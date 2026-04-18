@@ -53,18 +53,35 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# host 후보 (priority-first: ubu → ubu2 → mac, hosts.json enabled 순서).
-# Why: hexa run 은 default-remote dispatch 라 cold start ~10s. cx 는 매 호출 latency 예산 없음.
-#      infra_state 도 16h 지연 가능 → 신뢰 X. 각 후보 fresh TCP probe 로 실측.
-#      hexa claude_route.hexa 는 analytics 용도로 남기되 핫패스에서 제외 (2026-04-19).
+# host 후보 분산 (LRU, 2026-04-19): 최근 100 call 중 덜 쓰인 remote 부터.
+# Why priority-first 폐기: ubu 상시 당첨 → ubu2/htz 거의 미사용 (관찰 111 mac / 62 ubu / 2 ubu2 / 1 htz).
+#      infra_state 는 16h 지연 가능 → 실제 probe 로만 reachability 판정. LRU 는
+#      claude_genome.jsonl tail 100 count (관측 = 진실). 순위 동률은 hosts.json JSON 순서.
+#      hexa claude_route.hexa 는 analytics 용도로 남기되 핫패스에서 제외.
 if [ -n "$force_host" ]; then
     candidates=("$force_host")
 else
-    # hosts.json 의 enabled remote 들을 JSON 순서대로 (ubu, ubu2, htz…), 최후 mac.
-    # mapfile 은 bash 4+ 전용 — macOS bash 3.2 호환 위해 read loop 사용.
+    # enabled remote 를 JSON 순서대로 추출, 각 host 의 최근 100 call usage count 집계
+    remote_cands=()
+    while IFS= read -r h; do [ -n "$h" ] && remote_cands+=("$h"); done < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self")) | .[].key' "$REG" 2>/dev/null)
+    # count lookup — grep 로 정확 매칭 (quote 포함), 파일 없으면 0
+    _rank_lines=""
+    _idx=0
+    for _h in "${remote_cands[@]}"; do
+        if [ -f "$GENOME" ]; then
+            _cnt=$(tail -100 "$GENOME" 2>/dev/null | grep -c "\"host\":\"$_h\"" 2>/dev/null || echo 0)
+        else
+            _cnt=0
+        fi
+        _rank_lines="${_rank_lines}${_cnt} ${_idx} ${_h}"$'\n'
+        _idx=$((_idx+1))
+    done
     candidates=()
-    while IFS= read -r h; do [ -n "$h" ] && candidates+=("$h"); done < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self")) | .[].key' "$REG" 2>/dev/null)
+    while IFS=' ' read -r _c _i _h; do
+        [ -n "$_h" ] && candidates+=("$_h")
+    done < <(printf '%s' "$_rank_lines" | sort -k1n -k2n)
     candidates+=("mac")
+    unset _rank_lines _idx _cnt _c _i _h
 fi
 
 # fresh probe 순회 — 첫 번째 살아있는 후보 선택.
