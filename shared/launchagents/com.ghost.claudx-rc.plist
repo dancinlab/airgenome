@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  com.ghost.claudx-rc — M13g iOS RC 백그라운드 세션 (2026-04-19)
+  com.ghost.claudx-rc — M13g iOS RC 배경 세션 (2026-04-19)
 
   install:
     cp shared/launchagents/com.ghost.claudx-rc.plist ~/Library/LaunchAgents/
@@ -9,7 +9,7 @@
 
   check:
     launchctl list | grep claudx-rc
-    /Users/ghost/Dev/airgenome/bin/claudx-rc --status
+    claudx-rc with the status flag
 
   unload:
     launchctl unload ~/Library/LaunchAgents/com.ghost.claudx-rc.plist
