@@ -124,8 +124,9 @@ const HEAVY_KEYWORDS = [
 ];
 
 const NO_UNSAFE = process.env.CLAUDX_UNSAFE !== '1';
+const HEAVY_FILTER_ON = process.env.CLAUDX_HEAVY_FILTER === '1';
 // Default: size 체크 OFF (Anthropic 서버가 실제 한도 enforce). 명시적으로 제한 원하면 env 로.
-// heavy_keyword 필터만 default active.
+// heavy_keyword 필터는 false positive 가 잦아 기본 OFF. 필요 시 CLAUDX_HEAVY_FILTER=1.
 const MAX_PROMPT_BYTES = parseInt(process.env.CLAUDX_MAX_PROMPT_BYTES || '0', 10); // 0 = unlimited
 
 // M13f UI tune flags
@@ -144,6 +145,23 @@ const SLASH_ALIAS = {
   '/k': 'keep',
   '/lm': 'lm',
 };
+
+function looksLikePathishPrompt(text) {
+  if (!text) return false;
+  const t = String(text).trim();
+  return /^(~\/|\/Users\/|\/home\/|\.{1,2}\/)/.test(t) || /\s(?:~\/|\/Users\/|\/home\/|\.{1,2}\/)\S+/.test(t);
+}
+
+function textBlocksFromMessage(msg) {
+  if (!msg) return [];
+  if (typeof msg.content === 'string') return [msg.content];
+  if (!Array.isArray(msg.content)) return [];
+  const out = [];
+  for (const c of msg.content) {
+    if (c && c.type === 'text' && typeof c.text === 'string') out.push(c.text);
+  }
+  return out;
+}
 
 function expandSlashAlias(bodyStr) {
   if (!bodyStr || NO_SLASH_ALIAS) return bodyStr;
@@ -236,10 +254,12 @@ function checkInputFilter(bodyStr) {
   // image/document 블록 있으면 size 체크 skip (base64 팽창 감안)
   let hasBinaryContent = false;
   let msgs = [];
+  let lastUserMsg = null;
   try {
     const j = JSON.parse(bodyStr);
     msgs = j.messages || [];
     for (const m of msgs) {
+      if (m && m.role === 'user') lastUserMsg = m;
       if (Array.isArray(m.content)) {
         for (const c of m.content) {
           if (c && (c.type === 'image' || c.type === 'document' || c.type === 'tool_result')) {
@@ -250,15 +270,25 @@ function checkInputFilter(bodyStr) {
       if (hasBinaryContent) break;
     }
   } catch (_) {}
-  // size gate — MAX_PROMPT_BYTES > 0 일 때만 (default 0 = disabled), binary 제외
-  if (MAX_PROMPT_BYTES > 0 && !hasBinaryContent && bodyStr.length > MAX_PROMPT_BYTES) {
-    return { kind: 'size', bytes: bodyStr.length, limit: MAX_PROMPT_BYTES };
+  // size gate — last user text 에만 적용 (transcript/tool_result aggregate 는 면제).
+  // 이유: 병렬 sub-agent 결과 누적으로 bodyStr 전체 길이 기반 체크는 false positive.
+  if (MAX_PROMPT_BYTES > 0 && !hasBinaryContent) {
+    const lastUserTexts = textBlocksFromMessage(lastUserMsg);
+    let lastUserBytes = 0;
+    for (const t of lastUserTexts) lastUserBytes += Buffer.byteLength(t, 'utf8');
+    if (lastUserBytes > MAX_PROMPT_BYTES) {
+      return { kind: 'size', bytes: lastUserBytes, limit: MAX_PROMPT_BYTES };
+    }
   }
-  // heavy keyword — 텍스트에만 적용
-  for (const m of msgs) {
-    const content = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map(c => (c && c.text) || '').join(' ') : '';
-    for (const re of HEAVY_KEYWORDS) {
-      if (re.test(content)) return { kind: 'heavy_keyword', pattern: re.toString() };
+  // heavy keyword — 마지막 user text 입력에만 적용.
+  // 첨부 파일/과거 transcript 컨텍스트까지 훑으면 정상적인 "path + fix" 요청이 false positive 된다.
+  if (HEAVY_FILTER_ON) {
+    const lastUserTexts = textBlocksFromMessage(lastUserMsg);
+    for (const content of lastUserTexts) {
+      if (looksLikePathishPrompt(content)) continue;
+      for (const re of HEAVY_KEYWORDS) {
+        if (re.test(content)) return { kind: 'heavy_keyword', pattern: re.toString() };
+      }
     }
   }
   return null;

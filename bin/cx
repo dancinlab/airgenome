@@ -28,6 +28,7 @@ cd "$ROOT"
 MODULE="modules/claude_route.hexa"
 REG="shared/config/hosts.json"
 GENOME="$ROOT/forge/claude_genome.jsonl"
+INFRA_STATE="$HOME/Dev/nexus/shared/infra_state.json"
 
 die() { echo "cx: $*" >&2; exit 2; }
 
@@ -38,6 +39,46 @@ now_ms() {
     else
         echo $(( $(date +%s) * 1000 ))
     fi
+}
+
+jq_host() {
+    local host=$1 expr=$2
+    jq -r --arg h "$host" "$expr" "$REG" 2>/dev/null
+}
+
+ssh_target_user() {
+    local alias=$1
+    ssh -G "$alias" 2>/dev/null | awk '/^user /{print $2; exit}'
+}
+
+host_preload_enabled() {
+    local host=$1 mode
+    mode=$(jq_host "$host" '(.hosts[$h] // {}) | if has("claudx_preload") then .claudx_preload else true end')
+    [ "$mode" = "true" ]
+}
+
+host_hot() {
+    local host=$1
+    [ -r "$INFRA_STATE" ] || return 1
+    local line ts_s now_s age status load_s threads_s cap_s util
+    line=$(jq -r --arg h "$host" '
+        [(.ts // ""), (.hosts[$h].status // ""), (.hosts[$h].load // ""), (.hosts[$h].cpu_threads // ""), (.hosts[$h].ram_total_mb // "")]
+        | @tsv
+    ' "$INFRA_STATE" 2>/dev/null) || return 1
+    IFS=$'\t' read -r ts_s status load_s threads_s _ <<< "$line"
+    [ -n "$ts_s" ] || return 1
+    now_s=$(date +%s)
+    ts_s=$(jq -nr --arg ts "$ts_s" '$ts | fromdateiso8601' 2>/dev/null) || return 1
+    age=$((now_s - ts_s))
+    [ "$age" -le "${CLAUDX_INFRA_MAX_AGE_SEC:-180}" ] || return 1
+    [ "$status" = "active" ] || return 1
+    cap_s=$(jq_host "$host" '.hosts[$h].claude_limits.load_pct // empty')
+    [ -n "$cap_s" ] || return 1
+    [ -n "$load_s" ] || return 1
+    [ -n "$threads_s" ] || threads_s=$(jq_host "$host" '.hosts[$h].threads // 0')
+    [ "${threads_s:-0}" -gt 0 ] 2>/dev/null || return 1
+    util=$(awk -v l="$load_s" -v t="$threads_s" 'BEGIN{ if (t<=0) print 0; else printf "%d", (l*100)/t }')
+    [ "${util:-0}" -ge "${cap_s:-101}" ]
 }
 
 # arg parsing — --force-host / --show 는 wrapper 전용, 나머지는 claude 로 forward
@@ -53,46 +94,22 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# host 후보 분산 (LRU, 2026-04-19): 최근 100 call 중 덜 쓰인 remote 부터.
-# Why priority-first 폐기: ubu 상시 당첨 → ubu2/htz 거의 미사용 (관찰 111 mac / 62 ubu / 2 ubu2 / 1 htz).
-#      infra_state 는 16h 지연 가능 → 실제 probe 로만 reachability 판정. LRU 는
-#      claude_genome.jsonl tail 100 count (관측 = 진실). 순위 동률은 hosts.json JSON 순서.
-#      hexa claude_route.hexa 는 analytics 용도로 남기되 핫패스에서 제외.
+# host 후보 기본 순서:
+#   1. JSON 순서 우선 (현재 사용자 지시: ubu 우선)
+#   2. probe 성공 첫 호스트 선택
+# 기본 정책: 원격 후보가 전부 없으면 mac fallback 허용.
+# 명시적으로 막고 싶으면 CLAUDX_ALLOW_MAC_FALLBACK=0.
 if [ -n "$force_host" ]; then
     candidates=("$force_host")
 else
     # enabled remote 를 JSON 순서대로 추출
     remote_cands=()
     while IFS= read -r h; do [ -n "$h" ] && remote_cands+=("$h"); done < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self")) | .[].key' "$REG" 2>/dev/null)
-    # ubu 강제 demotion (2026-04-19 사용자 지시 "무조건 ubu 첫번째로 보지않기"):
-    # 동률 tie-break 이 JSON idx 순이라 count=0 상태에서 ubu 가 늘 먼저 선택됨.
-    # ubu 를 배열 끝으로 옮겨 idx 을 가장 크게 만들어 같은 count 에서 ubu2/htz 가 우선.
-    _non_ubu=()
-    _has_ubu=0
-    for _h in "${remote_cands[@]}"; do
-        if [ "$_h" = "ubu" ]; then _has_ubu=1; else _non_ubu+=("$_h"); fi
-    done
-    remote_cands=("${_non_ubu[@]}")
-    [ "$_has_ubu" = "1" ] && remote_cands+=("ubu")
-    unset _non_ubu _has_ubu
-    # count lookup — grep 로 정확 매칭 (quote 포함), 파일 없으면 0
-    _rank_lines=""
-    _idx=0
-    for _h in "${remote_cands[@]}"; do
-        if [ -f "$GENOME" ]; then
-            _cnt=$(tail -100 "$GENOME" 2>/dev/null | grep -c "\"host\":\"$_h\"" 2>/dev/null || echo 0)
-        else
-            _cnt=0
-        fi
-        _rank_lines="${_rank_lines}${_cnt} ${_idx} ${_h}"$'\n'
-        _idx=$((_idx+1))
-    done
-    candidates=()
-    while IFS=' ' read -r _c _i _h; do
-        [ -n "$_h" ] && candidates+=("$_h")
-    done < <(printf '%s' "$_rank_lines" | sort -k1n -k2n)
-    candidates+=("mac")
-    unset _rank_lines _idx _cnt _c _i _h
+    candidates=(${remote_cands[@]+"${remote_cands[@]}"})
+    if [ "${CLAUDX_ALLOW_MAC_FALLBACK:-1}" = "1" ]; then
+        candidates+=("mac")
+    fi
+    unset remote_cands
 fi
 
 # NODE_OPTIONS 에서 preload 경로 추출 (2026-04-19 htz preload 실패 대응):
@@ -114,22 +131,35 @@ for cand in "${candidates[@]}"; do
         host=mac
         break
     fi
+    if [ -z "$force_host" ] && host_hot "$cand"; then
+        _util=$(jq -r --arg h "$cand" '
+            ((.hosts[$h].load // "0") | tonumber) * 100 / ((.hosts[$h].cpu_threads // 0) | tonumber)
+            | floor
+        ' "$INFRA_STATE" 2>/dev/null)
+        _cap=$(jq_host "$cand" '.hosts[$h].claude_limits.load_pct // empty')
+        echo "cx: gate hot → $cand (${_util:-?}% >= ${_cap:-?}%, next)" >&2
+        unset _util _cap
+        continue
+    fi
     cand_alias=$(jq -r --arg h "$cand" '.hosts[$h].ssh_alias // ""' "$REG")
     [ -n "$cand_alias" ] || continue
+    _connect_t=$(jq_host "$cand" '.hosts[$h].probe_connect_timeout // 3')
     r0=$(now_ms)
     # probe: 연결 성공 + (preload 필요 시) 파일 존재 동시 확인
-    if [ -n "$cx_preload_path" ]; then
+    if [ -n "$cx_preload_path" ] && host_preload_enabled "$cand"; then
         _probe_cmd="test -f $(printf '%q' "$cx_preload_path")"
     else
         _probe_cmd="true"
     fi
-    # timeout 으로 감싸 probe 자체가 hang 해도 다음 후보로 빠르게 이동 (stale sshfs 등)
-    # macOS 는 gtimeout (brew coreutils) 우선, 없으면 timeout, 둘 다 없으면 그냥 ssh
-    if command -v gtimeout >/dev/null 2>&1; then _tmo="gtimeout 5";
-    elif command -v timeout >/dev/null 2>&1; then _tmo="timeout 5";
-    else _tmo="";
-    fi
-    if $_tmo ssh -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes "$cand_alias" "$_probe_cmd" 2>/dev/null; then
+    _probe_ok=0
+    for _try in 1 2; do
+        if ssh -o ControlPath=none -o ConnectTimeout="$_connect_t" -o BatchMode=yes "$cand_alias" "$_probe_cmd" 2>/dev/null; then
+            _probe_ok=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$_probe_ok" = "1" ]; then
         r1=$(now_ms)
         rtt=$(( r1 - r0 ))
         host=$cand
@@ -138,8 +168,9 @@ for cand in "${candidates[@]}"; do
     else
         echo "cx: probe fail → $cand (next)" >&2
     fi
+    unset _connect_t _probe_ok _try
 done
-[ -n "$host" ] || die "no host reachable (mac 포함 전 후보 실패)"
+[ -n "$host" ] || die "no host reachable"
 
 if [ "$show_only" = true ]; then
     echo "cx → $host${alias:+ ($alias)}"
@@ -164,7 +195,7 @@ fi
 # claudx integration (M13): forward NODE_OPTIONS + CLAUDX_* so the in-process
 # rate-limit interceptor loads on the remote claude. sshfs /Users/ghost symlink
 # lets Mac-absolute paths in NODE_OPTIONS resolve unchanged on the remote.
-if [ "$host" != "mac" ]; then
+if [ "$host" != "mac" ] && host_preload_enabled "$host"; then
     if [ -n "${NODE_OPTIONS:-}" ]; then
         remote_env_prefix="NODE_OPTIONS=$(printf '%q' "$NODE_OPTIONS") $remote_env_prefix"
     fi
@@ -178,6 +209,21 @@ if [ "$host" != "mac" ]; then
         fi
     done
     unset __cxv __cxval
+fi
+
+remote_scope_cmd=""
+if [ "$host" != "mac" ]; then
+    cpu_quota=$(jq_host "$host" '.hosts[$h].claude_limits.cpu_quota // empty')
+    mem_max=$(jq_host "$host" '.hosts[$h].claude_limits.memory_max // empty')
+    if [ -n "$cpu_quota$mem_max" ]; then
+        _scope=(systemd-run --user --scope --quiet)
+        [ -n "$cpu_quota" ] && _scope+=("--property=CPUQuota=$cpu_quota")
+        [ -n "$mem_max" ] && _scope+=("--property=MemoryMax=$mem_max")
+        _scope+=("--property=TasksMax=64" bash -lc)
+        remote_scope_cmd=$(printf '%q ' "${_scope[@]}")
+        unset _scope
+    fi
+    unset cpu_quota mem_max
 fi
 
 # cwd 매핑: 원격 /Users/ghost → $HOME/mac_home symlink 로 Mac 절대경로 그대로 resolve.
@@ -195,6 +241,58 @@ if [ "$host" != "mac" ]; then
             remote_cwd_prefix='cd '"$caller_quoted"' 2>/dev/null || cd "$HOME"; '
             ;;
     esac
+fi
+
+if [ "$host" != "mac" ]; then
+    remote_user=$(ssh_target_user "$alias")
+    if [ "$remote_user" = "root" ]; then
+        _safe_fwd=()
+        for _arg in ${fwd[@]+"${fwd[@]}"}; do
+            case "$_arg" in
+                --dangerously-skip-permissions|--allow-dangerously-skip-permissions) ;;
+                *) _safe_fwd+=("$_arg") ;;
+            esac
+        done
+        fwd=("${_safe_fwd[@]}")
+        unset _safe_fwd _arg
+    fi
+    unset remote_user
+fi
+
+# -c/--continue 자동 주입 가드 (2026-04-19 cl 크래시 대응):
+# zshrc 의 claude() 는 모든 호출에 -c 를 달아 cache hit 을 노리는데, 원격은 호스트마다
+# .claude-<n>/.claude.json 이 달라 "No conversation found to continue" 로 즉시 종료된다.
+# → 원격 remote_cwd 의 lastSessionId 가 없으면 -c/--continue 를 조용히 제거.
+# 세션 존재 시에는 그대로 유지 (연속성 보존).
+if [ "$host" != "mac" ]; then
+    _has_c=0
+    for _arg in ${fwd[@]+"${fwd[@]}"}; do
+        case "$_arg" in -c|--continue) _has_c=1; break ;; esac
+    done
+    if [ "$_has_c" = 1 ]; then
+        _cfg_base="${CLAUDE_CONFIG_DIR:+$(basename "$CLAUDE_CONFIG_DIR")}"
+        _cfg_base="${_cfg_base:-.claude}"
+        _caller_q=$(printf '%q' "$CALLER_CWD")
+        # 원격 .claude.json 에서 project.lastSessionId 존재 여부만 확인. ~2 RTT.
+        _sess_probe='python3 -c '"'"'import json,os,sys
+p=os.path.expanduser("~/'"$_cfg_base"'/.claude.json")
+if not os.path.exists(p): sys.exit(1)
+try: d=json.load(open(p))
+except Exception: sys.exit(1)
+proj=d.get("projects",{}).get('"$_caller_q"',{}) if isinstance(d.get("projects",{}),dict) else {}
+sys.exit(0 if proj.get("lastSessionId") else 1)'"'"' 2>/dev/null'
+        if ! ssh -S none -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes -T "$alias" "$_sess_probe" >/dev/null 2>&1; then
+            _new_fwd=()
+            for _arg in ${fwd[@]+"${fwd[@]}"}; do
+                case "$_arg" in -c|--continue) ;; *) _new_fwd+=("$_arg") ;; esac
+            done
+            fwd=(${_new_fwd[@]+"${_new_fwd[@]}"})
+            echo "cx: no remote session → -c stripped (fresh start on $host)" >&2
+            unset _new_fwd
+        fi
+        unset _cfg_base _caller_q _sess_probe
+    fi
+    unset _has_c _arg
 fi
 
 # 실행 + duration
@@ -217,12 +315,17 @@ else
     #          Why: -t + 비-tty stdin 은 "Pseudo-terminal will not be allocated" + claude -p 입력 행.
     # --add-dir /var/folders: Mac $TMPDIR paste 이미지 경로 read 허용 (mac-tmp.service sshfs 경유). 빠지면 interactive TUI image paste 시 401 재인증 루프.
     inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude --add-dir /var/folders ${fwd[@]+"${fwd[@]}"})
+    if [ -n "$remote_scope_cmd" ]; then
+        remote_cmd="if command -v systemd-run >/dev/null 2>&1; then $remote_scope_cmd $(printf '%q' "$inner_cmd"); else $inner_cmd; fi"
+    else
+        remote_cmd="$inner_cmd"
+    fi
     # KeepAlive 튜닝 (2026-04-19 stall observe): TCPKeepAlive=yes + ServerAliveInterval=15
     # 긴 응답 stream 중 TCP 버퍼 정체로 TUI freeze → 15s 마다 keepalive 로 버퍼 flush 유도.
     if [ -t 0 ]; then
-        ssh -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -t "$alias" "$inner_cmd"
+        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -t "$alias" "$remote_cmd"
     else
-        ssh -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -T "$alias" "$inner_cmd"
+        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -T "$alias" "$remote_cmd"
     fi
     rc=$?
 fi
