@@ -89,9 +89,11 @@ export CLAUDX_AUTOLOOP="$CLAUDX_RC_LOOP"
 info "starting claudx-loop (acct=$CLAUDX_RC_ACCT autoloop='$CLAUDX_RC_LOOP' rc_prefix=$CLAUDX_RC_PREFIX)"
 info "log: $LOGFILE  · pidfile: $PIDFILE"
 
-# claudx-loop 에 claude args forward (--force-acct + --remote-control-session-name-prefix)
+# claudx-loop 에 claude args forward
+# CRITICAL: --force-host mac — iOS RC 는 Mac 로컬 claude 와만 페어링됨 (원격 ssh 로 가면 안 됨)
 exec "$CLAUDX_LOOP" \
     --force-acct "$CLAUDX_RC_ACCT" \
+    --force-host mac \
     -- \
     --remote-control-session-name-prefix "$CLAUDX_RC_PREFIX" \
     -c \
