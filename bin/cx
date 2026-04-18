@@ -119,6 +119,9 @@ if [ "$host" != "mac" ]; then
     if [ -n "${NODE_OPTIONS:-}" ]; then
         remote_env_prefix="NODE_OPTIONS=$(printf '%q' "$NODE_OPTIONS") $remote_env_prefix"
     fi
+    if [ -n "${BUN_OPTIONS:-}" ]; then
+        remote_env_prefix="BUN_OPTIONS=$(printf '%q' "$BUN_OPTIONS") $remote_env_prefix"
+    fi
     for __cxv in CLAUDX_STATE CLAUDX_POOL CLAUDX_USAGE CLAUDX_HOME_MAP CLAUDX_MAX_ROT CLAUDX_EXH_SEC CLAUDX_DEBUG CLAUDX_SCRUB; do
         eval "__cxval=\${$__cxv:-}"
         if [ -n "$__cxval" ]; then
