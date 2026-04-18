@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# bin/claudx-observe — ROI#5(perf) + ROI#3(cache) 관찰 합집계
+#
+# 30분마다 또는 수동 호출. perf.jsonl + rotations.jsonl 을 slicing 해서
+# forge/claudx_observe.jsonl 에 1 라인 snapshot append. 사람 가독용 ASCII
+# 요약 stdout (plist 에서는 로그로 흘러감).
+#
+# usage:
+#   claudx-observe                      # 마지막 30분 기본 창
+#   claudx-observe --window 3600        # 1h 창
+#   claudx-observe --human              # ASCII 표만 stdout (snapshot X)
+#
+# snapshot 필드 (forge/claudx_observe.jsonl):
+#   {ts, window_s, perf_events, perf_top[phase,count,p50,p95,max_ms],
+#    cache_hits, cache_miss_est, rotations, budget_blocks, heavy_skips}
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+: "${CLAUDX_STATE:=$HOME/.airgenome/claudx}"
+PERF="$CLAUDX_STATE/perf.jsonl"
+ROT="$CLAUDX_STATE/rotations.jsonl"
+OUT="$CX_ROOT/forge/claudx_observe.jsonl"
+
+window_s=1800
+human=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --window) window_s=$2; shift 2 ;;
+        --human)  human=1; shift ;;
+        *)        shift ;;
+    esac
+done
+
+mkdir -p "$(dirname "$OUT")"
+
+now=$(date +%s)
+cutoff=$(( now - window_s ))
+ts_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# perf.jsonl — slice by ts >= cutoff, aggregate by phase
+perf_summary='[]'
+perf_events=0
+if [ -f "$PERF" ]; then
+    perf_summary=$(jq -c --arg cutoff "$cutoff" '
+        [inputs | select(.ts and ((.ts|fromdateiso8601) >= ($cutoff|tonumber)))]
+        | group_by(.phase)
+        | map({
+            phase: .[0].phase,
+            count: length,
+            p50:  ((. | map(.ms) | sort)[(length/2|floor)]),
+            p95:  ((. | map(.ms) | sort)[((length*95/100)|floor)]),
+            max:  ((. | map(.ms) | max))
+          })
+        | sort_by(-.p95)
+    ' "$PERF" 2>/dev/null || echo '[]')
+    perf_events=$(echo "$perf_summary" | jq -r '[.[].count] | add // 0' 2>/dev/null || echo 0)
+fi
+
+# rotations.jsonl — cache/rotation/budget/heavy counts in window
+cache_hits=0
+rotations=0
+budget_blocks=0
+heavy_skips=0
+if [ -f "$ROT" ]; then
+    read -r cache_hits rotations budget_blocks heavy_skips < <(
+        jq -s --arg cutoff "$cutoff" -r '
+            [.[] | select(.ts and ((.ts|fromdateiso8601) >= ($cutoff|tonumber)))]
+            | [
+                ([.[] | select(.event=="cache_hit")] | length),
+                ([.[] | select(.event=="rotating")] | length),
+                ([.[] | select(.event=="budget_block")] | length),
+                ([.[] | select(.event=="heavy_skip")] | length)
+              ] | @tsv
+        ' "$ROT" 2>/dev/null | awk 'NR==1'
+    )
+    : "${cache_hits:=0}" "${rotations:=0}" "${budget_blocks:=0}" "${heavy_skips:=0}"
+fi
+
+# snapshot JSON
+snap=$(jq -cn \
+    --arg ts "$ts_iso" \
+    --argjson window_s "$window_s" \
+    --argjson perf_events "${perf_events:-0}" \
+    --argjson perf_top "$perf_summary" \
+    --argjson cache_hits "${cache_hits:-0}" \
+    --argjson rotations "${rotations:-0}" \
+    --argjson budget_blocks "${budget_blocks:-0}" \
+    --argjson heavy_skips "${heavy_skips:-0}" \
+    '{ts:$ts, window_s:$window_s, perf_events:$perf_events, perf_top:$perf_top,
+      cache_hits:$cache_hits, rotations:$rotations, budget_blocks:$budget_blocks,
+      heavy_skips:$heavy_skips}')
+
+if [ "$human" = "0" ]; then
+    echo "$snap" >> "$OUT"
+fi
+
+# ASCII 요약 stdout
+win_min=$(( window_s / 60 ))
+echo "━━━ claudx-observe (last ${win_min}min, ${ts_iso}) ━━━"
+printf "perf events : %s\n" "${perf_events:-0}"
+if [ -n "$perf_summary" ] && [ "$perf_summary" != "[]" ]; then
+    echo "slow hooks (top 5 by p95):"
+    echo "$perf_summary" | jq -r '.[0:5] | .[] | "  \(.phase|.[0:20]) count=\(.count) p50=\(.p50)ms p95=\(.p95)ms max=\(.max)ms"' 2>/dev/null
+fi
+printf "cache_hits  : %s\n" "${cache_hits:-0}"
+printf "rotations   : %s\n" "${rotations:-0}"
+printf "budget_block: %s\n" "${budget_blocks:-0}"
+printf "heavy_skips : %s\n" "${heavy_skips:-0}"
