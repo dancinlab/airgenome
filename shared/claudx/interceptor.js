@@ -97,7 +97,8 @@ const HEAVY_KEYWORDS = [
 ];
 
 const NO_UNSAFE = process.env.CLAUDX_UNSAFE !== '1';
-const MAX_PROMPT_BYTES = parseInt(process.env.CLAUDX_MAX_PROMPT_BYTES || '524288', 10); // 512KB
+// 이미지·긴 컨텍스트 일상 사용 고려 — 기본 20MB. 이미지 블록 감지시 size 체크 skip.
+const MAX_PROMPT_BYTES = parseInt(process.env.CLAUDX_MAX_PROMPT_BYTES || '20971520', 10); // 20MB
 
 // M13f UI tune flags
 const TITLE_LOCK = process.env.CLAUDX_TITLE_LOCK !== '0';
@@ -204,21 +205,34 @@ if (TITLE_LOCK && process.stdout && typeof process.stdout.write === 'function') 
 
 function checkInputFilter(bodyStr) {
   if (!bodyStr || !NO_UNSAFE) return null;
-  // size gate
-  if (bodyStr.length > MAX_PROMPT_BYTES) {
-    return { kind: 'size', bytes: bodyStr.length, limit: MAX_PROMPT_BYTES };
-  }
-  // heavy keyword in prompt text (messages array values)
+  // image/document 블록 있으면 size 체크 skip (base64 팽창 감안)
+  let hasBinaryContent = false;
+  let msgs = [];
   try {
     const j = JSON.parse(bodyStr);
-    const msgs = j.messages || [];
+    msgs = j.messages || [];
     for (const m of msgs) {
-      const content = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map(c => c.text || '').join(' ') : '';
-      for (const re of HEAVY_KEYWORDS) {
-        if (re.test(content)) return { kind: 'heavy_keyword', pattern: re.toString() };
+      if (Array.isArray(m.content)) {
+        for (const c of m.content) {
+          if (c && (c.type === 'image' || c.type === 'document' || c.type === 'tool_result')) {
+            hasBinaryContent = true; break;
+          }
+        }
       }
+      if (hasBinaryContent) break;
     }
   } catch (_) {}
+  // size gate — binary 컨텐츠 없을 때만
+  if (!hasBinaryContent && bodyStr.length > MAX_PROMPT_BYTES) {
+    return { kind: 'size', bytes: bodyStr.length, limit: MAX_PROMPT_BYTES };
+  }
+  // heavy keyword — 텍스트에만 적용
+  for (const m of msgs) {
+    const content = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map(c => (c && c.text) || '').join(' ') : '';
+    for (const re of HEAVY_KEYWORDS) {
+      if (re.test(content)) return { kind: 'heavy_keyword', pattern: re.toString() };
+    }
+  }
   return null;
 }
 
