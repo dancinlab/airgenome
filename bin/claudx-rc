@@ -96,5 +96,4 @@ exec "$CLAUDX_LOOP" \
     --force-host mac \
     -- \
     --remote-control-session-name-prefix "$CLAUDX_RC_PREFIX" \
-    -c \
     >> "$LOGFILE" 2>&1
