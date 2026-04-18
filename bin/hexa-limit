@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# bin/hexa-limit — common hexa run/build wrapper with optional runtime caps.
+#
+# 목적:
+#   1. hexa run / build 공통 진입점에 limit 부여
+#   2. Linux systemd-run 가능 시 CPU/Memory/Tasks 상한 적용
+#   3. systemd-run 없으면 원래 hexa binary 로 그대로 exec
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+die() { echo "hexa-limit: $*" >&2; exit 2; }
+
+find_hexa() {
+    local candidates=(
+        "${HEXA_REAL:-}"
+        "$HOME/Dev/hexa-lang/hexa"
+        "$HOME/.hx/bin/hexa"
+        "$ROOT/nexus/shared/bin/hexa"
+    )
+    local c
+    for c in "${candidates[@]}"; do
+        [ -n "$c" ] || continue
+        [ -x "$c" ] || continue
+        [ "$c" != "$0" ] || continue
+        printf '%s\n' "$c"
+        return 0
+    done
+    command -v hexa 2>/dev/null || return 1
+}
+
+REAL_HEXA="$(find_hexa)" || die "no hexa binary found"
+
+: "${AIRGENOME_HEXA_LIMIT_ENABLE:=1}"
+: "${AIRGENOME_HEXA_CPU_QUOTA:=80%}"
+: "${AIRGENOME_HEXA_MEMORY_MAX:=6G}"
+: "${AIRGENOME_HEXA_TASKS_MAX:=256}"
+: "${AIRGENOME_HEXA_TIMEOUT_SEC:=0}"
+
+if [ "${AIRGENOME_HEXA_LIMIT_ENABLE}" != "1" ]; then
+    exec "$REAL_HEXA" "$@"
+fi
+
+cmd=()
+if [ -n "${AIRGENOME_HEXA_TIMEOUT_SEC}" ] && [ "${AIRGENOME_HEXA_TIMEOUT_SEC}" != "0" ]; then
+    cmd+=(timeout "${AIRGENOME_HEXA_TIMEOUT_SEC}")
+fi
+cmd+=("$REAL_HEXA" "$@")
+
+if command -v systemd-run >/dev/null 2>&1; then
+    scope=(systemd-run --user --scope --quiet)
+    [ -n "${AIRGENOME_HEXA_CPU_QUOTA}" ] && scope+=("--property=CPUQuota=${AIRGENOME_HEXA_CPU_QUOTA}")
+    [ -n "${AIRGENOME_HEXA_MEMORY_MAX}" ] && scope+=("--property=MemoryMax=${AIRGENOME_HEXA_MEMORY_MAX}")
+    [ -n "${AIRGENOME_HEXA_TASKS_MAX}" ] && scope+=("--property=TasksMax=${AIRGENOME_HEXA_TASKS_MAX}")
+    exec "${scope[@]}" "${cmd[@]}"
+fi
+
+exec "${cmd[@]}"

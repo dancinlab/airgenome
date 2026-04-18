@@ -52,7 +52,11 @@ let MAC_SAFE_AGENTS = [
 ]
 
 fn hexa_bin() -> str {
-    let candidates = [env("HOME") + "/Dev/hexa-lang/hexa", env("HOME") + "/.hx/bin/hexa"]
+    let candidates = [
+        airgenome_root() + "/bin/hexa-limit",
+        env("HOME") + "/Dev/hexa-lang/hexa",
+        env("HOME") + "/.hx/bin/hexa"
+    ]
     let mut i = 0
     while i < len(candidates) {
         let chk = exec("[ -x '" + candidates[i] + "' ] && echo y || echo n").trim()
