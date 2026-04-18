@@ -123,7 +123,13 @@ for cand in "${candidates[@]}"; do
     else
         _probe_cmd="true"
     fi
-    if ssh -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes "$cand_alias" "$_probe_cmd" 2>/dev/null; then
+    # timeout 으로 감싸 probe 자체가 hang 해도 다음 후보로 빠르게 이동 (stale sshfs 등)
+    # macOS 는 gtimeout (brew coreutils) 우선, 없으면 timeout, 둘 다 없으면 그냥 ssh
+    if command -v gtimeout >/dev/null 2>&1; then _tmo="gtimeout 5";
+    elif command -v timeout >/dev/null 2>&1; then _tmo="timeout 5";
+    else _tmo="";
+    fi
+    if $_tmo ssh -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes "$cand_alias" "$_probe_cmd" 2>/dev/null; then
         r1=$(now_ms)
         rtt=$(( r1 - r0 ))
         host=$cand
