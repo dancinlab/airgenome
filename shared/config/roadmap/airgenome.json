@@ -221,7 +221,9 @@
         "launchd": "com.airgenome.e2e-sample (StartInterval=1800, RunAtLoad=true) → ~/Library/LaunchAgents/",
         "first_samples": "19:56:56 seed + 19:57:19 RunAtLoad — 모든 stage fresh, stderr.total=0, anom_last=2, anom_sum_1h=100",
         "expected_samples_24h": "48 (sampler 30min × 48)",
-        "completion_path": "2026-04-15 ~19:57 에 shared/scripts/e2e_eval.sh 실행 → PASS 시 status=done + evidence 채움"
+        "eval_2026-04-19": "samples=56 > 48 충족. stderr_clean PASS (0건), anomaly_fired PASS (1h_sum=458). FAIL 6건: probe/dispatch/harvest/label/forecast freshness + duration_24h. 차단요인: (1) e2e_eval.sh 가 BSD date -j 사용 → Linux 호스트에서 span 계산 0.00h (2) harvest/label/forecast 스테이지 약 2일 미갱신 (Mac LaunchAgent 중단 의심).",
+        "blockers_outstanding": ["evaluator_linux_portability (date -j → date -d)", "mac_launchd_harvest_label_forecast_restart"],
+        "completion_path": "evaluator portable 재작성 + Mac LaunchAgent 복구 후 재평가. 현재는 active 유지."
       }
     },
     {
