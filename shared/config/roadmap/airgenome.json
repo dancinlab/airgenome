@@ -546,6 +546,23 @@
       ]
     },
     {
+      "id": "M13g_claudx_rc",
+      "title": "claudx-rc — 상시연결 remote-control 세션 (iOS 앱 페어링용)",
+      "priority": "P1",
+      "status": "active",
+      "started": "2026-04-19",
+      "deps": ["M13_claudx", "M13f_claudx_ui_tune"],
+      "problem": "외부에서 iOS Claude 앱으로 코딩할 일 多. 공식 앱은 계정 단일 로그인이지만 claude --remote-control-session-name-prefix 로 Mac 에 상시 세션 띄워두면 iOS 에서 원격 조작 가능. 계정 rotation 이 RC 페어링 깨므로 claude1 에 pinning + smash/free 교대로 돌파 워크로드.",
+      "approach": "bin/claudx-rc = single-instance guard + claudx-loop wrap (--force-acct claude1 + --autoloop '1h /smash 돌파탐색' 또는 smash/free 교대). launchd plist 로 RunAtLoad + KeepAlive. CLAUDX_NO_WATCH=1 (main 작업과 분리).",
+      "exit_criteria": [
+        "bin/claudx-rc — pidfile dedup, claudx-loop 기동, exit 시 자동 restart",
+        "shared/launchagents/com.ghost.claudx-rc.plist — launchd 배포 아티팩트",
+        "autoloop 기본값: '1h /smash 돌파탐색 · /free 교대' (환경변수로 override)",
+        "smoke: plist 로드 시도, 프로세스 1개 유지 확인",
+        "상시 cost 로그 → claude1 비용 추적"
+      ]
+    },
+    {
       "id": "M13e_claudx_watch",
       "title": "claudx-watch — 루프 stall 감지 watchdog (heartbeat gap + rotation storm)",
       "priority": "P1",
