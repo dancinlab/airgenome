@@ -57,17 +57,14 @@ log_evt() {
     echo "$line" >> "$CLAUDX_LOOP_LOG"
 }
 
-# graceful stop
-RUNNING_PID=0
+# graceful stop — foreground 자식이므로 신호는 pgid 로 자동 전파됨
 stop_requested=false
 on_sig() {
     stop_requested=true
-    log_evt '{ts:$ts,pid:$pid,event:"signal_received",sig:"term"}'
-    if [ "$RUNNING_PID" -gt 0 ]; then
-        kill -TERM "$RUNNING_PID" 2>/dev/null || true
-    fi
+    log_evt '{ts:$ts,pid:$pid,event:"signal_received"}'
 }
-trap on_sig TERM INT HUP
+trap on_sig TERM HUP
+# SIGINT (Ctrl+C) 은 foreground child 가 받음. rc 130 으로 상위에서 감지.
 
 iter=0
 burst_t0=$(date +%s)
@@ -107,11 +104,10 @@ while true; do
     if [ "$iter" -eq 1 ] && [ -n "$autoloop_spec" ]; then
         spawn_args=("/loop $autoloop_spec" "$@")
     fi
-    "$CLAUDX" ${spawn_args[@]+"${spawn_args[@]}"} &
-    RUNNING_PID=$!
-    wait "$RUNNING_PID" 2>/dev/null
+    # foreground 실행 — & 로 background 하면 TTY 끊어져 ssh -T → claude --print 모드 강제됨.
+    # TUI 에 TTY 필요하므로 foreground 유지. 시그널은 shell 이 pgid 로 자동 전파.
+    "$CLAUDX" ${spawn_args[@]+"${spawn_args[@]}"}
     rc=$?
-    RUNNING_PID=0
     t1=$(date +%s)
     dur=$((t1 - t0))
 
@@ -119,6 +115,11 @@ while true; do
         --arg i "$iter" --arg rc "$rc" --arg d "$dur"
 
     # stop conditions
+    if [ "$rc" = "130" ]; then
+        # SIGINT — 사용자가 TUI 에서 Ctrl+C 로 끝냄. 재시작 X
+        log_evt '{ts:$ts,pid:$pid,event:"ctrl_c_break"}'
+        break
+    fi
     if [ "$rc" = "0" ] && [ "$dur" -ge 10 ]; then
         # long clean exit — assume user quit intentionally
         log_evt '{ts:$ts,pid:$pid,event:"clean_exit_break"}'
