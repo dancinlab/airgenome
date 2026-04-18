@@ -40,9 +40,36 @@ const pool = require('./pool.js');
 const STATE_DIR = pool.paths.STATE_DIR;
 const ROT_LOG = path.join(STATE_DIR, 'rotations.jsonl');
 const COST_LOG = path.join(STATE_DIR, 'cost.jsonl');
+const PERF_LOG = path.join(STATE_DIR, 'perf.jsonl');
 const CACHE_DIR = path.join(STATE_DIR, 'cache');
 try { fs.mkdirSync(STATE_DIR, { recursive: true }); } catch (_) {}
 try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch (_) {}
+
+// Stall 방지 임계치 (2026-04-19 사용자 observe: "갑자기 전달 많을때 멈춤, 확 돌아옴")
+// - HEAVY_BODY_BYTES: 이 이상 response 는 cache/badge skip (clone+text read 가 stream block)
+// - PERF_SLOW_MS: 각 hook 수행시간 > 임계치 → perf.jsonl append (모니터링)
+const HEAVY_BODY_BYTES = parseInt(process.env.CLAUDX_HEAVY_BODY_BYTES || '500000', 10);
+const PERF_SLOW_MS = parseInt(process.env.CLAUDX_PERF_SLOW_MS || '50', 10);
+function logPerf(phase, ms, extra) {
+  if (ms < PERF_SLOW_MS) return;
+  try {
+    fs.appendFileSync(PERF_LOG, JSON.stringify({ ts: new Date().toISOString(), phase, ms, ...(extra || {}) }) + '\n');
+  } catch (_) {}
+}
+function timed(phase, fn) {
+  const t0 = Date.now();
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') {
+      return r.finally(() => logPerf(phase, Date.now() - t0));
+    }
+    logPerf(phase, Date.now() - t0);
+    return r;
+  } catch (e) {
+    logPerf(phase, Date.now() - t0, { error: String(e).slice(0, 200) });
+    throw e;
+  }
+}
 
 const MAX_ROT = parseInt(process.env.CLAUDX_MAX_ROT || '4', 10);
 const EXH_SEC = parseInt(process.env.CLAUDX_EXH_SEC || '3600', 10);
@@ -350,7 +377,10 @@ async function isRateLimited(resp) {
 
 async function parseUsageFromBody(resp) {
   // stream 응답은 여기서는 포기 (cli 가 --output-format json 이면 단일 JSON)
+  // 2026-04-19: content-type event-stream 은 전체 body read 가 stream 종료까지 block 하므로 skip.
   try {
+    const ct = resp.headers.get('content-type') || '';
+    if (ct.includes('event-stream')) return null;
     const clone = resp.clone();
     const txt = await clone.text();
     if (!txt) return null;
@@ -654,26 +684,41 @@ globalThis.fetch = async function claudx_fetch(input, init) {
     const verdict = await isRateLimited(resp);
 
     if (!verdict.hit) {
-      // 성공 응답 후처리
+      // 성공 응답 후처리 (2026-04-19 stall 방지):
+      //   - recordCost/freshenUsage/preemptSwap 은 fire-and-forget (await 제거) — 응답 반환 blocking 해제.
+      //   - HEAVY_BODY_BYTES 초과 (또는 event-stream) 이면 cache set + badge 건너뜀.
+      //   - 각 hook 수행시간 perf.jsonl 기록 (PERF_SLOW_MS 초과시만).
       const curAcct = triedNames[triedNames.length - 1];
-      try { await recordCost(resp, { acct: curAcct, model: reqBodyModel, cwd: process.cwd() }); } catch (_) {}
-      try { freshenUsageCache(resp, curAcct); } catch (_) {}
-      try { preemptSwapCheck(resp, curAcct); } catch (_) {}
+      const ct = resp.headers.get('content-type') || '';
+      const cl = parseInt(resp.headers.get('content-length') || '0', 10) || 0;
+      const heavy = ct.includes('event-stream') || (cl > 0 && cl > HEAVY_BODY_BYTES);
+
+      // fire-and-forget (응답 return 과 동시 실행)
+      Promise.resolve().then(() => timed('recordCost', () => recordCost(resp, { acct: curAcct, model: reqBodyModel, cwd: process.cwd() }))).catch(() => {});
+      try { timed('freshenUsage', () => freshenUsageCache(resp, curAcct)); } catch (_) {}
+      try { timed('preemptSwap', () => preemptSwapCheck(resp, curAcct)); } catch (_) {}
+
+      if (heavy) {
+        // 큰 payload — cache/badge 스킵하고 즉시 반환 (stream block 방지)
+        logEvent({ event: 'heavy_skip', bytes: cl, ct: ct.slice(0, 40) });
+        return scrubRateLimitHeaders(resp);
+      }
 
       // cache set + badge injection (print/json 모드만)
       if (hash && !NO_CACHE) {
         try {
           const clone = resp.clone();
+          const tTxt = Date.now();
           let txt = await clone.text();
-          if (txt && txt.length > 0 && txt.length < 5_000_000) {
-            // badge prefix (json 단일 응답 한정 — stream 은 TUI 층에서 처리)
-            const badged = injectBadge(txt, curAcct);
+          logPerf('cacheSet_read', Date.now() - tTxt, { bytes: txt ? txt.length : 0 });
+          if (txt && txt.length > 0 && txt.length < HEAVY_BODY_BYTES) {
+            const badged = timed('injectBadge', () => injectBadge(txt, curAcct));
             if (badged !== txt) {
-              cacheSet(hash, resp, badged);
+              timed('cacheSet', () => cacheSet(hash, resp, badged));
               const headers = new Headers(resp.headers);
               return scrubRateLimitHeaders(new Response(badged, { status: resp.status, headers }));
             }
-            cacheSet(hash, resp, txt);
+            timed('cacheSet', () => cacheSet(hash, resp, txt));
           }
         } catch (_) {}
       }
