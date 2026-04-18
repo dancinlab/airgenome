@@ -61,9 +61,20 @@ done
 if [ -n "$force_host" ]; then
     candidates=("$force_host")
 else
-    # enabled remote 를 JSON 순서대로 추출, 각 host 의 최근 100 call usage count 집계
+    # enabled remote 를 JSON 순서대로 추출
     remote_cands=()
     while IFS= read -r h; do [ -n "$h" ] && remote_cands+=("$h"); done < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self")) | .[].key' "$REG" 2>/dev/null)
+    # ubu 강제 demotion (2026-04-19 사용자 지시 "무조건 ubu 첫번째로 보지않기"):
+    # 동률 tie-break 이 JSON idx 순이라 count=0 상태에서 ubu 가 늘 먼저 선택됨.
+    # ubu 를 배열 끝으로 옮겨 idx 을 가장 크게 만들어 같은 count 에서 ubu2/htz 가 우선.
+    _non_ubu=()
+    _has_ubu=0
+    for _h in "${remote_cands[@]}"; do
+        if [ "$_h" = "ubu" ]; then _has_ubu=1; else _non_ubu+=("$_h"); fi
+    done
+    remote_cands=("${_non_ubu[@]}")
+    [ "$_has_ubu" = "1" ] && remote_cands+=("ubu")
+    unset _non_ubu _has_ubu
     # count lookup — grep 로 정확 매칭 (quote 포함), 파일 없으면 0
     _rank_lines=""
     _idx=0
@@ -84,6 +95,15 @@ else
     unset _rank_lines _idx _cnt _c _i _h
 fi
 
+# NODE_OPTIONS 에서 preload 경로 추출 (2026-04-19 htz preload 실패 대응):
+#   --require /path/to/interceptor.js → 원격에도 이 파일이 있어야 claudx 가 뜬다.
+#   sshfs 있는 host (ubu/ubu2) 는 /Users/ghost 심볼릭으로 해결. htz 는 mount 없어 실패.
+#   probe 단계에서 파일 존재까지 확인 → 없으면 다음 후보로.
+cx_preload_path=""
+if [ -n "${NODE_OPTIONS:-}" ]; then
+    cx_preload_path=$(printf '%s' "$NODE_OPTIONS" | grep -oE -- '--require[= ][^ ]+' | head -1 | sed -E 's/^--require[= ]//')
+fi
+
 # fresh probe 순회 — 첫 번째 살아있는 후보 선택.
 # -o ControlPath=none 으로 stale mux bypass, ConnectTimeout=3 으로 banner 행 방지.
 host=""
@@ -97,7 +117,13 @@ for cand in "${candidates[@]}"; do
     cand_alias=$(jq -r --arg h "$cand" '.hosts[$h].ssh_alias // ""' "$REG")
     [ -n "$cand_alias" ] || continue
     r0=$(now_ms)
-    if ssh -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes "$cand_alias" true 2>/dev/null; then
+    # probe: 연결 성공 + (preload 필요 시) 파일 존재 동시 확인
+    if [ -n "$cx_preload_path" ]; then
+        _probe_cmd="test -f $(printf '%q' "$cx_preload_path")"
+    else
+        _probe_cmd="true"
+    fi
+    if ssh -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes "$cand_alias" "$_probe_cmd" 2>/dev/null; then
         r1=$(now_ms)
         rtt=$(( r1 - r0 ))
         host=$cand

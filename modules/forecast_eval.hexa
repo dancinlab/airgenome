@@ -1,0 +1,424 @@
+// modules/forecast_eval.hexa — M10 forecast 실측 평가 (held-out MAE)
+//
+// 책임:
+//   1. forge/<ring>.ring (기본 genomes.unified.ring — AIRGENOME_RING_NAME override) 최근 N 게놈 스캔.
+//   2. distinct KEY (pid string — unified: "host.pid") 별 CPU axis 시계열 구성.
+//   3. train/holdout split — 마지막 1 sample 은 holdout, 앞 (N-1) 은 train.
+//   4. train 으로 Holt's linear (alpha/beta = 50/100) 적합 → 1-step ahead 예측.
+//   5. MAE% = |pred - actual| * 100 / max(|actual|, 1) 을 PID 별로 계산.
+//   6. 전체 평균 MAE, outlier (MAE > 30%) PID 수, PID 별 상세 를 JSON report 로 저장.
+//
+// 출력: forge/forecast_eval_report.json
+//   {
+//     "ts": "...",
+//     "ring": "genomes.unified.ring",
+//     "samples_total": N,
+//     "pids_evaluated": K,
+//     "avg_mae_pct": X,
+//     "outlier_pids": [{"pid":"host.123","mae":42}, ...],  // mae > 30
+//     "pid_mae": [{"pid":"host.123","mae":X,"pred":P,"actual":A,"samples":S}, ...],
+//     "pass": true|false  // avg_mae < 15
+//   }
+//
+// 제약: use "../core/core" 만. int 연산만. try/catch 미사용.
+
+use "../core/core"
+
+// Path resolution — hexa module_loader 의 path-traversal guard 가 `../core/core` import
+// 의 함수 resolve 를 막는 상황에 대비해 env 기반 fallback 을 직접 수행.
+// AIRGENOME_ROOT → forge_dir → ring_path(name) 을 inline 으로 재현 (core 와 동일 로직).
+fn fe_airgenome_root() -> str {
+    let c = env("AIRGENOME_ROOT")
+    if c != "" { return c }
+    return env("HOME") + "/Dev/airgenome"
+}
+fn fe_forge_dir() -> str { return fe_airgenome_root() + "/forge" }
+fn fe_ring_path(name: str) -> str { return fe_forge_dir() + "/" + name }
+fn fe_default_ring_path() -> str {
+    let n = env("AIRGENOME_RING_NAME")
+    if n != "" { return fe_ring_path(n) }
+    return fe_ring_path("genomes.ring")
+}
+
+let RING = fe_default_ring_path()
+let OUT  = fe_ring_path("forecast_eval_report.json")
+let SCAN_LINES = 500        // RSS watchdog (4GB cap) — hexa list concat O(n²) 보수적 한계
+let TOP_N_PIDS = 10
+let MIN_SERIES_LEN = 4        // train >=3 + holdout 1
+let OUTLIER_THRESHOLD = 30    // MAE% > 30 → outlier
+let PASS_THRESHOLD = 15       // avg MAE% < 15 → pass
+
+let ALPHA_NUM = 50
+let BETA_NUM  = 50
+
+fn jq_field(line: str, expr: str) -> str {
+    let cmd = "echo '" + line + "' | jq -r '" + expr + " // \"\"' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn to_int_safe(s: str) -> int {
+    if s == "" { return 0 }
+    let parts = s.split(".")
+    if len(parts) == 0 { return 0 }
+    if parts[0] == "" { return 0 }
+    return to_int(parts[0])
+}
+
+fn vit_at(line: str, idx: int) -> int {
+    if line == "" { return 0 }
+    return to_int_safe(jq_field(line, ".vitals[" + to_string(idx) + "]"))
+}
+
+struct HoltState {
+    level: int,
+    trend: int,
+    initialized: bool,
+    prev_level: int
+}
+
+fn holt_init() -> HoltState {
+    return HoltState { level: 0, trend: 0, initialized: false, prev_level: 0 }
+}
+
+fn holt_step(s: HoltState, y: int) -> HoltState {
+    if !s.initialized {
+        s.level = y
+        s.trend = 0
+        s.prev_level = y
+        s.initialized = true
+        return s
+    }
+    let level_new = (ALPHA_NUM * y + (100 - ALPHA_NUM) * (s.level + s.trend)) / 100
+    let trend_new = (BETA_NUM * (level_new - s.level) + (100 - BETA_NUM) * s.trend) / 100
+    s.prev_level = s.level
+    s.level = level_new
+    s.trend = trend_new
+    return s
+}
+
+fn forecast_h(s: HoltState, h: int) -> int {
+    if !s.initialized { return 0 }
+    return s.level + h * s.trend
+}
+
+fn abs_int(x: int) -> int {
+    if x < 0 { return 0 - x }
+    return x
+}
+
+fn mae_pct(pred: int, actual: int) -> int {
+    let denom = abs_int(actual)
+    if denom < 1 { denom = 1 }
+    return abs_int(pred - actual) * 100 / denom
+}
+
+fn read_recent_genomes() -> list {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" { result = result + [l] }
+        i = i + 1
+    }
+    return result
+}
+
+// 한 번의 jq 호출로 모든 (pid, cpu_vital) 쌍을 단일 스트림으로 추출.
+// 출력: ["pid1\tcpu1", "pid2\tcpu2", ...] — O(N) subprocess cost vs O(N*K) 개별 호출.
+fn extract_pid_cpu_pairs() -> list {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING
+            + "' 2>/dev/null | jq -r '[.pid, .vitals[0]] | @tsv' 2>/dev/null"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" { result = result + [l] }
+        i = i + 1
+    }
+    return result
+}
+
+fn parse_pid(line: str) -> str {
+    let parts = line.split("\t")
+    if len(parts) == 0 { return "" }
+    return parts[0]
+}
+
+fn parse_cpu(line: str) -> int {
+    let parts = line.split("\t")
+    if len(parts) < 2 { return 0 }
+    return to_int_safe(parts[1])
+}
+
+// O(N*K) subprocess fork 을 제거한 in-memory 버전. pairs = ["pid\tcpu", ...]
+fn distinct_keys_from_pairs(pairs: list, cap: int) -> list {
+    let seen = []
+    let mut i = 0
+    while i < len(pairs) {
+        let key = parse_pid(pairs[i])
+        if key != "" {
+            let mut found = false
+            let mut j = 0
+            while j < len(seen) {
+                if seen[j] == key { found = true }
+                j = j + 1
+            }
+            if !found { seen = seen + [key] }
+        }
+        if len(seen) >= cap { return seen }
+        i = i + 1
+    }
+    return seen
+}
+
+fn series_from_pairs(pairs: list, key: str) -> list {
+    let result = []
+    let mut i = 0
+    while i < len(pairs) {
+        if parse_pid(pairs[i]) == key {
+            result = result + [parse_cpu(pairs[i])]
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// 유지 (self-test 에서 사용 — 합성 JSON 게놈 parse 확인)
+fn distinct_keys(genomes: list, cap: int) -> list {
+    let seen = []
+    let mut i = 0
+    while i < len(genomes) {
+        let key = jq_field(genomes[i], ".pid")
+        if key != "" {
+            let mut found = false
+            let mut j = 0
+            while j < len(seen) {
+                if seen[j] == key { found = true }
+                j = j + 1
+            }
+            if !found { seen = seen + [key] }
+        }
+        if len(seen) >= cap { return seen }
+        i = i + 1
+    }
+    return seen
+}
+
+fn series_for_key(genomes: list, key: str, axis: int) -> list {
+    let result = []
+    let mut i = 0
+    while i < len(genomes) {
+        let g = genomes[i]
+        let p = jq_field(g, ".pid")
+        if p == key {
+            result = result + [vit_at(g, axis)]
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// train/holdout split + Holt fit + 1-step ahead 예측 + MAE%
+// 반환: [mae_pct, pred, actual, n]  (n = 전체 시리즈 길이; train = n-1)
+fn eval_series(series: list) -> list {
+    let n = len(series)
+    if n < MIN_SERIES_LEN {
+        return [0 - 1, 0, 0, n]   // mae=-1 → skip 신호
+    }
+    let actual = series[n - 1]
+    let mut s = holt_init()
+    let mut i = 0
+    while i < n - 1 {
+        s = holt_step(s, series[i])
+        i = i + 1
+    }
+    let pred = forecast_h(s, 1)
+    let err = mae_pct(pred, actual)
+    return [err, pred, actual, n]
+}
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn ring_name() -> str {
+    let n = env("AIRGENOME_RING_NAME")
+    if n != "" { return n }
+    return "genomes.ring"
+}
+
+fn write_report(genomes_total: int, pid_rows: list, outlier_rows: list, avg_mae: int, pass: bool) -> void {
+    let _ = exec("mkdir -p '" + fe_forge_dir() + "'")
+    let ts = ts_iso()
+    let mut s = "{\"ts\":\"" + ts + "\""
+    s = s + ",\"ring\":\"" + ring_name() + "\""
+    s = s + ",\"samples_total\":" + to_string(genomes_total)
+    s = s + ",\"pids_evaluated\":" + to_string(len(pid_rows))
+    s = s + ",\"avg_mae_pct\":" + to_string(avg_mae)
+    let mut pass_str = "false"
+    if pass { pass_str = "true" }
+    s = s + ",\"pass\":" + pass_str
+    s = s + ",\"outlier_threshold\":" + to_string(OUTLIER_THRESHOLD)
+    s = s + ",\"outlier_pids\":["
+    let mut i = 0
+    while i < len(outlier_rows) {
+        if i > 0 { s = s + "," }
+        s = s + outlier_rows[i]
+        i = i + 1
+    }
+    s = s + "],\"pid_mae\":["
+    let mut j = 0
+    while j < len(pid_rows) {
+        if j > 0 { s = s + "," }
+        s = s + pid_rows[j]
+        j = j + 1
+    }
+    s = s + "]}"
+    let _ = exec("printf '%s\\n' '" + s + "' > '" + OUT + "'")
+}
+
+fn run_eval() -> int {
+    // O(N) jq 단일 호출 — 메모리 안전.
+    let pairs = extract_pid_cpu_pairs()
+    if len(pairs) == 0 {
+        println("forecast_eval: empty ring — skipping (RING=" + RING + ")")
+        return 0
+    }
+    let keys = distinct_keys_from_pairs(pairs, TOP_N_PIDS)
+
+    let mut pid_rows = []
+    let mut outlier_rows = []
+    let mut mae_sum = 0
+    let mut evaluated = 0
+    let mut outliers = 0
+
+    let mut i = 0
+    while i < len(keys) {
+        let key = keys[i]
+        let ser = series_from_pairs(pairs, key)
+        let res = eval_series(ser)
+        let mae = res[0]
+        if mae >= 0 {
+            let pred = res[1]
+            let actual = res[2]
+            let samples = res[3]
+            let row = "{\"pid\":\"" + key + "\",\"mae\":" + to_string(mae)
+                    + ",\"pred\":" + to_string(pred)
+                    + ",\"actual\":" + to_string(actual)
+                    + ",\"samples\":" + to_string(samples) + "}"
+            pid_rows = pid_rows + [row]
+            mae_sum = mae_sum + mae
+            evaluated = evaluated + 1
+            if mae > OUTLIER_THRESHOLD {
+                outliers = outliers + 1
+                let orow = "{\"pid\":\"" + key + "\",\"mae\":" + to_string(mae) + "}"
+                outlier_rows = outlier_rows + [orow]
+            }
+        }
+        i = i + 1
+    }
+
+    let mut avg = 0
+    if evaluated > 0 { avg = mae_sum / evaluated }
+    let pass = avg < PASS_THRESHOLD
+
+    write_report(len(pairs), pid_rows, outlier_rows, avg, pass)
+
+    println("forecast_eval: ring=" + ring_name()
+          + " samples=" + to_string(len(pairs))
+          + " pids_eval=" + to_string(evaluated)
+          + " avg_mae=" + to_string(avg) + "%"
+          + " outliers(>30%)=" + to_string(outliers)
+          + " pass(<15%)=" + to_string(pass))
+    return evaluated
+}
+
+fn self_test() -> void {
+    // 1. holt basic
+    let s0 = holt_init()
+    if s0.initialized { panic("self_test FAIL [init flag]") }
+    if forecast_h(s0, 1) != 0 { panic("self_test FAIL [empty forecast]") }
+
+    // 2. abs / mae boundaries
+    if abs_int(0 - 12) != 12 { panic("self_test FAIL [abs]") }
+    if mae_pct(100, 100) != 0 { panic("self_test FAIL [mae perfect]") }
+    if mae_pct(110, 100) != 10 { panic("self_test FAIL [mae 10]") }
+    if mae_pct(0, 0) != 0 { panic("self_test FAIL [mae zero denom]") }
+
+    // 3. eval_series — under-sized returns -1
+    let tiny = [10, 20]
+    let rt = eval_series(tiny)
+    if rt[0] != (0 - 1) { panic("self_test FAIL [tiny series skip]") }
+
+    // 4. eval_series — 선형 slope=10 → train [0,10,20,30,40,50,60,70,80], holdout=90
+    //    Holt pred 의 MAE < 15% 요구 (M6 exit_criteria 검증)
+    let lin = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]
+    let rl = eval_series(lin)
+    if rl[0] < 0 { panic("self_test FAIL [linear eval failed]") }
+    if rl[2] != 90 { panic("self_test FAIL [linear holdout actual]") }
+    if rl[3] != 10 { panic("self_test FAIL [linear series length]") }
+    if rl[0] >= 15 {
+        panic("self_test FAIL [linear MAE>=15%, got " + to_string(rl[0]) + "% pred=" + to_string(rl[1]) + "]")
+    }
+
+    // 5. eval_series — 평탄 series → MAE=0
+    let flat = [30, 30, 30, 30, 30, 30]
+    let rf = eval_series(flat)
+    if rf[0] < 0 { panic("self_test FAIL [flat eval neg]") }
+    if rf[0] >= 15 { panic("self_test FAIL [flat MAE>=15]") }
+
+    // 6. distinct_keys + series_for_key (unified-style "host.pid")
+    let g1 = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[10,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
+    let g2 = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[20,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
+    let g3 = "{\"ts\":\"x\",\"pid\":\"ubu.1\",\"comm\":\"b\",\"vitals\":[80,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let synth = [g1, g2, g3]
+    let ks = distinct_keys(synth, 10)
+    if len(ks) != 2 { panic("self_test FAIL [distinct count=" + to_string(len(ks)) + "]") }
+    if ks[0] != "mac.1" { panic("self_test FAIL [distinct[0]]") }
+    let sm = series_for_key(synth, "mac.1", 0)
+    if len(sm) != 2 { panic("self_test FAIL [series mac.1 count]") }
+    if sm[0] != 10 { panic("self_test FAIL [series mac.1[0]]") }
+
+    // 7. ring_name fallback
+    let rn = ring_name()
+    if rn == "" { panic("self_test FAIL [ring_name empty]") }
+
+    // 8. pairs-based helpers (in-memory hot-path 검증)
+    let pairs = ["mac.1\t10", "mac.1\t20", "ubu.1\t80", "mac.1\t30"]
+    let pks = distinct_keys_from_pairs(pairs, 10)
+    if len(pks) != 2 { panic("self_test FAIL [pairs distinct count]") }
+    if pks[0] != "mac.1" { panic("self_test FAIL [pairs distinct[0]]") }
+    if pks[1] != "ubu.1" { panic("self_test FAIL [pairs distinct[1]]") }
+    let ps = series_from_pairs(pairs, "mac.1")
+    if len(ps) != 3 { panic("self_test FAIL [pairs series count]") }
+    if ps[0] != 10 { panic("self_test FAIL [pairs series[0]]") }
+    if ps[2] != 30 { panic("self_test FAIL [pairs series[2]]") }
+    if parse_pid("foo\t42") != "foo" { panic("self_test FAIL [parse_pid]") }
+    if parse_cpu("foo\t42") != 42 { panic("self_test FAIL [parse_cpu]") }
+
+    println("  ✅ forecast_eval self_test PASS — linear MAE=" + to_string(rl[0]) + "% (<15%)")
+}
+
+fn main() -> void {
+    let a = args()
+    if env("CORE_SELF_TEST") == "1" {
+        self_test()
+        return
+    }
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" {
+            self_test()
+            return
+        }
+    }
+    let n = run_eval()
+    println("forecast_eval done — evaluated " + to_string(n) + " PIDs, report=" + OUT)
+}
+
+main()
