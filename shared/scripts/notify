@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# shared/scripts/notify — airgenome 공용 알림 헬퍼 (source 전용, 실행 X)
+#
+# 원칙 (2026-04-19):
+#   - osascript 사용 X (사용자 지시 "osascript 는 패스하자")
+#   - macOS: terminal-notifier + DNA 🧬 아이콘 (투명 배경 PNG)
+#   - Linux:  notify-send (아이콘 경로 동일 pass)
+#   - 둘 다 없으면 stderr 로 fallback — 조용히 죽지 말 것
+#
+# 사용:
+#   . "$AG_ROOT/shared/scripts/notify"
+#   notify_airgenome "claudx" "iter done"
+#
+# env:
+#   AG_DNA_ICON    override 경로 (default ~/.airgenome/assets/dna.png)
+#   AG_NO_NOTIFY   1 → notify_airgenome 호출 no-op
+
+: "${AG_DNA_ICON:=$HOME/.airgenome/assets/dna.png}"
+
+# 아이콘이 없으면 생성 (macOS 에서만, swift 로 🧬 → 256x256 alpha PNG).
+# 실패해도 알림 자체는 계속 — 아이콘 없이 전송.
+_ag_ensure_icon() {
+    [ -f "$AG_DNA_ICON" ] && return 0
+    [ "$(uname)" = "Darwin" ] || return 1
+    command -v swift >/dev/null 2>&1 || return 1
+    mkdir -p "$(dirname "$AG_DNA_ICON")" 2>/dev/null
+    swift - "$AG_DNA_ICON" <<'SWIFT' 2>/dev/null
+import Cocoa
+let path = CommandLine.arguments[1]
+let size = CGSize(width: 256, height: 256)
+let img = NSImage(size: size)
+img.lockFocus()
+NSColor.clear.set()
+NSBezierPath.fill(NSRect(origin: .zero, size: size))
+let font = NSFont.systemFont(ofSize: 200)
+let attrs: [NSAttributedString.Key: Any] = [.font: font]
+let s = NSAttributedString(string: "\u{1F9EC}", attributes: attrs)
+let bounds = s.boundingRect(with: NSSize(width: 256, height: 256), options: [.usesLineFragmentOrigin])
+let x = (256 - bounds.width) / 2
+let y = (256 - bounds.height) / 2 - 8
+s.draw(at: NSPoint(x: x, y: y))
+img.unlockFocus()
+guard let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
+try? png.write(to: URL(fileURLWithPath: path))
+SWIFT
+    [ -f "$AG_DNA_ICON" ]
+}
+
+notify_airgenome() {
+    [ "${AG_NO_NOTIFY:-0}" = "1" ] && return 0
+    local title="${1:-airgenome}"
+    local msg="${2:-}"
+    _ag_ensure_icon
+    local icon_arg=""
+    [ -f "$AG_DNA_ICON" ] && icon_arg="$AG_DNA_ICON"
+    case "$(uname)" in
+        Darwin)
+            if command -v terminal-notifier >/dev/null 2>&1; then
+                if [ -n "$icon_arg" ]; then
+                    terminal-notifier -title "$title" -message "$msg" -appIcon "$icon_arg" -contentImage "$icon_arg" >/dev/null 2>&1 && return 0
+                else
+                    terminal-notifier -title "$title" -message "$msg" >/dev/null 2>&1 && return 0
+                fi
+            fi
+            # fallback: stderr only (osascript 금지)
+            printf '[notify:%s] %s\n' "$title" "$msg" >&2
+            ;;
+        Linux)
+            if command -v notify-send >/dev/null 2>&1; then
+                if [ -n "$icon_arg" ]; then
+                    notify-send -i "$icon_arg" "$title" "$msg" >/dev/null 2>&1 && return 0
+                else
+                    notify-send "$title" "$msg" >/dev/null 2>&1 && return 0
+                fi
+            fi
+            printf '[notify:%s] %s\n' "$title" "$msg" >&2
+            ;;
+        *)
+            printf '[notify:%s] %s\n' "$title" "$msg" >&2
+            ;;
+    esac
+}

@@ -10,7 +10,7 @@
 # usage:
 #   claudx-watch                     # 30s 간격 체크, stall 시 stderr + watch.jsonl
 #   claudx-watch --auto              # stall 시 claude 자식 SIGTERM (claudx-loop 가 재기동)
-#   claudx-watch --tty               # 알림 (macOS osascript / Linux notify-send / bell)
+#   claudx-watch --tty               # 알림 (terminal-notifier DNA🧬 / notify-send / bell)
 #   claudx-watch --stall-sec 300     # 임계치 override (default 180)
 #   claudx-watch --interval 15       # 체크 주기
 #   claudx-watch --once              # 1회 체크 후 종료
@@ -56,15 +56,11 @@ notify() {
     local msg="$1"
     echo "[claudx-watch] $msg" >&2
     if [ "$TTY" = "1" ]; then
-        # bell
-        printf '\a'
-        # Mac
-        if command -v osascript >/dev/null 2>&1; then
-            osascript -e "display notification \"$msg\" with title \"claudx-watch\"" 2>/dev/null
-        fi
-        # Linux
-        if command -v notify-send >/dev/null 2>&1; then
-            notify-send "claudx-watch" "$msg" 2>/dev/null
+        printf '\a'  # bell
+        # DNA 🧬 icon via shared notify (osascript 금지, 2026-04-19)
+        if [ -f "$CX_ROOT/shared/scripts/notify" ]; then
+            . "$CX_ROOT/shared/scripts/notify"
+            notify_airgenome "claudx-watch" "$msg"
         fi
     fi
 }
