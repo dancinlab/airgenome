@@ -1,11 +1,9 @@
 #!/bin/sh
-# cl — Claude Code multi-account launcher
+# cl — Claude Code 실행 약자 (M13h, 2026-04-19)
 #
-# 골화 레지스트리: ~/Dev/airgenome/shared/cl.json
-# 구현:           ~/Dev/airgenome/modules/cl.hexa
+# claudx-loop 경유로 자동 rotation + watchdog + RC 등 전부 활성.
+# zshrc 의 claude() 함수가 TUI → claudx-loop, -p → claudx 분기.
+# 이전 hexa 기반 pool 로직 (modules/cl.hexa) 은 claudx 의 pool.js 에 흡수됨.
+# 비상용 raw: `command claude` 또는 `NO_CLAUDX=1 claude`
 
-HEXA="$HOME/Dev/airgenome/nexus/shared/bin/hexa.real"
-AIRGENOME="$HOME/Dev/airgenome"
-[ -x "$HEXA" ] || { echo "ERROR(cl): hexa.real 누락 — $HEXA" >&2; exit 127; }
-cd "$AIRGENOME" || exit 1
-exec "$HEXA" run modules/cl.hexa "$@"
+exec claude "$@"
