@@ -97,8 +97,9 @@ const HEAVY_KEYWORDS = [
 ];
 
 const NO_UNSAFE = process.env.CLAUDX_UNSAFE !== '1';
-// 이미지·긴 컨텍스트 일상 사용 고려 — 기본 20MB. 이미지 블록 감지시 size 체크 skip.
-const MAX_PROMPT_BYTES = parseInt(process.env.CLAUDX_MAX_PROMPT_BYTES || '20971520', 10); // 20MB
+// Default: size 체크 OFF (Anthropic 서버가 실제 한도 enforce). 명시적으로 제한 원하면 env 로.
+// heavy_keyword 필터만 default active.
+const MAX_PROMPT_BYTES = parseInt(process.env.CLAUDX_MAX_PROMPT_BYTES || '0', 10); // 0 = unlimited
 
 // M13f UI tune flags
 const TITLE_LOCK = process.env.CLAUDX_TITLE_LOCK !== '0';
@@ -222,8 +223,8 @@ function checkInputFilter(bodyStr) {
       if (hasBinaryContent) break;
     }
   } catch (_) {}
-  // size gate — binary 컨텐츠 없을 때만
-  if (!hasBinaryContent && bodyStr.length > MAX_PROMPT_BYTES) {
+  // size gate — MAX_PROMPT_BYTES > 0 일 때만 (default 0 = disabled), binary 제외
+  if (MAX_PROMPT_BYTES > 0 && !hasBinaryContent && bodyStr.length > MAX_PROMPT_BYTES) {
     return { kind: 'size', bytes: bodyStr.length, limit: MAX_PROMPT_BYTES };
   }
   // heavy keyword — 텍스트에만 적용
