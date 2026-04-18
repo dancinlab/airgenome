@@ -31,7 +31,7 @@
     <key>HOME</key><string>/Users/ghost</string>
     <key>PATH</key><string>/Users/ghost/Dev/airgenome/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>CLAUDX_RC_ACCT</key><string>claude1</string>
-    <key>CLAUDX_RC_LOOP</key><string>1h /smash 돌파탐색 + /free 교대 — 현 컨텍스트 이어가며 atlas.n6 에 실험 기록</string>
+    <key>CLAUDX_RC_LOOP</key><string>/rc 를 먼저 실행해 Remote Control 활성화. 이어서 /loop 1h /smash 돌파탐색 + /free 교대 — 현 컨텍스트 이어가며 atlas.n6 에 실험 기록</string>
     <key>CLAUDX_RC_PREFIX</key><string>mobile</string>
     <key>CLAUDX_NO_WATCH</key><string>1</string>
     <key>CLAUDX_MAX_ROT</key><string>0</string>
