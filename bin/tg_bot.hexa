@@ -438,11 +438,14 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
     //   CWD  : airgenome repo 로 cd → 상대 경로 (.session_defaults 등) 해석 정상.
     let ag_path_prefix = "PATH=/Users/ghost/Dev/airgenome/bin:/opt/homebrew/bin:/Users/ghost/.local/bin:/usr/local/bin:/usr/bin:/bin"
     let ag_cwd = "cd /Users/ghost/Dev/airgenome"
+    // loadgate critical 로 claudx 가 abort 되면 bot 이 dispatch 실패. Mac load 높아도
+    // telegram dispatch 는 짧은 단발 호출 — 자가 부하 유발 위험 낮음 → 우회 기본.
+    let ag_loadgate_off = "CLAUDX_LOADGATE_OFF=1"
     if is_linux_bot && dispatch_mode == "cx" {
         // Linux bot (ubu/ubu2) → ssh mac "claudx -p ..." 로 Mac pool rotation 직접 사용.
         // PATH 에 airgenome/bin 추가 → claude shim 경유 → session_defaults 주입.
         cmd = "ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 mac "
-            + "'bash -lc \"" + ag_cwd + " && export " + ag_path_prefix + ":\\$PATH; timeout " + timeout_s + " /Users/ghost/Dev/airgenome/bin/claudx -p "
+            + "'bash -lc \"" + ag_cwd + " && export " + ag_loadgate_off + " " + ag_path_prefix + ":\\$PATH; timeout " + timeout_s + " /Users/ghost/Dev/airgenome/bin/claudx -p "
             + "\\\"$(cat '" + mac_tmp + "')\\\" --max-turns 1 2>&1\"' 2>&1; echo _RC_=$?"
     } else if dispatch_mode == "cx" {
         // Mac bot → local claudx (pool rotation + cx auto-pick, no host force).
@@ -450,7 +453,7 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
         let mut claudx_bin = HOME + "/Dev/airgenome/bin/claudx"
         let agroot = env("AIRGENOME")
         if agroot != "" { claudx_bin = agroot + "/bin/claudx" }
-        cmd = "(" + ag_cwd + " && export " + ag_path_prefix + ":$PATH && '"
+        cmd = "(" + ag_cwd + " && export " + ag_loadgate_off + " " + ag_path_prefix + ":$PATH && '"
             + timeout_bin + "' " + timeout_s + " '" + claudx_bin + "' -p "
             + "\"$(cat '" + tmp + "')\" --max-turns 1 2>&1); echo _RC_=$?"
     } else {
