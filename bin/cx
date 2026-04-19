@@ -121,55 +121,114 @@ if [ -n "${NODE_OPTIONS:-}" ]; then
     cx_preload_path=$(printf '%s' "$NODE_OPTIONS" | grep -oE -- '--require[= ][^ ]+' | head -1 | sed -E 's/^--require[= ]//')
 fi
 
-# fresh probe 순회 — 첫 번째 살아있는 후보 선택.
-# -o ControlPath=none 으로 stale mux bypass, ConnectTimeout=3 으로 banner 행 방지.
+# parallel probe — 모든 remote 후보에 동시 발사, priority 순서로 첫 성공 선택.
+# -o ControlPath=none 으로 stale mux bypass. `timeout` 래핑으로 banner-hang 도 강제 컷.
+# Why 병렬: ubu sshd 가 과부하로 banner timeout 이면 sequential 은 ConnectTimeout(3s) 단위로 쌓이고
+#        BannerTimeout 기본 120s 까지 대기 가능. 병렬+timeout 래핑 시 worst-case = max ConnectTimeout.
 host=""
 alias=""
 rtt=0
+
+# 분리: 원격 후보 + mac fallback 여부
+remote_to_probe=()
+has_mac_fallback=0
 for cand in "${candidates[@]}"; do
     if [ "$cand" = "mac" ]; then
-        host=mac
-        break
-    fi
-    if [ -z "$force_host" ] && host_hot "$cand"; then
-        _util=$(jq -r --arg h "$cand" '
-            ((.hosts[$h].load // "0") | tonumber) * 100 / ((.hosts[$h].cpu_threads // 0) | tonumber)
-            | floor
-        ' "$INFRA_STATE" 2>/dev/null)
-        _cap=$(jq_host "$cand" '.hosts[$h].claude_limits.load_pct // empty')
-        echo "cx: gate hot → $cand (${_util:-?}% >= ${_cap:-?}%, next)" >&2
-        unset _util _cap
-        continue
-    fi
-    cand_alias=$(jq -r --arg h "$cand" '.hosts[$h].ssh_alias // ""' "$REG")
-    [ -n "$cand_alias" ] || continue
-    _connect_t=$(jq_host "$cand" '.hosts[$h].probe_connect_timeout // 3')
-    r0=$(now_ms)
-    # probe: 연결 성공 + (preload 필요 시) 파일 존재 동시 확인
-    if [ -n "$cx_preload_path" ] && host_preload_enabled "$cand"; then
-        _probe_cmd="test -f $(printf '%q' "$cx_preload_path")"
+        has_mac_fallback=1
     else
-        _probe_cmd="true"
+        # gate hot 필터 (infra_state 기반)
+        if [ -z "$force_host" ] && host_hot "$cand"; then
+            _util=$(jq -r --arg h "$cand" '
+                ((.hosts[$h].load // "0") | tonumber) * 100 / ((.hosts[$h].cpu_threads // 0) | tonumber)
+                | floor
+            ' "$INFRA_STATE" 2>/dev/null)
+            _cap=$(jq_host "$cand" '.hosts[$h].claude_limits.load_pct // empty')
+            echo "cx: gate hot → $cand (${_util:-?}% >= ${_cap:-?}%, next)" >&2
+            unset _util _cap
+            continue
+        fi
+        remote_to_probe+=("$cand")
     fi
-    _probe_ok=0
-    for _try in 1 2; do
-        if ssh -o ControlPath=none -o ConnectTimeout="$_connect_t" -o BatchMode=yes "$cand_alias" "$_probe_cmd" 2>/dev/null; then
-            _probe_ok=1
+done
+
+if [ ${#remote_to_probe[@]} -gt 0 ]; then
+    probe_dir=$(mktemp -d -t cx-probe.XXXXXX) || die "mktemp failed"
+    probe_pids=()
+    trap 'for p in "${probe_pids[@]}"; do kill "$p" 2>/dev/null; done; rm -rf "$probe_dir" 2>/dev/null' EXIT
+    r0=$(now_ms)
+    max_t=0
+    # 병렬 발사 — 각 cand 별 background ssh + timeout 래핑
+    for cand in "${remote_to_probe[@]}"; do
+        cand_alias=$(jq -r --arg h "$cand" '.hosts[$h].ssh_alias // ""' "$REG")
+        [ -n "$cand_alias" ] || { echo no_alias > "$probe_dir/$cand.fail"; continue; }
+        _connect_t=$(jq_host "$cand" '.hosts[$h].probe_connect_timeout // 3')
+        [ "${_connect_t:-3}" -gt "$max_t" ] 2>/dev/null && max_t=$_connect_t
+        if [ -n "$cx_preload_path" ] && host_preload_enabled "$cand"; then
+            _probe_cmd="test -f $(printf '%q' "$cx_preload_path")"
+        else
+            _probe_cmd="true"
+        fi
+        (
+            # timeout: ConnectTimeout 은 TCP handshake 만 커버. banner-hang 차단용으로
+            # 외부 timeout 래퍼 필수. macOS 는 gtimeout 이 있을 수도, 없으면 `timeout`(coreutils).
+            _to=timeout
+            command -v timeout >/dev/null 2>&1 || _to=gtimeout
+            if "$_to" "$_connect_t" ssh -o ControlPath=none -o ControlMaster=no \
+                -o ConnectTimeout="$_connect_t" -o BatchMode=yes \
+                "$cand_alias" "$_probe_cmd" 2>/dev/null; then
+                printf '%s' "$cand_alias" > "$probe_dir/$cand.ok"
+            else
+                echo fail > "$probe_dir/$cand.fail"
+            fi
+        ) >/dev/null 2>&1 &
+        probe_pids+=($!)
+        disown "$!" 2>/dev/null || true
+    done
+    unset _connect_t _probe_cmd cand_alias
+
+    # first-responder-wins poll: 아무 후보라도 .ok 면 즉시 채택 (priority 는 동시-승리 시 tiebreak).
+    # Why first-responder: 사용자 요청 "속도 우선". LAN 환경에서 priority-first 상위가 과부하면
+    # 병렬의 의미가 사라짐 (상위 timeout 끝까지 대기). 병렬 중 상위와 하위가 모두 성공하면
+    # for-iteration 순서 (priority) 로 이미 상위가 뽑힘.
+    deadline=$(( $(date +%s) + max_t + 1 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        pick=""
+        all_done=1
+        for cand in "${remote_to_probe[@]}"; do
+            if [ -f "$probe_dir/$cand.ok" ]; then
+                pick=$cand
+                break
+            fi
+            [ -f "$probe_dir/$cand.fail" ] || all_done=0
+        done
+        if [ -n "$pick" ]; then
+            host=$pick
+            alias=$(cat "$probe_dir/$pick.ok")
             break
         fi
-        sleep 1
+        [ "$all_done" = 1 ] && break
+        sleep 0.05
     done
-    if [ "$_probe_ok" = "1" ]; then
-        r1=$(now_ms)
-        rtt=$(( r1 - r0 ))
-        host=$cand
-        alias=$cand_alias
-        break
-    else
-        echo "cx: probe fail → $cand (next)" >&2
-    fi
-    unset _connect_t _probe_ok _try
-done
+
+    # 실패 후보 로그 (선택된 것 이전의 fail 만)
+    for cand in "${remote_to_probe[@]}"; do
+        [ "$cand" = "$host" ] && break
+        [ -f "$probe_dir/$cand.fail" ] && echo "cx: probe fail → $cand (next)" >&2
+    done
+
+    [ -n "$host" ] && rtt=$(( $(now_ms) - r0 ))
+
+    # 잔여 프로브 즉시 kill (wait 하지 않음 — 선택 완료 직후 cx 진행)
+    for _p in "${probe_pids[@]}"; do kill "$_p" 2>/dev/null; done
+    rm -rf "$probe_dir" 2>/dev/null
+    trap - EXIT
+    unset _p
+fi
+
+if [ -z "$host" ] && [ "$has_mac_fallback" = 1 ]; then
+    host=mac
+fi
+
 [ -n "$host" ] || die "no host reachable"
 
 if [ "$show_only" = true ]; then
