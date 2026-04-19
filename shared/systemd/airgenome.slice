@@ -1,6 +1,6 @@
 [Unit]
 Description=airgenome umbrella slice (claude + bkgnd + stress + real parent)
-Documentation=M11a-docker-tuning — 원격 호스트 (ubu/ubu2/htz) claude 컨테이너 폭주 보호용 parent slice.
+Documentation=M11a-docker-tuning — 원격 호스트 (ubu1/ubu2/htz) claude 컨테이너 폭주 보호용 parent slice.
 # 자식 slice: airgenome-claude.slice (latency-critical TUI)
 #            airgenome-real.slice    (high priority workload)
 #            airgenome-bkgnd.slice   (maintenance)

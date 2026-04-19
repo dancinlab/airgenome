@@ -2,8 +2,8 @@
 # bin/rtt_probe — keystroke RTT 측정기 (ssh echo 왕복 시간)
 # 입력렉 방지 L4 — menubar V6 의 RTT bar + cx auto-switch 트리거에 쓰임.
 #
-# 사용:
-#   rtt_probe ubu              # 단발 (ms)
+# 사용 (<host> 는 ~/.ssh/config 의 Host alias — 예: ubu, ubu2, hetzner):
+#   rtt_probe ubu              # 단발 (ms) — ssh alias 'ubu' (host key=ubu1)
 #   rtt_probe ubu --samples 10 # 10회 샘플링 후 median/p95/p99
 #   rtt_probe --current        # 현재 cx 선택 호스트
 #   rtt_probe --all            # hosts.json 의 enabled remote 전체 (병렬)

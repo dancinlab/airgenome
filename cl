@@ -7,7 +7,7 @@
 # 비상용 raw: `command claude` 또는 `NO_CLAUDX=1 claude`
 #
 # [AG-Q14, 2026-04-19] CL_DOCKER default=1 (2026-04-19 승격):
-#   ubu/ubu2/htz 의 airgenome-claude 컨테이너로 기본 라우팅 → Mac 입력렉 우회.
+#   ubu1/ubu2/htz 의 airgenome-claude 컨테이너로 기본 라우팅 → Mac 입력렉 우회.
 #   cx --docker 경로 (priority-first probe + container exec).
 #   rotation/watchdog 은 cx 내부에 통합된 claudx env 전달로 유지.
 #
@@ -40,7 +40,7 @@ if [ "$cl_docker_enabled" = "1" ] && [ ! -f "$_cl_notice_marker" ]; then
     mkdir -p "${HOME}/.airgenome" 2>/dev/null
     : > "$_cl_notice_marker" 2>/dev/null
     printf '%s\n' \
-        "cl: CL_DOCKER default → container routing (ubu/ubu2/htz airgenome-claude)" \
+        "cl: CL_DOCKER default → container routing (ubu1/ubu2/htz airgenome-claude)" \
         "cl: opt-out → CL_NO_DOCKER=1 cl ...   (또는 command claude)" \
         >&2
 fi

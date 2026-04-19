@@ -1,7 +1,7 @@
-# airgenome-log-rotate.timer — daily 04:30 KST on ubu / ubu2 / htz.
+# airgenome-log-rotate.timer — daily 04:30 KST on ubu1 / ubu2 / htz.
 #
 # systemd v242+ supports TZ spec in OnCalendar. Asia/Seoul pins KST regardless
-# of host local time (htz is CEST, ubu/ubu2 are KST already — both coalesce).
+# of host local time (htz is CEST, ubu1/ubu2 are KST already — both coalesce).
 
 [Unit]
 Description=airgenome log rotate (daily 04:30 KST)

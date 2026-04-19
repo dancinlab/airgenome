@@ -76,12 +76,12 @@ keychain ANTHROPIC_API_KEY = not found
 ### 3-1. 현재 (M11e + 진행중 2단계)
 
 ```
-cl → claudx (pool.js best-pick) → cx (priority-first ubu→ubu2→mac) → ssh → claude (container)
+cl → claudx (pool.js best-pick) → cx (priority-first ubu1→ubu2→mac) → ssh → claude (container)
                                                                         ↑
                                                                   Max OAuth
 ```
 
-2단계 (진행중, 별도 agent): `airgenome dispatch -p "prompt" --host=auto` = local queue enqueue → remote worker(ubu/ubu2/htz) dequeue → `claude -p` 실행 → 결과 회수.
+2단계 (진행중, 별도 agent): `airgenome dispatch -p "prompt" --host=auto` = local queue enqueue → remote worker(ubu1/ubu2/htz) dequeue → `claude -p` 실행 → 결과 회수.
 
 ### 3-2. 3단계 (Managed Agents 추가)
 
@@ -126,7 +126,7 @@ airgenome dispatch -p "prompt"                    # blocking
 airgenome dispatch -p "prompt" --advisory         # returns job_id
 airgenome dispatch --status=job_abc
 airgenome dispatch --resume=job_abc
-airgenome worker --host=ubu                       # remote worker loop
+airgenome worker --host=ubu1                      # remote worker loop
 ```
 
 Q15 가 추가하는 flag:

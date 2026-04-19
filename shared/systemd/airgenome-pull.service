@@ -1,4 +1,4 @@
-# airgenome-pull — ubu/ubu2 puller. 1분 timer 로 image digest 체크.
+# airgenome-pull — ubu1/ubu2 puller. 1분 timer 로 image digest 체크.
 # digest 변경 시 airgenome-claude restart (idle 시점 선호 — claude 세션 활성이면 다음 틱 대기).
 #
 # 동작:

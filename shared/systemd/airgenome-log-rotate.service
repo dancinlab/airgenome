@@ -1,5 +1,5 @@
 # airgenome-log-rotate — daily log rotation for ~/.airgenome/*.{log,jsonl}.
-# Installed on ubu / ubu2 / htz as a user timer service.
+# Installed on ubu1 / ubu2 / htz as a user timer service.
 #
 # 설치:
 #   ssh <host> 'mkdir -p ~/.config/systemd/user && \

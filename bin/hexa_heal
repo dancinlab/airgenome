@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# bin/hexa_heal — hexa_real binary 드리프트 감지 + 자동 복구 (ubu golden → ubu2/htz)
+# bin/hexa_heal — hexa_real binary 드리프트 감지 + 자동 복구 (ubu1 golden → ubu2/htz)
+#   NOTE: ssh alias 는 'ubu' / 'ubu2' / 'hetzner' (Mac ~/.ssh/config legacy), host key 는 ubu1/ubu2/htz.
 #
 # 배경:
 #   ubu2 (summer-B650M-K) 에서 stage0 재계산 또는 환경 이슈로 hexa_real 이
 #   종종 깨지는 사례가 관찰됨 (size 8.8MB stripped 버전 → 실행 실패).
-#   ubu 는 안정적 2.3MB 버전 보유. 두 호스트의 kernel/glibc ABI 가 같아
-#   ubu 의 hexa_real 이 ubu2 에서 그대로 실행 가능함 (buildID sha1 동일).
+#   ubu1 (ssh alias 'ubu') 는 안정적 2.3MB 버전 보유. 두 호스트의 kernel/glibc ABI 가 같아
+#   ubu1 의 hexa_real 이 ubu2 에서 그대로 실행 가능함 (buildID sha1 동일).
 #
 # 전략:
-#   1. ubu 의 ~/.hx/bin/hexa_real sha256 을 golden 으로 간주
+#   1. ubu1 의 ~/.hx/bin/hexa_real sha256 을 golden 으로 간주
 #   2. ubu2/htz 의 hexa_real 과 비교
-#   3. 드리프트 감지 시 rsync 로 ubu → 타깃 복제
+#   3. 드리프트 감지 시 rsync 로 ubu1 → 타깃 복제
 #      - 파일 교체는 rm + cp (temp → rename) 패턴 (inode cache 회피)
 #      - cp -f 금지 규칙 준수 (feedback_hexa_codesign_kill)
 #   4. smoke test 5회 연속 성공해야 OK, 실패 시 이전 bak 롤백
@@ -26,7 +27,7 @@
 #   hexa_heal status             # 모든 호스트의 sha256 + size 표시
 #
 # 환경변수:
-#   HEXA_HEAL_GOLDEN_HOST=ubu    golden source 호스트
+#   HEXA_HEAL_GOLDEN_HOST=ubu    golden source 호스트 (ssh alias — hosts.json ubu1 의 ssh_alias)
 #   HEXA_HEAL_TARGETS="ubu2 htz" default 타깃 (공백 구분)
 #   HEXA_HEAL_DEBUG=1            상세 로그
 
@@ -97,7 +98,7 @@ HEXA
     return 0
 }
 
-# --- ubu → target 복제 (rm+cp 패턴) ---
+# --- golden (ubu1) → target 복제 (rm+cp 패턴) ---
 clone_from_golden() {
     local target="$1"
     local golden="$GOLDEN_HOST"

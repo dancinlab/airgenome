@@ -15,7 +15,7 @@ variable "CLAUDE_VERSION" {
   default = "latest"
 }
 
-# builder platforms — linux/amd64 우선 (ubu/ubu2/htz 전부 amd64)
+# builder platforms — linux/amd64 우선 (ubu1/ubu2/htz 전부 amd64)
 variable "PLATFORMS" {
   default = ["linux/amd64"]
 }

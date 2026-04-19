@@ -7,10 +7,10 @@
 #   3. Mac keychain → 원격 ~/.claude-<name>/.credentials.json
 #   4. installMethod: "native" → "unknown" 패치 (Linux claude 의 native 경고 우회)
 #
-# 사용:
-#   remote_account_sync ubu              # ubu 만
+# 사용 (arg 는 ssh alias — hosts.json 의 ssh_alias 값):
+#   remote_account_sync ubu              # ssh alias 'ubu' (host key=ubu1) 만
 #   remote_account_sync ubu ubu2         # 복수
-#   remote_account_sync                  # 기본: ubu ubu2
+#   remote_account_sync                  # 기본: hosts.json 의 enabled remote ssh_alias 전체
 #
 # Why 이 스크립트: 10+2 계정 + 2 호스트 조합에서 일부 빠지면 원격에서 브라우저 OAuth 재로그인 강제.
 # accounts.json 을 single source 로 삼아 "추가된 계정이 자동으로 포함" 되도록.

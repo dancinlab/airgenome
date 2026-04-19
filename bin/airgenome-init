@@ -4,7 +4,7 @@
 # 목적: "수작업 절대 없이" host 를 맨 땅부터 운영 상태까지 끌어올린다.
 #       - Mac: 17 개 LaunchAgent 전체를 ~/Library/LaunchAgents 에 복사 +
 #              bootout → bootstrap → kickstart 재등록.
-#       - 원격 (ubu/ubu2/htz): 코드 tar-pipe 배포 → systemd unit/slice 전파 →
+#       - 원격 (ubu1/ubu2/htz): 코드 tar-pipe 배포 → systemd unit/slice 전파 →
 #              daemon-reload → enable/start (runaway/tg/claude) →
 #              sshd drop-in (sshd 우선순위 상승) → docker 이미지 pull +
 #              airgenome-claude 컨테이너 기동 + authorized_keys docker cp.
@@ -260,7 +260,7 @@ init_mac() {
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 원격 부트스트랩 (ubu/ubu2/htz)
+# 원격 부트스트랩 (ubu1/ubu2/htz)
 # ═════════════════════════════════════════════════════════════════════════════
 
 # jq 로 hosts.json 필드 뽑기.

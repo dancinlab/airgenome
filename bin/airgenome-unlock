@@ -1,7 +1,7 @@
 #!/bin/bash
 # airgenome-unlock — 어떤 host/container 에서든 Mac chflags (uchg/schg) 원격 제어.
 #
-# 목적: Mac 에 직접 접근 없는 환경(container, ubu/ubu2/htz)에서 Mac 파일의
+# 목적: Mac 에 직접 접근 없는 환경(container, ubu1/ubu2/htz)에서 Mac 파일의
 #       immutable/append-only flag 해제/설정을 "수작업 없이" 자동화.
 #
 # 사용:
@@ -14,13 +14,13 @@
 #   1. 로컬 Mac (uname=Darwin) 이면 직접 chflags.
 #   2. 원격 (Linux/container): 우선순위 순 경로:
 #        a. 직접 ssh ghost@<mac-tailscale-ip> (authorized_keys 등록 시)
-#        b. ubu 경유 중계: ssh aiden@ubu 'ssh mac chflags ...' (ubu→Mac 는 sshfs 로 이미 검증됨)
-#        c. ubu2 경유 중계 (ubu 불가 시)
+#        b. ubu1 경유 중계 (ssh alias 'ubu'): ssh aiden@ubu 'ssh mac chflags ...' (sshfs 로 검증됨)
+#        c. ubu2 경유 중계 (ubu1 불가 시)
 #
 # 경로 변환:
 #   입력이 /Users/ghost/... 면 그대로 Mac 에 전달.
 #   입력이 /mac_home/... (container bind mount) 이면 /Users/ghost/... 로 재작성.
-#   입력이 /home/aiden/mac_home/... (ubu sshfs) 면 /Users/ghost/... 로 재작성.
+#   입력이 /home/aiden/mac_home/... (ubu1 sshfs) 면 /Users/ghost/... 로 재작성.
 
 set -euo pipefail
 
@@ -82,7 +82,7 @@ if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
     exit 0
 fi
 
-# --- 원격: ubu/ubu2 경유 중계 (Mac ssh 직결은 보통 key 미등록으로 실패) ---
+# --- 원격: ubu1/ubu2 경유 중계 (Mac ssh 직결은 보통 key 미등록으로 실패) ---
 run_via_host() {
     local host="$1"
     local ip user key tuple
@@ -101,8 +101,8 @@ run_via_host() {
     # 호환성: 먼저 user=root 로 시도 (hosts.json 값), 실패 시 aiden/summer fallback.
     local remote_users=("$user")
     case "$host" in
-        ubu)    remote_users+=("aiden") ;;
-        ubu2)   remote_users+=("summer") ;;
+        ubu1|ubu)   remote_users+=("aiden") ;;
+        ubu2)       remote_users+=("summer") ;;
     esac
 
     local cmd
@@ -111,7 +111,7 @@ run_via_host() {
     else
         cmd="chflags '$FLAG' '$MAC_PATH' 2>&1 && ls -lO '$MAC_PATH' 2>&1 | head -3"
     fi
-    # ubu/ubu2 에서 Mac 으로 중계: `ssh mac '<cmd>'`
+    # ubu1/ubu2 에서 Mac 으로 중계: `ssh mac '<cmd>'`
     local remote_cmd="ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no mac \"$cmd\""
 
     local ru
@@ -125,13 +125,13 @@ run_via_host() {
     return 1
 }
 
-# 시도 순서: ubu → ubu2 (둘 다 Mac sshfs mount 됐으면 Mac SSH 가능)
-for cand in ubu ubu2; do
+# 시도 순서: ubu1 → ubu2 (둘 다 Mac sshfs mount 됐으면 Mac SSH 가능). hosts.json key 사용.
+for cand in ubu1 ubu2; do
     if run_via_host "$cand"; then
         exit 0
     fi
 done
 
-err "모든 중계 경로 실패 (ubu/ubu2 → mac). Mac sshd 꺼졌거나 키 미등록."
+err "모든 중계 경로 실패 (ubu1/ubu2 → mac). Mac sshd 꺼졌거나 키 미등록."
 err "수동 해결: Mac 에서 직접 'chflags $FLAG $MAC_PATH' 실행."
 exit 3

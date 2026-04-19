@@ -1,5 +1,5 @@
 # airgenome — drill/blowup 전용 cap slice.
-# 설치 (ubu/ubu2 host user 에):
+# 설치 (ubu1/ubu2 host user 에):
 #   cp shared/systemd/drill.slice ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #
@@ -11,7 +11,7 @@
 #   2. IO priority 를 낮춰 host sshd 가 RTT 밀리지 않도록
 #   3. memory 과다 시 OOM killer 가 drill 을 먼저 정리
 #
-# 한계: ubu2/htz 는 선택적 — 이미 sshd 여유.  ubu1 (drill 주 실행지) 에 필수.
+# 한계: ubu2/htz 는 선택적 — 이미 sshd 여유. ubu1 (drill 주 실행지) 에 필수.
 
 [Unit]
 Description=airgenome drill/blowup compute cap slice

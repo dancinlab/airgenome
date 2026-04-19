@@ -1,4 +1,4 @@
-// bin/runaway_guard.hexa — M14 P2 ubu 폭주 감지/대응 엔진
+// bin/runaway_guard.hexa — M14 P2 ubu1 폭주 감지/대응 엔진
 //
 // 책임:
 //   1. /proc 직접 스캔 — load/iowait/mem/d-state + top CPU procs (systemctl X)
@@ -747,7 +747,7 @@ fn append_log(line: str) -> void {
 //      같은 host 는 TG_RATE_WINDOW (기본 300s) 내 중복이면 skip.
 //   3. token 조회 우선순위:
 //        env TG_BOT_TOKEN_FILE          (명시 override)
-//        $HOME/Dev/secret/tg_bot_token  (Mac 직경로 / ubu·ubu2 sshfs 동일 경로)
+//        $HOME/Dev/secret/tg_bot_token  (Mac 직경로 / ubu1·ubu2 sshfs 동일 경로)
 //        /Users/ghost/Dev/secret/tg_bot_token  (Users 심볼릭 fallback)
 //      없으면 WARN 로그만 남기고 skip.
 //   4. chat_id 조회 우선순위:

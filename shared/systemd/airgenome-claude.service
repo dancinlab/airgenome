@@ -1,4 +1,4 @@
-# airgenome-claude — 원격 호스트 (ubu/ubu2) systemd user service
+# airgenome-claude — 원격 호스트 (ubu1/ubu2) systemd user service
 # 설치: cp → ~/.config/systemd/user/, systemctl --user daemon-reload, systemctl --user enable --now airgenome-claude
 # 업데이트: airgenome-pull.service 가 image digest 변경 감지 후 `systemctl --user try-restart airgenome-claude`
 # 환경변수: /etc/airgenome/env 또는 ~/.config/airgenome/env 에서 로드 (AIRGENOME_TAG 로 이미지 고정 가능)

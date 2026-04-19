@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# bin/stress.sh — Phase R7: stress emergency pause/resume (ubu+hetzner)
+# bin/stress.sh — Phase R7: stress emergency pause/resume (ubu1+hetzner)
+#   NOTE: 여기의 'ubu'/'hetzner' 는 ssh alias (hosts.json 의 ssh_alias 값),
+#         host key 는 'ubu1'/'htz' — ssh 레이어는 alias 그대로 쓴다.
 #
 # 목적: real workload 시작 직전 stress (ag-*.service) 를 일시정지 →
 #       경쟁 원천 제거. R4 slice 격리 보완.
 #
 # Commands:
-#   pause          ubu+hetzner 의 ag-*.service 전 프로세스에 SIGSTOP
+#   pause          ubu1+hetzner 의 ag-*.service 전 프로세스에 SIGSTOP
 #   resume         SIGCONT 로 재개
 #   status         각 호스트 ag-* units 의 상태 + 프로세스 state(T/S/R)
 #   --self-test    pause→status→resume→status 왕복 후 stopped count 검증
@@ -130,7 +132,7 @@ case "${1:-}" in
     *) cat <<USAGE
 usage: $(basename "$0") <pause|resume|status|--self-test>
 
-R7: ubu+hetzner 의 ag-*.service (openssl speed, blowup.hexa 등 stress)
+R7: ubu1+hetzner 의 ag-*.service (openssl speed, blowup.hexa 등 stress)
     를 SIGSTOP/SIGCONT 로 일시정지/재개. 상태 보존.
 
   pause        모든 ag-* 프로세스에 SIGSTOP (kill -s STOP)

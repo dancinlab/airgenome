@@ -48,7 +48,7 @@ hexa run core/test/core_test.hexa
 # L0 verify (전 섹션 — 파일 존재 + CODEOWNERS + 브랜치 보호 + parse)
 hexa run $NEXUS/shared/harness/l0_guard.hexa verify
 
-# probe — Mac+ubu+htz vitals → nexus/shared/infra_state.json (M2)
+# probe — Mac+ubu1+htz vitals → nexus/shared/infra_state.json (M2)
 hexa run modules/probe.hexa self-test
 hexa run modules/probe.hexa
 
@@ -86,7 +86,7 @@ v1 의 모든 코드는 [`archive/v1/`](archive/v1/) 에 동결. 부활 절차�
 |-----|----------------------------------------------|----------|---------|--------|---------------------------------------------------------|
 | M0  | v1 동결 + core 분리                          | P0       | ✅ done | —      | airgenome#33 · nexus#33 · 19/0 PASS                     |
 | M1  | L0 guard parse-check 추가 (phantom 차단)     | P0       | ✅ done | M0     | nexus#34 · 21/0 PASS (parse 2건)                        |
-| M2  | probe — Mac+ubu+htz vitals → infra_state     | P1       | ✅ done | M0, M1 | airgenome#37 · nexus#36 · 24/0 PASS                     |
+| M2  | probe — Mac+ubu1+htz vitals → infra_state    | P1       | ✅ done | M0, M1 | airgenome#37 · nexus#36 · 24/0 PASS                     |
 | M3  | dispatch — infra_state → best host (AG6/AG7) | P1       | ✅ done | M2     | airgenome#39 · self-test PASS · ag6_gate=active 검증    |
 | M4  | harvest — 60-byte hexagon per process        | P1       | ✅ done | M2     | airgenome#41 · genomes.ring + sigdiff + AdaptiveThrottle |
 | M5  | label — anomaly → behavior 라벨 (T15)        | P2       | ✅ done | M4     | airgenome#42 · 5 rules SSOT · synthetic 3-label 검증     |

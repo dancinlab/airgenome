@@ -1,5 +1,5 @@
 [Unit]
-Description=airgenome Telegram bot (M15) — iOS → Mac/ubu claude dispatcher
+Description=airgenome Telegram bot (M15) — iOS → Mac/ubu1 claude dispatcher
 Documentation=file:/opt/airgenome/bin/tg_bot.hexa
 After=network-online.target
 Wants=network-online.target

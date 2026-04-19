@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# bin/airgenome-netlat — Mac → ubu/ubu2/htz 네트워크 latency 지속 모니터링
-# 오늘의 ubu banner timeout / sshd saturate 류 네트워크 문제 사전 감지용.
+# bin/airgenome-netlat — Mac → ubu1/ubu2/htz 네트워크 latency 지속 모니터링
+# 오늘의 ubu1 banner timeout / sshd saturate 류 네트워크 문제 사전 감지용.
 #
 # 측정 (호스트당):
 #   - TCP connect RTT (port 22 + docker_ssh_port)  — ms
@@ -9,7 +9,7 @@
 #   - ping packet loss (%) + avg RTT               — -c 3 -W 1000
 #
 # SSOT:
-#   hosts.json enabled && kind!=self  (ubu/ubu2/htz)
+#   hosts.json enabled && kind!=self  (ubu1/ubu2/htz)
 #
 # 저장:
 #   ~/.airgenome/netlat.jsonl   (append, 1-line-per-host-per-probe)

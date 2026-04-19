@@ -15,7 +15,7 @@
 #   real hexa 미존재       → exit 127 (명시적 에러)
 #
 # 경로 remap (Mac 경로 → 컨테이너 경로):
-#   ubu  : /home/aiden/mac_home/...        → /mac_home/... (sshfs 마운트 기준)
+#   ubu1 : /home/aiden/mac_home/...        → /mac_home/... (sshfs 마운트 기준)
 #   ubu2 : /home/summer/mac_home/...       → /mac_home/...
 #   htz  : bind mount 없음 — 제외 대상 (호스트에 shim 배포 안함)
 #
@@ -77,7 +77,7 @@ if ! $DOCKER exec airgenome-claude test -x "$CONTAINER_HEXA" 2>/dev/null; then
 fi
 
 # ─── 5. 경로 remap (host CWD → 컨테이너 CWD) ───
-# ubu/ubu2 의 $HOME/mac_home 은 Mac sshfs reverse-mount 경로.
+# ubu1/ubu2 의 $HOME/mac_home 은 Mac sshfs reverse-mount 경로.
 # 컨테이너 내부에서는 /mac_home 으로 bind 되어 있음.
 # 그 외 경로 (예: /home/aiden/Dev/foo) 는 컨테이너 bind mount 없으면 실패 — 그 경우 real fallback.
 HOST_CWD="$(pwd -P 2>/dev/null || pwd)"
