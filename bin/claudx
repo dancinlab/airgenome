@@ -117,6 +117,18 @@ elif [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     # upstream (cl, user env) 이 이미 선택함 — 존중
     picked_dir="$CLAUDE_CONFIG_DIR"
     picked_name=$(basename "$CLAUDE_CONFIG_DIR" | sed 's/^\.claude-//')
+    # (2026-04-19) upstream pin 이 local_exhausted 인 경우 재픽.
+    # 이전 세션에서 export 된 CLAUDE_CONFIG_DIR 이 이미 고갈된 계정을 가리킬 때
+    # 첫 요청을 무조건 429 로 낭비하지 않도록 선제적으로 버림.
+    _exh_until=$(jq -r --arg n "$picked_name" '(.[$n].until // 0)' "$CLAUDX_STATE/exhausted.json" 2>/dev/null || echo 0)
+    _now=$(date +%s)
+    if [ "${_exh_until:-0}" -gt "${_now:-0}" ] 2>/dev/null; then
+        info "upstream pin=$picked_name local_exhausted → re-pick"
+        unset CLAUDE_CONFIG_DIR
+        picked_dir=""
+        picked_name=""
+    fi
+    unset _exh_until _now
 else
     # 완전히 비어있을 때만 자체 pick
     picked_line=$(node "$POOL_JS" pick 2>/dev/null)

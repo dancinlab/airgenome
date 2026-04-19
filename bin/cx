@@ -209,6 +209,28 @@ if [ "$host" != "mac" ] && host_preload_enabled "$host"; then
         fi
     done
     unset __cxv __cxval
+    # (2026-04-19) interceptor rotation 경로 복구:
+    # 원격 pool.js 가 accounts.json + .credentials.json 을 resolve 할 수 있도록
+    # CLAUDX_POOL / CLAUDX_USAGE / CLAUDX_HOME_MAP 을 hosts.json 에 따라 자동주입.
+    # 이미 env 에 세팅돼 있으면 위 루프가 먼저 기록했으므로 덮지 않음.
+    case "$remote_env_prefix" in
+        *CLAUDX_POOL=*) : ;;
+        *) remote_env_prefix="CLAUDX_POOL=/Users/ghost/Dev/nexus/shared/.runtime/accounts/accounts.json $remote_env_prefix" ;;
+    esac
+    case "$remote_env_prefix" in
+        *CLAUDX_USAGE=*) : ;;
+        *) remote_env_prefix="CLAUDX_USAGE=/Users/ghost/Dev/nexus/shared/.runtime/accounts/usage-cache.json $remote_env_prefix" ;;
+    esac
+    case "$remote_env_prefix" in
+        *CLAUDX_HOME_MAP=*) : ;;
+        *)
+            _host_home=$(jq_host "$host" '.hosts[$h].home // empty')
+            if [ -n "$_host_home" ]; then
+                remote_env_prefix="CLAUDX_HOME_MAP=$(printf '%q' "/Users/ghost:$_host_home") $remote_env_prefix"
+            fi
+            unset _host_home
+            ;;
+    esac
 fi
 
 remote_scope_cmd=""

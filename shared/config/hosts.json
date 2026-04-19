@@ -12,7 +12,8 @@
       "tags": "compute | gpu | heavy | io — dispatch 후보 필터용",
       "slots": "kind 별 동시 실행 하드캡 (executor flock). dispatch 는 active*20 감점으로 쏠림 분산. 0 이면 해당 kind 금지, 필드 누락이면 무제한.",
       "needs_mac_ip": "true 면 bin/mac_ip_push 가 5분마다 이 호스트의 ~/.ssh/config 의 'Host mac' HostName 을 Mac 의 현재 LAN IP 로 갱신. tailscale 없는 LAN 호스트용.",
-      "claude_limits": "cx/claudx 전용 admission + runtime cap. load_pct 는 최근 infra_state 기준 허용 최대 load/thread %, cpu_quota·memory_max 는 remote systemd-run scope 제한."
+      "claude_limits": "cx/claudx 전용 admission + runtime cap. load_pct 는 최근 infra_state 기준 허용 최대 load/thread %, cpu_quota·memory_max 는 remote systemd-run scope 제한.",
+      "home": "원격 $HOME 경로 — cx 가 CLAUDX_HOME_MAP=/Users/ghost:<home> 자동주입으로 interceptor pool.js 가 .credentials.json resolve 하도록 함. sshfs /Users/ghost 심볼릭 있는 호스트만 필요."
     }
   },
   "hosts": {
@@ -37,7 +38,7 @@
         "cpu_quota": "85%",
         "memory_max": "6G"
       },
-      "claudx_preload": false
+      "home": "/home/aiden"
     },
     "ubu2": {
       "enabled": true,
