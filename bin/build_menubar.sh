@@ -37,5 +37,20 @@ perl -i -0pe 's{HexaVal msg_float\(HexaVal obj, HexaVal sel, HexaVal a1\) \{\n  
 echo "[3/3] clang compile → native binary (AppKit + CoreFoundation link)"
 clang -O2 -I"${HEXA_LANG:-$HOME/Dev/hexa-lang}/self" -framework AppKit -framework CoreFoundation -o "$OUT_BIN" "$OUT_C"
 
+# [AG-Q4 smoke] hexa_v2 codegen 변경으로 FFI patch 가 no-op 되는 regression 방지.
+# AIRGENOME_MENUBAR_TEST=1 로 실행 → TEST DONE PASS 없으면 FFI marshalling 깨진 것.
+# BUILD_MENUBAR_SKIP_SMOKE=1 로 bypass (오프라인/CI 용).
+if [ "${BUILD_MENUBAR_SKIP_SMOKE:-0}" != "1" ]; then
+    echo "[smoke] TEST mode self-check"
+    smoke_out=$(AIRGENOME_MENUBAR_TEST=1 "$OUT_BIN" 2>&1 || true)
+    if echo "$smoke_out" | grep -q "TEST DONE PASS"; then
+        echo "✅ smoke TEST DONE PASS"
+    else
+        echo "❌ smoke FAIL — FFI marshalling broken (codegen regression 가능성)" >&2
+        echo "$smoke_out" | grep -E "TEST|FAIL" | head -10 >&2
+        exit 1
+    fi
+fi
+
 echo "✅ built: $OUT_BIN"
 ls -la "$OUT_BIN"

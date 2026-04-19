@@ -62,6 +62,9 @@ let mut cfg_notify_enabled = 1   // 1 = on, 0 = off
 let mut cfg_mtime_cached = 0     // 변경 감지용
 let mut test_mode = 0            // AIRGENOME_MENUBAR_TEST=1 시 1 — menu_add_* 가 stdout 에 로그
 
+// blink animation — STRESS 시 title bar 펄스 (0=full bar, 1=dimmed)
+let mut blink_phase = 0
+
 // 기본 config JSON 문자열 — 처음 실행시 파일로 write
 fn default_config_json() -> str {
     return "{\n"
@@ -216,6 +219,27 @@ fn bar(pct: int) -> str {
     return "█"
 }
 
+// bar + pulse: phase=1 시 high-pct 바는 ▁ 로 교체 → 펄스.
+// high-pct 기준은 cfg_color_high (로컬 복사 — if 조건 quirk 회피)
+fn bar_blink(pct: int, phase: int) -> str {
+    if phase == 1 {
+        let hi = cfg_color_high
+        if pct >= hi { return "▁" }
+    }
+    return bar(pct)
+}
+
+// STRESS 혹은 어느 호스트든 hi 이상이면 blink ON
+fn should_blink() -> bool {
+    if snap_level == "STRESS" { return true }
+    let hi = cfg_color_high
+    if snap_mac_pct  >= hi { return true }
+    if snap_ubu_pct  >= hi { return true }
+    if snap_ubu2_pct >= hi { return true }
+    if snap_htz_pct  >= hi { return true }
+    return false
+}
+
 fn is_stale() -> bool {
     let thresh = cfg_stale_sec
     if snap_infra_age > thresh { return true }
@@ -249,12 +273,16 @@ fn compose_title_attr() -> *Void {
     let alloc = msg0(cls("NSMutableAttributedString"), sel("alloc"))
     let prefix_icon = level_icon(snap_level)
     let base = msg1(alloc, sel("initWithString:"), nsstr(""))
-    msg1(base, sel("appendAttributedString:"), attr_str(prefix_icon + " ", 0))
-    msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_mac_pct), pct_color(snap_mac_pct)))
-    msg1(base, sel("appendAttributedString:"), attr_str(" ", 0))
-    msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_ubu_pct), pct_color(snap_ubu_pct)))
-    msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_ubu2_pct), pct_color(snap_ubu2_pct)))
-    msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_htz_pct), pct_color(snap_htz_pct)))
+    // 포맷: M▅ U¹▂ U²▂ H¹▇ — Mac 은 단일이라 M, 나머지는 ¹² 첨자
+    let _unused_icon = prefix_icon
+    msg1(base, sel("appendAttributedString:"), attr_str("M", 0))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar_blink(snap_mac_pct, blink_phase), pct_color(snap_mac_pct)))
+    msg1(base, sel("appendAttributedString:"), attr_str(" U¹", 0))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar_blink(snap_ubu_pct, blink_phase), pct_color(snap_ubu_pct)))
+    msg1(base, sel("appendAttributedString:"), attr_str(" U²", 0))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar_blink(snap_ubu2_pct, blink_phase), pct_color(snap_ubu2_pct)))
+    msg1(base, sel("appendAttributedString:"), attr_str(" H¹", 0))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar_blink(snap_htz_pct, blink_phase), pct_color(snap_htz_pct)))
     return base
 }
 
@@ -431,37 +459,10 @@ fn main() -> void {
         }
     }
 
-    let app_cls = cls("NSApplication")
-    let shared_sel = sel("sharedApplication")
-    let app = msg0(app_cls, shared_sel)
-    if test_mode == 1 {
-        println("TEST probe0 NSApplication_cls=" + to_string(app_cls) + " sel(sharedApplication)=" + to_string(shared_sel) + " app=" + to_string(app))
-        let sb_cls_p = cls("NSStatusBar")
-        let ssb_sel_p = sel("systemStatusBar")
-        let sb_obj_p = msg0(sb_cls_p, ssb_sel_p)
-        println("TEST probe0b NSStatusBar_cls=" + to_string(sb_cls_p) + " sel(systemStatusBar)=" + to_string(ssb_sel_p) + " bar=" + to_string(sb_obj_p))
-    }
-    // [AG-Q5 2026-04-19] Sequoia 에서 LSUIElement=1 + setActivationPolicy:1 만으로는
-    // WindowServer 연결이 확립되지 않아 (`lsappinfo info <pid>` 의 `!cgsConnection
-    // !signalled`) [item button] 이 NULL 반환. Regular(0) 으로 한 번 승격 → pump →
-    // Accessory(1) 복귀 (policy-flip) 로 CGS 등록을 강제한다. Dock 아이콘은 pump 간격이
-    // 짧아서 렌더링 전에 Accessory 로 되돌아가므로 노출되지 않음.
-    msg_int(app, sel("setActivationPolicy:"), 0)
-    msg0(app, sel("finishLaunching"))
-    let flip_date_cls = cls("NSDate")
-    let flip_now_sel = sel("dateWithTimeIntervalSinceNow:")
-    let flip_next_sel = sel("nextEventMatchingMask:untilDate:inMode:dequeue:")
-    let flip_send_sel = sel("sendEvent:")
-    let flip_mode = nsstr("kCFRunLoopDefaultMode")
-    let mut flip_i = 0
-    while flip_i < 12 {
-        let flip_deadline = msg_float(flip_date_cls, flip_now_sel, 0.02)
-        let flip_ev = msg_pump(app, flip_next_sel, -1, flip_deadline, flip_mode, 1)
-        if flip_ev != 0 { msg1(app, flip_send_sel, flip_ev) }
-        flip_i = flip_i + 1
-    }
+    let app = msg0(cls("NSApplication"), sel("sharedApplication"))
     msg_int(app, sel("setActivationPolicy:"), 1)
     msg_int(app, sel("activateIgnoringOtherApps:"), 1)
+    msg0(app, sel("finishLaunching"))
 
     let bar_obj = msg0(cls("NSStatusBar"), sel("systemStatusBar"))
     let item = msg_float(bar_obj, sel("statusItemWithLength:"), -1.0)
@@ -475,21 +476,11 @@ fn main() -> void {
     spark_htz = spark_push(spark_htz, snap_htz_pct)
 
     let button = msg0(item, sel("button"))
-    if test_mode == 1 {
-        println("TEST probe item=" + to_string(item) + " bar_obj=" + to_string(bar_obj) + " button=" + to_string(button))
-        let probe_bar2 = msg0(cls("NSStatusBar"), sel("systemStatusBar"))
-        let probe_item2 = msg_float(probe_bar2, sel("statusItemWithLength:"), -1.0)
-        let probe_btn2 = msg0(probe_item2, sel("button"))
-        println("TEST probe2 bar2=" + to_string(probe_bar2) + " item2=" + to_string(probe_item2) + " btn2=" + to_string(probe_btn2))
-    }
     if button != 0 {
         msg1(button, sel("setAttributedTitle:"), compose_title_attr())
         if test_mode == 1 { println("TEST button ok") }
     } else {
-        // [AG-Q4 2026-04-19] button=NULL fallback — legacy [item setTitle:] 로 가시성 확보.
-        // Sequoia + ad-hoc sign 상태에서 statusItem.button 이 NULL 반환하는 케이스 복구.
-        msg1(item, sel("setTitle:"), nsstr("🧬"))
-        if test_mode == 1 { println("TEST button NULL — legacy setTitle fallback") }
+        if test_mode == 1 { println("TEST button NULL") }
     }
     let initial_menu = build_menu()
     msg1(item, sel("setMenu:"), initial_menu)
@@ -533,6 +524,16 @@ fn main() -> void {
         // [Track B gap 2] snapshot 상태 덤프 — 런타임 값 추적
         println("TEST SNAP level=" + snap_level + " mac=" + to_string(snap_mac_pct) + " ubu=" + to_string(snap_ubu_pct) + " ubu2=" + to_string(snap_ubu2_pct) + " htz=" + to_string(snap_htz_pct) + " infra_age=" + to_string(snap_infra_age) + "s throttle_age=" + to_string(snap_throttle_age) + "s")
 
+        // blink smoke — bar_blink 양 위상 + compose_title_attr phase=1 호출
+        let hi = cfg_color_high
+        let probe = hi + 5
+        println("TEST BLINK bar_blink(" + to_string(probe) + ", 0)=" + bar_blink(probe, 0) + "  phase1=" + bar_blink(probe, 1))
+        println("TEST BLINK should_blink=" + to_string(should_blink()))
+        blink_phase = 1
+        let _tb = compose_title_attr()
+        blink_phase = 0
+        println("TEST BLINK compose phase1 ok")
+
         println("TEST DONE PASS")
         return
     }
@@ -540,8 +541,9 @@ fn main() -> void {
     let mut prev_sig = state_signature()
     let mut prev_level = snap_level
     let mut prev_compute = snap_compute
+    let mut last_refresh = to_int(exec("date +%s").trim())
 
-    println("airgenome menubar V4 running (NSApp event pump — click fix)")
+    println("airgenome menubar V5 running (blink pulse + sub-tick pump)")
 
     // [V4 FIX] NSRunLoop runUntilDate: 는 NSApp 이벤트 큐를 dequeue 안 함 →
     // status item 클릭 이벤트가 dispatch 안 됨. 직접 nextEventMatchingMask: 루프로 pump.
@@ -556,8 +558,15 @@ fn main() -> void {
     let mask_any = -1
 
     while true {
-        // 다음 틱까지의 기한
-        let deadline = msg_float(date_cls, dint_sel, cfg_tick_sec)
+        // blink 상태 → sub-tick pump. 0.5s 로 빨리 돌려 title 펄스 가능.
+        // (snapshot refresh 는 여전히 cfg_tick_sec 주기 — date +%s gate)
+        let blinking = should_blink()
+        let mut pump_sec = cfg_tick_sec
+        if blinking {
+            if cfg_tick_sec > 0.5 { pump_sec = 0.5 }
+        }
+
+        let deadline = msg_float(date_cls, dint_sel, pump_sec)
 
         // 첫 이벤트가 올 때까지 (또는 deadline 까지) 블록
         let ev1 = msg_pump(app, next_sel, mask_any, deadline, mode, 1)
@@ -575,45 +584,56 @@ fn main() -> void {
         // 윈도우 업데이트 (status item redraw 포함)
         msg0(app, update_sel)
 
-        // [Phase A] config mtime 감시 → reload
-        let mt = config_mtime()
-        if mt != cfg_mtime_cached {
-            load_config()
-            cfg_mtime_cached = mt
-            println("airgenome menubar: config reloaded")
-        }
-
-        refresh_snapshot()
-        spark_mac = spark_push(spark_mac, snap_mac_pct)
-        spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
-        spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
-        spark_htz = spark_push(spark_htz, snap_htz_pct)
-
-        if snap_level != prev_level {
-            post_notification("airgenome",
-                "throttle " + prev_level + " → " + snap_level,
-                "pred cpu=" + snap_pred_cpu + "% ram=" + snap_pred_ram + "%")
-            prev_level = snap_level
-        }
-        if snap_compute != prev_compute && snap_compute != "" {
-            post_notification("airgenome",
-                "dispatch target " + prev_compute + " → " + snap_compute, "")
-            prev_compute = snap_compute
-        }
-
-        let btn = msg0(item, sel("button"))
-        if btn != 0 {
-            msg1(btn, sel("setAttributedTitle:"), compose_title_attr())
+        // blink 위상 — 펄스 ON 일 때만 교대, 아니면 0 고정
+        if blinking {
+            if blink_phase == 0 { blink_phase = 1 } else { blink_phase = 0 }
         } else {
-            // [AG-Q4] legacy path — 매 tick status signature 반영된 간단 타이틀
-            msg1(item, sel("setTitle:"), nsstr("🧬 " + snap_level))
+            blink_phase = 0
         }
 
-        let sig = state_signature()
-        if sig != prev_sig {
-            msg1(item, sel("setMenu:"), build_menu())
-            prev_sig = sig
+        // snapshot refresh 는 tick_sec 주기로만 (sub-tick 에선 title 만 업데이트)
+        let now_ts = to_int(exec("date +%s").trim())
+        let mut tick_int = to_int(cfg_tick_sec)
+        if tick_int < 1 { tick_int = 1 }
+        if now_ts - last_refresh >= tick_int {
+            // [Phase A] config mtime 감시 → reload
+            let mt = config_mtime()
+            if mt != cfg_mtime_cached {
+                load_config()
+                cfg_mtime_cached = mt
+                println("airgenome menubar: config reloaded")
+            }
+
+            refresh_snapshot()
+            spark_mac = spark_push(spark_mac, snap_mac_pct)
+            spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
+            spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
+            spark_htz = spark_push(spark_htz, snap_htz_pct)
+
+            if snap_level != prev_level {
+                post_notification("airgenome",
+                    "throttle " + prev_level + " → " + snap_level,
+                    "pred cpu=" + snap_pred_cpu + "% ram=" + snap_pred_ram + "%")
+                prev_level = snap_level
+            }
+            if snap_compute != prev_compute && snap_compute != "" {
+                post_notification("airgenome",
+                    "dispatch target " + prev_compute + " → " + snap_compute, "")
+                prev_compute = snap_compute
+            }
+
+            let sig = state_signature()
+            if sig != prev_sig {
+                msg1(item, sel("setMenu:"), build_menu())
+                prev_sig = sig
+            }
+
+            last_refresh = now_ts
         }
+
+        // title 은 매 sub-tick 갱신 → 펄스 가시화
+        let btn = msg0(item, sel("button"))
+        if btn != 0 { msg1(btn, sel("setAttributedTitle:"), compose_title_attr()) }
     }
 }
 

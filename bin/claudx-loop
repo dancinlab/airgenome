@@ -132,13 +132,17 @@ while true; do
     fi
     if [ "$stop_requested" = true ]; then break; fi
 
-    # burst throttling
-    burst_window=$((t1 - burst_t0))
-    if [ "$burst_window" -lt "$CLAUDX_LOOP_BURST_SEC" ]; then
-        burst_count=$((burst_count + 1))
-    else
-        burst_t0=$t1
-        burst_count=1
+    # (2026-04-19 v2) rc=3 = claudx ABORT (모든 계정 capped). burst_cap 카운트 제외 —
+    # 이건 크래시가 아니라 "대기해야 하는" 정상 시그널. 아래 pool_check 이 sleep 처리.
+    if [ "$rc" != "3" ]; then
+        # burst throttling
+        burst_window=$((t1 - burst_t0))
+        if [ "$burst_window" -lt "$CLAUDX_LOOP_BURST_SEC" ]; then
+            burst_count=$((burst_count + 1))
+        else
+            burst_t0=$t1
+            burst_count=1
+        fi
     fi
 
     # if all exhausted, sleep until earliest reset
