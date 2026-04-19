@@ -418,11 +418,26 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
     // into captured stdout when using <<'TAG'\n...\nTAG\n patterns).
     let tmp = HOME + "/.airgenome/.tg_in." + to_string(ts_epoch())
     let _ = write_file(tmp, text)
+    // tmp 파일을 Mac 경로로 정규화 (ubu sshfs → /Users/ghost/...).
+    // Linux bot 은 HOME=/home/aiden/mac_home 으로 실행되는 경우 tmp 가 sshfs mount
+    // → Mac 에서는 /Users/ghost/.airgenome/.tg_in.<ts> 로 같은 파일.
+    let mac_tmp = tmp.replace("/home/aiden/mac_home", "/Users/ghost").replace("/home/summer/mac_home", "/Users/ghost")
+    let is_linux_bot = uname_s() != "Darwin"
     let mut cmd = ""
-    if dispatch_mode == "cx" {
-        cmd = "NO_CLAUDX=1 timeout " + timeout_s + " '" + cx + "'"
-            + " --docker --force-host ubu1 -p \"$(cat '" + tmp + "')\" 2>&1; echo _RC_=$?"
+    if is_linux_bot && dispatch_mode == "cx" {
+        // Linux bot (ubu/ubu2) → ssh mac "claudx -p ..." 로 Mac pool rotation 직접 사용.
+        // 이점: Mac 의 logged-in claudx pool (12 account) 을 bot 이 원격 활용 → login/credential
+        //       문제 완전 우회. 컨테이너 credential stale + Mac default claude /login 부재 모두 우회.
+        // bash -lc → interactive shell PATH (~/.local/bin) 로드. ServerAlive 로 hang 방지.
+        cmd = "ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 mac "
+            + "'bash -lc \"timeout " + timeout_s + " /Users/ghost/Dev/airgenome/bin/claudx -p "
+            + "\\\"$(cat '" + mac_tmp + "')\\\" --max-turns 1 2>&1\"' 2>&1; echo _RC_=$?"
+    } else if dispatch_mode == "cx" {
+        // Mac bot → local cx (claudx pool 직접).
+        cmd = "timeout " + timeout_s + " '" + cx + "' --docker --force-host ubu1 -p "
+            + "\"$(cat '" + tmp + "')\" 2>&1; echo _RC_=$?"
     } else {
+        // dispatch=cl (Mac 전용 경로 — Linux bot 은 cx 권장).
         cmd = "NO_CLAUDX=1 timeout " + timeout_s + " '" + claude + "'"
             + " -p \"$(cat '" + tmp + "')\" --max-turns 1 2>&1; echo _RC_=$?"
     }
