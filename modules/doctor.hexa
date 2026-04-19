@@ -1,0 +1,728 @@
+// modules/doctor.hexa — airgenome cross-host 종합 진단 (M11a 후속)
+//
+// 책임:
+//   1. Mac local:
+//      - launchd com.airgenome.* 서비스 로드 수
+//      - ~/.airgenome/tg_bot.log heartbeat 10분 이내
+//      - ~/.ssh/config 의 ubu/ubu2/hetzner 블록 존재
+//   2. 원격 3호스트 (ubu/ubu2/htz — 병렬 ssh fresh probe, timeout 5s):
+//      - systemd user services: airgenome-claude, airgenome-runaway, airgenome-build
+//      - docker container: airgenome-claude healthy + port 2222 listener
+//      - drill.slice 유닛 존재 + inactive(idle) | active
+//      - mac_home mount (ubu/ubu2 만) + allow_other 옵션 포함 여부
+//      - ~/.airgenome/runaway.jsonl 최근 10분 이내 append
+//   3. GHCR:
+//      - gh_token scope 에 write:packages 포함
+//      - 최근 image push 시각 (ghcr.io/dancinlife/airgenome-claude)
+//   4. 설정 일관성:
+//      - Mac repo bin/airgenome-claude-run 과 원격 /usr/local/bin/airgenome-claude-run md5 동일
+//      - shared/config/hosts.json 의 ubu/ubu2/htz 에 docker_ssh_port 필드 존재
+//   5. Score + dispatch state:
+//      - ~/.airgenome/host_blacklist.json 존재 시 내용
+//      - $NEXUS/shared/dispatch_state.json 의 score + AG6 gate
+//
+// 출력:
+//   - 카테고리별 체크리스트 + 🟢/🟡/🔴
+//   - 🔴 항목은 suggestion 제공
+//   - --json 옵션: 플랫 리스트 + overall 상태
+//
+// 제약:
+//   - use 없음 (self-contained)
+//   - read-only (ssh 로 verdict 파일만 stat/tail — 수정 금지)
+//   - 총 ssh timeout 8s — 병렬이므로 wall-clock ~8s 이내
+//   - hexa-only (shell 스크립트 추가 없음, probe body 는 stdin 으로 전달)
+
+let HOME = env("HOME")
+let NEXUS = HOME + "/Dev/nexus"
+let AG_ROOT = HOME + "/Dev/airgenome"
+let CLAUDE_RUN_LOCAL = AG_ROOT + "/bin/airgenome-claude-run"
+let HOSTS_JSON = AG_ROOT + "/shared/config/hosts.json"
+let SSH_CONFIG = HOME + "/.ssh/config"
+let TG_BOT_LOG = HOME + "/.airgenome/tg_bot.log"
+let HOST_BLACKLIST = HOME + "/.airgenome/host_blacklist.json"
+let DISPATCH_STATE = NEXUS + "/shared/dispatch_state.json"
+let GHCR_IMAGE = "ghcr.io/dancinlife/airgenome-claude"
+
+let SEV_OK = 0
+let SEV_WARN = 1
+let SEV_FAIL = 2
+
+// ═══════════════════════════════════════════════════════════════════════
+//  util
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sh(cmd: str) -> str {
+    return exec(cmd).trim()
+}
+
+fn void_guard(s: str) -> str {
+    if s == "void" { return "" }
+    return s
+}
+
+fn ts_iso() -> str {
+    return sh("date -u +%Y-%m-%dT%H:%M:%SZ")
+}
+
+fn now_s() -> int {
+    return to_int(sh("date +%s"))
+}
+
+fn json_esc(s: str) -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(s) {
+        let c = s.substring(i, i + 1)
+        if c == "\\" { out = out + "\\\\" }
+        else if c == "\"" { out = out + "\\\"" }
+        else if c == "\n" { out = out + "\\n" }
+        else if c == "\r" { out = out + "\\r" }
+        else if c == "\t" { out = out + "\\t" }
+        else { out = out + c }
+        i = i + 1
+    }
+    return out
+}
+
+fn sev_mark(sev: int) -> str {
+    if sev == SEV_OK { return "🟢" }
+    if sev == SEV_WARN { return "🟡" }
+    return "🔴"
+}
+
+fn sev_label(sev: int) -> str {
+    if sev == SEV_OK { return "ok" }
+    if sev == SEV_WARN { return "warn" }
+    return "fail"
+}
+
+fn kv_get(blob: str, key: str) -> str {
+    let lines = blob.split("\n")
+    let prefix = key + "="
+    let mut i = 0
+    while i < len(lines) {
+        let ln = lines[i]
+        i = i + 1
+        if ln == "" { continue }
+        if ln.starts_with(prefix) {
+            let idx = ln.index_of("=")
+            if idx < 0 { continue }
+            return ln.substring(idx + 1, len(ln))
+        }
+    }
+    return ""
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Check record — 각 항목 단위
+// ═══════════════════════════════════════════════════════════════════════
+
+struct Check {
+    id: str,
+    category: str,
+    label: str,
+    sev: int,
+    detail: str,
+    hint: str
+}
+
+fn mk_check(id: str, cat: str, label: str, sev: int, detail: str, hint: str) -> Check {
+    return Check { id: id, category: cat, label: label, sev: sev, detail: detail, hint: hint }
+}
+
+fn check_json(c: Check) -> str {
+    return "{"
+        + "\"id\":\"" + json_esc(c.id) + "\""
+        + ",\"category\":\"" + json_esc(c.category) + "\""
+        + ",\"label\":\"" + json_esc(c.label) + "\""
+        + ",\"severity\":\"" + sev_label(c.sev) + "\""
+        + ",\"detail\":\"" + json_esc(c.detail) + "\""
+        + ",\"hint\":\"" + json_esc(c.hint) + "\""
+        + "}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Remote probe — 3호스트 병렬 (ssh stdin script)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn probe_body() -> str {
+    // KEY=VALUE lines. 원격에서 read-only 체크만.
+    return "#!/usr/bin/env bash\n"
+        + "export LANG=C LC_ALL=C\n"
+        + "# systemd user services (airgenome-claude / airgenome-runaway / airgenome-build)\n"
+        + "svc(){ local scope=$1 u=$2 t; if [ \"$scope\" = user ]; then t=$(systemctl --user is-active \"$u\" 2>/dev/null | head -1); else t=$(systemctl is-active \"$u\" 2>/dev/null | head -1); fi; [ -z \"$t\" ] && t=inactive; printf '%s' \"$t\"; }\n"
+        + "svcen(){ local scope=$1 u=$2 t; if [ \"$scope\" = user ]; then t=$(systemctl --user is-enabled \"$u\" 2>/dev/null | head -1); else t=$(systemctl is-enabled \"$u\" 2>/dev/null | head -1); fi; [ -z \"$t\" ] && t=not-found; printf '%s' \"$t\"; }\n"
+        + "SC=$(svc user airgenome-claude); SCE=$(svcen user airgenome-claude)\n"
+        + "SR=$(svc system airgenome-runaway); SRE=$(svcen system airgenome-runaway)\n"
+        + "SB=$(svc system airgenome-build.timer); SBE=$(svcen system airgenome-build.timer)\n"
+        + "# drill.slice — 존재 여부 + 상태\n"
+        + "DRILL=$(systemctl show drill.slice --property=LoadState,ActiveState --no-pager 2>/dev/null | tr '\\n' ',' | sed 's/,$//')\n"
+        + "# docker container\n"
+        + "DKR_LINE=''; DKR_HEALTH=''\n"
+        + "if command -v docker >/dev/null 2>&1; then\n"
+        + "  DKR_LINE=$(sudo -n docker ps --filter name=airgenome-claude --format '{{.Names}}|{{.Status}}|{{.Image}}' 2>/dev/null | head -1)\n"
+        + "  DKR_HEALTH=$(sudo -n docker inspect --format '{{.State.Health.Status}}' airgenome-claude 2>/dev/null)\n"
+        + "fi\n"
+        + "# port 2222 listener\n"
+        + "P2222=0\n"
+        + "if command -v ss >/dev/null 2>&1; then P2222=$(ss -ltn 2>/dev/null | awk '$4 ~ /:2222$/' | wc -l | tr -d ' ');\n"
+        + "elif command -v netstat >/dev/null 2>&1; then P2222=$(netstat -ltn 2>/dev/null | awk '$4 ~ /:2222$/' | wc -l | tr -d ' '); fi\n"
+        + "# mac_home sshfs mount — /Users/ghost bind 또는 /mnt/mac_home\n"
+        + "MNT=''; MNT_OPT=''\n"
+        + "for cand in /Users/ghost /mnt/mac_home /home/aiden/mac_home; do\n"
+        + "  if mountpoint -q \"$cand\" 2>/dev/null; then\n"
+        + "    MNT=\"$cand\"\n"
+        + "    MNT_OPT=$(awk -v p=\"$cand\" '$2==p {print $4; exit}' /proc/self/mounts 2>/dev/null)\n"
+        + "    break\n"
+        + "  fi\n"
+        + "done\n"
+        + "# runaway.jsonl 최근 append (~/.airgenome/runaway.jsonl)\n"
+        + "RW=0; RW_AGE=-1\n"
+        + "for p in \"$HOME/.airgenome/runaway.jsonl\" /var/log/airgenome-runaway.log; do\n"
+        + "  [ -f \"$p\" ] || continue\n"
+        + "  MT=$(stat -c %Y \"$p\" 2>/dev/null); [ -z \"$MT\" ] && continue\n"
+        + "  RW=1; RW_AGE=$(( $(date +%s) - MT )); break\n"
+        + "done\n"
+        + "# airgenome-claude-run md5 — 두 경로 체크\n"
+        + "CRUN_MD5=''\n"
+        + "for p in /usr/local/bin/airgenome-claude-run \"$HOME/Dev/airgenome/bin/airgenome-claude-run\" /root/Dev/airgenome/bin/airgenome-claude-run; do\n"
+        + "  [ -f \"$p\" ] || continue\n"
+        + "  CRUN_MD5=$(md5sum \"$p\" 2>/dev/null | awk '{print $1}'); [ -n \"$CRUN_MD5\" ] && break\n"
+        + "done\n"
+        + "printf 'SVC_CLAUDE=%s\\nSVC_CLAUDE_EN=%s\\nSVC_RUNAWAY=%s\\nSVC_RUNAWAY_EN=%s\\nSVC_BUILD=%s\\nSVC_BUILD_EN=%s\\nDRILL=%s\\nDKR_LINE=%s\\nDKR_HEALTH=%s\\nP2222=%s\\nMNT=%s\\nMNT_OPT=%s\\nRW=%s\\nRW_AGE=%s\\nCRUN_MD5=%s\\n' \\\n"
+        + "  \"$SC\" \"$SCE\" \"$SR\" \"$SRE\" \"$SB\" \"$SBE\" \"$DRILL\" \"$DKR_LINE\" \"$DKR_HEALTH\" \"$P2222\" \"$MNT\" \"$MNT_OPT\" \"$RW\" \"$RW_AGE\" \"$CRUN_MD5\"\n"
+}
+
+fn probe_script_path() -> str {
+    let p = "/tmp/agdoctor_probe.sh"
+    let _ = write_file(p, probe_body())
+    let _ = sh("chmod +x '" + p + "' 2>/dev/null")
+    return p
+}
+
+fn ssh_opts() -> str {
+    return "-S none -o ControlMaster=no -o ConnectTimeout=4 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=3 -o ServerAliveCountMax=2"
+}
+
+// probe_all_parallel — 3호스트 동시 ssh, 결과를 /tmp/agdoctor_<alias>.out 에 저장.
+fn probe_all_parallel(script: str) -> void {
+    let aliases = ["ubu", "ubu2", "hetzner"]
+    let mut cmd = ""
+    let mut i = 0
+    while i < len(aliases) {
+        let a = aliases[i]
+        let out = "/tmp/agdoctor_" + a + ".out"
+        let _ = sh(": > '" + out + "' 2>/dev/null")
+        let this = "(timeout 6 ssh " + ssh_opts() + " '" + a + "' bash -s < '" + script + "' >'" + out + "' 2>&1) &"
+        if cmd == "" { cmd = this } else { cmd = cmd + " " + this }
+        i = i + 1
+    }
+    cmd = cmd + " wait"
+    let _ = sh(cmd)
+}
+
+fn probe_read(alias: str) -> str {
+    return void_guard(exec("cat '/tmp/agdoctor_" + alias + ".out' 2>/dev/null"))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Mac local checks
+// ═══════════════════════════════════════════════════════════════════════
+
+fn check_launchd() -> Check {
+    let cnt = to_int(sh("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./' | wc -l | tr -d ' '"))
+    if cnt == 0 {
+        return mk_check("mac.launchd", "mac", "launchd com.airgenome.*", SEV_FAIL,
+            "0 agents loaded",
+            "airgenome install-agents 로 LaunchAgent 설치")
+    }
+    if cnt < 3 {
+        return mk_check("mac.launchd", "mac", "launchd com.airgenome.*", SEV_WARN,
+            to_string(cnt) + " agent(s) loaded (기대: ≥3)",
+            "shared/launchagents/*.plist 목록과 비교 — install-agents mac-safe")
+    }
+    return mk_check("mac.launchd", "mac", "launchd com.airgenome.*", SEV_OK,
+        to_string(cnt) + " agent(s) loaded", "")
+}
+
+fn check_tg_heartbeat() -> Check {
+    let exists = sh("[ -f '" + TG_BOT_LOG + "' ] && echo y || echo n")
+    if exists != "y" {
+        return mk_check("mac.tg_bot", "mac", "tg_bot.log heartbeat (10m)", SEV_WARN,
+            "로그 파일 없음 — bot 미기동?",
+            "launchctl list | grep tg-bot 후 airgenome tg-bot 기동 확인")
+    }
+    let mt = to_int(sh("stat -f %m '" + TG_BOT_LOG + "' 2>/dev/null || echo 0"))
+    if mt == 0 {
+        return mk_check("mac.tg_bot", "mac", "tg_bot.log heartbeat (10m)", SEV_WARN,
+            "mtime 읽기 실패",
+            "")
+    }
+    let age = now_s() - mt
+    if age > 600 {
+        return mk_check("mac.tg_bot", "mac", "tg_bot.log heartbeat (10m)", SEV_FAIL,
+            "마지막 쓰기 " + to_string(age) + "s 전",
+            "launchctl kickstart -k gui/$(id -u)/com.airgenome.tg-bot")
+    }
+    return mk_check("mac.tg_bot", "mac", "tg_bot.log heartbeat (10m)", SEV_OK,
+        "age=" + to_string(age) + "s", "")
+}
+
+fn check_ssh_config() -> Check {
+    let exists = sh("[ -f '" + SSH_CONFIG + "' ] && echo y || echo n")
+    if exists != "y" {
+        return mk_check("mac.ssh_config", "mac", "~/.ssh/config ubu/ubu2/hetzner", SEV_FAIL,
+            "~/.ssh/config 파일 없음",
+            "ssh config 초기 세팅 필요")
+    }
+    // 각각의 Host 블록이 존재하는지
+    let has_ubu = sh("awk 'NR==1{x=0} /^Host[[:space:]]/{x=($0 ~ /\\<ubu\\>/)} x' '" + SSH_CONFIG + "' | head -1").trim()
+    let has_ubu2 = sh("awk 'NR==1{x=0} /^Host[[:space:]]/{x=($0 ~ /\\<ubu2\\>/)} x' '" + SSH_CONFIG + "' | head -1").trim()
+    let has_htz = sh("awk 'NR==1{x=0} /^Host[[:space:]]/{x=($0 ~ /\\<hetzner\\>/)} x' '" + SSH_CONFIG + "' | head -1").trim()
+    let mut missing = ""
+    if has_ubu == "" { missing = missing + "ubu " }
+    if has_ubu2 == "" { missing = missing + "ubu2 " }
+    if has_htz == "" { missing = missing + "hetzner " }
+    if missing != "" {
+        return mk_check("mac.ssh_config", "mac", "~/.ssh/config ubu/ubu2/hetzner", SEV_FAIL,
+            "누락: " + missing.trim(),
+            "~/.ssh/config 에 Host 블록 추가 — airgenome remote 작동 못함")
+    }
+    return mk_check("mac.ssh_config", "mac", "~/.ssh/config ubu/ubu2/hetzner", SEV_OK,
+        "ubu + ubu2 + hetzner 블록 존재", "")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Remote host checks — 각 체크가 Check 를 반환, host prefix 붙여서 배출
+// ═══════════════════════════════════════════════════════════════════════
+
+struct HostBlob {
+    alias: str,
+    short: str,        // ubu1/ubu2/htz1
+    blob: str,
+    reachable: bool,
+    want_mount: bool   // ubu/ubu2 만 true
+}
+
+fn check_svc(short: str, blob: str, svc_key: str, svc_en_key: str, svc_name: str) -> Check {
+    let active = kv_get(blob, svc_key)
+    let enabled = kv_get(blob, svc_en_key)
+    let id = "remote." + short + "." + svc_name
+    let label = short + " systemd " + svc_name
+    if active == "active" {
+        let detail = "active" + if enabled == "enabled" { ", enabled" } else { ", " + enabled }
+        let sev = if enabled == "enabled" { SEV_OK } else { SEV_WARN }
+        let hint = if enabled != "enabled" { "systemctl [--user] enable " + svc_name } else { "" }
+        return mk_check(id, "remote", label, sev, detail, hint)
+    }
+    if active == "inactive" && enabled == "not-found" {
+        return mk_check(id, "remote", label, SEV_FAIL, "유닛 파일 없음",
+            "shared/systemd/" + svc_name + ".service 배포 필요")
+    }
+    return mk_check(id, "remote", label, SEV_FAIL, active + " / " + enabled,
+        "systemctl [--user] status " + svc_name + " 로 원인 확인")
+}
+
+fn check_docker(short: str, blob: str) -> Check {
+    let line = kv_get(blob, "DKR_LINE")
+    let health = kv_get(blob, "DKR_HEALTH")
+    let p2222 = kv_get(blob, "P2222")
+    let id = "remote." + short + ".docker"
+    let label = short + " docker airgenome-claude"
+    if line == "" {
+        return mk_check(id, "remote", label, SEV_FAIL, "container not running",
+            "systemctl --user start airgenome-claude (또는 airgenome-claude-run 수동)")
+    }
+    let p_ok = p2222 != "" && p2222 != "0"
+    let h_ok = health == "healthy" || health == ""    // health 미구현은 수용
+    if h_ok && p_ok {
+        let detail = "running" + if health != "" { " (" + health + ")" } else { "" } + ", :2222 listen"
+        return mk_check(id, "remote", label, SEV_OK, detail, "")
+    }
+    if h_ok && !p_ok {
+        return mk_check(id, "remote", label, SEV_WARN, "running but :2222 미listen",
+            "docker compose 의 port mapping 확인 — 2222:22")
+    }
+    return mk_check(id, "remote", label, SEV_WARN,
+        "health=" + health + ", :2222=" + p2222,
+        "docker inspect airgenome-claude 로 Health.Log 확인")
+}
+
+fn check_drill(short: str, blob: str) -> Check {
+    let drill = kv_get(blob, "DRILL")
+    let id = "remote." + short + ".drill_slice"
+    let label = short + " drill.slice"
+    if drill == "" {
+        return mk_check(id, "remote", label, SEV_WARN, "systemctl show 결과 없음",
+            "shared/systemd/drill.slice 배포 여부 확인")
+    }
+    // LoadState=loaded,ActiveState=inactive 또는 active 면 OK
+    let load_ok = drill.index_of("LoadState=loaded") >= 0
+    let active_ok = drill.index_of("ActiveState=active") >= 0 || drill.index_of("ActiveState=inactive") >= 0
+    if !load_ok {
+        return mk_check(id, "remote", label, SEV_FAIL, drill,
+            "shared/systemd/drill.slice → /etc/systemd/system/ cp + daemon-reload")
+    }
+    if !active_ok {
+        return mk_check(id, "remote", label, SEV_WARN, drill,
+            "drill.slice 상태 비정상 — activating/failed?")
+    }
+    return mk_check(id, "remote", label, SEV_OK, drill, "")
+}
+
+fn check_mount(short: str, blob: str, want: bool) -> Check {
+    let id = "remote." + short + ".mac_home_mount"
+    let label = short + " mac_home sshfs"
+    if !want {
+        return mk_check(id, "remote", label, SEV_OK, "not required", "")
+    }
+    let mnt = kv_get(blob, "MNT")
+    let opt = kv_get(blob, "MNT_OPT")
+    if mnt == "" {
+        return mk_check(id, "remote", label, SEV_FAIL, "/Users/ghost 마운트 없음",
+            "systemctl --user restart mac-home.mount 또는 sshfs reverse 재셋업")
+    }
+    if opt.index_of("allow_other") < 0 {
+        return mk_check(id, "remote", label, SEV_WARN, mnt + "  opts=" + opt,
+            "allow_other 옵션 누락 — user_allow_other + mount unit 수정")
+    }
+    return mk_check(id, "remote", label, SEV_OK, mnt + " allow_other", "")
+}
+
+fn check_runaway_log(short: str, blob: str) -> Check {
+    let id = "remote." + short + ".runaway_log"
+    let label = short + " runaway.jsonl (10m)"
+    let rw = kv_get(blob, "RW")
+    let age_s = kv_get(blob, "RW_AGE")
+    if rw != "1" || age_s == "" || age_s == "-1" {
+        return mk_check(id, "remote", label, SEV_FAIL, "로그 없음",
+            "systemctl status airgenome-runaway 로 서비스 건강 확인")
+    }
+    let age = to_int(age_s)
+    if age > 600 {
+        return mk_check(id, "remote", label, SEV_WARN,
+            "마지막 append " + to_string(age) + "s 전",
+            "airgenome-runaway timer 확인 또는 stuck 여부")
+    }
+    return mk_check(id, "remote", label, SEV_OK, "age=" + to_string(age) + "s", "")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GHCR / config consistency / dispatch
+// ═══════════════════════════════════════════════════════════════════════
+
+fn check_gh_token() -> Check {
+    let has_gh = sh("command -v gh >/dev/null 2>&1 && echo y || echo n")
+    if has_gh != "y" {
+        return mk_check("ghcr.token", "ghcr", "gh token write:packages", SEV_WARN,
+            "gh CLI 미설치",
+            "brew install gh + gh auth login --scopes write:packages")
+    }
+    // gh auth status stderr 에 scopes 가 나옴
+    let status = sh("gh auth status 2>&1")
+    if status.index_of("Logged in") < 0 {
+        return mk_check("ghcr.token", "ghcr", "gh token write:packages", SEV_FAIL,
+            "gh 로그인 안됨",
+            "gh auth login --scopes write:packages,read:org")
+    }
+    if status.index_of("write:packages") < 0 {
+        return mk_check("ghcr.token", "ghcr", "gh token write:packages", SEV_FAIL,
+            "write:packages scope 없음",
+            "gh auth refresh --scopes write:packages")
+    }
+    return mk_check("ghcr.token", "ghcr", "gh token write:packages", SEV_OK,
+        "write:packages 포함", "")
+}
+
+fn check_ghcr_recent_push() -> Check {
+    let has_gh = sh("command -v gh >/dev/null 2>&1 && echo y || echo n")
+    if has_gh != "y" {
+        return mk_check("ghcr.recent_push", "ghcr", "GHCR image 최근 push", SEV_WARN,
+            "gh CLI 미설치", "")
+    }
+    // 빠른 체크 — API 한 번만 (병렬 ssh 와 별도)
+    let url = "/users/dancinlife/packages/container/airgenome-claude/versions?per_page=1"
+    let out = sh("timeout 4 gh api '" + url + "' --jq '.[0].updated_at // empty' 2>/dev/null")
+    if out == "" {
+        return mk_check("ghcr.recent_push", "ghcr", "GHCR image 최근 push", SEV_WARN,
+            "GHCR package 버전 조회 실패",
+            "package 존재 또는 권한 확인 (read:packages)")
+    }
+    let age = to_int(sh("date -u -j -f '%Y-%m-%dT%H:%M:%SZ' '" + out + "' +%s 2>/dev/null"))
+    let now = now_s()
+    if age == 0 {
+        return mk_check("ghcr.recent_push", "ghcr", "GHCR image 최근 push", SEV_WARN,
+            "updated_at=" + out + " (파싱 실패)", "")
+    }
+    let hours = (now - age) / 3600
+    if hours > 168 {
+        return mk_check("ghcr.recent_push", "ghcr", "GHCR image 최근 push", SEV_WARN,
+            "최근 push " + to_string(hours) + "h 전 (>7d)",
+            "airgenome-build timer 확인 또는 수동 build")
+    }
+    return mk_check("ghcr.recent_push", "ghcr", "GHCR image 최근 push", SEV_OK,
+        "updated_at=" + out + " (" + to_string(hours) + "h)", "")
+}
+
+fn check_claude_run_sync(short: str, blob: str, mac_md5: str) -> Check {
+    let id = "config." + short + ".claude_run_md5"
+    let label = short + " airgenome-claude-run md5 sync"
+    let remote_md5 = kv_get(blob, "CRUN_MD5")
+    if remote_md5 == "" {
+        return mk_check(id, "config", label, SEV_WARN, "원격 파일 없음/읽기 실패",
+            "원격 /usr/local/bin/airgenome-claude-run 배포 필요")
+    }
+    if remote_md5 != mac_md5 {
+        return mk_check(id, "config", label, SEV_FAIL,
+            "mac=" + mac_md5.substring(0, 8) + " remote=" + remote_md5.substring(0, 8),
+            "bin/airgenome-claude-run 을 원격에 재배포 — scp 또는 ansible")
+    }
+    return mk_check(id, "config", label, SEV_OK, "md5=" + mac_md5.substring(0, 8) + " (일치)", "")
+}
+
+fn check_hosts_json() -> Check {
+    let exists = sh("[ -f '" + HOSTS_JSON + "' ] && echo y || echo n")
+    if exists != "y" {
+        return mk_check("config.hosts_json", "config", "hosts.json docker_ssh_port", SEV_FAIL,
+            "파일 없음",
+            "shared/config/hosts.json 복구 필요")
+    }
+    // ubu/ubu2/htz 3개 각각에 docker_ssh_port 필드가 있는지 확인
+    let missing = sh("jq -r '[\"ubu\",\"ubu2\",\"htz\"] | map(select(. as $h | ($host_port[$h] | not))) | join(\",\")' --argjson host_port \"$(jq '.hosts | to_entries | map({(.key): (.value.docker_ssh_port // null)}) | add' '" + HOSTS_JSON + "')\" '" + HOSTS_JSON + "' 2>/dev/null")
+    // 위 jq 가 복잡 → 단순화: 각각 개별 검사
+    let chk_ubu = sh("jq -r '.hosts.ubu.docker_ssh_port // empty' '" + HOSTS_JSON + "' 2>/dev/null")
+    let chk_ubu2 = sh("jq -r '.hosts.ubu2.docker_ssh_port // empty' '" + HOSTS_JSON + "' 2>/dev/null")
+    let chk_htz = sh("jq -r '.hosts.htz.docker_ssh_port // empty' '" + HOSTS_JSON + "' 2>/dev/null")
+    let mut miss = ""
+    if chk_ubu == "" { miss = miss + "ubu " }
+    if chk_ubu2 == "" { miss = miss + "ubu2 " }
+    if chk_htz == "" { miss = miss + "htz " }
+    if miss != "" {
+        return mk_check("config.hosts_json", "config", "hosts.json docker_ssh_port", SEV_FAIL,
+            "누락 호스트: " + miss.trim(),
+            "shared/config/hosts.json 의 해당 host 에 \"docker_ssh_port\": 2222 추가")
+    }
+    return mk_check("config.hosts_json", "config", "hosts.json docker_ssh_port", SEV_OK,
+        "ubu=" + chk_ubu + " ubu2=" + chk_ubu2 + " htz=" + chk_htz, "")
+}
+
+fn check_blacklist() -> Check {
+    let exists = sh("[ -f '" + HOST_BLACKLIST + "' ] && echo y || echo n")
+    if exists != "y" {
+        return mk_check("score.blacklist", "score", "host_blacklist.json", SEV_OK,
+            "파일 없음 (blacklist 비어있음)", "")
+    }
+    let content = sh("jq -c '.' '" + HOST_BLACKLIST + "' 2>/dev/null")
+    let n = to_int(sh("jq -r 'if type==\"object\" then (keys|length) elif type==\"array\" then length else 0 end' '" + HOST_BLACKLIST + "' 2>/dev/null"))
+    if n == 0 {
+        return mk_check("score.blacklist", "score", "host_blacklist.json", SEV_OK,
+            "empty", "")
+    }
+    return mk_check("score.blacklist", "score", "host_blacklist.json", SEV_WARN,
+        to_string(n) + " entry/entries — " + content,
+        "blacklist 잔재 — cx fresh probe 통과하면 rm 후 재평가")
+}
+
+fn check_dispatch_state() -> Check {
+    let exists = sh("[ -f '" + DISPATCH_STATE + "' ] && echo y || echo n")
+    if exists != "y" {
+        return mk_check("score.dispatch_state", "score", "AG7 dispatch_state", SEV_WARN,
+            "파일 없음",
+            "airgenome dispatch 1회 실행")
+    }
+    let mt = to_int(sh("stat -f %m '" + DISPATCH_STATE + "' 2>/dev/null || echo 0"))
+    let age = now_s() - mt
+    let sel_c = sh("jq -r '.selection.compute // empty' '" + DISPATCH_STATE + "' 2>/dev/null")
+    let gate = sh("jq -r '.ag6_gate // empty' '" + DISPATCH_STATE + "' 2>/dev/null")
+    if age > 900 {
+        return mk_check("score.dispatch_state", "score", "AG7 dispatch_state", SEV_WARN,
+            "age=" + to_string(age) + "s compute=" + sel_c + " gate=" + gate,
+            "dispatch timer stale — LaunchAgent/timer 확인")
+    }
+    return mk_check("score.dispatch_state", "score", "AG7 dispatch_state", SEV_OK,
+        "age=" + to_string(age) + "s compute=" + sel_c + " gate=" + gate, "")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  render
+// ═══════════════════════════════════════════════════════════════════════
+
+fn pad_right(s: str, n: int) -> str {
+    let mut out = s
+    while len(out) < n { out = out + " " }
+    return out
+}
+
+fn render_table(checks: list, ts: str, elapsed_ms: int) -> void {
+    println("⬡ airgenome doctor  " + ts + "  (" + to_string(elapsed_ms) + "ms)")
+    println("═══════════════════════════════════════════════════════════════════════════════")
+    let cats = ["mac", "remote", "ghcr", "config", "score"]
+    let cat_titles = ["Mac local", "Remote hosts (ubu/ubu2/htz)", "GHCR", "Config consistency", "Score / dispatch"]
+    let mut ci = 0
+    let mut total_fail = 0
+    let mut total_warn = 0
+    while ci < len(cats) {
+        let cat = cats[ci]
+        let title = cat_titles[ci]
+        ci = ci + 1
+        let mut printed_header = false
+        let mut i = 0
+        while i < len(checks) {
+            let c = checks[i]
+            i = i + 1
+            if c.category != cat { continue }
+            if !printed_header {
+                println("")
+                println("── " + title + " ──")
+                printed_header = true
+            }
+            let mark = sev_mark(c.sev)
+            println("  " + mark + " " + pad_right(c.label, 44) + "  " + c.detail)
+            if c.sev == SEV_FAIL && c.hint != "" {
+                println("     → " + c.hint)
+            }
+            if c.sev == SEV_WARN && c.hint != "" {
+                println("     → " + c.hint)
+            }
+            if c.sev == SEV_FAIL { total_fail = total_fail + 1 }
+            if c.sev == SEV_WARN { total_warn = total_warn + 1 }
+        }
+    }
+    println("")
+    println("═══════════════════════════════════════════════════════════════════════════════")
+    let overall = if total_fail > 0 { "🔴 FAIL" } else if total_warn > 0 { "🟡 WARN" } else { "🟢 OK" }
+    println("  overall: " + overall + "   fail=" + to_string(total_fail) + "  warn=" + to_string(total_warn) + "  total=" + to_string(len(checks)))
+}
+
+fn render_json(checks: list, ts: str, elapsed_ms: int) -> void {
+    let mut total_fail = 0
+    let mut total_warn = 0
+    let mut arr = "["
+    let mut i = 0
+    while i < len(checks) {
+        if i > 0 { arr = arr + "," }
+        let c = checks[i]
+        arr = arr + check_json(c)
+        if c.sev == SEV_FAIL { total_fail = total_fail + 1 }
+        if c.sev == SEV_WARN { total_warn = total_warn + 1 }
+        i = i + 1
+    }
+    arr = arr + "]"
+    let overall = if total_fail > 0 { "fail" } else if total_warn > 0 { "warn" } else { "ok" }
+    let out = "{"
+        + "\"ts\":\"" + json_esc(ts) + "\""
+        + ",\"elapsed_ms\":" + to_string(elapsed_ms)
+        + ",\"overall\":\"" + overall + "\""
+        + ",\"summary\":{\"fail\":" + to_string(total_fail)
+        + ",\"warn\":" + to_string(total_warn)
+        + ",\"total\":" + to_string(len(checks)) + "}"
+        + ",\"checks\":" + arr
+        + "}"
+    println(out)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  main
+// ═══════════════════════════════════════════════════════════════════════
+
+fn now_ms() -> int {
+    let s = sh("perl -MTime::HiRes=time -e 'printf \"%d\", time()*1000' 2>/dev/null")
+    if s == "" { return to_int(sh("date +%s")) * 1000 }
+    return to_int(s)
+}
+
+fn mac_claude_run_md5() -> str {
+    let exists = sh("[ -f '" + CLAUDE_RUN_LOCAL + "' ] && echo y || echo n")
+    if exists != "y" { return "" }
+    return sh("md5 -q '" + CLAUDE_RUN_LOCAL + "' 2>/dev/null")
+}
+
+fn run_doctor(as_json: bool) -> void {
+    let t0 = now_ms()
+
+    // 1. Remote probe 병렬 발사 (제일 느림 → 먼저)
+    let script = probe_script_path()
+    probe_all_parallel(script)
+
+    // 2. Mac local checks (ssh 대기 중 병렬 처리)
+    let mut checks = []
+    checks = checks + [check_launchd()]
+    checks = checks + [check_tg_heartbeat()]
+    checks = checks + [check_ssh_config()]
+
+    // 3. Config / dispatch / blacklist / hosts.json (로컬 파일)
+    checks = checks + [check_hosts_json()]
+    checks = checks + [check_blacklist()]
+    checks = checks + [check_dispatch_state()]
+
+    // 4. GHCR — gh API 호출 (4s timeout)
+    checks = checks + [check_gh_token()]
+    checks = checks + [check_ghcr_recent_push()]
+
+    // 5. Remote blob 읽기 (여기서 wait 완료)
+    let mac_md5 = mac_claude_run_md5()
+    let hosts_info = [
+        HostBlob { alias: "ubu", short: "ubu1", blob: probe_read("ubu"), reachable: false, want_mount: true },
+        HostBlob { alias: "ubu2", short: "ubu2", blob: probe_read("ubu2"), reachable: false, want_mount: true },
+        HostBlob { alias: "hetzner", short: "htz1", blob: probe_read("hetzner"), reachable: false, want_mount: false }
+    ]
+    let mut hi = 0
+    while hi < len(hosts_info) {
+        let h = hosts_info[hi]
+        hi = hi + 1
+        let short = h.short
+        let blob = h.blob
+        if blob == "" {
+            checks = checks + [mk_check("remote." + short + ".reachable", "remote",
+                short + " ssh reachable", SEV_FAIL,
+                "ssh timeout/unreachable",
+                "ssh " + h.alias + " true — 수동 연결성 확인")]
+            continue
+        }
+        // Reachable — 개별 체크
+        checks = checks + [check_svc(short, blob, "SVC_CLAUDE", "SVC_CLAUDE_EN", "airgenome-claude")]
+        checks = checks + [check_svc(short, blob, "SVC_RUNAWAY", "SVC_RUNAWAY_EN", "airgenome-runaway")]
+        checks = checks + [check_svc(short, blob, "SVC_BUILD", "SVC_BUILD_EN", "airgenome-build.timer")]
+        checks = checks + [check_docker(short, blob)]
+        checks = checks + [check_drill(short, blob)]
+        checks = checks + [check_mount(short, blob, h.want_mount)]
+        checks = checks + [check_runaway_log(short, blob)]
+        if mac_md5 != "" {
+            checks = checks + [check_claude_run_sync(short, blob, mac_md5)]
+        }
+    }
+
+    let elapsed = now_ms() - t0
+    let ts = ts_iso()
+    if as_json { render_json(checks, ts, elapsed) }
+    else { render_table(checks, ts, elapsed) }
+}
+
+fn self_test() -> void {
+    let c = mk_check("test", "mac", "dummy", SEV_OK, "detail", "")
+    if c.id != "test" { panic("mk_check FAIL") }
+    if sev_mark(SEV_OK) != "🟢" || sev_mark(SEV_FAIL) != "🔴" { panic("sev_mark FAIL") }
+    if json_esc("a\"b") != "a\\\"b" { panic("json_esc FAIL") }
+    let kv = kv_get("A=1\nB=two\n", "B")
+    if kv != "two" { panic("kv_get FAIL") }
+    println("⬡ doctor self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    let mut as_json = false
+    let mut i = 2
+    while i < len(a) {
+        let t = a[i]
+        if t == "--json" || t == "-j" { as_json = true }
+        else if t == "self-test" { self_test(); return }
+        else if t == "--help" || t == "-h" {
+            println("usage: airgenome doctor [--json|self-test]")
+            return
+        }
+        i = i + 1
+    }
+    run_doctor(as_json)
+}
+
+main()

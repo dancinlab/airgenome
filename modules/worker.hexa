@@ -28,7 +28,15 @@
 use "../core/core"
 use "worker_queue"
 
-let HOSTS_JSON = airgenome_root() + "/shared/config/hosts.json"
+// hexa-lang parser bug on some platforms drops `use "../core/core"` silently.
+// Provide local fallback for airgenome_root so module runs standalone.
+fn w_airgenome_root() -> str {
+    let c = env("AIRGENOME_ROOT")
+    if c != "" { return c }
+    return env("HOME") + "/Dev/airgenome"
+}
+
+let HOSTS_JSON = w_airgenome_root() + "/shared/config/hosts.json"
 
 fn poll_interval_s() -> int {
     let e = env("AIRGENOME_WORKER_POLL_S")
@@ -351,7 +359,7 @@ fn cmd_spawn(target_host: str, count: int) -> void {
         if chk == "y" { hexa = hb_candidates[hi]; hi = len(hb_candidates) } else { hi = hi + 1 }
     }
     if hexa == "" { println("spawn: hexa binary not found"); return }
-    let run_hexa = airgenome_root() + "/run.hexa"
+    let run_hexa = w_airgenome_root() + "/run.hexa"
 
     let mut i = 1
     while i <= n {

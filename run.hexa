@@ -15,6 +15,7 @@
 //   airgenome cli            — 인터랙티브 TUI (숫자 선택)
 //   airgenome status         — launchd + ring 파일 + state 한눈에
 //   airgenome slots [opts]   — bin/cx slot 상태 (기본 JSON, --human/--reset/--watch)
+//   airgenome netlat [sub]   — Mac→ubu/ubu2/htz 네트워크 latency (probe|tail|stats|watch|alert-check)
 //   airgenome install [mode] — mode=all|mac-safe. mac-safe=ring-sync+throttle (AG6)
 //   airgenome uninstall      — 모든 com.airgenome.* bootout
 //   airgenome self-test      — 모든 module self-test 일괄
@@ -25,6 +26,23 @@
 //   AIRGENOME_RING_NAME  — 기본 genomes.ring (unified 시 genomes.unified.ring)
 
 use "core/core"
+
+// ── core/core 미로드 대비 로컬 fallback (hexa-lang module_loader 파서 버그 우회) ──
+// Mac 에서 `use "core/core"` 가 StringLit 로 오인 → import 실패 → airgenome_root 등
+// core 함수들이 undefined 되는 회귀. 로컬 fallback 으로 CLI 경로 복원.
+// use 가 정상화되면 이 블록 제거 가능 (이름 prefix ag_ 로 name collision 회피).
+fn ag_root() -> str {
+    let custom = env("AIRGENOME_ROOT")
+    if custom != "" { return custom }
+    return env("HOME") + "/Dev/airgenome"
+}
+fn ag_forge() -> str { return ag_root() + "/forge" }
+fn ag_ring(name: str) -> str { return ag_forge() + "/" + name }
+fn ag_default_ring() -> str {
+    let n = env("AIRGENOME_RING_NAME")
+    if n != "" { return ag_ring(n) }
+    return ag_ring("genomes.ring")
+}
 
 let AGENT_LABELS = [
     "com.airgenome.probe",
@@ -54,7 +72,7 @@ let MAC_SAFE_AGENTS = [
 
 fn hexa_bin() -> str {
     let candidates = [
-        airgenome_root() + "/bin/hexa-limit",
+        ag_root() + "/bin/hexa-limit",
         env("HOME") + "/Dev/hexa-lang/hexa",
         env("HOME") + "/.hx/bin/hexa"
     ]
@@ -68,7 +86,7 @@ fn hexa_bin() -> str {
 }
 
 fn run_module(name: str) -> int {
-    let path = airgenome_root() + "/modules/" + name + ".hexa"
+    let path = ag_root() + "/modules/" + name + ".hexa"
     let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
     if chk != "y" {
         println("airgenome: module not found — " + path)
@@ -82,7 +100,7 @@ fn run_module(name: str) -> int {
 // run_module_args — streaming 버전. argv tail 을 공백 join 하여 모듈에 forward.
 // exec() 버퍼링 대신 exec_stream 사용 (subcommand 실시간 출력 필요 — worker/dashboard/session).
 fn run_module_args(name: str, tail: [str]) -> int {
-    let path = airgenome_root() + "/modules/" + name + ".hexa"
+    let path = ag_root() + "/modules/" + name + ".hexa"
     let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
     if chk != "y" {
         println("airgenome: module not found — " + path)
@@ -104,7 +122,7 @@ fn run_module_args(name: str, tail: [str]) -> int {
 
 // run_bin_hexa — bin/<name>.hexa 실행 (tg_bot / runaway_guard / deploy / install_agents).
 fn run_bin_hexa(name: str, tail: [str]) -> int {
-    let path = airgenome_root() + "/bin/" + name + ".hexa"
+    let path = ag_root() + "/bin/" + name + ".hexa"
     let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
     if chk != "y" {
         println("airgenome: bin not found — " + path)
@@ -123,8 +141,28 @@ fn run_bin_hexa(name: str, tail: [str]) -> int {
     return 0
 }
 
+// run_bin_sh — bin/<name> (shell script) 실행. argv tail 을 공백 join.
+fn run_bin_sh(name: str, tail: [str]) -> int {
+    let path = ag_root() + "/bin/" + name
+    let chk = exec("[ -x '" + path + "' ] && echo y || echo n").trim()
+    if chk != "y" {
+        println("airgenome: bin not found or not executable — " + path)
+        return 2
+    }
+    let mut joined = ""
+    let mut i = 0
+    while i < len(tail) {
+        if joined != "" { joined = joined + " " }
+        joined = joined + "'" + tail[i] + "'"
+        i = i + 1
+    }
+    let out = exec("'" + path + "' " + joined + " 2>&1")
+    print(out)
+    return 0
+}
+
 fn run_module_self_test(name: str) -> int {
-    let path = airgenome_root() + "/modules/" + name + ".hexa"
+    let path = ag_root() + "/modules/" + name + ".hexa"
     let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
     if chk != "y" {
         println("[skip] " + name + " — file missing")
@@ -138,24 +176,24 @@ fn run_module_self_test(name: str) -> int {
 
 fn cmd_status() -> void {
     println("⬡ airgenome status")
-    println("  root: " + airgenome_root())
-    println("  ring: " + default_ring_path())
+    println("  root: " + ag_root())
+    println("  ring: " + default_ag_ring())
     println("")
     println("--- launchd (com.airgenome.*) ---")
     let agents = exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./{printf \"  %-40s pid=%s rc=%s\\n\", $3, $1, $2}'")
     if agents.trim() == "" { println("  (none registered)") }
     println(agents)
     println("--- ring files ---")
-    let rings = exec("ls -1 '" + forge_dir() + "'/*.ring 2>/dev/null | head -10")
+    let rings = exec("ls -1 '" + ag_forge() + "'/*.ring 2>/dev/null | head -10")
     if rings.trim() == "" { println("  (none)") }
     println(rings)
     println("--- predictive_throttle state ---")
-    let st = exec("cat '" + ring_path("predictive_throttle_state.json") + "' 2>/dev/null").trim()
+    let st = exec("cat '" + ag_ring("predictive_throttle_state.json") + "' 2>/dev/null").trim()
     if st == "" { println("  (no state)") } else { println("  " + st) }
 }
 
 fn install_set(labels: [str], label: str) -> void {
-    let src_dir = airgenome_root() + "/shared/launchagents"
+    let src_dir = ag_root() + "/shared/launchagents"
     let dst_dir = env("HOME") + "/Library/LaunchAgents"
     let log_dir = env("HOME") + "/.airgenome"
     let _ = exec("mkdir -p '" + dst_dir + "' '" + log_dir + "'")
@@ -216,7 +254,7 @@ fn cmd_self_test_all() -> void {
     let _ = run_module_self_test("probe")
     println("")
     println("--- bin/runaway_guard ---")
-    let rg_path = airgenome_root() + "/bin/runaway_guard.hexa"
+    let rg_path = ag_root() + "/bin/runaway_guard.hexa"
     let rg_chk = exec("[ -f '" + rg_path + "' ] && echo y || echo n").trim()
     if rg_chk == "y" {
         let rg_cmd = hexa_bin() + " run '" + rg_path + "' self-test 2>&1 | tail -5"
@@ -227,18 +265,18 @@ fn cmd_self_test_all() -> void {
     }
     println("")
     println("--- core ---")
-    let cmd = hexa_bin() + " run '" + airgenome_root() + "/core/test/core_test.hexa' 2>&1 | tail -3"
+    let cmd = hexa_bin() + " run '" + ag_root() + "/core/test/core_test.hexa' 2>&1 | tail -3"
     let out = exec(cmd)
     println(out)
 }
 
 fn cmd_menubar() -> void {
     // T4: hexa_v2 transpile 된 native binary. hexa 인터프리터는 @link FFI 미지원이라 build 필요.
-    let bin = airgenome_root() + "/build/artifacts/airgenome-menubar"
+    let bin = ag_root() + "/build/artifacts/airgenome-menubar"
     let chk = exec("[ -x '" + bin + "' ] && echo y || echo n").trim()
     if chk != "y" {
         println("airgenome menubar binary 미빌드 — `airgenome build-menubar` 먼저 실행")
-        println("  소스: " + airgenome_root() + "/bin/menubar.hexa")
+        println("  소스: " + ag_root() + "/bin/menubar.hexa")
         return
     }
     println("⬡ launching menubar (foreground, ctrl-C to exit)")
@@ -246,7 +284,7 @@ fn cmd_menubar() -> void {
 }
 
 fn cmd_build_menubar() -> void {
-    let script = airgenome_root() + "/bin/build_menubar.sh"
+    let script = ag_root() + "/bin/build_menubar.sh"
     let chk = exec("[ -x '" + script + "' ] && echo y || echo n").trim()
     if chk != "y" {
         println("❌ build script 없음: " + script)
@@ -365,7 +403,7 @@ fn host_capacity_default(host: str, kind: str) -> int {
 }
 
 fn hosts_registry_path() -> str {
-    return airgenome_root() + "/shared/config/hosts.json"
+    return ag_root() + "/shared/config/hosts.json"
 }
 
 // 한 host 에 대해 used/stale count 반환 — output 은 "used\tstale" tsv.
@@ -494,7 +532,7 @@ fn cmd_doctor() -> void {
     fails = fails + doctor_check("hexa binary", hb_ok, hb)
 
     // 2. core self-test
-    let core_out = exec(hb + " run '" + airgenome_root() + "/core/test/core_test.hexa' 2>&1 | tail -1").trim()
+    let core_out = exec(hb + " run '" + ag_root() + "/core/test/core_test.hexa' 2>&1 | tail -1").trim()
     let core_ok = core_out == "" || exec("echo '" + core_out + "' | grep -c 'PASS'").trim() != "0"
     fails = fails + doctor_check("core self-test", core_ok, core_out)
 
@@ -510,7 +548,7 @@ fn cmd_doctor() -> void {
     let rings = ["genomes.ring", "genomes.ubu.ring", "genomes.htz.ring", "genomes.unified.ring"]
     let mut i = 0
     while i < len(rings) {
-        let p = forge_dir() + "/" + rings[i]
+        let p = ag_forge() + "/" + rings[i]
         let mt = to_int(exec("stat -f %m '" + p + "' 2>/dev/null || echo 0").trim())
         if mt > freshest { freshest = mt }
         i = i + 1
@@ -521,7 +559,7 @@ fn cmd_doctor() -> void {
     fails = fails + doctor_check("ring freshness", ring_ok, ring_detail)
 
     // 5. throttle sanity — state 존재 + level != STRESS
-    let st = exec("cat '" + ring_path("predictive_throttle_state.json") + "' 2>/dev/null").trim()
+    let st = exec("cat '" + ag_ring("predictive_throttle_state.json") + "' 2>/dev/null").trim()
     let lvl = exec("echo '" + st + "' | sed -E 's/.*\"level\":\"([^\"]+)\".*/\\1/'").trim()
     let th_ok = lvl == "CALM" || lvl == "WARM"
     let th_detail = if st == "" { "no state file" } else { "level=" + lvl }
@@ -594,7 +632,7 @@ fn cmd_watch(interval_s: int) -> void {
     let sec = if interval_s < 1 { 2 } else { interval_s }
     let sleep_cmd = "sleep " + to_string(sec)
     let clear_seq = exec("printf '\\033[2J\\033[H'")
-    let fd = forge_dir()
+    let fd = ag_forge()
     let r_mac = fd + "/genomes.ring"
     let r_ubu = fd + "/genomes.ubu.ring"
     let r_htz = fd + "/genomes.htz.ring"
@@ -613,7 +651,7 @@ fn cmd_watch(interval_s: int) -> void {
         println("Load:        " + load)
 
         // Throttle state + last level
-        let st_raw = exec("cat '" + ring_path("predictive_throttle_state.json") + "' 2>/dev/null").trim()
+        let st_raw = exec("cat '" + ag_ring("predictive_throttle_state.json") + "' 2>/dev/null").trim()
         if st_raw == "" {
             println("Throttle:    (no state — not yet run)")
         } else {
@@ -642,7 +680,7 @@ fn cmd_watch(interval_s: int) -> void {
 
         println("")
         println("Throttle history (last 3):")
-        let hist = exec("tail -3 '" + ring_path("throttle_history.jsonl") + "' 2>/dev/null | sed 's/^/  /'")
+        let hist = exec("tail -3 '" + ag_ring("throttle_history.jsonl") + "' 2>/dev/null | sed 's/^/  /'")
         if hist.trim() == "" { println("  (no history)") } else { print(hist) }
 
         prev_mac = c_mac
@@ -1030,6 +1068,11 @@ fn main() -> void {
     }
     if sub == "install-agents" || sub == "install_agents" {
         let _ = run_bin_hexa("install_agents", argv_tail(a, 3))
+        return
+    }
+    if sub == "netlat" {
+        // airgenome netlat [probe|tail|stats|watch|alert-check] [args]
+        let _ = run_bin_sh("airgenome-netlat", argv_tail(a, 3))
         return
     }
     println("airgenome: unknown subcommand '" + sub + "'. try 'airgenome help'.")
