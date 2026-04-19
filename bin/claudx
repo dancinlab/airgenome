@@ -46,6 +46,24 @@ mkdir -p "$CLAUDX_STATE"
 die() { echo "claudx: $*" >&2; exit 2; }
 info() { [ "$CLAUDX_QUIET" = "1" ] || echo "claudx: $*" >&2; }
 
+# prune expired exhausted entries (2026-04-19 M14_fix).
+# 기존 v2 는 expired entry 가 쌓이면서 허위 pool 축소 → ABORT 재발.
+# 진입 직후 jq 로 until<=now 인 엔트리 전수 제거. in-place rewrite.
+_prune_exhausted() {
+    local f="$CLAUDX_STATE/exhausted.json"
+    [ -f "$f" ] || return 0
+    local now
+    now=$(date +%s) || return 0
+    local cleaned orig
+    orig=$(cat "$f" 2>/dev/null) || return 0
+    cleaned=$(printf '%s' "$orig" | jq --argjson now "$now" 'with_entries(select(.value.until // 0 | tonumber > $now))' 2>/dev/null) || return 0
+    if [ -n "$cleaned" ] && [ "$cleaned" != "$orig" ]; then
+        printf '%s\n' "$cleaned" > "$f.tmp" && mv "$f.tmp" "$f"
+        info "exhausted.json pruned (expired entries removed)"
+    fi
+}
+_prune_exhausted
+
 # loadgate — critical 이면 abort, danger 이면 60s hold, warn/ok 진행 (M13d)
 _loadgate() {
     local g rc
@@ -179,10 +197,11 @@ if [ -n "$picked_dir" ]; then
         info "acct=$picked_name cfg=$picked_dir"
     fi
 else
-    # (2026-04-19 v2) 모든 계정이 capped/retry/exhausted — 기존 "default ~/.claude"
-    # fallback 은 Mac 에서 무의미 (creds Keychain). `cl` 이 한도 찬 계정으로 세션을
-    # 시작하는 것 자체를 차단. CLAUDX_ALLOW_EMPTY=1 로 강제 우회 가능.
-    if [ "$show_only" != true ] && [ "${CLAUDX_ALLOW_EMPTY:-0}" != "1" ]; then
+    # (2026-04-19 v3 M14_fix) pool 전체 capped/retry/exhausted 시 기본은 fallback.
+    # 기존 v2 는 ABORT 가 default 라 사용자가 매번 CLAUDX_ALLOW_EMPTY=1 수동 우회 →
+    # cl 기동 반복 실패 사용성 나쁨. 이제는 default ~/.claude (Mac keychain) 로 자동
+    # 떨어지고 earliest reset 안내만 1줄. 엄격 모드 원하면 CLAUDX_ABORT_ON_EMPTY=1.
+    if [ "$show_only" != true ] && [ "${CLAUDX_ABORT_ON_EMPTY:-0}" = "1" ] && [ "${CLAUDX_ALLOW_EMPTY:-0}" != "1" ]; then
         # earliest_available: usage-cache + exhausted 의 min(reset_at) + name
         _next=$(CLAUDX_POOL="$CLAUDX_POOL" CLAUDX_USAGE="$CLAUDX_USAGE" CLAUDX_STATE="$CLAUDX_STATE" \
             node -e '
