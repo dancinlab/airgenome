@@ -969,18 +969,20 @@ fn main() -> void {
 
     let cfg = load_config()
 
-    // primary-host guard
+    // Arbitration: 2026-04-20 — hostname 문자열 매칭 기반 STANDBY 폐기.
+    // 이유: "Mac" vs "ghostui-MacBookAir.local", container hostname 등으로 매칭 brittle
+    //       → STANDBY exit loop → launchd KeepAlive 없으면 실질적 상주 실패.
+    // 새 정책: leader lock (mkdir atomic + 60s stale 회수) 이 유일한 arbiter.
+    //          어느 host 든 먼저 lock 획득한 인스턴스가 leader. 나머지는 60s 후 재시도 가능.
+    //          primary_host 필드는 logging hint 로만 사용 (실제 차단 안 함).
     let hn = host_name()
-    if cfg.primary_host != "" {
-        if hn != cfg.primary_host {
-            log_line("INFO", "STANDBY host=" + hn + " primary=" + cfg.primary_host + " — exiting")
-            return
-        }
+    if cfg.primary_host != "" && hn != cfg.primary_host {
+        log_line("INFO", "host=" + hn + " primary_hint=" + cfg.primary_host + " — proceeding (lock arbitrates)")
     }
 
     // lock
     if !acquire_lock() {
-        log_line("INFO", "another instance holds lock — exit")
+        log_line("INFO", "another instance holds lock — exit (will retry on next launch)")
         return
     }
     // NOTE: hexa has no atexit — release on normal exit only. Stale detected
