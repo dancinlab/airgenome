@@ -1,4 +1,4 @@
-// bin/tg_bot.hexa — M15 Telegram bot (iOS → Mac/ubu claude dispatcher)
+// bin/tg_bot.hexa — M15 Telegram bot (iOS → Mac/ubu1 claude dispatcher)
 //
 // 책임:
 //   1. ~/.airgenome/tg.json 로드 → bot_token_file 에서 token 읽기
@@ -82,7 +82,7 @@ fn uname_s() -> str {
 
 // Multi-host binary resolution — 2026-04-20.
 // 문제: tg.json 의 claude_bin/cx_bin 이 Mac 절대경로 (/Users/ghost/.local/bin/claude) 이지만
-//       ubu/ubu2 에서 tg_bot 이 실행되면 sshfs mount 를 통해 그 경로로 bash 가 읽기 성공
+//       ubu1/ubu2 에서 tg_bot 이 실행되면 sshfs mount 를 통해 그 경로로 bash 가 읽기 성공
 //       → Mac Mach-O binary / bash-shim 을 Linux sh 가 해석 → `Syntax error: "(" unexpected`.
 // 해결: 후보 경로 순회, Linux 에서는 /Users/ghost/* 스킵, 첫 `test -x` 통과 경로 반환.
 // 실패 시 PATH 에 있는 `command -v <name>` 로 마지막 해결 시도. 모두 실패 시 원본 반환.
@@ -91,7 +91,7 @@ fn uname_s() -> str {
 //   1. tg.json 지정값 (raw)
 //   2. $AIRGENOME_ROOT/bin/<name>      — 환경변수 세팅 시 (repo 내 script, 크로스플랫폼)
 //   3. $HOME/Dev/airgenome/bin/<name>  — Mac 기본 repo 경로
-//   4. $HOME/mac_home/Dev/airgenome/bin/<name> — ubu sshfs mount 경로
+//   4. $HOME/mac_home/Dev/airgenome/bin/<name> — ubu1 sshfs mount 경로
 //   5. /opt/airgenome/bin/<name>       — 시스템 설치 경로
 //   6. /usr/local/bin/<name>
 //   7. $HOME/.local/bin/<name>
@@ -115,18 +115,38 @@ fn resolve_bin(name: str, raw: str) -> str {
     while i < len(candidates) {
         let cand = candidates[i]
         if cand != "" {
-            // Linux 에서 /Users/ghost/* 는 Mac shim/Mach-O 위험 → skip
+            // Linux 에서 Mac 전용 경로는 shim/Mach-O 위험 → skip.
+            // (a) /Users/ghost/* 직접 경로, (b) sshfs mount /home/*/mac_home/* 간접 경로.
+            // sshfs 로 읽기는 되지만 shebang 이 /opt/homebrew/bin/bash 등 Mac-only →
+            // Linux /bin/sh fallback 시 'Syntax error: "(" unexpected' 발생.
             let mut skip = false
             if !is_darwin {
-                // hexa-lang: 문자열 시작 검사는 str_sub 으로.
                 if len(cand) >= 13 {
                     let head = str_sub(cand, 0, 13)
                     if head == "/Users/ghost/" { skip = true }
                 }
+                // sshfs mount 경로 (mac_home 포함) 탐지 — grep 1회.
+                if !skip {
+                    let hit = exec("printf '%s' '" + cand + "' | grep -q '/mac_home/' && echo y || echo n").trim()
+                    if hit == "y" { skip = true }
+                }
             }
             if !skip {
                 let ok = exec("test -x '" + cand + "' && echo y || echo n").trim()
-                if ok == "y" { return cand }
+                if ok == "y" {
+                    // shebang 검증 — interpreter 가 실존해야 Linux exec 성공.
+                    if is_darwin {
+                        return cand
+                    }
+                    // 첫 2바이트 '#!' 이면 shebang script. interpreter path 추출해 검사.
+                    let head2 = exec("head -c 2 '" + cand + "' 2>/dev/null").trim()
+                    if head2 != "#!" { return cand }  // binary or non-shebang → 그대로 OK
+                    let interp = exec("head -1 '" + cand + "' 2>/dev/null | sed 's|^#!||' | awk '{print $1}'").trim()
+                    if interp == "" { return cand }
+                    let iok = exec("test -x '" + interp + "' && echo y || echo n").trim()
+                    if iok == "y" { return cand }
+                    // interpreter 없음 → 다음 후보로 (Mac /opt/homebrew/bin/bash 같은 경로).
+                }
             }
         }
         i = i + 1
@@ -186,7 +206,7 @@ fn load_config() -> Config {
     if token_file_raw == "" { panic("tg.json missing bot_token_file") }
     // Resolve token path — 2026-04-20 code-level multi-host compatibility.
     // tg.json bot_token_file 은 Mac 절대경로 (/Users/ghost/Dev/secret/tg_bot_token) 지만
-    // ubu/ubu2 에서 실행 시 sshfs mount (/home/aiden/mac_home/...) 로도 접근 가능.
+    // ubu1/ubu2 에서 실행 시 sshfs mount (/home/aiden/mac_home/...) 로도 접근 가능.
     // 후보 리스트 순회 → 첫 존재하는 경로 사용. 모두 실패 시 panic.
     let tok_candidates = [
         token_file_raw,
@@ -381,7 +401,7 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
     let timeout_s = to_string(cfg.dispatch_timeout)
     let dispatch_mode = cfg.dispatch
     // Resolve bin at call-time — tg.json 값은 Mac 절대경로일 수 있으므로
-    // ubu/ubu2 (Linux) 에서 실행 중이면 후보 리스트에서 매칭되는 첫 유효 경로 사용.
+    // ubu1/ubu2 (Linux) 에서 실행 중이면 후보 리스트에서 매칭되는 첫 유효 경로 사용.
     let claude = resolve_bin("claude", cfg.claude_bin)
     let cx = resolve_bin("cx", cfg.cx_bin)
     let mut active_bin = claude
@@ -493,14 +513,14 @@ fn parse_updates(raw: str) -> list {
 //
 // Design:
 //   - every command runs in the tg_bot process (Mac) and shells out via ssh
-//     to reach ubu/ubu2/hetzner. Mac self-state via direct exec.
+//     to reach ubu1/ubu2/hetzner. Mac self-state via direct exec.
 //   - destructive commands (/deploy) require `confirm <token>` second arg
 //     and only from whitelisted chat_id.
 //   - shell injection blocked by whitelisting tokens BEFORE interpolation.
 //
-// Host map (bin/cx hosts.json SSOT):
-//   ubu  → ssh alias `ubu`,  slice: airgenome-claude.service
-//   ubu2 → ssh alias `ubu2`, slice: airgenome-claude.service
+// Host map (bin/cx hosts.json SSOT) — key → ssh alias:
+//   ubu1 → ssh alias `ubu`,     slice: airgenome-claude.service
+//   ubu2 → ssh alias `ubu2`,    slice: airgenome-claude.service
 //   htz  → ssh alias `hetzner`
 //   mac  → local (launchctl com.airgenome.tg-bot etc.)
 
@@ -526,8 +546,11 @@ fn service_allowed(s: str) -> bool {
 }
 
 // Canonical mac-only alias → actual ssh Host entry.
+// hosts.json key → ssh alias (Mac ~/.ssh/config Host).
+// Callers may pass either the host key (ubu1/htz) or the ssh alias (ubu/hetzner).
 fn ssh_host_of(h: str) -> str {
     if h == "htz" { return "hetzner" }
+    if h == "ubu1" { return "ubu" }
     return h
 }
 
@@ -736,16 +759,16 @@ fn do_restart_service(service: str) -> str {
         let r = run_local("launchctl kickstart -k gui/$(id -u)/com.airgenome.tg-bot 2>&1; echo RC=$?", CMD_TIMEOUT_SHORT)
         return "✅ tg-bot 재기동 시작 (self-restart)\n" + truncate(r, 400)
     }
-    // Remote systemd user service — restart on ubu AND ubu2 when applicable.
+    // Remote systemd user service — restart on ubu1 AND ubu2 when applicable.
     if service == "airgenome-claude" {
         let r1 = run_remote("ubu",  "systemctl --user restart airgenome-claude 2>&1; systemctl --user is-active airgenome-claude 2>&1", CMD_TIMEOUT_MED)
         let r2 = run_remote("ubu2", "systemctl --user restart airgenome-claude 2>&1; systemctl --user is-active airgenome-claude 2>&1", CMD_TIMEOUT_MED)
-        return "✅ airgenome-claude 재기동 완료:\n[ubu]  " + truncate(r1, 200) + "\n[ubu2] " + truncate(r2, 200)
+        return "✅ airgenome-claude 재기동 완료:\n[ubu1] " + truncate(r1, 200) + "\n[ubu2] " + truncate(r2, 200)
     }
     if service == "airgenome-runaway" {
-        // Runs on ubu under root systemd
+        // Runs on ubu1 under root systemd
         let r = run_remote("ubu", "sudo -n systemctl restart airgenome-runaway 2>&1; systemctl is-active airgenome-runaway 2>&1", CMD_TIMEOUT_MED)
-        return "✅ airgenome-runaway 재기동 완료 (ubu):\n" + truncate(r, 400)
+        return "✅ airgenome-runaway 재기동 완료 (ubu1):\n" + truncate(r, 400)
     }
     return "❌ 알 수 없는 서비스"
 }
@@ -780,7 +803,7 @@ fn cmd_deploy(chat_id: int, argv: list) -> str {
 // ─── /logs <host> [lines] ─────────────────────────────────────────────
 fn cmd_logs(argv: list) -> str {
     if len(argv) < 2 {
-        return "사용법: /logs <host> [lines]\n  host: ubu | ubu2 | hetzner"
+        return "사용법: /logs <host> [lines]\n  host: ubu | ubu2 | hetzner (ssh alias — ubu = ubu1)"
     }
     let h = argv[1].trim()
     if !safe_token(h) { return "❌ 호스트 이름이 올바르지 않습니다" }
@@ -792,7 +815,7 @@ fn cmd_logs(argv: list) -> str {
     }
     if n <= 0 { n = 20 }
     if n > 200 { n = 200 }
-    // Try user-unit claude first (ubu/ubu2 has it), fall back to system journal.
+    // Try user-unit claude first (ubu1/ubu2 has it), fall back to system journal.
     let rcmd = "(journalctl --user -u airgenome-claude -n " + to_string(n) + " --no-pager 2>/dev/null"
             + " || journalctl -u airgenome-claude -n " + to_string(n) + " --no-pager 2>/dev/null"
             + " || journalctl -n " + to_string(n) + " --no-pager 2>&1)"
@@ -824,11 +847,11 @@ fn cmd_tail(argv: list) -> str {
     s = s + "[mac tg]\n" + truncate(mac_tg, 700) + "\n\n"
     let ubu_sum = run_remote("ubu", "journalctl --user -u airgenome-claude --since '1 min ago' --no-pager 2>&1 | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
     let ubu2_sum = run_remote("ubu2", "journalctl --user -u airgenome-claude --since '1 min ago' --no-pager 2>&1 | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
-    s = s + "[최근 1분 journal 줄수]  ubu=" + truncate(ubu_sum, 10) + "  ubu2=" + truncate(ubu2_sum, 10) + "\n"
+    s = s + "[최근 1분 journal 줄수]  ubu1=" + truncate(ubu_sum, 10) + "  ubu2=" + truncate(ubu2_sum, 10) + "\n"
     let ubu_claude = run_remote("ubu", "pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
     let ubu2_claude = run_remote("ubu2", "pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
     let htz_claude = run_remote("hetzner", "pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
-    s = s + "[claude 프로세스 수]     ubu=" + truncate(ubu_claude, 10) + "  ubu2=" + truncate(ubu2_claude, 10) + "  htz=" + truncate(htz_claude, 10) + "\n"
+    s = s + "[claude 프로세스 수]     ubu1=" + truncate(ubu_claude, 10) + "  ubu2=" + truncate(ubu2_claude, 10) + "  htz=" + truncate(htz_claude, 10) + "\n"
     return s
 }
 
@@ -836,10 +859,10 @@ fn cmd_tail(argv: list) -> str {
 fn cmd_drill() -> str {
     let b = ""
     let mut s = b + "# 고부하 프로세스 점검 (" + ts_iso() + ")\n\n"
-    // Top heavy on ubu — top CPU processes excluding idle kernel threads
+    // Top heavy on ubu1 — top CPU processes excluding idle kernel threads
     let heavy_cmd = "ps -eo pid,pcpu,pmem,comm --sort=-pcpu 2>/dev/null | awk 'NR==1 || $2>5' | head -10"
     let u1 = run_remote("ubu", heavy_cmd, CMD_TIMEOUT_SHORT)
-    s = s + "[ubu 고부하]\n" + truncate(u1, 900) + "\n\n"
+    s = s + "[ubu1 고부하]\n" + truncate(u1, 900) + "\n\n"
     let u2 = run_remote("ubu2", heavy_cmd, CMD_TIMEOUT_SHORT)
     s = s + "[ubu2 고부하]\n" + truncate(u2, 900) + "\n\n"
     let h1 = run_remote("hetzner", heavy_cmd, CMD_TIMEOUT_SHORT)

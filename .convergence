@@ -75,4 +75,24 @@
   - 고아 loop 누적 = 0 (기존 reap + 향후 self-reap)
 @rollback: bin/claudx-loop 의 2026-04-20 패치 역적용 + 이전 `rc=0 && dur>=10` 조건 복원
 
+[session-defaults-decide-section]
+@state: converged
+@date: 2026-04-20
+@scope: .session_defaults :: [DECIDE] D1-D4 + [FANOUT] F6 angle extension
+@decision: Formalize root-cause-first selection policy and anomaly-extraction as the auto-breakthrough primitive when choice is ambiguous.
+@changes:
+  - [DECIDE] D1 ROOT_CAUSE: root-cause resolution is the default; symptom patching requires TODO(root) and is allowed only when root inaccessible this turn.
+  - [DECIDE] D2 PICK_RANK: strict selection order P0-blocker > anomaly/singularity > root-cause-layer > coldstart(F2) > longest-ETA(T1) > shallow-quick. No taste-based re-rank.
+  - [DECIDE] D3 ANOMALY_DRILL: when no clear best or candidates rank-tied, fire F6 DRILL_GAP with seed "extract singularity from current state (logs, state-files, infra, roadmap, git, task queue, heartbeat history)". The drill's top singularity becomes the confirmed best choice and the auto-breakthrough target.
+  - [DECIDE] D4 NO_SECOND_GUESS: once picked, execute. Re-pick only on {new P0 blocker | new D3 singularity | milestone exit-criteria met | explicit user override}.
+  - [FANOUT] F6: added 'rank-tie (D3)' to trigger set and 'singularity-extract' to divergent-angle set. F6 now serves both gap/exhaustion and ambiguity-resolution roles.
+@why: Observed pattern — when a /loop tick has multiple incomplete tasks, selection is frequently ambiguous and prior prompt had no codified rule. User explicitly requested root-cause-first policy ("근본원인 해결 강력 추천") and an auto-breakthrough mechanism via drill-based singularity extraction ("drill 해서 특이점 뽑거나 그럼 그게 최선의 선택"). Without D1-D4 the loop drifts to shallow symptom patches or burns cycles on re-ranking.
+@effect:
+  - Deterministic task selection at session boundaries and /loop ticks — no preference oscillation.
+  - Ambiguity is no longer a stall — it becomes a drill trigger, and the drill output deterministically resolves the choice.
+  - Root-cause fixes compound; symptom patches are surfaced as debt via TODO(root).
+  - F6 becomes the unified mechanism for gap, exhaustion, breakthrough chaining, and ambiguity resolution.
+@file: .session_defaults:39 (F6 extended), 60-65 (DECIDE section appended)
+@rollback: revert this commit. D3 removal also breaks F6's rank-tie trigger; leave F6 angle-set untouched for the gap/exhaustion paths if only D1-D2-D4 need revert.
+
 @__raw__
