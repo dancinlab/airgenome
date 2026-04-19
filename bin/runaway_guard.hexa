@@ -174,6 +174,39 @@ fn read_d_state_count() -> int {
     return to_int(s)
 }
 
+// D-state PID 목록 — iowait/sshfs stall 주 원인. top-CPU 리스트에는 안 잡힘 (0% CPU while stuck).
+// state 컬럼이 'D' 포함(D+, Ds 등)인 userspace PID 만.
+// 커널 스레드(PPID=2 및 자손)는 renice/cpulimit 대상이 아니므로 제외.
+// feedback_pgrep_self_reference 회피 — pgrep -f 쓰지 않고 ps 로 전수 스캔.
+fn read_d_state_pids() -> list {
+    let cmd = "ps -eo pid=,ppid=,stat=,pcpu=,rss=,comm= 2>/dev/null | awk '$3 ~ /D/ && $2 != 2 && $1 != 2 && $1 > 1 {printf \"%s %s %s %s %s\\n\", $1, $4, $5, $6, $3}' | sort -k2 -n"
+    let out = exec(cmd)
+    let lines = out.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line != "" {
+            let f = split_fields(line)
+            if len(f) >= 4 {
+                let pid_i = to_int(f[0])
+                let cpu_parts = f[1].split(".")
+                let mut cpu_i = 0
+                if len(cpu_parts) > 0 {
+                    if cpu_parts[0] != "" { cpu_i = to_int(cpu_parts[0]) }
+                }
+                let rss_i = to_int(f[2])
+                let comm = f[3]
+                if pid_i > 1 {
+                    result = result + [ProcStat { pid: pid_i, comm: comm, pcpu: cpu_i, rss_kb: rss_i }]
+                }
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
 struct ProcStat {
     pid: int,
     comm: str,
@@ -305,9 +338,12 @@ fn load_whitelist() -> Whitelist {
     let p = whitelist_path()
     let exists = exec("test -f '" + p + "' && echo y || echo n").trim()
     if exists != "y" {
+        // Narrow default — only the 4 essential names (2026-04-19).
+        // dbus-daemon / containerd / polkitd / node / systemd* / kworker* 는 제거해서
+        // fallback 이 실제 폭주 주체를 잡을 수 있게 함. 커널 스레드는 renice 자체 불가.
         return Whitelist {
-            exact: ["claude", "sshd", "node", "hexa", "dbus", "ssh-agent", "tini", "systemd", "init"],
-            prefix: ["systemd"]
+            exact: ["claude", "tailscaled", "hexa", "hexa_stage0", "hexa_v2", "sshd"],
+            prefix: []
         }
     }
     let ex_raw = exec("jq -r '.exact[]? // empty' '" + p + "' 2>/dev/null").trim()
@@ -380,7 +416,8 @@ struct Metrics {
     iowait_pct: int,
     mem_avail_gb: int,
     d_state: int,
-    top: list   // list of ProcStat
+    top: list,     // list of ProcStat — top-CPU
+    d_pids: list   // list of ProcStat — current D-state PIDs (userspace only)
 }
 
 fn compute_verdict(m: Metrics, t: Thresholds) -> int {
@@ -475,6 +512,13 @@ fn do_cpulimit(pid: int, limit_pct: int) -> void {
     let _ = exec("nohup cpulimit --limit " + l_s + " --pid " + pid_s + " >/dev/null 2>&1 &")
 }
 
+// D-state (iowait-stuck) PID 에는 ionice 가 cpulimit 보다 효과적.
+// class 3 = idle — IO 슬롯이 남을 때만 진행. sshfs stall 같은 blocking 풀림.
+fn do_ionice(pid: int) -> void {
+    let pid_s = to_string(pid)
+    let _ = exec("ionice -c 3 -p " + pid_s + " 2>/dev/null")
+}
+
 fn format_action_json(a: Action) -> str {
     let dr = "false"
     if a.dry_run { dr = "true" }
@@ -515,9 +559,35 @@ fn actions_warn(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool) -
 
 fn actions_danger(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool) -> list {
     let result = []
-    let mut per_pid_hits = 0
-    // pass 1 — per-PID trigger (single-core runaway). threshold is pid_cpu_pct/2 in danger
-    // (100% 기준이면 멀티코어 12-box에서 시스템 압력 있어도 per-PID 절대 안 걸림.)
+    let mut hits = 0
+    // ─── pass 0 — D-state (iowait-stuck) PID pick ───────────────────────
+    // sshfs stall / disk hang 같은 iowait 주체는 top-CPU 리스트에 절대 안 잡힘 (0% CPU).
+    // D-state PID 를 우선 겨냥 → renice+10 + ionice idle(c3) + cpulimit50.
+    // whitelist 매치는 skip_protected 로 기록하고 건너뜀.
+    let mut k = 0
+    while k < len(m.d_pids) {
+        if hits >= 3 { k = len(m.d_pids) }
+        else {
+            let p = m.d_pids[k]
+            if is_protected(p.comm, wl) {
+                result = result + [Action { kind: "skip_protected", pid: p.pid, comm: p.comm, dry_run: dry }]
+            } else {
+                if !dry {
+                    do_renice(p.pid, 10)
+                    do_ionice(p.pid)
+                    do_cpulimit(p.pid, 50)
+                }
+                result = result + [Action { kind: "renice+10",  pid: p.pid, comm: p.comm, dry_run: dry }]
+                result = result + [Action { kind: "ionice_idle", pid: p.pid, comm: p.comm, dry_run: dry }]
+                result = result + [Action { kind: "cpulimit50", pid: p.pid, comm: p.comm, dry_run: dry }]
+                hits = hits + 1
+            }
+            k = k + 1
+        }
+    }
+    // ─── pass 1 — per-PID trigger (single-core runaway) ─────────────────
+    // threshold is pid_cpu_pct/2 in danger (100% 기준이면 멀티코어 12-box에서
+    // 시스템 압력 있어도 per-PID 절대 안 걸림.)
     let pid_gate = t.pid_cpu_pct / 2
     let mut i = 0
     while i < len(m.top) {
@@ -534,20 +604,19 @@ fn actions_danger(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool)
                     }
                     result = result + [Action { kind: "renice+10", pid: p.pid, comm: p.comm, dry_run: dry }]
                     result = result + [Action { kind: "cpulimit50", pid: p.pid, comm: p.comm, dry_run: dry }]
-                    per_pid_hits = per_pid_hits + 1
+                    hits = hits + 1
                 }
             }
         }
         i = i + 1
     }
-    // pass 2 — systemic fallback. system-level danger (load/iowait/mem/d_state) 가
-    // 트리거됐지만 per-PID gate에 아무도 안 걸렸다면, top-3 non-protected 에 gentler
-    // renice+10/cpulimit50. claude/hexa 등 whitelist 는 skip_protected 로만 기록.
-    if per_pid_hits == 0 {
+    // ─── pass 2 — systemic fallback (top-3 non-protected) ───────────────
+    // D-state/per-PID 모두 hit 없으면 system 압력 원인 미상 → top-3 에 gentler.
+    if hits == 0 {
         let mut j = 0
-        let mut hit = 0
+        let mut fb = 0
         while j < len(m.top) {
-            if hit >= 3 { j = len(m.top) }
+            if fb >= 3 { j = len(m.top) }
             else {
                 let p = m.top[j]
                 if is_protected(p.comm, wl) {
@@ -559,7 +628,7 @@ fn actions_danger(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool)
                     }
                     result = result + [Action { kind: "renice+10", pid: p.pid, comm: p.comm, dry_run: dry }]
                     result = result + [Action { kind: "cpulimit50", pid: p.pid, comm: p.comm, dry_run: dry }]
-                    hit = hit + 1
+                    fb = fb + 1
                 }
                 j = j + 1
             }
@@ -648,6 +717,7 @@ fn format_event(ts: str, m: Metrics, v: int, actions: list) -> str {
          + ",\"mem_avail_gb\":" + to_string(m.mem_avail_gb)
          + ",\"d_state\":" + to_string(m.d_state)
          + ",\"top\":" + format_top_json(m.top)
+         + ",\"d_pids\":" + format_top_json(m.d_pids)
          + "}"
          + ",\"actions\":" + format_actions_json(actions)
          + ",\"dry_run\":" + bool_str(is_dry_run())
@@ -680,6 +750,7 @@ fn collect_metrics() -> Metrics {
     let mem = read_mem_avail_gb()
     let dst = read_d_state_count()
     let top = read_top_cpu(10)
+    let d_pids = read_d_state_pids()
     return Metrics {
         load1_x100: load1,
         load5_x100: load5,
@@ -687,7 +758,8 @@ fn collect_metrics() -> Metrics {
         iowait_pct: iowait,
         mem_avail_gb: mem,
         d_state: dst,
-        top: top
+        top: top,
+        d_pids: d_pids
     }
 }
 
@@ -708,12 +780,19 @@ fn tick(t: Thresholds, wl: Whitelist) -> void {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn self_test() -> void {
-    // 1. whitelist protection
+    // 1. whitelist protection — narrowed 2026-04-19
     let wl = load_whitelist()
     if !is_protected("claude", wl) { panic("self_test FAIL [claude not protected]") }
     if !is_protected("hexa", wl) { panic("self_test FAIL [hexa not protected]") }
-    if !is_protected("systemd-logind", wl) { panic("self_test FAIL [systemd prefix not caught]") }
+    if !is_protected("sshd", wl) { panic("self_test FAIL [sshd not protected]") }
+    if !is_protected("tailscaled", wl) { panic("self_test FAIL [tailscaled not protected]") }
+    // These were previously protected but must NOT be anymore (narrow list).
     if is_protected("python3", wl) { panic("self_test FAIL [python3 should NOT be protected]") }
+    if is_protected("dbus-daemon", wl) { panic("self_test FAIL [dbus-daemon must be actionable now]") }
+    if is_protected("containerd", wl) { panic("self_test FAIL [containerd must be actionable now]") }
+    if is_protected("polkitd", wl) { panic("self_test FAIL [polkitd must be actionable now]") }
+    if is_protected("node", wl) { panic("self_test FAIL [node must be actionable now]") }
+    if is_protected("systemd-logind", wl) { panic("self_test FAIL [systemd* must be actionable now — prefix removed]") }
 
     // 2. thresholds load
     let t = load_thresholds()
@@ -723,12 +802,12 @@ fn self_test() -> void {
 
     // 3. verdict compute — synthetic metrics
     let ok_m = Metrics { load1_x100: 50, load5_x100: 50, nproc: 8,
-                         iowait_pct: 2, mem_avail_gb: 16, d_state: 0, top: [] }
+                         iowait_pct: 2, mem_avail_gb: 16, d_state: 0, top: [], d_pids: [] }
     let ok_v = compute_verdict(ok_m, t)
     if ok_v != VERDICT_OK { panic("self_test FAIL [ok verdict got " + to_string(ok_v) + "]") }
 
     let crit_m = Metrics { load1_x100: 1600, load5_x100: 1200, nproc: 8,
-                           iowait_pct: 40, mem_avail_gb: 0, d_state: 5, top: [] }
+                           iowait_pct: 40, mem_avail_gb: 0, d_state: 5, top: [], d_pids: [] }
     let crit_v = compute_verdict(crit_m, t)
     if crit_v != VERDICT_CRITICAL { panic("self_test FAIL [critical verdict got " + to_string(crit_v) + "]") }
 

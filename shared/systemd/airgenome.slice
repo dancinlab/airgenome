@@ -1,0 +1,13 @@
+[Unit]
+Description=airgenome umbrella slice (claude + bkgnd + stress + real parent)
+Documentation=M11a-docker-tuning — 원격 호스트 (ubu/ubu2/htz) claude 컨테이너 폭주 보호용 parent slice.
+# 자식 slice: airgenome-claude.slice (latency-critical TUI)
+#            airgenome-real.slice    (high priority workload)
+#            airgenome-bkgnd.slice   (maintenance)
+#            airgenome-stress.slice  (deferrable bench)
+
+[Slice]
+# parent 는 중립. 자식들이 각자 CPUWeight 로 경쟁.
+CPUWeight=200
+IOWeight=150
+TasksMax=8192

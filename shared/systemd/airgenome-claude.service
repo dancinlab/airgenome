@@ -9,9 +9,10 @@
 [Unit]
 Description=airgenome claude CLI container (long-running, cold-start=0)
 Documentation=https://github.com/need-singularity/airgenome/blob/main/docs/AG-Q14_docker_migration.md
-After=network-online.target docker.service mac-home.service
+# NOTE: user-mode systemd 에서는 `docker.service` 가 보이지 않아 Requires/After
+# 에서 제거. 컨테이너가 docker daemon 을 못 만나면 Restart=always 가 재시도.
+After=network-online.target
 Wants=network-online.target
-Requires=docker.service
 
 [Service]
 Type=simple
@@ -19,6 +20,13 @@ EnvironmentFile=-%h/.config/airgenome/env
 Environment=AIRGENOME_TAG=dev
 Environment=REGISTRY=ghcr.io/need-singularity/airgenome
 Environment=MAC_HOME=%h/mac_home
+# M11a docker tuning — 원격 호스트 폭주 보호 (입력렉 완화)
+Environment=AIRGENOME_CPUSET=0,1
+Environment=AIRGENOME_CPU_SHARES=4096
+
+# slice 격리 + OOM killer 우선순위 하향
+Slice=airgenome-claude.slice
+OOMScoreAdjust=-500
 
 # 메인: airgenome-claude-run 이 accounts SSOT 를 읽어 creds bind 를 동적 생성
 # (stale 컨테이너 정리 + pull + exec docker run 까지 스크립트 내부에서 처리).

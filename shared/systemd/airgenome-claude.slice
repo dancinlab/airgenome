@@ -1,0 +1,15 @@
+[Unit]
+Description=airgenome claude CLI (TUI latency-critical, OOM-protected)
+Documentation=M11a-docker-tuning — claude 세션 격리. CPUWeight=10000 (max) + MemoryMin reservation
+              으로 blowup/stress/과부하 상황에서도 입력렉 최소화.
+# parent: airgenome.slice
+# 적용: systemd unit `Slice=airgenome-claude.slice`
+
+[Slice]
+# CPUWeight=10000 (최대값) → 경쟁 시 절대 우선
+CPUWeight=10000
+IOWeight=300
+# 메모리 최저 예약 — OOM 압박에서 먼저 보호
+MemoryMin=4G
+MemoryLow=6G
+TasksMax=4096

@@ -1,37 +1,14 @@
 {
-  "_comment": "M14 P2 runaway_guard — protected process names. match = /proc/<pid>/comm exact OR startswith for systemd*. No renice, no cpulimit, no kill. EVER.",
+  "_comment": "M14 P2 runaway_guard — protected process names. match = /proc/<pid>/comm exact OR startswith. No renice, no cpulimit, no kill. EVER.",
   "_rule_ref": "feedback_no_kill_claude_cli — claude CLI kill/STOP 절대 금지",
+  "_narrowed_2026_04_19": "whitelist narrowed to 4 essential names only — claude/tailscaled/hexa/sshd. dbus-daemon/containerd/polkitd/node/systemd*/kworker* removed so fallback CAN target them when they are the real culprit. kernel threads (kthreadd/rcu_/ksoftirqd/migration/kswapd0) are PID-unreachable by renice/cpulimit anyway — removal is harmless.",
   "exact": [
     "claude",
-    "sshd",
-    "ssh",
-    "node",
+    "tailscaled",
     "hexa",
     "hexa_stage0",
     "hexa_v2",
-    "dbus",
-    "dbus-daemon",
-    "ssh-agent",
-    "tini",
-    "init",
-    "systemd",
-    "systemd-udevd",
-    "systemd-journal",
-    "systemd-logind",
-    "systemd-resolve",
-    "systemd-network",
-    "tailscaled",
-    "kswapd0",
-    "kthreadd",
-    "ksoftirqd",
-    "migration",
-    "rcu_sched",
-    "rcu_preempt"
+    "sshd"
   ],
-  "prefix": [
-    "systemd",
-    "kworker",
-    "ksoftirqd",
-    "rcu_"
-  ]
+  "prefix": []
 }

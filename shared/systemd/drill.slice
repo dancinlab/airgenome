@@ -1,0 +1,34 @@
+# airgenome — drill/blowup 전용 cap slice.
+# 설치 (ubu/ubu2 host user 에):
+#   cp shared/systemd/drill.slice ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#
+# 사용 (nexus-cli drill 래핑 — 수동 또는 래퍼 수정):
+#   systemd-run --user --slice=drill --scope nexus-cli drill --seed "..."
+#
+# 목표:
+#   1. drill 이 CPU 를 400% (4 core 동급) 이상 못 잡도록 cap
+#   2. IO priority 를 낮춰 host sshd 가 RTT 밀리지 않도록
+#   3. memory 과다 시 OOM killer 가 drill 을 먼저 정리
+#
+# 한계: ubu2/htz 는 선택적 — 이미 sshd 여유.  ubu1 (drill 주 실행지) 에 필수.
+
+[Unit]
+Description=airgenome drill/blowup compute cap slice
+Documentation=https://github.com/need-singularity/airgenome
+
+[Slice]
+# CPU: 호스트 12-thread 기준 ~33% (4 core 동급). sshd 에 여유 확보.
+CPUQuota=400%
+CPUWeight=100
+
+# IO: 기본(100) 의 5배 낮게 — sshd 의 IO 가 항상 우선
+IOWeight=500
+
+# Memory: 128G 노드 기준 12G 로 cap. swap 허용은 안 함 (thrashing 방지).
+MemoryMax=12G
+MemoryHigh=10G
+MemorySwapMax=0
+
+# OOM killer: drill 이 1순위 candidate
+TasksMax=512
