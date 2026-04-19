@@ -1146,6 +1146,9 @@ t0=$(date +%s)
 if [ "$host" = "mac" ]; then
     # cx 초반 `cd "$ROOT"` 로 airgenome 에 들어간 상태 → CALLER_CWD 복원 후 실행.
     # 빠뜨리면 `~/Dev/hexa-lang % cl` 같이 다른 cwd 에서 띄워도 claude 가 airgenome 에서 열림.
+    # 2026-04-20: non-interactive ssh 세션 (ubu aiden → ssh mac cx) 에서 ~/.local/bin
+    #   미포함 → 'claude: command not found'. PATH 명시 보강.
+    export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
     ( cd "$CALLER_CWD" && command claude ${fwd[@]+"${fwd[@]}"} )
     rc=$?
 else
