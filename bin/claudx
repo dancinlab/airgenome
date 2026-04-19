@@ -127,6 +127,14 @@ elif [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
         unset CLAUDE_CONFIG_DIR
         picked_dir=""
         picked_name=""
+        # (2026-04-19) recovery: elif/else 구조상 여기서 fall-through 가 안 되므로
+        # pool.pickBest 를 즉시 호출. 없으면 계속 empty → default ~/.claude.
+        # 이게 없으면 11개 사용 가능 계정이 있어도 "pool empty" 로 빠지는 버그.
+        picked_line=$(node "$POOL_JS" pick 2>/dev/null)
+        if [ -n "$picked_line" ]; then
+            picked_name=$(printf '%s' "$picked_line" | awk -F'\t' '{print $1}')
+            picked_dir=$(printf '%s' "$picked_line" | awk -F'\t' '{print $2}')
+        fi
     fi
     unset _exh_until _now
 else
