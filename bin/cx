@@ -1037,22 +1037,20 @@ else
     # KeepAlive 튜닝 (2026-04-19 stall observe): TCPKeepAlive=yes + ServerAliveInterval=15
     # 긴 응답 stream 중 TCP 버퍼 정체로 TUI freeze → 15s 마다 keepalive 로 버퍼 flush 유도.
     #
-    # docker-ssh mode (M14 P5): hosts.json 의 docker_ssh_port 가 있고 docker_ssh_mode=1
-    # 이면 컨테이너 sshd 직결 (host sshd 바이패스). -p <port> -l root 를 override 로
-    # 끼워 넣고 기존 ssh_alias 는 HostName resolution 용으로만 씀.
-    ssh_override=()
-    _host_docker_ssh_port=$(jq_host "$host" '.hosts[$h].docker_ssh_port // empty')
-    if [ "$docker_ssh_mode" = 1 ] && [ -n "$_host_docker_ssh_port" ] && [ "$_host_docker_ssh_port" != "null" ]; then
-        ssh_override=( -p "$_host_docker_ssh_port" -l root -o StrictHostKeyChecking=accept-new )
-        echo "cx: docker-ssh → port $_host_docker_ssh_port root@$alias (host sshd bypass)" >&2
+    # ssh target 선택 (v5):
+    #   - dssh_alias 있음 → probe 에서 검증된 docker-ssh alias (host sshd bypass)
+    #   - 없음 → 기존 host ssh alias (A+C 미배포 / docker-ssh probe 실패 fallback)
+    _ssh_target="${dssh_alias:-$alias}"
+    if [ -n "$dssh_alias" ]; then
+        echo "cx: docker-ssh → $dssh_alias (host sshd bypass)" >&2
     fi
     if [ -t 0 ]; then
-        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 "${ssh_override[@]}" -t "$alias" "$remote_cmd"
+        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -t "$_ssh_target" "$remote_cmd"
     else
-        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 "${ssh_override[@]}" -T "$alias" "$remote_cmd"
+        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -T "$_ssh_target" "$remote_cmd"
     fi
     rc=$?
-    unset _host_docker_ssh_port ssh_override
+    unset _ssh_target
 fi
 t1=$(date +%s)
 dur=$(( t1 - t0 ))
