@@ -182,6 +182,7 @@ exec $DOCKER run --rm \
     -e LANG=C.UTF-8 \
     -e TZ=Asia/Seoul \
     -e "CLAUDX_HOME_MAP=/Users/ghost:${MAC_HOME}" \
+    -e "PATH=/opt/airgenome/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     -e "NODE_OPTIONS=--max-old-space-size=4096" \
     -v "$HOME/.airgenome:/root/.airgenome" \
     "${mac_home_binds[@]}" \

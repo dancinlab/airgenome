@@ -79,6 +79,50 @@ fn run_module(name: str) -> int {
     return 0
 }
 
+// run_module_args — streaming 버전. argv tail 을 공백 join 하여 모듈에 forward.
+// exec() 버퍼링 대신 exec_stream 사용 (subcommand 실시간 출력 필요 — worker/dashboard/session).
+fn run_module_args(name: str, tail: [str]) -> int {
+    let path = airgenome_root() + "/modules/" + name + ".hexa"
+    let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
+    if chk != "y" {
+        println("airgenome: module not found — " + path)
+        return 2
+    }
+    let mut joined = ""
+    let mut i = 0
+    while i < len(tail) {
+        if joined != "" { joined = joined + " " }
+        // naive shell-escape: single-quote wrap — no embedded single quotes expected
+        joined = joined + "'" + tail[i] + "'"
+        i = i + 1
+    }
+    let cmd = hexa_bin() + " run '" + path + "' " + joined
+    let out = exec(cmd + " 2>&1")
+    print(out)
+    return 0
+}
+
+// run_bin_hexa — bin/<name>.hexa 실행 (tg_bot / runaway_guard / deploy / install_agents).
+fn run_bin_hexa(name: str, tail: [str]) -> int {
+    let path = airgenome_root() + "/bin/" + name + ".hexa"
+    let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
+    if chk != "y" {
+        println("airgenome: bin not found — " + path)
+        return 2
+    }
+    let mut joined = ""
+    let mut i = 0
+    while i < len(tail) {
+        if joined != "" { joined = joined + " " }
+        joined = joined + "'" + tail[i] + "'"
+        i = i + 1
+    }
+    let cmd = hexa_bin() + " run '" + path + "' " + joined
+    let out = exec(cmd + " 2>&1")
+    print(out)
+    return 0
+}
+
 fn run_module_self_test(name: str) -> int {
     let path = airgenome_root() + "/modules/" + name + ".hexa"
     let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
@@ -610,36 +654,263 @@ fn cmd_watch(interval_s: int) -> void {
     }
 }
 
+// print_help — 카테고리 그루핑 + 1줄 설명.
+// 상세 도움말은 `airgenome help <sub>` 로 dispatch.
 fn print_help() -> void {
-    println("airgenome — OS hexagon genome scanner")
+    println("airgenome — OS hexagon genome scanner + distributed Claude dispatcher")
     println("")
-    println("subcommands:")
-    println("  harvest             modules/harvest.hexa 1회 실행 (genomes.ring 갱신)")
-    println("  label               modules/label.hexa")
-    println("  forecast            modules/forecast.hexa")
-    println("  dispatch            modules/dispatch.hexa")
-    println("  probe               modules/probe.hexa")
-    println("  merge               modules/genome_merge.hexa")
-    println("  throttle            modules/predictive_throttle.hexa (Mac 보호)")
-    println("  menubar             Mac menubar 실행 (built binary 필요)")
-    println("  build-menubar       bin/menubar.hexa → native binary (hexa_v2 + clang)")
-    println("  watch [sec]         terminal HUD — status 초단위 refresh (기본 2초)")
-    println("  doctor              통합 진단 (core/launchd/ring/throttle)")
-    println("  cli                 인터랙티브 TUI — 숫자 선택 dispatch")
-    println("  logs [agent] [N]    ~/.airgenome/*.log 최근 tail (기본 all, N=20)")
-    println("  remote <host> <sub> ubu/htz 원격 airgenome subcommand 실행")
-    println("  status              launchd + ring + state 한눈에")
-    println("  slots [--json|--human|--reset|--watch [sec]]")
-    println("                      bin/cx per-host claude slot 상태 (기본 JSON)")
-    println("  install [mode]      LaunchAgent bootstrap — mode=all|mac-safe (기본 all)")
-    println("                      mac-safe: ring-sync + predictive-throttle만 (AG6 준수)")
-    println("  uninstall           7 LaunchAgent bootout + plist 제거")
-    println("  self-test           모든 module self-test 일괄")
-    println("  help                이 도움말")
+    println("usage: airgenome <subcommand> [args...]")
+    println("       airgenome help <subcommand>   — 상세 도움말")
     println("")
-    println("env:")
-    println("  AIRGENOME_ROOT       (기본 $AIRGENOME)")
-    println("  AIRGENOME_RING_NAME  (기본 genomes.ring; unified 시 genomes.unified.ring)")
+    println("GENOME PIPELINE")
+    println("  harvest                  /proc 스캔 → forge/genomes.ring append (Mac 금지, ubu/htz)")
+    println("  label                    anomaly label 부여 (labeled_anomaly.jsonl)")
+    println("  merge                    genomes.{mac,ubu,htz} → genomes.unified.ring")
+    println("  forecast                 Holt's linear 1-step 예측 (forge/forecast_state.json)")
+    println("  forecast-eval            held-out MAE 평가 (forge/forecast_eval_report.json)")
+    println("")
+    println("INFRA / DISPATCH")
+    println("  probe                    infra_state.json 갱신 (vitals + blowup 감지)")
+    println("  dispatch                 AG7 load balancer — best_host 계산 → dispatch_state.json")
+    println("  claude-route <sub>       AI Claude 호스트 선택 (select|record|self-test)")
+    println("  worker <sub>             분산 Claude 워커 (run|spawn|list|stop|status|dispatch)")
+    println("  throttle                 Mac 자가보호 — predictive_throttle (AG6)")
+    println("  session-snapshot <sub>   명령 레벨 snapshot/resume (list|save|tick|end|resume)")
+    println("")
+    println("OBSERVABILITY")
+    println("  status [--json]          3-host 통합 상태 (uptime/load/docker/runaway/dispatch)")
+    println("  doctor                   통합 진단 (hexa/core/launchd/ring/throttle)")
+    println("  watch [sec]              터미널 HUD — 초단위 refresh (기본 2s)")
+    println("  slots [--reset|--watch]  bin/cx per-host claude slot 상태")
+    println("  dashboard                forge/dashboard.html 정적 페이지 생성")
+    println("  logs [agent] [N]         ~/.airgenome/*.log 최근 tail (기본 all, N=20)")
+    println("  cli                      인터랙티브 TUI — 숫자 선택 dispatch")
+    println("")
+    println("PROTECTION / BOT")
+    println("  runaway-guard [sub]      ubu 폭주 감지/대응 (self-test|run-once|loop)")
+    println("  tg-bot                   Telegram bot (iOS → claude dispatcher, M15)")
+    println("")
+    println("DEPLOY / LIFECYCLE")
+    println("  deploy [sub]             전 hosts 에 stack 배포 (self-test|status|verify)")
+    println("  install-agents [sub]     AG6-safe LaunchAgent 설치 (mac-safe 기본)")
+    println("  install [mode]           legacy install (mode=all|mac-safe, 권장: install-agents)")
+    println("  uninstall                모든 com.airgenome.* LaunchAgent 제거")
+    println("  self-test                모든 module self-test 일괄")
+    println("  build-menubar            bin/menubar.hexa → native binary")
+    println("  menubar                  Mac menubar 실행 (built binary 필요)")
+    println("")
+    println("REMOTE / META")
+    println("  remote <host> <sub>      ubu/htz 원격 airgenome subcommand 실행")
+    println("  help [sub]               이 도움말 — sub 지정시 상세")
+    println("")
+    println("EXTERNAL TOOLS (bash, PATH=$AIRGENOME/bin)")
+    println("  cx [args]                Claude CLI router (ubu/ubu2 우선, docker-ssh 기본)")
+    println("  claudx [args]            limit-resilient Claude launcher (12 account pool)")
+    println("  claudx-observe           rotation/usage 실시간 추적")
+    println("  enq <kind> -- <cmd>      AI-native queue frontend (compute|heavy|gpu slots)")
+    println("  host_list [--json|...]   hosts.json SSOT 조회 (enabled/remote/ssh/display)")
+    println("  container_manage <sub>   docker compose wrapper (status|start|logs|exec|pull)")
+    println("  rtt_probe <host>         keystroke RTT 측정 (menubar V6 + cx auto-switch)")
+    println("  stability_monitor        Mac tick-based 감시자 (claude 절대 보호)")
+    println("  hexa_heal [check|heal]   hexa_real binary drift 감지/복구 (ubu golden)")
+    println("  airgenome-logs <sub>     통합 로그 tail/grep/rotate (~/.airgenome/*.log)")
+    println("  airgenome-build          daily docker image build (htz timer)")
+    println("  airgenome-claude-run     docker run for airgenome-claude service (직접 호출 X)")
+    println("")
+    println("ENV")
+    println("  AIRGENOME_ROOT           기본 $HOME/Dev/airgenome")
+    println("  AIRGENOME_RING_NAME      기본 genomes.ring (unified 시 genomes.unified.ring)")
+    println("  AIRGENOME_DISPATCH_ROOT  worker queue 디렉토리 override")
+    println("  CLAUDX_STATE             기본 ~/.airgenome (slot/rotation state)")
+    println("  CX_PICK_MODE             score|priority|priority_fallback (기본 score)")
+}
+
+// print_help_sub — 특정 subcommand 의 상세 도움말.
+// SSOT 정책: 모듈 파일 상단 주석이 있으면 그걸 표시, 없으면 1줄 요약 반복.
+fn print_help_sub(sub: str) -> void {
+    // 카탈로그 — one-liner + source path
+    if sub == "harvest" {
+        println("airgenome harvest — /proc 스캔해 호스트 hexagon genome 을 ring 에 append")
+        println("  source: modules/harvest.hexa")
+        println("  출력:   forge/genomes.ring (호스트별)")
+        println("  주의:   Mac 금지 (AG6) — ubu/htz 에서만 timer 로 실행")
+        return
+    }
+    if sub == "label" {
+        println("airgenome label — genomes.ring 의 최근 anomaly 에 라벨 부여")
+        println("  source: modules/label.hexa")
+        println("  출력:   forge/labeled_anomaly.jsonl")
+        return
+    }
+    if sub == "merge" {
+        println("airgenome merge — genomes.{mac,ubu,htz}.ring → genomes.unified.ring")
+        println("  source: modules/genome_merge.hexa")
+        println("  호출:   ring-sync timer 직후 실행")
+        return
+    }
+    if sub == "forecast" {
+        println("airgenome forecast — Holt's linear 1-step ahead 예측 (CPU/RAM)")
+        println("  source: modules/forecast.hexa")
+        println("  출력:   forge/forecast_state.json")
+        return
+    }
+    if sub == "forecast-eval" {
+        println("airgenome forecast-eval — held-out MAE 평가")
+        println("  source: modules/forecast_eval.hexa")
+        println("  출력:   forge/forecast_eval_report.json (pass=avg_mae<15)")
+        return
+    }
+    if sub == "probe" {
+        println("airgenome probe — host vitals + blowup 감지")
+        println("  source: modules/probe.hexa")
+        println("  출력:   $NEXUS/shared/infra_state.json")
+        return
+    }
+    if sub == "dispatch" {
+        println("airgenome dispatch — AG7 load balancer, best_host 계산")
+        println("  source: modules/dispatch.hexa")
+        println("  출력:   $NEXUS/shared/dispatch_state.json")
+        return
+    }
+    if sub == "claude-route" {
+        println("airgenome claude-route <select|record|self-test>")
+        println("  source: modules/claude_route.hexa")
+        println("  select:    best claude host name 을 stdout 단일 라인")
+        println("  record:    <host> <duration_s> <exit> <rtt_ms> — claude_genome.jsonl append")
+        return
+    }
+    if sub == "worker" {
+        println("airgenome worker <run|spawn|list|stop|status|dispatch>")
+        println("  source: modules/worker.hexa (queue: modules/worker_queue.hexa)")
+        println("  dispatch -p <prompt> [--host X] [--account claudeN] [--timeout N]")
+        println("  spawn <host> [--count N]          N 워커 원격 기동 (ssh)")
+        println("  run --id <wid> --host <host>      단일 워커 루프 (내부용)")
+        println("  env:    AIRGENOME_DISPATCH_ROOT=~/.airgenome/dispatch")
+        return
+    }
+    if sub == "throttle" {
+        println("airgenome throttle — Mac predictive_throttle 1회 실행")
+        println("  source: modules/predictive_throttle.hexa")
+        println("  출력:   forge/predictive_throttle_state.json + throttle_history.jsonl")
+        return
+    }
+    if sub == "session-snapshot" {
+        println("airgenome session-snapshot <list|save|tick|end|show|resume|gc>")
+        println("  source: modules/session_snapshot_cmd.hexa")
+        println("  save <id> <cmd>       — 새 세션 시작 (jsonl event=start)")
+        println("  tick <id> <prog> <note> — 체크포인트 append")
+        println("  resume <id> [--force] — 미완료 세션 재실행")
+        println("  저장:  ~/.airgenome/sessions/<id>.jsonl")
+        return
+    }
+    if sub == "status" {
+        println("airgenome status [--json] — 3-host 통합 상태")
+        println("  source: modules/status.hexa")
+        println("  수집:   Mac(local) + ubu/ubu2/htz(ssh fresh probe)")
+        println("  표시:   uptime, load, mem, docker, port 2222, runaway verdict, AG7 score")
+        return
+    }
+    if sub == "doctor" {
+        println("airgenome doctor — 통합 진단 (hexa/core/launchd/ring/throttle)")
+        println("  source: run.hexa:cmd_doctor")
+        println("  체크:   hexa bin, core self-test, launchd agent 수, ring freshness, throttle level")
+        return
+    }
+    if sub == "watch" {
+        println("airgenome watch [sec] — 터미널 HUD (기본 2초 refresh)")
+        println("  표시:   load / throttle / launchd / ring counts+Δ / throttle history")
+        return
+    }
+    if sub == "slots" {
+        println("airgenome slots [--json|--human|--reset|--watch [sec]]")
+        println("  source: run.hexa:cmd_slots_*")
+        println("  데이터: ${CLAUDX_STATE:-~/.airgenome}/cx_slots/<host>_<i>/pid")
+        return
+    }
+    if sub == "dashboard" {
+        println("airgenome dashboard — forge/dashboard.html 정적 생성")
+        println("  source: modules/dashboard.hexa")
+        println("  입력:   labeled_anomaly.jsonl + infra_state.json + throttle_state.json + ring")
+        return
+    }
+    if sub == "logs" {
+        println("airgenome logs [agent] [N] — ~/.airgenome/*.log tail")
+        println("  N 기본 20. agent 생략/all 시 전체 agent 5줄씩 summary.")
+        return
+    }
+    if sub == "cli" {
+        println("airgenome cli — 인터랙티브 TUI, 숫자 선택 dispatch")
+        return
+    }
+    if sub == "runaway-guard" || sub == "runaway_guard" || sub == "runaway" {
+        println("airgenome runaway-guard [self-test|run-once]")
+        println("  source: bin/runaway_guard.hexa")
+        println("  /proc 스캔 → 4단계 verdict (ok/warn/danger/critical)")
+        println("  액션: renice/cpulimit (kill/STOP 금지), claude/sshd whitelist 보호")
+        println("  env:  RUNAWAY_DRY_RUN=1 | RUNAWAY_TEST=1")
+        return
+    }
+    if sub == "tg-bot" || sub == "tg_bot" {
+        println("airgenome tg-bot — Telegram bot 포어그라운드 실행 (M15)")
+        println("  source: bin/tg_bot.hexa")
+        println("  conf:   ~/.airgenome/tg.json (bot_token_file, whitelist, primary_host)")
+        println("  보통은 systemd airgenome-tg.service 로 기동")
+        return
+    }
+    if sub == "deploy" {
+        println("airgenome deploy [self-test|status|verify]")
+        println("  source: bin/deploy.hexa")
+        println("  전 hosts 에 stack 배포 (hosts.json + ag6_manifest.json)")
+        return
+    }
+    if sub == "install-agents" {
+        println("airgenome install-agents [verify|remote|uninstall]")
+        println("  source: bin/install_agents.hexa")
+        println("  AG6-safe LaunchAgent 설치 (mac_allowed=false 모듈 거부)")
+        return
+    }
+    if sub == "install" {
+        println("airgenome install [all|mac-safe] — legacy LaunchAgent bootstrap")
+        println("  권장: install-agents (AG6 검증 포함)")
+        return
+    }
+    if sub == "uninstall" {
+        println("airgenome uninstall — com.airgenome.* LaunchAgent 전부 bootout + plist 제거")
+        return
+    }
+    if sub == "self-test" {
+        println("airgenome self-test — 모든 module + runaway_guard + core self-test 일괄")
+        return
+    }
+    if sub == "menubar" || sub == "build-menubar" {
+        println("airgenome build-menubar — bin/menubar.hexa → native binary (hexa_v2 + clang)")
+        println("airgenome menubar       — built binary foreground 실행")
+        println("  binary: build/artifacts/airgenome-menubar")
+        return
+    }
+    if sub == "remote" {
+        println("airgenome remote <ubu|htz|hetzner> <sub> [args...]")
+        println("  예:  airgenome remote ubu harvest")
+        println("       airgenome remote htz ring-count")
+        return
+    }
+    if sub == "help" {
+        println("airgenome help [sub] — 도움말. sub 생략시 전체 트리.")
+        return
+    }
+    println("airgenome help: unknown subcommand '" + sub + "'")
+    println("try 'airgenome help' for the full list.")
+}
+
+// argv tail slice — a[from..] 을 [str] 로 복사.
+fn argv_tail(a: [str], from: int) -> [str] {
+    let mut out = []
+    let mut i = from
+    while i < len(a) {
+        out = out + [a[i]]
+        i = i + 1
+    }
+    return out
 }
 
 fn main() -> void {
@@ -649,8 +920,16 @@ fn main() -> void {
         return
     }
     let sub = a[2]
-    if sub == "help" { print_help(); return }
-    if sub == "status" { cmd_status(); return }
+    if sub == "help" {
+        if len(a) >= 4 { print_help_sub(a[3]) } else { print_help() }
+        return
+    }
+    // status: 새로운 3-host module 을 기본. --legacy 는 구 launchd 뷰.
+    if sub == "status" {
+        if len(a) >= 4 && a[3] == "--legacy" { cmd_status(); return }
+        let _ = run_module_args("status", argv_tail(a, 3))
+        return
+    }
     if sub == "install" {
         let mut mode = "all"
         if len(a) >= 4 { mode = a[3] }
@@ -716,6 +995,43 @@ fn main() -> void {
     if sub == "probe" { let _ = run_module("probe"); return }
     if sub == "merge" { let _ = run_module("genome_merge"); return }
     if sub == "throttle" { let _ = run_module("predictive_throttle"); return }
+    // ── 신규 서브커맨드 (M12~M15 추가 모듈 연결) ──
+    if sub == "forecast-eval" {
+        let _ = run_module_args("forecast_eval", argv_tail(a, 3))
+        return
+    }
+    if sub == "dashboard" {
+        let _ = run_module_args("dashboard", argv_tail(a, 3))
+        return
+    }
+    if sub == "claude-route" {
+        let _ = run_module_args("claude_route", argv_tail(a, 3))
+        return
+    }
+    if sub == "worker" {
+        let _ = run_module_args("worker", argv_tail(a, 3))
+        return
+    }
+    if sub == "session-snapshot" {
+        let _ = run_module_args("session_snapshot_cmd", argv_tail(a, 3))
+        return
+    }
+    if sub == "runaway-guard" || sub == "runaway_guard" || sub == "runaway" {
+        let _ = run_bin_hexa("runaway_guard", argv_tail(a, 3))
+        return
+    }
+    if sub == "tg-bot" || sub == "tg_bot" {
+        let _ = run_bin_hexa("tg_bot", argv_tail(a, 3))
+        return
+    }
+    if sub == "deploy" {
+        let _ = run_bin_hexa("deploy", argv_tail(a, 3))
+        return
+    }
+    if sub == "install-agents" || sub == "install_agents" {
+        let _ = run_bin_hexa("install_agents", argv_tail(a, 3))
+        return
+    }
     println("airgenome: unknown subcommand '" + sub + "'. try 'airgenome help'.")
 }
 

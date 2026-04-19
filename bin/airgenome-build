@@ -19,6 +19,8 @@
 #   GH_TOKEN_FILE     default: $HOME/.config/airgenome/gh_token
 #   GH_USER           default: need-singularity
 #   AUTH_KEYS_SRC     default: $STATE_DIR/docker_authorized_keys  (optional)
+#   HEXA_BIN_SRC      default: /home/hexa-lang/hexa  (htz bare-metal hexa binary)
+#                     fallbacks: /root/Dev/hexa-lang/hexa  → build/artifacts/hexa untouched
 #   SKIP_GIT_PULL     1 = do not pull (for manual retries)
 #   FORCE             1 = build even if HEAD unchanged since last built_sha
 #   NO_PUSH           1 = build only (no --push); emits :dev-local tag locally.
@@ -38,6 +40,7 @@ REGISTRY="${REGISTRY:-ghcr.io/need-singularity/airgenome}"
 GH_TOKEN_FILE="${GH_TOKEN_FILE:-$HOME/.config/airgenome/gh_token}"
 GH_USER="${GH_USER:-need-singularity}"
 AUTH_KEYS_SRC="${AUTH_KEYS_SRC:-$STATE_DIR/docker_authorized_keys}"
+HEXA_BIN_SRC="${HEXA_BIN_SRC:-/home/hexa-lang/hexa}"
 
 mkdir -p "$STATE_DIR"
 LOG="$STATE_DIR/build.jsonl"
@@ -90,6 +93,50 @@ else
 fi
 
 # ---------------------------------------------------------------
+# 2b. stage hexa binary  (build/artifacts/hexa ← bare-metal ELF)
+#     Dockerfile 의 `COPY ${HEXA_BIN_PATH} /usr/local/bin/hexa` 단계가
+#     25B placeholder(`echo hexa-stub`) 만 복사하던 버그 회피.
+#     - HEXA_BIN_SRC 가 읽히고 ELF x86-64 면 → 덮어쓴다 (아키텍처 가드)
+#     - 없거나 Mac binary 등 잘못된 arch 면 → 기존 파일 유지 + WARN
+#     - build 는 항상 진행 (hexa 없이도 나머지 이미지는 쓸 만함)
+# ---------------------------------------------------------------
+stage_hexa() {
+    local src="$HEXA_BIN_SRC"
+    local dst="$REPO/build/artifacts/hexa"
+    mkdir -p "$REPO/build/artifacts"
+
+    # fallback chain — 사용자가 HEXA_BIN_SRC 를 override 안 했을 때만
+    if [ ! -r "$src" ] && [ "${HEXA_BIN_SRC:-}" = "/home/hexa-lang/hexa" ]; then
+        for cand in /root/Dev/hexa-lang/hexa /opt/hexa-lang/hexa; do
+            if [ -r "$cand" ]; then src="$cand"; break; fi
+        done
+    fi
+
+    if [ ! -r "$src" ]; then
+        log "WARN: hexa binary not found at $HEXA_BIN_SRC (+fallbacks) — leaving $dst untouched"
+        return 0
+    fi
+
+    # arch 가드 — linux/amd64 ELF 만 허용
+    local finfo
+    finfo="$(file -b "$src" 2>/dev/null || true)"
+    case "$finfo" in
+        *"ELF 64-bit"*"x86-64"*)
+            : ok
+            ;;
+        *)
+            log "WARN: $src not ELF x86-64 ($finfo) — leaving $dst untouched"
+            return 0
+            ;;
+    esac
+
+    cp -f "$src" "$dst"
+    chmod 0755 "$dst"
+    log "staged hexa binary: $src → $dst ($(wc -c <"$dst") bytes)"
+}
+stage_hexa
+
+# ---------------------------------------------------------------
 # 3. GHCR login (NO_PUSH 모드에서는 skip)
 # ---------------------------------------------------------------
 if [ "${NO_PUSH:-0}" != "1" ]; then
@@ -132,6 +179,29 @@ if docker buildx bake "${BAKE_FLAGS[@]}" 2>&1 \
     log "$MODE OK  sha=$HEAD_NEW  dur=${DUR}s"
     printf '{"ts":"%s","event":"ok","mode":"%s","head":"%s","prev":"%s","branch":"%s","dur_sec":%d}\n' \
         "$(date -u +%FT%TZ)" "$MODE" "$HEAD_NEW" "$HEAD_OLD" "$BRANCH" "$DUR" >> "$LOG"
+
+    # ------------------------------------------------------------------
+    # 5. GHCR retention cleanup (post-push only).
+    #    CLEANUP_MODE env controls behavior:
+    #      unset/dryrun  = plan only (stderr + ghcr_cleanup.jsonl, no DELETE)
+    #      apply         = actually delete untagged/old versions
+    #      skip          = do not invoke cleanup
+    #    Cleanup failures are non-fatal (build still reports OK).
+    # ------------------------------------------------------------------
+    if [ "${NO_PUSH:-0}" != "1" ]; then
+        CLEANUP_MODE="${CLEANUP_MODE:-dryrun}"
+        CLEANUP_BIN="$REPO/bin/airgenome-ghcr-cleanup"
+        if [ -x "$CLEANUP_BIN" ] && [ "$CLEANUP_MODE" != "skip" ]; then
+            log "ghcr retention cleanup (mode=$CLEANUP_MODE)"
+            CLEANUP_ARGS=()
+            [ "$CLEANUP_MODE" = "apply" ] && CLEANUP_ARGS+=(--apply)
+            "$CLEANUP_BIN" "${CLEANUP_ARGS[@]}" 2>&1 \
+                | sed 's/^/  ghcr-cleanup: /' \
+                || log "WARN: ghcr-cleanup non-zero (non-fatal)"
+        else
+            log "ghcr retention: skipped (mode=$CLEANUP_MODE or bin missing)"
+        fi
+    fi
 else
     RC=$?
     T1="$(date +%s)"

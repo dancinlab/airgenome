@@ -27,6 +27,10 @@ TCPKeepAlive yes
 # 퍼포먼스: reverse DNS 끔
 UseDNS no
 
+# PATH 주입 — ssh 세션이 /opt/airgenome/bin (cx, claudx, runaway_guard 등) 을
+# 먼저 resolve 하도록. Mac cx 가 원격 세션에 airgenome 도구를 기대함.
+SetEnv PATH=/opt/airgenome/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
 # subsystem (sftp 쓸 일 거의 없지만 기본값 유지)
 Subsystem sftp /usr/lib/openssh/sftp-server
 

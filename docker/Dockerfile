@@ -83,7 +83,7 @@ COPY core/      /opt/airgenome/core/
 # authorized_keys 는 runtime bind mount (/root/.ssh/authorized_keys) 로 주입 →
 # 이미지에 키 포함 금지. host keys 는 컨테이너 startup 때 생성 (ephemeral OK).
 #   run 스크립트가 CMD 에 `sleep infinity` 를 내리므로 아래 CMD 는 compose 로컬용.
-ENTRYPOINT ["/usr/bin/tini", "--", "/bin/sh", "-c", "ssh-keygen -A >/dev/null 2>&1; /usr/sbin/sshd -f /etc/ssh/sshd_config.d/airgenome.conf -E /var/log/sshd-airgenome.log; exec \"$@\"", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/bin/sh", "-c", "ssh-keygen -A >/dev/null 2>&1; mkdir -p /Users && ln -sfn /mac_home /Users/ghost; /usr/sbin/sshd -f /etc/ssh/sshd_config.d/airgenome.conf -E /var/log/sshd-airgenome.log; exec \"$@\"", "--"]
 CMD ["claude"]
 
 LABEL org.opencontainers.image.source="https://github.com/need-singularity/airgenome" \
