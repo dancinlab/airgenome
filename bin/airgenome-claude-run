@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# bin/airgenome-claude-run — dynamic `docker run` for airgenome-claude container.
+#
+# Goal: eliminate the 12 hard-coded `-v ~/.claude-claude{N}:...` lines from
+#       shared/systemd/airgenome-claude.service + docker/compose.yml by reading
+#       the accounts SSOT and generating binds on-the-fly.
+#
+# SSOT:   $HOME/mac_home/Dev/nexus/shared/.runtime/accounts/accounts.json
+#         (or $AIRGENOME_ACCOUNTS_JSON override). jq reads .accounts[].name.
+#         fallback: glob $HOME/.claude-claude* if SSOT unreachable.
+#
+# Invoked by: shared/systemd/airgenome-claude.service ExecStart
+# Env (opt):
+#   REGISTRY          default ghcr.io/need-singularity/airgenome
+#   AIRGENOME_TAG     default dev
+#   MAC_HOME          default $HOME/mac_home
+#   AIRGENOME_ACCOUNTS_JSON   explicit accounts.json path override
+#   AIRGENOME_CPUSET  default 0,1,8,9
+#   AIRGENOME_MEM     default 8g
+#   AIRGENOME_CPU_SHARES  default 2048
+#   AIRGENOME_PIDS    default 512
+#   AIRGENOME_EXTRA_ARGS  extra args appended verbatim to `docker run`
+#
+# Output: JSONL run-log to $HOME/.airgenome/claude-run.jsonl (ts, bind_count)
+# Exec:   systemd Type=simple → exec docker (PID 1 = docker → container)
+
+set -euo pipefail
+
+REGISTRY="${REGISTRY:-ghcr.io/need-singularity/airgenome}"
+TAG="${AIRGENOME_TAG:-dev}"
+MAC_HOME="${MAC_HOME:-$HOME/mac_home}"
+CPUSET="${AIRGENOME_CPUSET:-0,1,8,9}"
+MEM="${AIRGENOME_MEM:-8g}"
+CPU_SHARES="${AIRGENOME_CPU_SHARES:-2048}"
+PIDS="${AIRGENOME_PIDS:-512}"
+STATE_DIR="${CLAUDX_STATE:-$HOME/.airgenome}"
+mkdir -p "$STATE_DIR"
+LOG="$STATE_DIR/claude-run.jsonl"
+
+# accounts SSOT: Mac path via sshfs reverse-mount.
+ACCOUNTS_JSON="${AIRGENOME_ACCOUNTS_JSON:-$MAC_HOME/Dev/nexus/shared/.runtime/accounts/accounts.json}"
+
+binds=()
+acct_names=()
+
+read_accounts_jq() {
+    local src="$1"
+    # jq -r; swallow errors to return empty
+    jq -r '.accounts[].name' "$src" 2>/dev/null || true
+}
+
+if [ -r "$ACCOUNTS_JSON" ] && command -v jq >/dev/null 2>&1; then
+    while IFS= read -r nm; do
+        [ -n "$nm" ] || continue
+        acct_names+=("$nm")
+    done < <(read_accounts_jq "$ACCOUNTS_JSON")
+    SRC="accounts.json"
+fi
+
+if [ "${#acct_names[@]}" -eq 0 ]; then
+    # fallback: glob local $HOME/.claude-claude*
+    for d in "$HOME"/.claude-claude*; do
+        [ -d "$d" ] || continue
+        acct_names+=("$(basename "$d" | sed 's/^\.claude-//')")
+    done
+    SRC="glob-fallback"
+fi
+
+for nm in "${acct_names[@]}"; do
+    src="$HOME/.claude-$nm"
+    tgt="/root/.claude-$nm"
+    # only bind if source exists; docker would fail otherwise
+    if [ -d "$src" ]; then
+        binds+=( -v "$src:$tgt" )
+    fi
+done
+
+# JSONL run-log
+printf '{"ts":"%s","src":"%s","bind_count":%d,"accounts":[%s]}\n' \
+    "$(date -u +%FT%TZ)" \
+    "$SRC" \
+    "${#binds[@]}" \
+    "$(printf '"%s",' "${acct_names[@]}" | sed 's/,$//')" \
+    >> "$LOG" 2>/dev/null || true
+
+# stale container sweep — matches ExecStartPre in old service
+docker rm -f airgenome-claude >/dev/null 2>&1 || true
+docker pull "${REGISTRY}:${TAG}" >/dev/null 2>&1 || true
+
+# extra args — space-split honouring simple quoting via xargs
+extra=()
+if [ -n "${AIRGENOME_EXTRA_ARGS:-}" ]; then
+    # shellcheck disable=SC2206
+    extra=( ${AIRGENOME_EXTRA_ARGS} )
+fi
+
+exec docker run --rm \
+    --name airgenome-claude \
+    --init \
+    --cpu-shares="$CPU_SHARES" \
+    --cpuset-cpus="$CPUSET" \
+    --pids-limit="$PIDS" \
+    --memory="$MEM" \
+    --memory-swap="$MEM" \
+    --network=host \
+    --device=/dev/fuse \
+    --cap-add=SYS_ADMIN \
+    --security-opt=apparmor:unconfined \
+    -e TERM=xterm-256color \
+    -e LANG=C.UTF-8 \
+    -e TZ=Asia/Seoul \
+    -e "CLAUDX_HOME_MAP=/Users/ghost:${MAC_HOME}" \
+    -e "NODE_OPTIONS=--max-old-space-size=4096" \
+    -v "$HOME/.airgenome:/root/.airgenome" \
+    -v "${MAC_HOME}:/mac_home:rshared" \
+    "${binds[@]}" \
+    -v "${MAC_HOME}/Dev/airgenome:/workspace/airgenome" \
+    "${extra[@]}" \
+    "${REGISTRY}:${TAG}" \
+    sleep infinity

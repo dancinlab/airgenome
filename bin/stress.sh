@@ -16,19 +16,30 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-HOSTS=("ubu" "hetzner")
-# ubu: user-level (--user), hetzner: system-level (빈 문자열)
-ubu_scope="--user"
-hetzner_scope=""
+# [AG-Q14] SSOT — hosts.json 에서 ssh_alias 목록 조회 (하드코딩 박멸).
+# hosts.json 에 systemd_scope 필드 있으면 그 값, 없으면 sensible default.
+HOST_LIST="$(dirname "$0")/host_list"
+HOSTS=()
+if [ -x "$HOST_LIST" ]; then
+    # shellcheck disable=SC2207
+    HOSTS=($("$HOST_LIST" --ssh 2>/dev/null))
+fi
+[ "${#HOSTS[@]}" -eq 0 ] && HOSTS=("ubu" "hetzner")   # fallback
 
-# 호스트별 scope 조회
+# 호스트별 scope 조회 — hosts.json 의 systemd_scope 필드 참조 (기본 --user)
 scope_of() {
     local h="$1"
-    case "$h" in
-        ubu)     echo "--user" ;;
-        hetzner) echo "" ;;
-        *)       echo "" ;;
-    esac
+    local reg="${HOSTS_REGISTRY:-$(dirname "$0")/../shared/config/hosts.json}"
+    local key_expr='.hosts | to_entries[] | select(.value.ssh_alias == $a) | .value.systemd_scope // "--user"'
+    local v
+    v=$(jq -r --arg a "$h" "$key_expr" "$reg" 2>/dev/null | head -1)
+    [ -z "$v" ] || [ "$v" = "null" ] && v="--user"
+    # hetzner 만 root-session 이라 system scope — SSOT 에 값 없으면 레거시 fallback
+    if [ -z "$v" ] || [ "$v" = "--user" ]; then
+        case "$h" in hetzner|htz) echo "" ;; *) echo "--user" ;; esac
+    else
+        [ "$v" = "system" ] && echo "" || echo "$v"
+    fi
 }
 
 cmd_pause() {
