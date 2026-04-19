@@ -488,6 +488,7 @@ fn json_safe(s: str) -> str {
 }
 
 // warn 단계 액션: 단일 runaway PID (CPU≥pct, sustain≥sec) 에 renice +10
+// warn 은 진짜 단일-PID runaway 만 잡음 — 시스템 fallback 없음 (noise 회피).
 fn actions_warn(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool) -> list {
     let result = []
     let mut i = 0
@@ -514,10 +515,14 @@ fn actions_warn(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool) -
 
 fn actions_danger(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool) -> list {
     let result = []
+    let mut per_pid_hits = 0
+    // pass 1 — per-PID trigger (single-core runaway). threshold is pid_cpu_pct/2 in danger
+    // (100% 기준이면 멀티코어 12-box에서 시스템 압력 있어도 per-PID 절대 안 걸림.)
+    let pid_gate = t.pid_cpu_pct / 2
     let mut i = 0
     while i < len(m.top) {
         let p = m.top[i]
-        if p.pcpu >= t.pid_cpu_pct {
+        if p.pcpu >= pid_gate {
             let sust = pid_sustain_seconds(p.pid, now)
             if sust >= t.pid_sustain_s {
                 if is_protected(p.comm, wl) {
@@ -529,10 +534,36 @@ fn actions_danger(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool)
                     }
                     result = result + [Action { kind: "renice+10", pid: p.pid, comm: p.comm, dry_run: dry }]
                     result = result + [Action { kind: "cpulimit50", pid: p.pid, comm: p.comm, dry_run: dry }]
+                    per_pid_hits = per_pid_hits + 1
                 }
             }
         }
         i = i + 1
+    }
+    // pass 2 — systemic fallback. system-level danger (load/iowait/mem/d_state) 가
+    // 트리거됐지만 per-PID gate에 아무도 안 걸렸다면, top-3 non-protected 에 gentler
+    // renice+10/cpulimit50. claude/hexa 등 whitelist 는 skip_protected 로만 기록.
+    if per_pid_hits == 0 {
+        let mut j = 0
+        let mut hit = 0
+        while j < len(m.top) {
+            if hit >= 3 { j = len(m.top) }
+            else {
+                let p = m.top[j]
+                if is_protected(p.comm, wl) {
+                    result = result + [Action { kind: "skip_protected", pid: p.pid, comm: p.comm, dry_run: dry }]
+                } else {
+                    if !dry {
+                        do_renice(p.pid, 10)
+                        do_cpulimit(p.pid, 50)
+                    }
+                    result = result + [Action { kind: "renice+10", pid: p.pid, comm: p.comm, dry_run: dry }]
+                    result = result + [Action { kind: "cpulimit50", pid: p.pid, comm: p.comm, dry_run: dry }]
+                    hit = hit + 1
+                }
+                j = j + 1
+            }
+        }
     }
     return result
 }
