@@ -885,3 +885,8 @@ cx → ubu (ubu)
 cx: no remote session → -c stripped (fresh start on ubu)
 {"ts":"2026-04-19T04:52:54Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":302}
 {"ts":"2026-04-19T04:54:13Z","host":"ubu","duration_s":127,"exit":143,"rtt_ms":378}
+{"ts":"2026-04-19T04:57:09Z","host":"mac","duration_s":2,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T04:57:10Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":373}
+{"ts":"2026-04-19T04:59:34Z","host":"ubu","duration_s":1466,"exit":143,"rtt_ms":541}
