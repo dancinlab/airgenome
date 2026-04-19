@@ -95,4 +95,22 @@
 @file: .session_defaults:39 (F6 extended), 60-65 (DECIDE section appended)
 @rollback: revert this commit. D3 removal also breaks F6's rank-tie trigger; leave F6 angle-set untouched for the gap/exhaustion paths if only D1-D2-D4 need revert.
 
+[session-defaults-chain-over-cron]
+@state: converged
+@date: 2026-04-20
+@scope: .session_defaults :: [LOOP] L8 CHAIN_OVER_CRON
+@decision: Codify completion-chain as the default pacing primitive for sequential long BG work; demote cron/fixed-interval to strictly-periodic no-state tasks.
+@change: [LOOP] L8 added. For iter sweeps, queued probes, retry-after-fail chains: an agent/BG completion deterministically triggers the next spawn, instead of a wall-clock timer. Cron/CronCreate/ScheduleWakeup reserved for heartbeat, watchdog, daily rotate — tasks with no state-carry between firings.
+@why: User empirically confirmed in 2026-04-20 session while running SWEEP P4 iter 70-147. First attempt used hourly cron at :17 — causes overlap if an iter takes >1h, idle gap if iters average <1h, and fires mid-work. User corrective ("매시간이 아니라 완료시마다 재발사") switched to a chain runner (2 concurrent → wait-for-both → next batch) which completed 76 iters in ~3h wallclock with zero overlap and zero idle gap. Chain is strictly dominant for this class of work.
+@effect:
+  - Default pacing for batch/iter/queued work is completion-chain. Cron is explicitly narrowed.
+  - Eliminates three failure modes simultaneously: overlap, idle-gap, early-fire mid-work.
+  - Reduces observability cost (one chained task vs many cron fires in logs).
+  - Makes resource usage self-limiting (next spawn waits for prior completion, so host-saturation stays bounded).
+@non-goals:
+  - Does NOT apply to /loop tick pacing itself (L1/L2/ScheduleWakeup remains for chat-side cadence).
+  - Does NOT apply to strictly-periodic heartbeat/watchdog jobs — those should stay on cron since they have no state to chain.
+@file: .session_defaults:23 (L8 appended to [LOOP])
+@rollback: remove L8. Prior behavior allowed cron+chain indifferently; L8 just makes chain the stated default.
+
 @__raw__

@@ -20,6 +20,7 @@ L4 HALT       ON user message during loop: finish current tick cleanly. DO NOT S
 L5 HEARTBEAT  ON each tick emit ONE sentence: what advanced + next wake delay + reason. No silent ticks. heartbeat MUST include: N in_progress / K stuck / R revived / G drill-gaps-active / P pivots-triggered.
 L6 CHAIN      ON blocker 돌파 | milestone 완주 within tick THEN 즉시 F6 DRILL_GAP (next-layer) in SAME tick. ScheduleWakeup 지연 금지. 연쇄 돌파 = 로드맵 기간 압축 메커니즘.
 L7 EXHAUST_PIVOT  ON tick start: IF TaskList empty AND active milestones empty AND blocker queue empty THEN DO NOT end loop — fire F6 DRILL_GAP pivot angles (next-layer-predict / adjacent-speculation / roadmap-unblock). 고갈은 loop 종료 조건 아님. user 명시 중단(L4) 만이 종료.
+L8 CHAIN_OVER_CRON  For sequential long BG work (iter sweeps, queued probes, retry-after-fail chains), PREFER completion-chain (agent/BG done → next fires immediately via chained spawn) OVER fixed-interval cron/ScheduleWakeup. Cron/CronCreate only for strictly-periodic no-state tasks (heartbeat, watchdog, daily rotate). Chain eliminates: (a) overlap when prior iter exceeds interval, (b) idle gap when prior iter under-runs, (c) mid-work abandonment on cron firing too early.
 
 [AUTO] — autonomous across every phase. user states goal once. no approval gates.
 A1 NOASK      never ask "shall I fire?" / "proceed?" / "which one?". If the next action is determined by the rules below, execute it. Ask only when the user-facing contract is genuinely ambiguous (destructive op scope, irreversible external side-effects).
