@@ -6,6 +6,7 @@
 #   rtt_probe ubu              # 단발 (ms)
 #   rtt_probe ubu --samples 10 # 10회 샘플링 후 median/p95/p99
 #   rtt_probe --current        # 현재 cx 선택 호스트
+#   rtt_probe --all            # hosts.json 의 enabled remote 전체 (병렬)
 #   rtt_probe --watch          # 5s cadence, JSONL 에 append
 #
 # 출력:
@@ -24,8 +25,10 @@ set -uo pipefail
 HOST=""
 SAMPLES=1
 WATCH=0
+ALL=0
 STATE_DIR="${CLAUDX_STATE:-$HOME/.airgenome}"
 LOG="$STATE_DIR/rtt.jsonl"
+HOST_LIST="$(dirname "$0")/host_list"
 
 usage() {
     grep '^# ' "$0" | sed 's/^# \{0,1\}//'
@@ -36,6 +39,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --samples) SAMPLES="$2"; shift 2 ;;
         --watch)   WATCH=1; shift ;;
+        --all)     ALL=1; shift ;;
         --current)
             HOST=$("$(dirname "$0")/cx" --show 2>/dev/null | awk -F'[ →()]+' '/cx →/{print $3; exit}')
             shift
@@ -45,7 +49,20 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$HOST" ] || { echo "usage: rtt_probe <host> [--samples N] [--watch]" >&2; exit 2; }
+# --all: hosts.json 의 enabled remote 전부 병렬 측정
+if [ "$ALL" = 1 ]; then
+    remote_hosts=$("$HOST_LIST" --remote 2>/dev/null)
+    [ -n "$remote_hosts" ] || { echo "rtt_probe --all: no remote hosts" >&2; exit 2; }
+    for h in $remote_hosts; do
+        alias=$("$HOST_LIST" --env | awk -F'"' "/^export HOST_ALIAS_$h=/{print \$2}")
+        [ -z "$alias" ] && alias="$h"
+        "$0" "$alias" --samples "${SAMPLES:-1}" &
+    done
+    wait
+    exit 0
+fi
+
+[ -n "$HOST" ] || { echo "usage: rtt_probe <host> [--samples N] [--watch] [--all]" >&2; exit 2; }
 
 mkdir -p "$STATE_DIR"
 

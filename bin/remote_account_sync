@@ -26,7 +26,15 @@ command -v jq       >/dev/null || { echo "ERROR: jq 필요" >&2; exit 3; }
 command -v security >/dev/null || { echo "ERROR: security (macOS) 필요" >&2; exit 3; }
 
 hosts=("$@")
-[ ${#hosts[@]} -eq 0 ] && hosts=(ubu ubu2)
+if [ ${#hosts[@]} -eq 0 ]; then
+    # 하드코딩 대신 hosts.json SSOT 에서 enabled remote alias 목록 추출
+    _hl="$(dirname "$0")/host_list"
+    if [ -x "$_hl" ]; then
+        # shellcheck disable=SC2207
+        hosts=($("$_hl" --ssh 2>/dev/null))
+    fi
+    [ ${#hosts[@]} -eq 0 ] && hosts=(ubu ubu2 hetzner)   # fallback
+fi
 
 # 계정명 배열 (natural sort)
 names=()
