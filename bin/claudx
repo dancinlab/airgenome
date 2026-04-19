@@ -117,26 +117,38 @@ elif [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     # upstream (cl, user env) 이 이미 선택함 — 존중
     picked_dir="$CLAUDE_CONFIG_DIR"
     picked_name=$(basename "$CLAUDE_CONFIG_DIR" | sed 's/^\.claude-//')
-    # (2026-04-19) upstream pin 이 local_exhausted 인 경우 재픽.
-    # 이전 세션에서 export 된 CLAUDE_CONFIG_DIR 이 이미 고갈된 계정을 가리킬 때
-    # 첫 요청을 무조건 429 로 낭비하지 않도록 선제적으로 버림.
-    _exh_until=$(jq -r --arg n "$picked_name" '(.[$n].until // 0)' "$CLAUDX_STATE/exhausted.json" 2>/dev/null || echo 0)
+    # (2026-04-19 v2) upstream pin 전수 검증 — exhausted.json 만 보던 기존 로직은
+    # session_pct=98% / _retry_at active / week=100% 계정이 그대로 통과하는 구멍.
+    # pool.pickBest 가 적용하는 loadPool 필터와 동일 기준으로 pin 을 재검증.
     _now=$(date +%s)
+    _reject_reason=""
+    _exh_until=$(jq -r --arg n "$picked_name" '(.[$n].until // 0)' "$CLAUDX_STATE/exhausted.json" 2>/dev/null || echo 0)
     if [ "${_exh_until:-0}" -gt "${_now:-0}" ] 2>/dev/null; then
-        info "upstream pin=$picked_name local_exhausted → re-pick"
+        _reject_reason="local_exhausted(until=$_exh_until)"
+    fi
+    if [ -z "$_reject_reason" ] && [ -f "$CLAUDX_USAGE" ]; then
+        # session_pct>=95 / week_all_pct>=100 / _retry_at>now 전부 pool.js loadPool 과 동일
+        _u=$(jq -r --arg n "$picked_name" '[(.[$n].session_pct // 0), (.[$n].week_all_pct // 0), (.[$n]._retry_at // 0)] | @tsv' "$CLAUDX_USAGE" 2>/dev/null)
+        # bash arithmetic 은 float 미지원 → int 변환 (98.0 → 98)
+        _sp=$(printf '%s' "$_u" | awk -F'\t' '{printf "%d", $1}')
+        _wp=$(printf '%s' "$_u" | awk -F'\t' '{printf "%d", $2}')
+        _ra=$(printf '%s' "$_u" | awk -F'\t' '{printf "%d", $3}')
+        if [ "${_sp:-0}" -ge 95 ] 2>/dev/null; then _reject_reason="session_cap(${_sp}%)"; fi
+        if [ -z "$_reject_reason" ] && [ "${_wp:-0}" -ge 100 ] 2>/dev/null; then _reject_reason="week_exhausted(${_wp}%)"; fi
+        if [ -z "$_reject_reason" ] && [ "${_ra:-0}" -gt "${_now:-0}" ] 2>/dev/null; then _reject_reason="retry_at($_ra)"; fi
+    fi
+    if [ -n "$_reject_reason" ]; then
+        info "upstream pin=$picked_name REJECT ($_reject_reason) → re-pick"
         unset CLAUDE_CONFIG_DIR
         picked_dir=""
         picked_name=""
-        # (2026-04-19) recovery: elif/else 구조상 여기서 fall-through 가 안 되므로
-        # pool.pickBest 를 즉시 호출. 없으면 계속 empty → default ~/.claude.
-        # 이게 없으면 11개 사용 가능 계정이 있어도 "pool empty" 로 빠지는 버그.
         picked_line=$(node "$POOL_JS" pick 2>/dev/null)
         if [ -n "$picked_line" ]; then
             picked_name=$(printf '%s' "$picked_line" | awk -F'\t' '{print $1}')
             picked_dir=$(printf '%s' "$picked_line" | awk -F'\t' '{print $2}')
         fi
     fi
-    unset _exh_until _now
+    unset _exh_until _now _reject_reason _u _sp _wp _ra
 else
     # 완전히 비어있을 때만 자체 pick
     picked_line=$(node "$POOL_JS" pick 2>/dev/null)
@@ -167,6 +179,46 @@ if [ -n "$picked_dir" ]; then
         info "acct=$picked_name cfg=$picked_dir"
     fi
 else
+    # (2026-04-19 v2) 모든 계정이 capped/retry/exhausted — 기존 "default ~/.claude"
+    # fallback 은 Mac 에서 무의미 (creds Keychain). `cl` 이 한도 찬 계정으로 세션을
+    # 시작하는 것 자체를 차단. CLAUDX_ALLOW_EMPTY=1 로 강제 우회 가능.
+    if [ "$show_only" != true ] && [ "${CLAUDX_ALLOW_EMPTY:-0}" != "1" ]; then
+        # earliest_available: usage-cache + exhausted 의 min(reset_at) + name
+        _next=$(CLAUDX_POOL="$CLAUDX_POOL" CLAUDX_USAGE="$CLAUDX_USAGE" CLAUDX_STATE="$CLAUDX_STATE" \
+            node -e '
+            const fs=require("fs"),p=require("path");
+            const r=(f,d)=>{try{return JSON.parse(fs.readFileSync(f,"utf8"))}catch{return d}};
+            const acc=r(process.env.CLAUDX_POOL,{accounts:[]}).accounts||[];
+            const u=r(process.env.CLAUDX_USAGE,{}); const e=r(p.join(process.env.CLAUDX_STATE,"exhausted.json"),{});
+            const now=Math.floor(Date.now()/1000);
+            let best=null;
+            for(const a of acc){
+              const uu=u[a.name]||{};const ee=e[a.name]||{};
+              const cands=[];
+              if(uu._retry_at&&uu._retry_at>now)cands.push(uu._retry_at);
+              if(ee.until&&ee.until>now)cands.push(ee.until);
+              if(uu.session_pct>=95&&uu.session_resets){const t=Math.floor(new Date(uu.session_resets).getTime()/1000);if(t>now)cands.push(t)}
+              if(uu.week_all_pct>=100&&uu.week_resets){const t=Math.floor(new Date(uu.week_resets).getTime()/1000);if(t>now)cands.push(t)}
+              if(cands.length===0)continue;
+              const t=Math.min(...cands);
+              if(!best||t<best.t)best={name:a.name,t};
+            }
+            if(!best)console.log("none\t0"); else console.log(best.name+"\t"+best.t);
+            ' 2>/dev/null)
+        _nname=$(printf '%s' "$_next" | awk -F'\t' '{print $1}')
+        _ntime=$(printf '%s' "$_next" | awk -F'\t' '{print $2+0}')
+        _delta=$((${_ntime:-0} - $(date +%s)))
+        if [ "$_delta" -gt 0 ] 2>/dev/null; then
+            _min=$((_delta / 60))
+            _sec=$((_delta % 60))
+            echo "claudx: ABORT — 모든 계정 한도/retry 상태" >&2
+            echo "claudx: earliest=$_nname in ${_min}m${_sec}s (epoch=$_ntime)" >&2
+        else
+            echo "claudx: ABORT — pool empty (usage-cache/accounts.json 점검)" >&2
+        fi
+        echo "claudx: 우회: CLAUDX_ALLOW_EMPTY=1 cl ..." >&2
+        exit 3
+    fi
     info "no acct — using default ~/.claude (pool empty or unreachable)"
 fi
 
@@ -199,6 +251,13 @@ if [ "${CLAUDX_SAFE:-0}" != "1" ] && [ "$show_only" != true ]; then
     if [ $_has_dsp -eq 0 ]; then
         fwd=("--dangerously-skip-permissions" ${fwd[@]+"${fwd[@]}"})
     fi
+fi
+
+# M14 (2026-04-19): .session_defaults plain text 를 매 세션 system prompt 끝에 무손실 주입.
+# 파일 자체가 inject 텍스트 — cat 만 사용 (변환·파싱 0). NEXUS_SESSION_LAX=1 우회.
+SD_FILE="$CX_ROOT/.session_defaults"
+if [ "${NEXUS_SESSION_LAX:-0}" != "1" ] && [ -f "$SD_FILE" ] && [ "$show_only" != true ]; then
+    fwd=("--append-system-prompt" "$(cat "$SD_FILE")" ${fwd[@]+"${fwd[@]}"})
 fi
 
 # --- delegate to cx (host routing + ssh + env forward patched for claudx M13) ---
