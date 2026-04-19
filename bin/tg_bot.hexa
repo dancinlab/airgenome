@@ -399,6 +399,14 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
         return "[DRY] 디스패치 예정: " + text
     }
     let timeout_s = to_string(cfg.dispatch_timeout)
+    // Mac 에는 기본 timeout binary 없음 (homebrew 가 /opt/homebrew/bin/timeout 제공).
+    // Linux bash 의 'timeout' literal → non-interactive bash -lc 에서 PATH 누락 시 'not found'.
+    // 해결: uname=Darwin 이면 '/opt/homebrew/bin/timeout' 또는 fallback 경로 사용.
+    let mut timeout_bin = "timeout"
+    if uname_s() == "Darwin" {
+        let tc = exec("command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || ls /opt/homebrew/bin/timeout 2>/dev/null || echo").trim()
+        if tc != "" && to_string(tc) != "void" { timeout_bin = tc }
+    }
     let dispatch_mode = cfg.dispatch
     // Resolve bin at call-time — tg.json 값은 Mac 절대경로일 수 있으므로
     // ubu1/ubu2 (Linux) 에서 실행 중이면 후보 리스트에서 매칭되는 첫 유효 경로 사용.
@@ -430,7 +438,7 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
         //       문제 완전 우회. 컨테이너 credential stale + Mac default claude /login 부재 모두 우회.
         // bash -lc → interactive shell PATH (~/.local/bin) 로드. ServerAlive 로 hang 방지.
         cmd = "ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 mac "
-            + "'bash -lc \"timeout " + timeout_s + " /Users/ghost/Dev/airgenome/bin/claudx -p "
+            + "'bash -lc \"export PATH=/opt/homebrew/bin:\\$HOME/.local/bin:\\$PATH; timeout " + timeout_s + " /Users/ghost/Dev/airgenome/bin/claudx -p "
             + "\\\"$(cat '" + mac_tmp + "')\\\" --max-turns 1 2>&1\"' 2>&1; echo _RC_=$?"
     } else if dispatch_mode == "cx" {
         // Mac bot → local claudx (pool rotation + cx auto-pick, no host force).
@@ -439,7 +447,7 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
         let mut claudx_bin = HOME + "/Dev/airgenome/bin/claudx"
         let agroot = env("AIRGENOME")
         if agroot != "" { claudx_bin = agroot + "/bin/claudx" }
-        cmd = "timeout " + timeout_s + " '" + claudx_bin + "' -p "
+        cmd = "'" + timeout_bin + "' " + timeout_s + " '" + claudx_bin + "' -p "
             + "\"$(cat '" + tmp + "')\" --max-turns 1 2>&1; echo _RC_=$?"
     } else {
         // dispatch=cl (Mac 전용 경로 — Linux bot 은 cx 권장).
