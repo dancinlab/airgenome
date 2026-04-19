@@ -83,25 +83,39 @@ fn uname_s() -> str {
 // Multi-host binary resolution — 2026-04-20.
 // 문제: tg.json 의 claude_bin/cx_bin 이 Mac 절대경로 (/Users/ghost/.local/bin/claude) 이지만
 //       ubu/ubu2 에서 tg_bot 이 실행되면 sshfs mount 를 통해 그 경로로 bash 가 읽기 성공
-//       → Mac Mach-O binary 를 Linux sh 가 해석 → `Syntax error: "(" unexpected`.
-// 해결: 후보 경로 순회, Linux 에서는 /Users/ghost/* 스킵, 첫 유효 경로 반환.
+//       → Mac Mach-O binary / bash-shim 을 Linux sh 가 해석 → `Syntax error: "(" unexpected`.
+// 해결: 후보 경로 순회, Linux 에서는 /Users/ghost/* 스킵, 첫 `test -x` 통과 경로 반환.
 // 실패 시 PATH 에 있는 `command -v <name>` 로 마지막 해결 시도. 모두 실패 시 원본 반환.
+//
+// 후보 우선순위 (Mac → 첫 번째 후보 = tg.json 값으로 즉시 매칭되어 기존 동작 유지):
+//   1. tg.json 지정값 (raw)
+//   2. $AIRGENOME_ROOT/bin/<name>      — 환경변수 세팅 시 (repo 내 script, 크로스플랫폼)
+//   3. $HOME/Dev/airgenome/bin/<name>  — Mac 기본 repo 경로
+//   4. $HOME/mac_home/Dev/airgenome/bin/<name> — ubu sshfs mount 경로
+//   5. /opt/airgenome/bin/<name>       — 시스템 설치 경로
+//   6. /usr/local/bin/<name>
+//   7. $HOME/.local/bin/<name>
+//   8. command -v <name>               — PATH 의존
 fn resolve_bin(name: str, raw: str) -> str {
     let os = uname_s()
     let is_darwin = os == "Darwin"
-    let repo_guess = HOME + "/Dev/airgenome/bin/" + name
+    let ag_root = env("AIRGENOME_ROOT")
+    let mut ag_root_cand = ""
+    if ag_root != "" { ag_root_cand = ag_root + "/bin/" + name }
     let candidates = [
         raw,
-        HOME + "/.local/bin/" + name,
-        "/usr/local/bin/" + name,
+        ag_root_cand,
+        HOME + "/Dev/airgenome/bin/" + name,
+        HOME + "/mac_home/Dev/airgenome/bin/" + name,
         "/opt/airgenome/bin/" + name,
-        repo_guess
+        "/usr/local/bin/" + name,
+        HOME + "/.local/bin/" + name
     ]
     let mut i = 0
     while i < len(candidates) {
         let cand = candidates[i]
         if cand != "" {
-            // Linux 에서 /Users/ghost/* 는 Mac shim 위험 → skip
+            // Linux 에서 /Users/ghost/* 는 Mac shim/Mach-O 위험 → skip
             let mut skip = false
             if !is_darwin {
                 // hexa-lang: 문자열 시작 검사는 str_sub 으로.
@@ -366,17 +380,19 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
     }
     let timeout_s = to_string(cfg.dispatch_timeout)
     let dispatch_mode = cfg.dispatch
-    let claude = cfg.claude_bin
-    let cx = cfg.cx_bin
-    // Pre-flight: verify resolved bin is executable on this host (multi-host guard).
-    // Linux 에서 Mac shim 을 실수로 실행하지 않도록 resolve_bin 이 이미 걸러냈지만,
-    // 결과가 여전히 비실행 파일이면 여기서 안전하게 실패.
-    let active_bin = claude
+    // Resolve bin at call-time — tg.json 값은 Mac 절대경로일 수 있으므로
+    // ubu/ubu2 (Linux) 에서 실행 중이면 후보 리스트에서 매칭되는 첫 유효 경로 사용.
+    let claude = resolve_bin("claude", cfg.claude_bin)
+    let cx = resolve_bin("cx", cfg.cx_bin)
+    let mut active_bin = claude
     if dispatch_mode == "cx" { active_bin = cx }
+    log_line("INFO", "dispatch mode=" + dispatch_mode + " bin=" + active_bin + " host=" + host_name() + " os=" + uname_s())
+    // Pre-flight: verify resolved bin is executable on this host (multi-host guard).
+    // resolve_bin 이 이미 test -x 로 걸렀지만, 모든 후보 실패 시 raw 를 반환하므로 재확인.
     let bin_ok = exec("test -x '" + active_bin + "' && echo y || echo n").trim()
     if bin_ok != "y" {
         log_line("WARN", "dispatch abort — bin not executable: " + active_bin)
-        return "dispatch 실패: " + dispatch_mode + " 바이너리 실행불가 (" + active_bin + ") — host=" + host_name() + " os=" + uname_s()
+        return "❌ dispatch 실패: " + dispatch_mode + " 바이너리 실행불가 (" + active_bin + ") — host=" + host_name() + " os=" + uname_s() + "\n후보 경로 중 어느 것도 실행 가능하지 않음. tg.json claude_bin/cx_bin 또는 $AIRGENOME_ROOT 확인 필요."
     }
     // Write text to temp file (hexa exec heredoc quirk — the shell body leaks
     // into captured stdout when using <<'TAG'\n...\nTAG\n patterns).
@@ -384,16 +400,43 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
     let _ = write_file(tmp, text)
     let mut cmd = ""
     if dispatch_mode == "cx" {
-        cmd = "NO_CLAUDX=1 timeout " + timeout_s + " " + cx
-            + " --docker --force-host ubu -p \"$(cat '" + tmp + "')\" 2>&1"
+        cmd = "NO_CLAUDX=1 timeout " + timeout_s + " '" + cx + "'"
+            + " --docker --force-host ubu1 -p \"$(cat '" + tmp + "')\" 2>&1; echo _RC_=$?"
     } else {
-        cmd = "NO_CLAUDX=1 timeout " + timeout_s + " " + claude
-            + " -p \"$(cat '" + tmp + "')\" --max-turns 1 2>&1"
+        cmd = "NO_CLAUDX=1 timeout " + timeout_s + " '" + claude + "'"
+            + " -p \"$(cat '" + tmp + "')\" --max-turns 1 2>&1; echo _RC_=$?"
     }
-    cmd = cmd + "; rm -f '" + tmp + "'"
+    cmd = cmd + "; rm -f '" + tmp + "' 2>/dev/null"
     let out = exec(cmd)
     if to_string(out) == "void" { return "(디스패치 결과 void)" }
-    return out
+    let trimmed = out.trim()
+    // Split off the _RC_=<n> tail (last line) and diagnose failure.
+    let lines = trimmed.split("\n")
+    let mut rc = "?"
+    let mut body = ""
+    let mut j = 0
+    while j < len(lines) {
+        let ln = lines[j]
+        if j == len(lines) - 1 && ln.contains("_RC_=") {
+            // extract digits after _RC_=
+            let kv = ln.split("=")
+            if len(kv) >= 2 { rc = kv[1].trim() }
+        } else {
+            if body == "" { body = ln } else { body = body + "\n" + ln }
+        }
+        j = j + 1
+    }
+    if rc == "0" {
+        if body == "" { return "(빈 응답)" }
+        return body
+    }
+    // Non-zero RC — surface stderr to telegram (원래 '⏳' 후 침묵 문제 해결).
+    log_line("ERROR", "dispatch rc=" + rc + " bin=" + active_bin + " body=" + truncate(body, 200))
+    let mut reason = ""
+    if body.contains("Syntax error") {
+        reason = "\n\n(Mac bash-shim 을 Linux 가 해석 실패 — AIRGENOME_ROOT 또는 tg.json cx_bin 설정 확인)"
+    }
+    return "❌ dispatch 실패 (rc=" + rc + ", bin=" + active_bin + ")\n\n" + body + reason
 }
 
 // ═══════════════════════════════════════════════════════════════════════

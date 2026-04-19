@@ -1,0 +1,517 @@
+#!/usr/bin/env bash
+# bin/airgenome-init — 단일 커맨드 완정성 부트스트랩.
+#
+# 목적: "수작업 절대 없이" host 를 맨 땅부터 운영 상태까지 끌어올린다.
+#       - Mac: 17 개 LaunchAgent 전체를 ~/Library/LaunchAgents 에 복사 +
+#              bootout → bootstrap → kickstart 재등록.
+#       - 원격 (ubu/ubu2/htz): 코드 tar-pipe 배포 → systemd unit/slice 전파 →
+#              daemon-reload → enable/start (runaway/tg/claude) →
+#              sshd drop-in (sshd 우선순위 상승) → docker 이미지 pull +
+#              airgenome-claude 컨테이너 기동 + authorized_keys docker cp.
+#
+# 사용:
+#   airgenome-init                       # --target=mac (기본)
+#   airgenome-init --target=mac
+#   airgenome-init --target=ubu1         # 또는 ubu2 / htz
+#   airgenome-init --target=all          # mac + 원격 3개 전부
+#   airgenome-init --dry-run             # 실제 변경 없이 수행 예정 동작 출력
+#   airgenome-init --force               # 오류 무시하고 다음 단계 진행
+#   airgenome-init --continue-on-error   # --force 의 긴 별칭
+#   airgenome-init --skip-docker         # (원격) docker 관련 단계 스킵
+#   airgenome-init --help
+#
+# SSOT:
+#   shared/config/hosts.json            — ip / ssh_user / ssh_key
+#   shared/launchagents/*.plist         — Mac LaunchAgent (전수)
+#   shared/systemd/*.{service,timer,slice}  — Linux unit
+#   shared/systemd/ssh.service.d/override.conf
+#   $HOME/.airgenome/docker_authorized_keys  — 컨테이너 sshd 용 pubkey set
+#
+# 멱등성: 이미 설치된 상태에서 재실행해도 무해 (bootout 이 선행, daemon-reload
+#         이후 enable --now 가 idempotent). 실패 단계는 PASS/FAIL 카운트로 보고.
+
+set -uo pipefail    # -e 는 쓰지 않는다: 단계별 실패는 카운트로 기록, --force 시 계속 진행.
+
+# ── 경로 결정 ─────────────────────────────────────────────────────────────────
+if [ -n "${AIRGENOME_ROOT:-}" ]; then
+    ROOT="$AIRGENOME_ROOT"
+else
+    SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+    ROOT="$(cd "$SELF_DIR/.." && pwd)"
+fi
+[ -d "$ROOT" ] || { echo "airgenome-init: ROOT not found ($ROOT)" >&2; exit 2; }
+
+HOSTS_JSON="$ROOT/shared/config/hosts.json"
+PLIST_SRC="$ROOT/shared/launchagents"
+SYSTEMD_SRC="$ROOT/shared/systemd"
+
+# ── 로그 / 색상 ───────────────────────────────────────────────────────────────
+if [ -t 2 ]; then
+    C_CYAN='\033[36m'; C_YELLOW='\033[33m'; C_RED='\033[31m'
+    C_GREEN='\033[32m'; C_GRAY='\033[90m'; C_RESET='\033[0m'
+else
+    C_CYAN=''; C_YELLOW=''; C_RED=''; C_GREEN=''; C_GRAY=''; C_RESET=''
+fi
+
+log()   { printf "${C_CYAN}[init]${C_RESET} %s\n" "$*" >&2; }
+info()  { printf "${C_GRAY}  %s${C_RESET}\n" "$*" >&2; }
+warn()  { printf "${C_YELLOW}[init WARN]${C_RESET} %s\n" "$*" >&2; }
+err()   { printf "${C_RED}[init ERR]${C_RESET} %s\n" "$*" >&2; }
+ok()    { printf "${C_GREEN}[init OK]${C_RESET} %s\n" "$*" >&2; }
+
+# ── argv 파싱 ────────────────────────────────────────────────────────────────
+TARGET="mac"
+DRY_RUN=0
+FORCE=0
+SKIP_DOCKER=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --target=*)   TARGET="${1#*=}"; shift ;;
+        --target)     TARGET="$2"; shift 2 ;;
+        --dry-run|-n) DRY_RUN=1; shift ;;
+        --force|--continue-on-error) FORCE=1; shift ;;
+        --skip-docker) SKIP_DOCKER=1; shift ;;
+        -h|--help)
+            sed -n '3,32p' "$0"
+            exit 0 ;;
+        *) err "unknown arg: $1"; exit 2 ;;
+    esac
+done
+
+# hosts.json alias → registry key 매핑.
+# hosts.json 이 키를 변경할 수 있으므로 (ubu → ubu1 등), short_code 역매핑을 우선 시도.
+resolve_host_key() {
+    local raw="$1"
+    # 1. 직접 키 매치
+    if jq -e --arg k "$raw" '.hosts[$k]' "$HOSTS_JSON" >/dev/null 2>&1; then
+        printf '%s' "$raw"
+        return
+    fi
+    # 2. short_code 필드 역매핑
+    local found
+    found=$(jq -r --arg c "$raw" '.hosts | to_entries | map(select(.value.short_code == $c)) | .[0].key // ""' "$HOSTS_JSON" 2>/dev/null)
+    if [ -n "$found" ] && [ "$found" != "null" ]; then
+        printf '%s' "$found"
+        return
+    fi
+    # 3. legacy alias fallback
+    case "$raw" in
+        ubu) printf 'ubu1' ;;
+        hetzner) printf 'htz' ;;
+        *) printf '%s' "$raw" ;;
+    esac
+}
+
+# ── 카운터 ───────────────────────────────────────────────────────────────────
+STEP_PASS=0
+STEP_FAIL=0
+STEP_SKIP=0
+TOTAL_ERRORS=0
+
+step_pass() { STEP_PASS=$((STEP_PASS+1)); }
+step_fail() {
+    STEP_FAIL=$((STEP_FAIL+1))
+    TOTAL_ERRORS=$((TOTAL_ERRORS+1))
+    if [ "$FORCE" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+        err "step failed; use --force to continue past errors: $*"
+        exit_summary 1
+    fi
+}
+step_skip() { STEP_SKIP=$((STEP_SKIP+1)); }
+
+run() {
+    # run <desc> <cmd...> — DRY_RUN 일 땐 echo, 아니면 실행.
+    local desc="$1"; shift
+    if [ "$DRY_RUN" -eq 1 ]; then
+        info "[DRY] $desc"
+        info "      \$ $*"
+        step_pass
+        return 0
+    fi
+    info "$desc"
+    if "$@"; then
+        step_pass
+        return 0
+    else
+        local rc=$?
+        step_fail "$desc (rc=$rc)"
+        return $rc
+    fi
+}
+
+run_sh() {
+    # run_sh <desc> <shell-string> — 복잡한 파이프/subshell 용.
+    local desc="$1" cmd="$2"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        info "[DRY] $desc"
+        info "      \$ $cmd"
+        step_pass
+        return 0
+    fi
+    info "$desc"
+    if bash -c "$cmd"; then
+        step_pass
+        return 0
+    else
+        local rc=$?
+        step_fail "$desc (rc=$rc)"
+        return $rc
+    fi
+}
+
+exit_summary() {
+    local rc="${1:-0}"
+    log "────────────────────────────────────────────────────────"
+    log "summary: PASS=$STEP_PASS  FAIL=$STEP_FAIL  SKIP=$STEP_SKIP  errors=$TOTAL_ERRORS"
+    if [ "$TOTAL_ERRORS" -gt 0 ]; then
+        warn "일부 단계에서 오류가 발생했습니다. 로그를 확인하세요."
+    else
+        ok "airgenome init 완료 (target=$TARGET)"
+    fi
+    exit "$rc"
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Mac 부트스트랩
+# ═════════════════════════════════════════════════════════════════════════════
+init_mac() {
+    log "─── Mac 부트스트랩 시작 ───"
+
+    local dst_dir="$HOME/Library/LaunchAgents"
+    local log_dir="$HOME/.airgenome"
+
+    if [ "$(uname -s)" != "Darwin" ]; then
+        warn "현재 호스트가 Darwin 이 아닙니다 — Mac 단계는 의미가 없을 수 있습니다."
+    fi
+
+    run "mkdir LaunchAgents / ~/.airgenome" mkdir -p "$dst_dir" "$log_dir"
+
+    # shared/launchagents/ 내 전수 plist 동적으로 수집 — AGENT_LABELS 하드코딩 회피.
+    local src_list=()
+    if [ -d "$PLIST_SRC" ]; then
+        while IFS= read -r -d '' f; do
+            src_list+=("$f")
+        done < <(find "$PLIST_SRC" -maxdepth 1 -type f -name "com.airgenome.*.plist" -print0)
+    fi
+
+    local plist_count=${#src_list[@]}
+    if [ "$plist_count" -eq 0 ]; then
+        warn "shared/launchagents/*.plist 를 찾지 못했습니다 ($PLIST_SRC)"
+        step_skip
+        return
+    fi
+    log "총 $plist_count 개 LaunchAgent 발견"
+
+    local uid; uid="$(id -u)"
+
+    local installed=0
+    local failed_labels=()
+    for src in "${src_list[@]}"; do
+        local base label dst
+        base="$(basename "$src")"
+        label="${base%.plist}"
+        dst="$dst_dir/$base"
+
+        info "▸ $label"
+
+        if [ "$DRY_RUN" -eq 1 ]; then
+            info "  [DRY] cp $src → $dst"
+            info "  [DRY] launchctl bootout gui/$uid/$label"
+            info "  [DRY] launchctl bootstrap gui/$uid $dst"
+            info "  [DRY] launchctl kickstart -k gui/$uid/$label"
+            installed=$((installed+1))
+            step_pass
+            continue
+        fi
+
+        if ! cp -f "$src" "$dst" 2>/dev/null; then
+            err "  cp 실패 — $src"
+            failed_labels+=("$label")
+            step_fail "cp $label"
+            continue
+        fi
+
+        # bootout (이미 로드돼 있으면 제거) — 실패 허용.
+        launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+        # KeepAlive 지속형 (menubar 등) 은 bootout 이 async — sleep 유예.
+        sleep 1
+        # bootstrap — 실패는 경고.
+        if ! launchctl bootstrap "gui/$uid" "$dst" >/dev/null 2>&1; then
+            warn "  bootstrap 실패 (이미 로드됐거나 plist 오류): $label"
+            failed_labels+=("$label")
+            step_fail "bootstrap $label"
+            continue
+        fi
+        # kickstart -k — 즉시 재시작 (idempotent).
+        launchctl kickstart -k "gui/$uid/$label" >/dev/null 2>&1 || true
+        installed=$((installed+1))
+        step_pass
+    done
+
+    ok "Mac LaunchAgent 설치: $installed / $plist_count (실패=${#failed_labels[@]})"
+    if [ "${#failed_labels[@]}" -gt 0 ]; then
+        warn "실패한 label: ${failed_labels[*]}"
+    fi
+
+    # 선택: docker_authorized_keys SSOT 존재 확인 (원격 단계에서 사용).
+    if [ ! -r "$HOME/.airgenome/docker_authorized_keys" ]; then
+        warn "~/.airgenome/docker_authorized_keys 없음 — 원격 컨테이너 sshd pubkey 가 누락될 수 있음"
+    fi
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 원격 부트스트랩 (ubu/ubu2/htz)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# jq 로 hosts.json 필드 뽑기.
+host_field() {
+    local h="$1" f="$2" v
+    v=$(jq -r --arg h "$h" --arg f "$f" '.hosts[$h][$f] // ""' "$HOSTS_JSON" 2>/dev/null || echo "")
+    [ "$v" = "null" ] && v=""
+    printf '%s' "$v"
+}
+
+# (ip user key) 3-tuple — 실패 시 rc=1.
+host_resolve() {
+    local h="$1" ip user key
+    ip="$(host_field "$h" ip)"
+    [ -z "$ip" ] && { warn "$h: hosts.json .ip 비어있음"; return 1; }
+    user="$(host_field "$h" ssh_user)"
+    [ -z "$user" ] && user="root"
+    key="$(host_field "$h" ssh_key)"
+    [ -z "$key" ] && key="$HOME/.ssh/id_ed25519"
+    key="${key/#\~/$HOME}"
+    # $HOME 리터럴 expand (hosts.json 에 $HOME 문자열이 들어있는 케이스).
+    key="${key//\$HOME/$HOME}"
+    if [ ! -r "$key" ]; then
+        warn "$h: ssh_key '$key' 읽을 수 없음"
+        return 1
+    fi
+    printf '%s %s %s' "$ip" "$user" "$key"
+}
+
+SSH_OPTS_BASE=(-o ConnectTimeout=8 -o BatchMode=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no)
+
+REMOTE_ROOT="/opt/airgenome"   # systemd unit 들이 WorkingDirectory=/opt/airgenome 기대.
+REMOTE_SYMLINK="/root/Dev/airgenome"
+
+init_remote() {
+    local h="$1"
+    log "─── 원격 부트스트랩 시작 ($h) ───"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        err "jq 미설치 — hosts.json 파싱 불가"
+        step_fail "jq missing"
+        return 1
+    fi
+
+    local tuple ip user key
+    tuple="$(host_resolve "$h")" || { step_fail "$h hosts.json resolve"; return 1; }
+    read -r ip user key <<< "$tuple"
+    local target="${user}@${ip}"
+    log "target: $target  key: $key"
+
+    local ssh=(ssh -i "$key" "${SSH_OPTS_BASE[@]}" "$target")
+    local scp=(scp -i "$key" "${SSH_OPTS_BASE[@]}")
+
+    # 1. ssh 도달성 + 원격 디렉토리 준비.
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if ! "${ssh[@]}" true 2>/dev/null; then
+            err "ssh 도달 실패 — $target"
+            step_fail "ssh $h"
+            return 1
+        fi
+        step_pass
+    else
+        info "[DRY] ssh 도달성 확인"
+        step_pass
+    fi
+
+    run_sh "원격 디렉토리 생성 ($REMOTE_ROOT)" \
+        "${ssh[*]} 'mkdir -p $REMOTE_ROOT $(dirname $REMOTE_SYMLINK) /etc/systemd/system/ssh.service.d /var/log'"
+
+    # 2. 코드 tar-pipe 전파 (airgenome-sync 와 동일 pattern).
+    local tar_excludes=(
+        --exclude=.git
+        --exclude='*.log'
+        --exclude=.DS_Store
+        --exclude=__pycache__
+        --exclude=build/artifacts
+        --exclude=archive
+        --exclude='forge/*.jsonl'
+        --exclude=node_modules
+        --exclude='*.tmp'
+    )
+    if [ "$DRY_RUN" -eq 1 ]; then
+        info "[DRY] tar -C $ROOT … | ssh $target 'tar -C $REMOTE_ROOT -xf -'"
+        step_pass
+    else
+        info "tar-pipe $ROOT → $target:$REMOTE_ROOT"
+        if tar -C "$ROOT" "${tar_excludes[@]}" -cf - . \
+            | "${ssh[@]}" "tar -C '$REMOTE_ROOT' -xf - --overwrite" 2>&1 \
+            | tail -5; then
+            step_pass
+        else
+            step_fail "tar-pipe $h"
+        fi
+    fi
+
+    # /root/Dev/airgenome symlink (airgenome-sync 가 기대하는 경로 호환).
+    run_sh "/root/Dev/airgenome symlink → $REMOTE_ROOT" \
+        "${ssh[*]} 'ln -sfn $REMOTE_ROOT $REMOTE_SYMLINK'"
+
+    # 3. systemd unit 파일 배포 (service + timer + slice + ssh drop-in).
+    if [ "$DRY_RUN" -eq 1 ]; then
+        info "[DRY] systemd unit 파일 배포 (service/timer/slice) → /etc/systemd/system/"
+        step_pass
+    else
+        local units=()
+        while IFS= read -r -d '' u; do
+            units+=("$u")
+        done < <(find "$SYSTEMD_SRC" -maxdepth 1 -type f \( -name '*.service' -o -name '*.timer' -o -name '*.slice' \) -print0)
+        local unit_count=${#units[@]}
+        info "systemd unit 파일 ${unit_count} 개 발견 → 배포"
+        if [ "$unit_count" -gt 0 ]; then
+            if "${scp[@]}" "${units[@]}" "${target}:/etc/systemd/system/" 2>&1 | tail -3; then
+                step_pass
+            else
+                step_fail "scp unit files"
+            fi
+        else
+            step_skip
+        fi
+    fi
+
+    # sshd 우선순위 drop-in 배포.
+    local ssh_override="$SYSTEMD_SRC/ssh.service.d/override.conf"
+    if [ -r "$ssh_override" ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            info "[DRY] scp $ssh_override → /etc/systemd/system/ssh.service.d/airgenome.conf"
+            step_pass
+        else
+            if "${scp[@]}" "$ssh_override" "${target}:/etc/systemd/system/ssh.service.d/airgenome.conf" 2>&1 | tail -2; then
+                step_pass
+            else
+                step_fail "scp sshd drop-in"
+            fi
+        fi
+    else
+        warn "ssh.service.d/override.conf 없음 — sshd 우선순위 상승 생략"
+        step_skip
+    fi
+
+    # 4. systemctl daemon-reload + restart ssh + enable/start 핵심 service.
+    run_sh "systemctl daemon-reload" \
+        "${ssh[*]} 'systemctl daemon-reload'"
+
+    run_sh "systemctl restart ssh (drop-in 적용)" \
+        "${ssh[*]} 'systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true'"
+
+    # airgenome-runaway: hexa 바이너리 존재 여부 확인 필요하지만 enable 만이라도 시도.
+    run_sh "enable/start airgenome-runaway.service" \
+        "${ssh[*]} 'systemctl enable --now airgenome-runaway.service 2>&1 | tail -3 || true; systemctl is-active airgenome-runaway.service || true'"
+
+    # airgenome-tg: system-level 로 enable (user unit 아님 — shared/systemd/airgenome-tg.service 는 system).
+    run_sh "enable/start airgenome-tg.service" \
+        "${ssh[*]} 'systemctl enable --now airgenome-tg.service 2>&1 | tail -3 || true'"
+
+    # systemd timer 들 (build/git-sync/log-rotate/harvest/label/forecast/pull/forecast).
+    run_sh "enable --now 주요 timer" \
+        "${ssh[*]} 'for t in airgenome-build.timer airgenome-git-sync.timer airgenome-log-rotate.timer airgenome-harvest.timer airgenome-label.timer airgenome-forecast.timer airgenome-pull.timer; do systemctl enable --now \$t 2>/dev/null || true; done; systemctl list-timers airgenome-\* --no-pager 2>/dev/null | head -10'"
+
+    # 5. Docker + airgenome-claude 컨테이너 (SKIP_DOCKER 아닐 때).
+    if [ "$SKIP_DOCKER" -eq 1 ]; then
+        warn "--skip-docker — docker 단계 생략"
+        step_skip
+    else
+        # docker 존재 확인 → 없으면 경고 + 스킵.
+        local has_docker="n"
+        if [ "$DRY_RUN" -eq 0 ]; then
+            has_docker="$("${ssh[@]}" 'command -v docker >/dev/null 2>&1 && echo y || echo n' 2>/dev/null || echo n)"
+            has_docker="${has_docker//[^yn]/}"
+        else
+            has_docker="y"
+        fi
+
+        if [ "$has_docker" != "y" ]; then
+            warn "$h: docker 미설치 — airgenome-claude 컨테이너 단계 건너뜀"
+            step_skip
+        else
+            # ghcr 이미지 pull (이미 있으면 캐시 HIT).
+            run_sh "docker pull ghcr.io/need-singularity/airgenome:dev-sshd" \
+                "${ssh[*]} 'docker pull ghcr.io/need-singularity/airgenome:dev-sshd 2>&1 | tail -5 || sudo -n docker pull ghcr.io/need-singularity/airgenome:dev-sshd 2>&1 | tail -5 || true'"
+
+            # airgenome-claude.service enable --now — bin/airgenome-claude-run 이
+            # 내부적으로 rm -f + pull + docker run 까지 수행 (idempotent).
+            run_sh "enable/start airgenome-claude.service" \
+                "${ssh[*]} 'systemctl enable --now airgenome-claude.service 2>&1 | tail -3 || true; systemctl is-active airgenome-claude.service || true'"
+
+            # authorized_keys docker cp — Mac SSOT → 컨테이너.
+            local auth_src="$HOME/.airgenome/docker_authorized_keys"
+            if [ -r "$auth_src" ]; then
+                if [ "$DRY_RUN" -eq 1 ]; then
+                    info "[DRY] scp $auth_src → $target:/tmp/docker_auth_keys"
+                    info "[DRY] ssh $target 'docker cp /tmp/docker_auth_keys airgenome-claude:/root/.ssh/authorized_keys'"
+                    step_pass
+                else
+                    if "${scp[@]}" "$auth_src" "${target}:/tmp/airgenome_docker_auth_keys" 2>&1 | tail -2; then
+                        # 컨테이너 기동 완료까지 잠깐 유예.
+                        "${ssh[@]}" 'for i in 1 2 3 4 5; do docker ps --format "{{.Names}}" 2>/dev/null | grep -q "^airgenome-claude$" && break; sleep 2; done' >/dev/null 2>&1 || true
+                        if "${ssh[@]}" "
+                            docker cp /tmp/airgenome_docker_auth_keys airgenome-claude:/root/.ssh/authorized_keys 2>/dev/null \
+                              || sudo -n docker cp /tmp/airgenome_docker_auth_keys airgenome-claude:/root/.ssh/authorized_keys 2>/dev/null \
+                              || true
+                            docker exec airgenome-claude chown root:root /root/.ssh/authorized_keys 2>/dev/null \
+                              || sudo -n docker exec airgenome-claude chown root:root /root/.ssh/authorized_keys 2>/dev/null \
+                              || true
+                            docker exec airgenome-claude chmod 600 /root/.ssh/authorized_keys 2>/dev/null \
+                              || sudo -n docker exec airgenome-claude chmod 600 /root/.ssh/authorized_keys 2>/dev/null \
+                              || true
+                            rm -f /tmp/airgenome_docker_auth_keys
+                        "; then
+                            step_pass
+                        else
+                            step_fail "docker cp authorized_keys"
+                        fi
+                    else
+                        step_fail "scp authorized_keys"
+                    fi
+                fi
+            else
+                warn "~/.airgenome/docker_authorized_keys 없음 — 컨테이너 sshd pubkey 생략"
+                step_skip
+            fi
+        fi
+    fi
+
+    ok "원격 부트스트랩 완료: $h"
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 라우팅
+# ═════════════════════════════════════════════════════════════════════════════
+log "airgenome-init target=$TARGET dry_run=$DRY_RUN force=$FORCE skip_docker=$SKIP_DOCKER"
+log "ROOT=$ROOT"
+
+if [ "$TARGET" = "all" ]; then
+    init_mac
+    # hosts.json 에서 enabled=true 이고 kind!=self 인 전 호스트 동적 추출.
+    mapfile -t REMOTE_HOSTS < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self")) | .[].key' "$HOSTS_JSON" 2>/dev/null)
+    if [ "${#REMOTE_HOSTS[@]}" -eq 0 ]; then
+        warn "원격 호스트 없음 — hosts.json 확인"
+    fi
+    for h in "${REMOTE_HOSTS[@]}"; do
+        init_remote "$h" || warn "host $h 부트스트랩 일부 실패 — 계속 진행"
+    done
+elif [ "$TARGET" = "mac" ]; then
+    init_mac
+else
+    key="$(resolve_host_key "$TARGET")"
+    if [ "$key" = "mac" ]; then
+        init_mac
+    else
+        init_remote "$key" || true
+    fi
+fi
+
+exit_summary 0

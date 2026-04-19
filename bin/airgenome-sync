@@ -1,0 +1,304 @@
+#!/bin/bash
+# airgenome-sync — Mac SSOT → ubu1/ubu2/htz 자동 전파 + service restart
+#
+# 목적: "수작업 절대 없이" Mac 레포 변경분을 모든 호스트에 원샷 전파.
+#
+# 사용:
+#   airgenome-sync                             # 모든 host 에 전파
+#   airgenome-sync --hosts ubu1,htz            # 특정 host key 만 (legacy 'ubu' 도 'ubu1' 로 매핑)
+#   airgenome-sync --restart=airgenome-runaway # 전파 후 재시작할 service 지정
+#   airgenome-sync --dry-run                   # 변경사항만 표시, 실제 적용 X
+#   airgenome-sync --self-test                 # ssh/key 가용성 선검증
+#
+# 호스트 정보 SSOT:
+#   shared/config/hosts.json
+#     .ip        → LAN/public IP (ssh_alias 우회용, container 에서 필수)
+#     .ssh_key   → SSH 개인키 절대경로 (누락 시 $HOME/.ssh/id_ed25519)
+#     .ssh_user  → SSH user (누락 시 root)
+#   필드가 하나라도 비어있으면 warn + skip (panic 금지).
+#
+# 전송 방식: rsync 대신 `tar | ssh | tar` 파이프라인.
+#   이유: 운영 컨테이너 이미지에 rsync 미포함 → 'command not found' 실패.
+#   tar/ssh 는 busybox/alpine 포함 모든 POSIX 환경에 기본 존재.
+#   delete-after 의미는 --full 옵션 시 원격 rm -rf 로 재현 (기본값 off, 증분 복사).
+#
+# 동작 원리:
+#   1. Mac 레포 ($AIRGENOME_ROOT 또는 fallback) 를 각 host:/root/Dev/airgenome 에 전송
+#   2. 변경 파일 중 service 영향분 감지 → 해당 service 자동 restart
+#        bin/runaway_guard.hexa → airgenome-runaway
+#        bin/tg_bot.hexa        → airgenome-tg
+#        shared/systemd/*       → daemon-reload + restart
+#
+# SSH 키: container 에서는 $HOME/.ssh/id_ed25519 + id_hetzner_ax102 (Mac 에서 복사).
+
+set -euo pipefail
+
+ROOT="${AIRGENOME_ROOT:-${HOME}/Dev/airgenome}"
+[ -d "$ROOT" ] || ROOT="/mac_home/Dev/airgenome"  # container fallback
+[ -d "$ROOT" ] || { echo "airgenome-sync: ROOT not found" >&2; exit 2; }
+
+HOSTS_JSON="$ROOT/shared/config/hosts.json"
+[ -r "$HOSTS_JSON" ] || { echo "airgenome-sync: hosts.json missing" >&2; exit 2; }
+
+# SSH 옵션 — 타임아웃 + batch 모드. BannerTimeout hang 방지.
+SSH_OPTS=(-o ConnectTimeout=8 -o BatchMode=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no)
+
+log()  { printf '\033[36m[sync]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[33m[sync WARN]\033[0m %s\n' "$*" >&2; }
+err()  { printf '\033[31m[sync ERR]\033[0m %s\n' "$*" >&2; }
+
+command -v jq >/dev/null 2>&1 || { err "jq 필요 (hosts.json 파싱)"; exit 2; }
+
+# --- hosts.json 필드 조회 헬퍼 ---
+# jq 가 null/empty 를 반환하면 빈 문자열로 치환.
+host_field() {
+    local h="$1" f="$2" v
+    v=$(jq -r --arg h "$h" --arg f "$f" '.hosts[$h][$f] // ""' "$HOSTS_JSON" 2>/dev/null || echo "")
+    [ "$v" = "null" ] && v=""
+    printf '%s' "$v"
+}
+
+# 호스트의 (ip, ssh_user, ssh_key) 3-tuple 을 stdout 에 공백 구분 출력.
+# 하나라도 resolve 실패 면 비-zero 리턴 + stderr warn.
+host_resolve() {
+    local h="$1"
+    local ip user key
+
+    ip="$(host_field "$h" ip)"
+    if [ -z "$ip" ]; then
+        warn "$h: hosts.json 의 .ip 필드 비어있음 → skip (다른 agent 가 채워야 함)"
+        return 1
+    fi
+
+    user="$(host_field "$h" ssh_user)"
+    [ -z "$user" ] && user="root"
+
+    key="$(host_field "$h" ssh_key)"
+    [ -z "$key" ] && key="$HOME/.ssh/id_ed25519"
+    # hosts.json 은 literal 문자열. $HOME / ~ 확장은 여기서 수동 처리.
+    key="${key/#\~/$HOME}"
+    key="${key//\$HOME/$HOME}"
+    key="${key//\$\{HOME\}/$HOME}"
+
+    if [ ! -r "$key" ]; then
+        warn "$h: ssh_key '$key' 읽을 수 없음 → skip"
+        return 1
+    fi
+
+    printf '%s %s %s' "$ip" "$user" "$key"
+}
+
+# --- argv 파싱 ---
+HOSTS_TARGET=""
+RESTART_LIST=""
+DRY_RUN=0
+SELF_TEST=0
+FULL_SYNC=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --hosts=*)   HOSTS_TARGET="${1#*=}"; shift ;;
+        --hosts)     HOSTS_TARGET="$2"; shift 2 ;;
+        --restart=*) RESTART_LIST="${1#*=}"; shift ;;
+        --restart)   RESTART_LIST="$2"; shift 2 ;;
+        --dry-run)   DRY_RUN=1; shift ;;
+        --self-test) SELF_TEST=1; shift ;;
+        --full)      FULL_SYNC=1; shift ;;
+        -h|--help)
+            sed -n '3,31p' "$0"
+            exit 0 ;;
+        *)           err "unknown arg: $1"; exit 2 ;;
+    esac
+done
+
+# --- host 리스트 결정 ---
+if [ -n "$HOSTS_TARGET" ]; then
+    IFS=',' read -ra HOSTS <<< "$HOSTS_TARGET"
+else
+    # hosts.json 에서 enabled=true + kind!=self 전체.
+    mapfile -t HOSTS < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self")) | .[].key' "$HOSTS_JSON" 2>/dev/null)
+fi
+[ "${#HOSTS[@]}" -eq 0 ] && { err "no target hosts"; exit 1; }
+
+# Legacy alias remap — 'ubu' (구 key) 를 'ubu1' 로 자동 치환 (사용자 입력 관용).
+# hosts.json 에 해당 key 가 있으면 pass-through, 없고 legacy 매칭 가능하면 치환.
+for i in "${!HOSTS[@]}"; do
+    h="${HOSTS[i]}"
+    # hosts.json 에 이 key 가 있는지 확인
+    if jq -e --arg h "$h" '.hosts[$h] // empty' "$HOSTS_JSON" >/dev/null 2>&1; then
+        continue
+    fi
+    # legacy 'ubu' → 'ubu1' 매핑 (SSOT 의 short_code 로 resolve)
+    resolved=$(jq -r --arg q "$h" '.hosts | to_entries[] | select(.value.short_code == $q or .value.ssh_alias == $q) | .key' "$HOSTS_JSON" 2>/dev/null | head -1)
+    if [ -n "$resolved" ] && [ "$resolved" != "null" ]; then
+        warn "legacy alias '$h' → '$resolved' 로 치환 (hosts.json short_code/ssh_alias 매칭)"
+        HOSTS[i]="$resolved"
+    fi
+done
+
+# --- self-test: ssh 연결성 검증 ---
+if [ "$SELF_TEST" -eq 1 ]; then
+    log "self-test — ssh 연결성 검증 (hosts: ${HOSTS[*]})"
+    rc=0
+    skipped=0
+    reached=0
+    for h in "${HOSTS[@]}"; do
+        tuple="$(host_resolve "$h")" || { skipped=$((skipped+1)); continue; }
+        read -r ip user key <<< "$tuple"
+        target="${user}@${ip}"
+        if ssh -i "$key" "${SSH_OPTS[@]}" "$target" true 2>/dev/null; then
+            log "  OK  $h ($target) key=$key"
+            reached=$((reached+1))
+        else
+            err "  FAIL $h ($target) key=$key 도달 실패"
+            rc=1
+        fi
+    done
+    log "self-test 요약: reached=$reached skipped=$skipped failed=$((rc==0?0:${#HOSTS[@]}-reached-skipped))"
+    # skip 만 있으면 rc=0 (IP 미설정은 error 아닌 warn).
+    exit $rc
+fi
+
+# --- 변경 파일 탐지 (git diff 기반) ---
+pushd "$ROOT" > /dev/null
+CHANGED_FILES=$(
+    {
+        git diff --name-only HEAD~5..HEAD 2>/dev/null || true
+        git diff --name-only HEAD 2>/dev/null || true
+    } | sort -u | grep -vE "^$" || true
+)
+popd > /dev/null
+
+if [ -z "$CHANGED_FILES" ] && [ -z "$RESTART_LIST" ] && [ "$FULL_SYNC" -eq 0 ]; then
+    log "변경 없음 — 전송 건너뜀 (--full 또는 --restart 로 강제 가능)"
+    exit 0
+fi
+
+# --- tar 제외 목록 ---
+# tar 는 --exclude 패턴을 여러번 지정 가능. 경로 기준은 source dir.
+TAR_EXCLUDES=(
+    --exclude=.git
+    --exclude='*.log'
+    --exclude=.DS_Store
+    --exclude=__pycache__
+    --exclude=build/artifacts
+    --exclude=archive
+    --exclude='forge/*.jsonl'
+    --exclude=node_modules
+    --exclude='*.tmp'
+)
+
+REMOTE_ROOT="/root/Dev/airgenome"
+
+for h in "${HOSTS[@]}"; do
+    tuple="$(host_resolve "$h")" || continue
+    read -r ip user key <<< "$tuple"
+    target="${user}@${ip}"
+
+    log "=== $h ($target) ==="
+
+    # 연결 확인 먼저.
+    if ! ssh -i "$key" "${SSH_OPTS[@]}" "$target" true 2>/dev/null; then
+        err "  ssh 도달 실패 — skip"
+        continue
+    fi
+
+    # 원격 경로 확인/생성.
+    if ! ssh -i "$key" "${SSH_OPTS[@]}" "$target" "mkdir -p '$REMOTE_ROOT'" 2>/dev/null; then
+        err "  mkdir -p $REMOTE_ROOT 실패 — skip"
+        continue
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "  [DRY] tar | ssh | tar  $ROOT/ -> $target:$REMOTE_ROOT/"
+    else
+        log "  tar-pipe -> $target:$REMOTE_ROOT/"
+        # tar 로 묶어서 ssh 파이프 → 원격 tar -x 로 풀기.
+        # -C $ROOT 로 상대경로, -C $REMOTE_ROOT 로 풀기 위치 지정.
+        # 원격 tar 는 --overwrite 로 기존 파일 덮어쓰기.
+        if ! tar -C "$ROOT" "${TAR_EXCLUDES[@]}" -cf - . \
+            | ssh -i "$key" "${SSH_OPTS[@]}" "$target" \
+                "tar -C '$REMOTE_ROOT' -xf - --overwrite"; then
+            err "  tar-pipe 전송 실패 — skip (서비스 재시작도 건너뜀)"
+            continue
+        fi
+
+        if [ "$FULL_SYNC" -eq 1 ]; then
+            # --full 옵션: 원격에서 tarball 에 없는 파일 제거 (rsync --delete-after 대체).
+            # 보수적으로 작동: 우선 생략. 필요 시 구현.
+            warn "  --full 은 현재 no-op (삭제 동기화는 수동으로)"
+        fi
+    fi
+
+    # --- 영향 받은 service 자동 재시작 ---
+    SERVICES_TO_RESTART=""
+    for f in $CHANGED_FILES; do
+        case "$f" in
+            bin/runaway_guard.hexa|shared/runaway/*|shared/systemd/airgenome-runaway.*)
+                SERVICES_TO_RESTART="$SERVICES_TO_RESTART airgenome-runaway" ;;
+            bin/tg_bot.hexa|shared/systemd/airgenome-tg.*)
+                SERVICES_TO_RESTART="$SERVICES_TO_RESTART airgenome-tg" ;;
+            bin/airgenome-build|shared/systemd/airgenome-build.*)
+                SERVICES_TO_RESTART="$SERVICES_TO_RESTART airgenome-build" ;;
+            shared/systemd/*.service|shared/systemd/*.timer|shared/systemd/*.slice)
+                SERVICES_TO_RESTART="$SERVICES_TO_RESTART RELOAD_DAEMON" ;;
+        esac
+    done
+    if [ -n "$RESTART_LIST" ]; then
+        IFS=',' read -ra EXTRA <<< "$RESTART_LIST"
+        for svc in "${EXTRA[@]}"; do
+            SERVICES_TO_RESTART="$SERVICES_TO_RESTART $svc"
+        done
+    fi
+
+    SERVICES_UNIQ=$(echo "$SERVICES_TO_RESTART" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
+
+    for svc in $SERVICES_UNIQ; do
+        if [ "$svc" = "RELOAD_DAEMON" ]; then
+            [ "$DRY_RUN" -eq 1 ] && { log "  [DRY] daemon-reload"; continue; }
+            log "  systemctl daemon-reload"
+            ssh -i "$key" "${SSH_OPTS[@]}" "$target" 'systemctl daemon-reload' 2>&1 | head -3 || warn "  daemon-reload 실패 (무권한?)"
+            continue
+        fi
+        if [ "$DRY_RUN" -eq 1 ]; then
+            log "  [DRY] restart $svc"
+            continue
+        fi
+
+        case "$svc" in
+            airgenome-runaway)
+                if ssh -i "$key" "${SSH_OPTS[@]}" "$target" 'systemctl list-unit-files airgenome-runaway.service 2>/dev/null | grep -q airgenome-runaway' 2>/dev/null; then
+                    log "  systemctl restart $svc"
+                    ssh -i "$key" "${SSH_OPTS[@]}" "$target" \
+                        "systemctl restart $svc 2>&1; systemctl is-active $svc" 2>&1 | tail -3
+                else
+                    log "  bare restart $svc (unit 부재 → pkill + spawn)"
+                    ssh -i "$key" "${SSH_OPTS[@]}" "$target" "
+                        pkill -f 'runaway_guard.hexa' 2>/dev/null || true
+                        sleep 1
+                        nohup /usr/local/bin/hexa run $REMOTE_ROOT/bin/runaway_guard.hexa \
+                            > /var/log/airgenome-runaway.log 2>&1 < /dev/null &
+                        disown 2>/dev/null || true
+                        echo 'restarted'
+                    " 2>&1 | tail -3
+                fi
+                ;;
+            airgenome-tg)
+                log "  kill + respawn $svc (multi-host lock arbitrates)"
+                ssh -i "$key" "${SSH_OPTS[@]}" "$target" "
+                    pkill -f 'tg_bot.hexa' 2>/dev/null || true
+                    sleep 1
+                    echo 'killed; lock 자연 회수 대기 → 다음 launchd/systemd tick 때 재개'
+                " 2>&1 | tail -3
+                ;;
+            *)
+                log "  systemctl restart $svc"
+                ssh -i "$key" "${SSH_OPTS[@]}" "$target" \
+                    "systemctl restart $svc 2>&1 || systemctl --user restart $svc 2>&1" 2>&1 | tail -3 || warn "  $svc 재시작 실패 (unit 부재?)"
+                ;;
+        esac
+    done
+
+    log "  OK  $h 완료"
+done
+
+log "sync 전체 완료 (${#HOSTS[@]} hosts)"

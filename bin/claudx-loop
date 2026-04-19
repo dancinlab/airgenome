@@ -32,6 +32,12 @@ POOL_JS="$CX_ROOT/shared/claudx/pool.js"
 : "${CLAUDX_LOOP_MAX_BURST:=10}"
 : "${CLAUDX_LOOP_BURST_SEC:=60}"
 : "${CLAUDX_LOOP_LOG:=$CLAUDX_STATE/loop.jsonl}"
+# 2026-04-20 — fast-fail circuit breaker. rc!=0 & dur<FASTFAIL_DUR 이 연속
+# FASTFAIL_MAX 회면 복구 불가능한 args/state error 로 간주하고 루프 종료.
+# 없으면 "Not logged in" / "No deferred tool marker" / "--print 입력 누락" 이
+# 영구 silent 재시작 루프를 만든다 (사용자엔 "thinking 없이 무한대기" 로 보임).
+: "${CLAUDX_LOOP_FASTFAIL_MAX:=5}"
+: "${CLAUDX_LOOP_FASTFAIL_DUR:=3}"
 export CLAUDX_STATE CLAUDX_POOL CLAUDX_USAGE
 
 mkdir -p "$CLAUDX_STATE"
@@ -69,6 +75,7 @@ trap on_sig TERM HUP
 iter=0
 burst_t0=$(date +%s)
 burst_count=0
+fastfail_streak=0
 
 # --autoloop <spec> 파싱 — first iter 에 "/loop <spec>" 자동 주입
 autoloop_spec=""
@@ -120,8 +127,10 @@ while true; do
         log_evt '{ts:$ts,pid:$pid,event:"ctrl_c_break"}'
         break
     fi
-    if [ "$rc" = "0" ] && [ "$dur" -ge 10 ]; then
-        # long clean exit — assume user quit intentionally
+    if [ "$rc" = "0" ]; then
+        # 2026-04-20 — dur>=10 제한 삭제: rc=0 은 언제나 의도된 종료 (TUI /quit,
+        # --help, --version, 빠른 -p 등). dur<10 짧은 종료도 재시작하면 --help 같은
+        # 빠른-exit 호출이 무한 spawn 루프가 된다. rc=0 이면 항상 clean-break.
         log_evt '{ts:$ts,pid:$pid,event:"clean_exit_break"}'
         # M13f: 긴 작업 (>60s) 이면 완료 알림 (DNA 🧬 icon via notify, 2026-04-19)
         if [ "$dur" -ge "${CLAUDX_NOTIFY_MIN_SEC:-60}" ]; then
@@ -131,6 +140,23 @@ while true; do
         break
     fi
     if [ "$stop_requested" = true ]; then break; fi
+
+    # 2026-04-20 fast-fail circuit breaker —
+    # rc!=0 + dur<CLAUDX_LOOP_FASTFAIL_DUR 이 연속 CLAUDX_LOOP_FASTFAIL_MAX 회면
+    # 복구 불가능 (arg/auth/state) 로 간주하고 즉시 종료.
+    # rc=3 (ABORT, 모든 계정 capped) 은 아래 all_exhausted_sleep 가 처리하므로 예외.
+    if [ "$rc" != "0" ] && [ "$rc" != "3" ] && [ "$dur" -lt "$CLAUDX_LOOP_FASTFAIL_DUR" ]; then
+        fastfail_streak=$((fastfail_streak + 1))
+        if [ "$fastfail_streak" -ge "$CLAUDX_LOOP_FASTFAIL_MAX" ]; then
+            log_evt '{ts:$ts,pid:$pid,event:"fastfail_break",streak:($s|tonumber),rc:($rc|tonumber),dur:($d|tonumber)}' \
+                --arg s "$fastfail_streak" --arg rc "$rc" --arg d "$dur"
+            echo "claudx-loop: 연속 $fastfail_streak회 fast-fail (rc=$rc dur=${dur}s) — 복구불가 상태로 판단, 종료" >&2
+            echo "claudx-loop: 최근 stderr 확인: tail $CLAUDX_STATE/rc.log" >&2
+            break
+        fi
+    else
+        fastfail_streak=0
+    fi
 
     # (2026-04-19 v2) rc=3 = claudx ABORT (모든 계정 capped). burst_cap 카운트 제외 —
     # 이건 크래시가 아니라 "대기해야 하는" 정상 시그널. 아래 pool_check 이 sleep 처리.

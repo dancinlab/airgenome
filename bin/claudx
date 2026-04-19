@@ -243,7 +243,7 @@ else
 fi
 
 # --- inject interceptor ---
-# Linux (원격 ubu 포함) 의 claude 는 node cli.js → NODE_OPTIONS 존중
+# Linux (원격 ubu1 포함) 의 claude 는 node cli.js → NODE_OPTIONS 존중
 # Mac 의 claude 는 Bun 컴파일 binary → BUN_OPTIONS 만 존중 (NODE_OPTIONS 무시)
 # 양쪽 다 세팅해서 플랫폼 감지 없이 통일
 if [ "$no_rotate" != true ] && [ -f "$INTERCEPTOR" ]; then

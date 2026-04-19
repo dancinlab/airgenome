@@ -1,0 +1,137 @@
+#!/bin/bash
+# airgenome-unlock — 어떤 host/container 에서든 Mac chflags (uchg/schg) 원격 제어.
+#
+# 목적: Mac 에 직접 접근 없는 환경(container, ubu/ubu2/htz)에서 Mac 파일의
+#       immutable/append-only flag 해제/설정을 "수작업 없이" 자동화.
+#
+# 사용:
+#   airgenome-unlock <path>              # uchg 해제 (기본 동작 = unlock)
+#   airgenome-unlock --lock <path>       # uchg 설정
+#   airgenome-unlock --show <path>       # 현재 flag 표시만
+#   airgenome-unlock --flag schg <path>  # 다른 flag 지정 (nouchg/uchg/noschg/schg 등)
+#
+# 경로 라우팅:
+#   1. 로컬 Mac (uname=Darwin) 이면 직접 chflags.
+#   2. 원격 (Linux/container): 우선순위 순 경로:
+#        a. 직접 ssh ghost@<mac-tailscale-ip> (authorized_keys 등록 시)
+#        b. ubu 경유 중계: ssh aiden@ubu 'ssh mac chflags ...' (ubu→Mac 는 sshfs 로 이미 검증됨)
+#        c. ubu2 경유 중계 (ubu 불가 시)
+#
+# 경로 변환:
+#   입력이 /Users/ghost/... 면 그대로 Mac 에 전달.
+#   입력이 /mac_home/... (container bind mount) 이면 /Users/ghost/... 로 재작성.
+#   입력이 /home/aiden/mac_home/... (ubu sshfs) 면 /Users/ghost/... 로 재작성.
+
+set -euo pipefail
+
+ROOT="${AIRGENOME_ROOT:-${HOME}/Dev/airgenome}"
+[ -d "$ROOT" ] || ROOT="/mac_home/Dev/airgenome"
+[ -d "$ROOT" ] || { echo "airgenome-unlock: ROOT not found" >&2; exit 2; }
+
+HOSTS_JSON="$ROOT/shared/config/hosts.json"
+[ -r "$HOSTS_JSON" ] || { echo "airgenome-unlock: hosts.json missing" >&2; exit 2; }
+
+SSH_OPTS=(-o ConnectTimeout=8 -o BatchMode=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no)
+
+log()  { printf '\033[36m[unlock]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[33m[unlock WARN]\033[0m %s\n' "$*" >&2; }
+err()  { printf '\033[31m[unlock ERR]\033[0m %s\n' "$*" >&2; }
+
+# --- argv 파싱 ---
+FLAG="nouchg"
+MODE="apply"
+TARGET_PATH=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --lock)       FLAG="uchg"; shift ;;
+        --unlock)     FLAG="nouchg"; shift ;;
+        --flag)       FLAG="$2"; shift 2 ;;
+        --flag=*)     FLAG="${1#*=}"; shift ;;
+        --show)       MODE="show"; shift ;;
+        -h|--help)    sed -n '3,24p' "$0"; exit 0 ;;
+        -*)           err "unknown flag: $1"; exit 2 ;;
+        *)            TARGET_PATH="$1"; shift ;;
+    esac
+done
+
+[ -z "$TARGET_PATH" ] && { err "path 지정 필요 (airgenome-unlock <path>)"; exit 2; }
+
+# --- 경로 Mac 표준화 ---
+MAC_PATH="$TARGET_PATH"
+case "$MAC_PATH" in
+    /mac_home/*)                MAC_PATH="/Users/ghost/${MAC_PATH#/mac_home/}" ;;
+    /home/aiden/mac_home/*)     MAC_PATH="/Users/ghost/${MAC_PATH#/home/aiden/mac_home/}" ;;
+    /home/summer/mac_home/*)    MAC_PATH="/Users/ghost/${MAC_PATH#/home/summer/mac_home/}" ;;
+    /Users/ghost/*)             ;;  # 그대로
+    *)                          warn "비표준 경로 '$MAC_PATH' — Mac 에서 그대로 시도" ;;
+esac
+
+log "target: $MAC_PATH"
+log "action: ${MODE}${MODE:+ }flag=$FLAG"
+
+# --- 로컬 Mac 인가? ---
+if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    log "로컬 Mac — 직접 chflags 실행"
+    if [ "$MODE" = "show" ]; then
+        ls -lO "$MAC_PATH" 2>&1 | head -3
+    else
+        chflags "$FLAG" "$MAC_PATH" 2>&1 || { err "chflags 실패"; exit 3; }
+        log "ok — $FLAG 적용됨"
+        ls -lO "$MAC_PATH" 2>&1 | head -3
+    fi
+    exit 0
+fi
+
+# --- 원격: ubu/ubu2 경유 중계 (Mac ssh 직결은 보통 key 미등록으로 실패) ---
+run_via_host() {
+    local host="$1"
+    local ip user key tuple
+    tuple=$(jq -r --arg h "$host" '
+        [.hosts[$h].ip // "", .hosts[$h].ssh_user // "", .hosts[$h].ssh_key // ""] | @tsv
+    ' "$HOSTS_JSON" 2>/dev/null)
+    IFS=$'\t' read -r ip user key <<< "$tuple"
+    [ -z "$ip" ] && return 1
+    [ -z "$user" ] && user="root"
+    [ -z "$key" ] && key="$HOME/.ssh/id_ed25519"
+    key="${key/#\~/$HOME}"
+    key="${key//\$HOME/$HOME}"
+    [ -r "$key" ] || return 1
+
+    # host 의 user 는 hosts.json 에 root 로 돼 있지만, Mac sshfs 를 mount 한 건 보통 aiden/summer.
+    # 호환성: 먼저 user=root 로 시도 (hosts.json 값), 실패 시 aiden/summer fallback.
+    local remote_users=("$user")
+    case "$host" in
+        ubu)    remote_users+=("aiden") ;;
+        ubu2)   remote_users+=("summer") ;;
+    esac
+
+    local cmd
+    if [ "$MODE" = "show" ]; then
+        cmd="ls -lO '$MAC_PATH' 2>&1 | head -3"
+    else
+        cmd="chflags '$FLAG' '$MAC_PATH' 2>&1 && ls -lO '$MAC_PATH' 2>&1 | head -3"
+    fi
+    # ubu/ubu2 에서 Mac 으로 중계: `ssh mac '<cmd>'`
+    local remote_cmd="ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no mac \"$cmd\""
+
+    local ru
+    for ru in "${remote_users[@]}"; do
+        log "  attempting via ${ru}@${ip} → mac"
+        if ssh -i "$key" "${SSH_OPTS[@]}" "${ru}@${ip}" "$remote_cmd" 2>/dev/null; then
+            log "  ✅ $host (user=$ru) 경유 성공"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 시도 순서: ubu → ubu2 (둘 다 Mac sshfs mount 됐으면 Mac SSH 가능)
+for cand in ubu ubu2; do
+    if run_via_host "$cand"; then
+        exit 0
+    fi
+done
+
+err "모든 중계 경로 실패 (ubu/ubu2 → mac). Mac sshd 꺼졌거나 키 미등록."
+err "수동 해결: Mac 에서 직접 'chflags $FLAG $MAC_PATH' 실행."
+exit 3
