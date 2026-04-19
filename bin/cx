@@ -32,6 +32,11 @@
 #   cx --show                  # 선택만, 실행 안 함
 #   cx --no-docker-ssh         # 이번 호출만 host ssh 강제 (opt-out)
 #   CX_NO_DOCKER_SSH=1 cx ...  # 셸 전체 opt-out
+#   cx --resume-last           # 직전 세션 (host+cwd+args+env) 복원해 재실행
+#   cx --resume <id>           # 특정 세션 ID 로 복원
+#   cx --resume-last --show    # resume dry-run (복원만 확인)
+#   cx --sessions [N]          # 최근 N (default 10) 세션 JSON lines
+#   cx --session-show [id]     # 세션 상세 (id 생략 시 last)
 #
 # Why 별도 이름: Mac 의 `claude` 가 shell 함수 wrapper (터미널 제목 설정) 라 shadow 하면 충돌.
 
@@ -44,6 +49,131 @@ MODULE="modules/claude_route.hexa"
 REG="shared/config/hosts.json"
 GENOME="$ROOT/forge/claude_genome.jsonl"
 INFRA_STATE="$HOME/Dev/nexus/shared/infra_state.json"
+
+# ─── cx session snapshot (host/cwd/args resume) ──────────────────────────────
+# 목적: cx 종료 후 `cx --resume-last` / `cx --resume <id>` 로 직전 컨텍스트 복원.
+#   - snapshot = host + alias + dssh_alias + cwd + fwd args + env whitelist + ts
+#   - SSOT: ~/.airgenome/cx_sessions/<id>.json  (로컬 FS, sshfs 안전)
+# 기존 `modules/session_snapshot_cmd.hexa` 는 일반 cmd-level snapshot 전용이라
+# cx 전용 host/cwd 메타는 여기서 직접 관리 (R1 HEXA-FIRST 예외: cx 가 bash 래퍼).
+CX_SESS_DIR="${CLAUDX_STATE:-$HOME/.airgenome}/cx_sessions"
+
+_cx_sess_env_whitelist="CLAUDE_CONFIG_DIR CX_DOCKER CX_NO_DOCKER_SSH CX_DOCKER_SSH CX_PICK_MODE CX_DOCKER_WORKDIR CX_DOCKER_HOME CLAUDX_STATE CLAUDX_POOL CLAUDX_USAGE CLAUDX_HOME_MAP CLAUDX_MAX_ROT CLAUDX_EXH_SEC"
+
+# snapshot 저장: 인자 없이 호출, 현재 shell 의 변수에서 채움.
+# `host` `alias` `dssh_alias` `CALLER_CWD` `fwd[]` 가 scope 에 있어야 함.
+cx_sess_save() {
+    mkdir -p "$CX_SESS_DIR" 2>/dev/null
+    local id="$1" rc="$2" dur="$3" rtt="$4"
+    local fp="$CX_SESS_DIR/$id.json"
+    local tmp; tmp=$(mktemp "${fp}.XXXXXX") || return 1
+    local ts; ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # fwd[] → JSON array
+    local args_json
+    if [ ${#fwd[@]} -gt 0 ]; then
+        args_json=$(printf '%s\n' "${fwd[@]}" | jq -R . | jq -sc .)
+    else
+        args_json='[]'
+    fi
+    # env whitelist → object
+    local env_json='{}' k v
+    for k in $_cx_sess_env_whitelist; do
+        eval "v=\${$k:-}"
+        [ -n "$v" ] || continue
+        env_json=$(printf '%s' "$env_json" | jq --arg k "$k" --arg v "$v" '. + {($k):$v}')
+    done
+    jq -n \
+        --arg ts "$ts" \
+        --arg id "$id" \
+        --arg host "$host" \
+        --arg alias "${alias:-}" \
+        --arg dssh "${dssh_alias:-}" \
+        --arg cwd "$CALLER_CWD" \
+        --arg force_host "${force_host:-}" \
+        --argjson rc "${rc:-0}" \
+        --argjson dur "${dur:-0}" \
+        --argjson rtt "${rtt:-0}" \
+        --argjson args "$args_json" \
+        --argjson env "$env_json" \
+        '{ts:$ts,id:$id,host:$host,alias:$alias,dssh_alias:$dssh,cwd:$cwd,force_host:$force_host,exit:$rc,duration_s:$dur,rtt_ms:$rtt,args:$args,env:$env}' \
+        > "$tmp" 2>/dev/null && mv "$tmp" "$fp" 2>/dev/null || rm -f "$tmp"
+    # last pointer (symlink 대신 파일 — sshfs/탐색 안전)
+    printf '%s' "$id" > "$CX_SESS_DIR/LAST" 2>/dev/null
+}
+
+# 최근 N (default 10) 세션 id 를 시간 내림차순으로 echo (jsonl 아님, 라인당 id).
+cx_sess_list() {
+    local limit=${1:-10}
+    [ -d "$CX_SESS_DIR" ] || return 0
+    # mtime 순 — ls -t; BSD/GNU 모두 호환.
+    ls -t "$CX_SESS_DIR"/*.json 2>/dev/null | head -n "$limit" | while read -r fp; do
+        [ -f "$fp" ] && basename "$fp" .json
+    done
+}
+
+# last id — LAST pointer 먼저, 없으면 list 첫줄.
+cx_sess_last_id() {
+    if [ -r "$CX_SESS_DIR/LAST" ]; then
+        cat "$CX_SESS_DIR/LAST" 2>/dev/null
+        return 0
+    fi
+    cx_sess_list 1
+}
+
+# snapshot 로드 → 현재 shell 변수에 주입. resume 플래그 세팅 시 caller 가 호출.
+# 반환: 0 = ok, 1 = 파일 없음.
+cx_sess_load() {
+    local id=$1 fp="$CX_SESS_DIR/$id.json" j k v
+    [ -r "$fp" ] || return 1
+    j=$(cat "$fp" 2>/dev/null) || return 1
+    # host / cwd / args / env 복원 — force_host 는 resume 의도상 stored host 를 직접 지정.
+    CALLER_CWD=$(printf '%s' "$j" | jq -r '.cwd // ""')
+    [ -n "$CALLER_CWD" ] || CALLER_CWD=$(pwd)
+    local stored_host; stored_host=$(printf '%s' "$j" | jq -r '.host // ""')
+    # 기존 force_host 가 CLI 로 이미 주어져 있으면 우선.
+    if [ -z "${force_host:-}" ] && [ -n "$stored_host" ]; then
+        force_host="$stored_host"
+    fi
+    # args 복원 — 기존 fwd[] 가 empty 일 때만.
+    if [ "${#fwd[@]}" -eq 0 ]; then
+        local tmpf; tmpf=$(mktemp) || return 1
+        printf '%s' "$j" | jq -r '.args[]? // empty' > "$tmpf"
+        while IFS= read -r line; do
+            fwd+=("$line")
+        done < "$tmpf"
+        rm -f "$tmpf"
+    fi
+    # env 복원 — whitelist 만, 기존 값이 있으면 유지.
+    for k in $_cx_sess_env_whitelist; do
+        eval "v=\${$k:-}"
+        [ -z "$v" ] || continue
+        v=$(printf '%s' "$j" | jq -r --arg k "$k" '.env[$k] // empty')
+        [ -n "$v" ] && export "$k=$v"
+    done
+    echo "cx: resume session=$id host=$stored_host cwd=$CALLER_CWD args=$(printf '%s ' "${fwd[@]:-}")" >&2
+    return 0
+}
+
+# sessions subcommand: 최근 N 세션 요약 (JSON lines: id ts host cwd exit dur).
+cx_sess_show_list() {
+    local limit=${1:-10} fp
+    [ -d "$CX_SESS_DIR" ] || { echo "cx: no sessions ($CX_SESS_DIR)"; return 0; }
+    cx_sess_list "$limit" | while read -r id; do
+        fp="$CX_SESS_DIR/$id.json"
+        [ -r "$fp" ] || continue
+        jq -c '{id,ts,host,cwd,exit,duration_s,args}' "$fp" 2>/dev/null
+    done
+}
+
+# snapshot 단건 show (dry-run 확인용).
+cx_sess_show_one() {
+    local id=${1:-} fp
+    [ -n "$id" ] || id=$(cx_sess_last_id)
+    [ -n "$id" ] || { echo "cx: no session found" >&2; return 1; }
+    fp="$CX_SESS_DIR/$id.json"
+    [ -r "$fp" ] || { echo "cx: session not found: $id" >&2; return 1; }
+    jq . "$fp"
+}
 
 die() { echo "cx: $*" >&2; exit 2; }
 
@@ -324,6 +454,8 @@ else
     docker_ssh_mode=${CX_DOCKER_SSH:-1}
 fi
 fwd=()
+resume_id=""       # cx --resume <id>  또는 --resume-last
+resume_requested=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --force-host)    force_host=$2; shift 2 ;;
@@ -332,6 +464,26 @@ while [ $# -gt 0 ]; do
         --no-docker)     docker_mode=0; shift ;;
         --docker-ssh)    docker_ssh_mode=1; shift ;;
         --no-docker-ssh) docker_ssh_mode=0; shift ;;
+        --resume)        resume_id=$2; resume_requested=1; shift 2 ;;
+        --resume-last)   resume_requested=1; shift ;;
+        --sessions)
+            # 최근 세션 목록 (JSON lines). 2번째 arg 가 숫자면 limit.
+            _limit=10
+            if [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#[0-9]}" != "$2" ]; then
+                _limit=$2; shift
+            fi
+            cx_sess_show_list "$_limit"
+            unset _limit
+            exit 0 ;;
+        --session-show)
+            # 특정 세션 상세 (없으면 last).
+            _sid=""
+            if [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#--}" = "$2" ]; then
+                _sid=$2; shift
+            fi
+            cx_sess_show_one "$_sid"
+            unset _sid
+            exit $? ;;
         --blacklist-show)
             bl_show
             exit 0 ;;
@@ -352,13 +504,55 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# ─── resume: snapshot 로드 (force_host/fwd/CALLER_CWD/env 복원) ───────────────
+# --resume-last: LAST pointer 사용. --resume <id>: 명시.
+# 복원 후 stored host 는 force_host 로 설정됨 → 이하 probe 단계가 해당 호스트 우선 시도.
+# 단, 해당 호스트 probe 실패 시 `--show` 가 아니면 force_host 해제하고 score 재선정 fallback.
+if [ "$resume_requested" = 1 ]; then
+    if [ -z "$resume_id" ]; then
+        resume_id=$(cx_sess_last_id)
+    fi
+    if [ -z "$resume_id" ]; then
+        echo "cx: --resume-last: no prior session found ($CX_SESS_DIR)" >&2
+        exit 2
+    fi
+    if ! cx_sess_load "$resume_id"; then
+        echo "cx: resume failed — session not found: $resume_id" >&2
+        exit 2
+    fi
+    # --show 모드에서는 복원만 확인하고 실행하지 않음 (dry-run).
+    if [ "$show_only" = true ]; then
+        echo "cx: [resume dry-run] id=$resume_id force_host=$force_host cwd=$CALLER_CWD"
+        echo "cx: [resume dry-run] args=$(printf '%s ' "${fwd[@]:-}")"
+        # 아래 probe/실행 단계로 계속 흘러가도록 두되 show_only 가 exit 시킴.
+    fi
+    # force_host probe 가 실패하면 re-pick 을 허용하기 위한 플래그.
+    CX_RESUME_ALLOW_REPICK=1
+fi
+
 # host 후보 기본 순서:
 #   1. JSON 순서 우선 (현재 사용자 지시: ubu 우선)
 #   2. probe 성공 첫 호스트 선택
 # 기본 정책: 원격 후보가 전부 없으면 mac fallback 허용.
 # 명시적으로 막고 싶으면 CLAUDX_ALLOW_MAC_FALLBACK=0.
-if [ -n "$force_host" ]; then
+if [ -n "$force_host" ] && [ "${CX_RESUME_ALLOW_REPICK:-0}" != "1" ]; then
     candidates=("$force_host")
+elif [ -n "$force_host" ] && [ "${CX_RESUME_ALLOW_REPICK:-0}" = "1" ]; then
+    # resume: stored host 를 맨 앞에 두고, probe 실패 시 다른 enabled 호스트로 fallback.
+    # priority-first 원칙 유지 — stored host 가 1순위, 나머지는 JSON 순.
+    candidates=("$force_host")
+    while IFS= read -r h; do
+        [ -n "$h" ] || continue
+        [ "$h" = "$force_host" ] && continue
+        candidates+=("$h")
+    done < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self" and (.value.claudx_enabled != false))) | .[].key' "$REG" 2>/dev/null)
+    if [ "${CLAUDX_ALLOW_MAC_FALLBACK:-1}" = "1" ]; then
+        case " ${candidates[*]} " in *" mac "*) : ;; *) candidates+=("mac") ;; esac
+    fi
+    # force_host 는 이제 hint — blacklist/gate 필터는 돌지만 다른 호스트도 probe 대상.
+    # probe 단계에서 force_host 가 ok 면 그대로 선택, 실패면 score fallback.
+    echo "cx: resume hint — prefer=$force_host, fallback pool=${candidates[*]}" >&2
+    force_host=""  # CLI 관점의 strict force 는 해제 (resume 은 soft hint).
 else
     # enabled remote 를 JSON 순서대로 추출
     remote_cands=()
@@ -938,7 +1132,9 @@ fi
 # 실행 + duration
 t0=$(date +%s)
 if [ "$host" = "mac" ]; then
-    command claude ${fwd[@]+"${fwd[@]}"}
+    # cx 초반 `cd "$ROOT"` 로 airgenome 에 들어간 상태 → CALLER_CWD 복원 후 실행.
+    # 빠뜨리면 `~/Dev/hexa-lang % cl` 같이 다른 cwd 에서 띄워도 claude 가 airgenome 에서 열림.
+    ( cd "$CALLER_CWD" && command claude ${fwd[@]+"${fwd[@]}"} )
     rc=$?
 else
     # /login SSOT 경고 (하루 1회)
@@ -1091,5 +1287,12 @@ mkdir -p "$(dirname "$GENOME")"
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '{"ts":"%s","host":"%s","duration_s":%d,"exit":%d,"rtt_ms":%d}\n' \
     "$ts" "$host" "$dur" "$rc" "$rtt" >> "$GENOME"
+
+# cx session snapshot — 다음 호출의 --resume-last 를 위한 메타 기록.
+# id = unix_ts + short host — 충돌 가능성 무시할 수준 (같은 second 연속 호출 희귀).
+# 실패해도 cx rc 에 영향 주지 않음.
+cx_sid="$(date +%s)-${host}-$$"
+cx_sess_save "$cx_sid" "$rc" "$dur" "$rtt" 2>/dev/null || true
+unset cx_sid
 
 exit $rc

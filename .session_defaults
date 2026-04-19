@@ -8,7 +8,9 @@ S1 TASKS      IF non-trivial work (>=2 steps) THEN call TaskCreate immediately. 
 S2 BG         IF independent track OR expected >=30s THEN spawn Agent run_in_background=true. Never wait synchronously on long ops.
 S3 NOBLOCK    ON user message: ack <=2 sentences, switch to bg immediately. Never block chat on tool result. Use ScheduleWakeup/Monitor for waits.
 S4 PARALLEL   IF >=2 independent tasks THEN fire all in ONE message (Agent calls in parallel, min N=8). Serialize only on dependency.
-S5 CATCHUP    ON session start/resume: query TaskList + running bg Agents FIRST. Resume incomplete work before starting new.
+S5 CATCHUP    ON session start/resume: one TaskList → filter status=in_progress. done/failed = lazy (TaskGet only when next step needs the result). Never bulk-read outputs.
+S6 TAG PRIO   catchup(observe) > gate/token/lock(maintain) > new fanout(explore). New work never starts before in_progress items are accounted for.
+S7 DUP GUARD  BEFORE spawn Agent: match description against current in_progress. Exact dup = skip. Near-dup = merge scope, do not double-fire.
 
 [LOOP]
 L1 AUTONOMOUS ON /loop tick: FIRST query TaskList → pick incomplete → advance work → call ScheduleWakeup. Never skip tick without reason.
@@ -17,6 +19,20 @@ L3 BUDGET     IF tick exceeds budget (>=5 Agents OR >=10 min real-time) THEN abo
 L4 HALT       ON user message during loop: finish current tick cleanly. DO NOT ScheduleWakeup again unless user explicitly resumes.
 L5 HEARTBEAT  ON each tick emit ONE sentence: what advanced + next wake delay + reason. No silent ticks.
 
+[FANOUT] — max-split strategy. BG unbounded. hive math applied (UCB1 / Thompson / EMA).
+F1 SPLIT      split axis: (host × module × blocker-domain) orthogonal product. Skip split IF same-file write conflict OR task <60s. Auto isolation=worktree IF file collision risk.
+F2 COLDSTART  first-seen (host × module) pair = top priority (UCB1 cold-start, score=∞). Breaks host-bias loops.
+F3 EPSILON    with p=0.1 pick random host (ε-greedy). Prevents ubu-monoculture.
+F4 BURST      IF last-10 bg fail/total > 0.30 (error_burst) THEN halt new fanout + enter resolve-mode. Resume on cool 3600s OR blocker cleared.
+F5 FAILGATE   IF cumulative fail-rate (host × module) > 0.90 AND n>=10 THEN exclude pair. Empirical AG6-style hard rule.
+
+[STALL] — stuck detection + auto-revive. zero abandonment.
+T1 EMA        track per-axis bg duration EMA(α=0.3) + Welford σ. pick_predictive = argmax(η_sec) — during catchup, check longest-ETA slots first.
+T2 HEALTH     IF bg duration > (EMA + 2σ) AND no heartbeat THEN TaskGet + classify. Normal = re-optimistic. Stuck = T3.
+T3 REVIVE     stuck diagnosis → per-domain auto-revive: token-expired→refresh, host-down→cold-start on alt host, tool-loop→TaskStop + re-fire with different approach. One-line user notice.
+T4 REPORT     heartbeat MUST include stuck count: "N in_progress / K stuck / R revived". Silent with K>0 is forbidden.
+T5 BLOCKER    8 blocker domains (user-wait / auth-expired / gate-denied / tool-loop / hexa-compiler / dep-deadlock / external-service / zombie-stale). Report only {1, 5, 6} to user. Others = T3 auto-resolve first.
+
 [COMMAND] — nexus/airgenome 자체 CLI 가 커맨드 plane. 새 ad-hoc 스크립트 금지.
 C1 NX         ON project install/uninstall/open/list/status intent THEN Bash `nx <action> <name>`. Never build ad-hoc app deploy/control.
 C2 AG         ON airgenome harvest/label/forecast/dispatch/probe/merge/throttle/watch/doctor/status/self-test intent THEN Bash `airgenome <subcommand>`. Never hand-run module hexa directly.
@@ -24,5 +40,5 @@ C3 DISCOVER   BEFORE writing new ops logic: run `nx help` and `airgenome help`. 
 C4 NOGUESS    ONLY invoke subcommands declared by help output. Never invent names from memory or training data.
 C5 EXTEND     New recurring operation → add as `airgenome <name>` or `nx <name>` subcommand. Keep single-entry CLI as SSOT for ops surface.
 
-WHY  zero session-start ceremony. zero chat blocking. throughput N x. user never re-states preferences. loops never go silent. slash commands never get paraphrased.
+WHY  zero session-start ceremony. zero chat blocking. zero abandoned blockers. throughput N×. user never re-states preferences. loops never go silent. slash commands never get paraphrased. in_progress first, split without bound, auto-revive when stuck.
 HOW  this file is the prompt. edit here, takes effect next claudx invocation. no rebuild, no restart.

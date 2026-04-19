@@ -1,0 +1,31 @@
+# airgenome .convergence — 수렴 attr 기록
+# format: single-file, 엔트리 단위로 @state 로 트래킹. JSON/JSONL/xattr 금지.
+
+[cl-fresh-default]
+@state: converged
+@date: 2026-04-20
+@scope: ~/.zshrc :: claude() wrapper (cl alias)
+@decision: default=fresh (option A)
+@prior: 2026-04-19 ROI#1 — `cl` 자동 `-c` 주입 (cache hit 극대 목적)
+@why-reverted: 새 터미널에서 `cl` 치면 직전 세션 전체가 딸려와 context 부풀림. "갑자기 전부 메모리가 이어져 · 엉망이네" (user, 2026-04-20).
+@effect:
+  - `cl`                 → fresh (새 세션)
+  - `cl -c|--continue`   → 이어감 (명시)
+  - `cl --resume`        → resume picker
+  - `cl --session-id ID` → 특정 세션
+  - `cl --new`           → no-op (backward compat, 기본이 이미 fresh)
+@file: ~/.zshrc:38-64
+@rollback: 이 커밋의 diff 역적용 + claude() 안 `fwd=(-c "${fwd[@]}")` 복원
+
+
+[cx-mac-cwd-restore]
+@state: converged
+@date: 2026-04-20
+@scope: bin/cx :: mac local exec branch
+@bug: 다른 cwd (예: ~/Dev/hexa-lang) 에서 `cl` 하면 claude TUI 가 `~/Dev/airgenome` 에서 열림.
+@cause: cx 진입 직후 `cd "$ROOT"` (airgenome) 로 이동해 hexa 모듈 resolve. remote 분기는 ssh 명령에 `cd $CALLER_CWD` 주입해 복원하는데 mac local 분기 `command claude ...` 는 복원 없이 실행 → airgenome 상속.
+@fix: mac 분기를 subshell 로 감싸 `( cd "$CALLER_CWD" && command claude ... )` — rc 는 subshell exit 로 자연히 전파.
+@file: bin/cx:940-945
+@regression-test: `cd ~/Dev/hexa-lang && cl` → TUI banner 의 cwd 가 `~/Dev/hexa-lang` 인지 확인.
+
+@__raw__
