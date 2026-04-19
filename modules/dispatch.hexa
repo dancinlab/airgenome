@@ -47,10 +47,21 @@ fn to_int_safe(s: str) -> int {
 fn score_compute(cpu_free: int, ram_free: int, load_int: int) -> int {
     // cpu_free(0~100) + ram_free(0~100) - load*20. 0~200 → clamp 0~100
     // (과거 *4 스케일은 load penalty 를 클램프가 삼켜 blowup 감지 실패 — 2026-04-14 수정)
+    // load_int 는 12-thread 기준으로 이미 normalize 되어 전달됨 (view_* 에서 처리).
     let raw = cpu_free + ram_free - load_int * 20
     if raw < 0 { return 0 }
     if raw > 100 { return 100 }
     return raw
+}
+
+// (2026-04-19) 12-thread 기준 정규화. htz(32)·ubu2(12)·ubu(12) 간 load penalty 공정성 확보.
+// 예: htz load=11, threads=32 → norm=4 (~비슷한 부하의 ubu2 load=4 와 동등 취급).
+// 기존 raw load 전달은 htz compute 를 항상 0 으로 만들던 버그 원인.
+fn norm_load_12t(load_int: int, threads: int) -> int {
+    if threads <= 0 { return load_int }
+    let n = load_int * 12 / threads
+    if n < 0 { return 0 }
+    return n
 }
 
 // active_slots — ~/.airgenome/host_slots/<host>.<kind>.active 카운터 읽기.
@@ -127,9 +138,11 @@ fn view_ubu(path: str) -> HostView {
     let a_c = active_slots("ubu", "compute")
     let a_g = active_slots("ubu", "gpu")
     let a_h = active_slots("ubu", "heavy")
+    // ubu threads=12 (infra_state 미노출) → norm = raw. 다른 호스트와 동일 경로 유지.
+    let nlu = norm_load_12t(load_i, 12)
     return HostView {
         name: "ubu", status: "active",
-        compute: apply_active_penalty(score_compute(cpu_free, ram_free, load_i), a_c),
+        compute: apply_active_penalty(score_compute(cpu_free, ram_free, nlu), a_c),
         gpu: apply_active_penalty(score_gpu("active", gpu_util, vram_free), a_g),
         heavy: apply_active_penalty(score_heavy(cpu_free, ram_free, 8), a_h)
     }
@@ -157,9 +170,10 @@ fn view_ubu2(path: str) -> HostView {
     }
     let a_c2 = active_slots("ubu2", "compute")
     let a_h2 = active_slots("ubu2", "heavy")
+    let nl2 = norm_load_12t(load_i, threads)
     return HostView {
         name: "ubu2", status: "active",
-        compute: apply_active_penalty(score_compute(cpu_free, ram_free, load_i), a_c2),
+        compute: apply_active_penalty(score_compute(cpu_free, ram_free, nl2), a_c2),
         gpu: 0,
         heavy: apply_active_penalty(score_heavy(cpu_free, ram_free, threads), a_h2)
     }
@@ -187,9 +201,10 @@ fn view_htz(path: str) -> HostView {
     }
     let a_ch = active_slots("htz", "compute")
     let a_hh = active_slots("htz", "heavy")
+    let nlh = norm_load_12t(load_i, threads)
     return HostView {
         name: "htz", status: "active",
-        compute: apply_active_penalty(score_compute(cpu_free, ram_free, load_i), a_ch),
+        compute: apply_active_penalty(score_compute(cpu_free, ram_free, nlh), a_ch),
         gpu: 0,
         heavy: apply_active_penalty(score_heavy(cpu_free, ram_free, threads), a_hh)
     }
@@ -334,6 +349,13 @@ fn self_test() -> void {
     if p2 != 0 { panic("self_test FAIL [apply_active_penalty active=3 clamp]") }  // 50-60 → 0
     let p3 = apply_active_penalty(100, 10)
     if p3 != 0 { panic("self_test FAIL [apply_active_penalty huge active]") }
+
+    // 9. (2026-04-19) norm_load_12t — thread 수 별 load 정규화
+    if norm_load_12t(10, 32) != 3 { panic("self_test FAIL [norm_load htz 32t load=10 → 3]") }
+    if norm_load_12t(10, 12) != 10 { panic("self_test FAIL [norm_load ubu 12t identity]") }
+    if norm_load_12t(0, 32) != 0 { panic("self_test FAIL [norm_load zero]") }
+    if norm_load_12t(5, 0) != 5 { panic("self_test FAIL [norm_load zero threads → passthrough]") }
+    if norm_load_12t(0 - 3, 12) != 0 { panic("self_test FAIL [norm_load negative clamp]") }
 
     // 8. active_slots 라운드트립 — 파일 없을 때 0, 있을 때 읽어옴
     let a_none = active_slots("nonexistent_host", "heavy")
