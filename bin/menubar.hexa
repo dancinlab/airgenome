@@ -408,6 +408,7 @@ fn post_notification(title: str, subtitle: str, info: str) -> void {
         + " -message \"" + body + "\""
         + " -appIcon \"" + icon + "\""
         + " -contentImage \"" + icon + "\""
+        + " -sender com.need-singularity.airgenome"
         + " -group airgenome"
         + " >/dev/null 2>&1 &"
     let _ = exec(cmd)
