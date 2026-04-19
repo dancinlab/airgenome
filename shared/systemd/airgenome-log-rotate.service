@@ -1,0 +1,33 @@
+# airgenome-log-rotate — daily log rotation for ~/.airgenome/*.{log,jsonl}.
+# Installed on ubu / ubu2 / htz as a user timer service.
+#
+# 설치:
+#   ssh <host> 'mkdir -p ~/.config/systemd/user && \
+#     cp -f ~/Dev/airgenome/shared/systemd/airgenome-log-rotate.{service,timer} \
+#           ~/.config/systemd/user/ && \
+#     systemctl --user daemon-reload && \
+#     systemctl --user enable --now airgenome-log-rotate.timer'
+#
+# 트리거:
+#   .timer 가 매일 04:30 KST (Asia/Seoul) 에 실행.
+#   수동: systemctl --user start airgenome-log-rotate.service
+#   dry-run: ~/Dev/airgenome/bin/airgenome-logs rotate --dry-run --force
+
+[Unit]
+Description=airgenome daily log rotate (~/.airgenome/*.{log,jsonl})
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+
+# 호스트별 user 는 aiden / summer / root — %h 가 자동 해결.
+ExecStart=%h/Dev/airgenome/bin/airgenome-logs rotate
+
+StandardOutput=journal
+StandardError=journal
+
+# 로그 rotate 는 보통 <30s. 안전마진 5min.
+TimeoutStartSec=300
+
+# 실패해도 재시도 안 함 (다음 타이머에서 재시도). journal 로 확인.

@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+# bin/airgenome-netlat — Mac → ubu/ubu2/htz 네트워크 latency 지속 모니터링
+# 오늘의 ubu banner timeout / sshd saturate 류 네트워크 문제 사전 감지용.
+#
+# 측정 (호스트당):
+#   - TCP connect RTT (port 22 + docker_ssh_port)  — ms
+#   - SSH banner handshake time                    — ms
+#   - DNS resolve time                             — ms
+#   - ping packet loss (%) + avg RTT               — -c 3 -W 1000
+#
+# SSOT:
+#   hosts.json enabled && kind!=self  (ubu/ubu2/htz)
+#
+# 저장:
+#   ~/.airgenome/netlat.jsonl   (append, 1-line-per-host-per-probe)
+#
+# 사용:
+#   airgenome netlat probe               # 1회 병렬 probe + JSONL append (launchd 호출용)
+#   airgenome netlat tail [N]            # 마지막 N 라인 (default 20)
+#   airgenome netlat stats [--host H]    # 1h / 24h 평균 + p95 + loss%
+#   airgenome netlat watch               # 실시간 스트림 (5s cadence, TTY)
+#   airgenome netlat alert-check         # 최근 3샘플 check → 🔴 alert 발사
+#
+# 임계 (hosts.json p95_rtt_ms 참조, 기본값 2000ms):
+#   connect_rtt > 2s 3회 연속 → 🔴 alert
+#
+# 안전:
+#   - ping -c 3 -W 1 (3초 안에 종료, host sshd 무경합)
+#   - nc -G 3 (TCP connect timeout 3초)
+#   - ssh BatchMode + ConnectTimeout=3  (banner handshake 격리)
+#   - 실패/timeout 시 JSONL 에 null 기록 (시계열 끊김 방지)
+
+set -uo pipefail
+
+AIRGENOME_ROOT="${AIRGENOME_ROOT:-$HOME/Dev/airgenome}"
+STATE_DIR="${STATE_DIR:-$HOME/.airgenome}"
+LOG="$STATE_DIR/netlat.jsonl"
+HOSTS_JSON="$AIRGENOME_ROOT/shared/config/hosts.json"
+HOST_LIST="$AIRGENOME_ROOT/bin/host_list"
+ALERT_STATE="$STATE_DIR/netlat.alert.json"
+
+mkdir -p "$STATE_DIR"
+
+die() { echo "netlat: $*" >&2; exit 2; }
+[ -x "$HOST_LIST" ] || die "host_list missing: $HOST_LIST"
+command -v jq >/dev/null || die "jq required"
+
+# ms 단위 current timestamp (perl → high-res)
+now_ms() {
+    perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000'
+}
+
+iso_now() { date -u +%FT%TZ; }
+
+# --- probe primitives ---------------------------------------------------------
+
+# DNS resolve time (ms). HOST 가 IP 면 0 반환.
+probe_dns() {
+    local host="$1"
+    # HOST=IP → skip
+    if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo 0
+        return 0
+    fi
+    local t0 t1
+    t0=$(now_ms)
+    if dscacheutil -q host -a name "$host" 2>/dev/null | grep -q '^ip_address'; then
+        t1=$(now_ms)
+        echo $((t1 - t0))
+    else
+        echo null
+    fi
+}
+
+# TCP connect RTT to host:port (ms). timeout=3s. 실패시 null.
+probe_tcp() {
+    local host="$1" port="$2"
+    local t0 t1
+    t0=$(now_ms)
+    if nc -z -G 3 -w 3 "$host" "$port" >/dev/null 2>&1; then
+        t1=$(now_ms)
+        echo $((t1 - t0))
+    else
+        echo null
+    fi
+}
+
+# ssh banner handshake time (ms). BatchMode, ConnectTimeout=3. 실패시 null.
+probe_banner() {
+    local ssh_alias="$1"
+    if [ -z "$ssh_alias" ] || [ "$ssh_alias" = "null" ]; then
+        echo null
+        return
+    fi
+    local t0 t1
+    t0=$(now_ms)
+    # -o ControlPath=none : stale master 무시, fresh handshake 측정
+    if ssh -o BatchMode=yes \
+           -o ConnectTimeout=3 \
+           -o ControlPath=none \
+           -o ControlMaster=no \
+           -o StrictHostKeyChecking=accept-new \
+           "$ssh_alias" 'true' >/dev/null 2>&1; then
+        t1=$(now_ms)
+        echo $((t1 - t0))
+    else
+        echo null
+    fi
+}
+
+# ping -c 3 -W 1 → "avg_ms loss_pct"  (공백 구분). 실패시 "null 100"
+probe_ping() {
+    local host="$1"
+    local out avg loss
+    out=$(ping -c 3 -W 1000 -q "$host" 2>/dev/null) || { echo "null 100"; return; }
+    # "3 packets transmitted, 3 packets received, 0.0% packet loss"
+    loss=$(echo "$out" | sed -nE 's/.*, ([0-9]+(\.[0-9]+)?)% packet loss.*/\1/p')
+    # "round-trip min/avg/max/stddev = 2.478/2.822/3.000/0.243 ms"
+    avg=$(echo "$out" | sed -nE 's#.*min/avg/max/[a-z]+ = [0-9.]+/([0-9.]+)/.*#\1#p')
+    [ -z "$avg" ] && avg=null
+    [ -z "$loss" ] && loss=100
+    # 정수 반올림
+    if [ "$avg" != "null" ]; then
+        avg=$(printf "%.0f" "$avg" 2>/dev/null)
+        [ -z "$avg" ] && avg=null
+    fi
+    # loss 는 정수화 (jq --argjson 호환; "0.0" 도 OK지만 통일)
+    if [ "$loss" != "100" ]; then
+        loss=$(printf "%.0f" "$loss" 2>/dev/null)
+        [ -z "$loss" ] && loss=100
+    fi
+    echo "$avg $loss"
+}
+
+# --- per-host probe (single record) ------------------------------------------
+
+probe_host() {
+    local host_key="$1" ssh_alias="$2" hostname="$3" docker_port="$4"
+    local ts dns tcp22 tcp_d banner ping_out ping_avg ping_loss
+
+    ts=$(iso_now)
+
+    dns=$(probe_dns "$hostname")
+    # TCP/ssh probe 를 병렬로 (sequential 이지만 2초 이내면 수용)
+    tcp22=$(probe_tcp "$hostname" 22)
+    if [ -n "$docker_port" ] && [ "$docker_port" != "null" ]; then
+        tcp_d=$(probe_tcp "$hostname" "$docker_port")
+    else
+        tcp_d=null
+    fi
+    banner=$(probe_banner "$ssh_alias")
+    ping_out=$(probe_ping "$hostname")
+    ping_avg=${ping_out%% *}
+    ping_loss=${ping_out##* }
+
+    # JSON line
+    jq -cn \
+        --arg ts "$ts" \
+        --arg host "$host_key" \
+        --arg alias "$ssh_alias" \
+        --arg hostname "$hostname" \
+        --argjson dns "$dns" \
+        --argjson tcp22 "$tcp22" \
+        --argjson tcpd "$tcp_d" \
+        --argjson banner "$banner" \
+        --argjson ping_avg "$ping_avg" \
+        --argjson loss "$ping_loss" \
+        '{ts:$ts, host:$host, ssh_alias:$alias, hostname:$hostname,
+          dns_ms:$dns, connect_rtt_ms:$tcp22, connect_rtt_docker_ms:$tcpd,
+          banner_ms:$banner, ping_avg_ms:$ping_avg, loss_pct:$loss}'
+}
+
+# --- probe all enabled non-self hosts, parallel ------------------------------
+
+cmd_probe() {
+    local remote_keys
+    remote_keys=$("$HOST_LIST" --remote 2>/dev/null)
+    [ -n "$remote_keys" ] || die "no remote hosts"
+
+    local tmp; tmp=$(mktemp -d)
+
+    for key in $remote_keys; do
+        (
+            ssh_alias=$(jq -r --arg k "$key" '.hosts[$k].ssh_alias // ""' "$HOSTS_JSON")
+            docker_port=$(jq -r --arg k "$key" '.hosts[$k].docker_ssh_port // "null"' "$HOSTS_JSON")
+            # ssh_alias 가 있으면 ~/.ssh/config 의 HostName resolve. 없으면 key 자체.
+            if [ -n "$ssh_alias" ] && [ "$ssh_alias" != "null" ]; then
+                hostname=$(ssh -G "$ssh_alias" 2>/dev/null | awk '/^hostname /{print $2; exit}')
+                [ -z "$hostname" ] && hostname="$ssh_alias"
+            else
+                hostname="$key"
+            fi
+            probe_host "$key" "$ssh_alias" "$hostname" "$docker_port" > "$tmp/$key.json"
+        ) &
+    done
+    wait
+
+    # append to jsonl (atomic: 한 번에 cat)
+    for key in $remote_keys; do
+        [ -f "$tmp/$key.json" ] && cat "$tmp/$key.json" >> "$LOG"
+    done
+
+    # echo to stdout 도 (launchd out-path 로 감). --quiet 아니면.
+    if [ "${1:-}" != "--quiet" ]; then
+        for key in $remote_keys; do
+            [ -f "$tmp/$key.json" ] && cat "$tmp/$key.json"
+        done
+    fi
+    rm -rf "$tmp"
+}
+
+# --- stats: 1h / 24h avg + p95 + loss ----------------------------------------
+
+cmd_stats() {
+    local filter_host=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --host) filter_host="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    [ -f "$LOG" ] || die "no data: $LOG"
+
+    # 1h / 24h cutoff (ISO UTC)
+    local cutoff_1h cutoff_24h
+    cutoff_1h=$(date -u -v-1H +%FT%TZ 2>/dev/null || date -u -d '1 hour ago' +%FT%TZ)
+    cutoff_24h=$(date -u -v-24H +%FT%TZ 2>/dev/null || date -u -d '24 hours ago' +%FT%TZ)
+
+    stats_for_window() {
+        local cutoff="$1" label="$2"
+        printf '\n== %s (since %s) ==\n' "$label" "$cutoff"
+        local hosts
+        if [ -n "$filter_host" ]; then
+            hosts="$filter_host"
+        else
+            hosts=$(jq -sr --arg cut "$cutoff" '
+                map(select(.ts >= $cut)) | map(.host) | unique | .[]' "$LOG" 2>/dev/null)
+        fi
+        printf '%-6s %8s %8s %8s %8s %8s %8s %8s\n' \
+            "host" "n" "conn_ms" "p95_ms" "banner" "ping_ms" "loss%" "ok%"
+        for h in $hosts; do
+            jq -sr --arg cut "$cutoff" --arg host "$h" '
+                map(select(.ts >= $cut and .host == $host)) as $rows
+                | ($rows | length) as $n
+                | if $n == 0 then
+                    "\($host)\tn=0"
+                  else
+                    ($rows | map(.connect_rtt_ms | select(. != null))) as $conns
+                    | ($rows | map(.banner_ms | select(. != null))) as $banners
+                    | ($rows | map(.ping_avg_ms | select(. != null))) as $pings
+                    | ($rows | map(.loss_pct // 100)) as $losses
+                    | ($conns | length) as $nok
+                    | ($conns | sort) as $cs
+                    | (if ($conns|length)==0 then "-"
+                       else (($conns|add) / ($conns|length) | floor | tostring) end) as $conn_avg
+                    | (if ($cs|length)==0 then "-"
+                       else ($cs[($cs|length)*95/100 | floor | if . >= ($cs|length) then ($cs|length)-1 else . end] | tostring) end) as $p95
+                    | (if ($banners|length)==0 then "-"
+                       else (($banners|add) / ($banners|length) | floor | tostring) end) as $banner_avg
+                    | (if ($pings|length)==0 then "-"
+                       else (($pings|add) / ($pings|length) | floor | tostring) end) as $ping_avg
+                    | (($losses | add) / ($losses | length) | floor | tostring) as $loss_avg
+                    | (($nok * 100 / $n) | floor | tostring) as $ok_pct
+                    | "\($host)\t\($n)\t\($conn_avg)\t\($p95)\t\($banner_avg)\t\($ping_avg)\t\($loss_avg)\t\($ok_pct)"
+                  end
+            ' "$LOG" 2>/dev/null | awk -F'\t' '{printf "%-6s %8s %8s %8s %8s %8s %8s %8s\n",$1,$2,$3,$4,$5,$6,$7,$8}'
+        done
+    }
+
+    stats_for_window "$cutoff_1h" "LAST 1h"
+    stats_for_window "$cutoff_24h" "LAST 24h"
+}
+
+cmd_tail() {
+    local n="${1:-20}"
+    [ -f "$LOG" ] || die "no data: $LOG"
+    tail -n "$n" "$LOG"
+}
+
+cmd_watch() {
+    while true; do
+        clear
+        printf '=== airgenome netlat (watch) — %s ===\n' "$(date)"
+        cmd_probe --quiet >/dev/null
+        cmd_stats
+        printf '\n--- last 5 ---\n'
+        cmd_tail 5 | jq -r '"\(.ts) \(.host)\tconn=\(.connect_rtt_ms // "x")ms banner=\(.banner_ms // "x")ms ping=\(.ping_avg_ms // "x")ms loss=\(.loss_pct)%"'
+        sleep 5
+    done
+}
+
+# --- alert-check: 최근 3샘플 연속 connect_rtt>2s → alert ---------------------
+
+cmd_alert_check() {
+    [ -f "$LOG" ] || return 0
+    local threshold_ms="${AIRGENOME_NETLAT_THRESHOLD_MS:-2000}"
+    local hosts; hosts=$("$HOST_LIST" --remote 2>/dev/null)
+    local alerts_json='{}'
+    [ -f "$ALERT_STATE" ] && alerts_json=$(cat "$ALERT_STATE")
+
+    for h in $hosts; do
+        # 마지막 3샘플
+        local last3
+        last3=$(grep "\"host\":\"$h\"" "$LOG" | tail -3)
+        local count; count=$(echo "$last3" | wc -l | tr -d ' ')
+        [ "$count" -lt 3 ] && continue
+
+        # 전부 null 이거나 > threshold 인지
+        local bad
+        bad=$(echo "$last3" | jq -s --argjson t "$threshold_ms" '
+            map(select(.connect_rtt_ms == null or .connect_rtt_ms > $t)) | length')
+        local was_firing; was_firing=$(echo "$alerts_json" | jq -r --arg h "$h" '.[$h] // false')
+
+        if [ "$bad" = "3" ]; then
+            if [ "$was_firing" != "true" ]; then
+                printf '🔴 ALERT [netlat] %s connect_rtt bad x3 (threshold=%sms)\n' "$h" "$threshold_ms" >&2
+                # telegram push 여지 — hook 존재 시
+                if [ -x "$AIRGENOME_ROOT/bin/tg_send" ]; then
+                    "$AIRGENOME_ROOT/bin/tg_send" "🔴 netlat: $h connect_rtt >${threshold_ms}ms x3" 2>/dev/null || true
+                fi
+            fi
+            alerts_json=$(echo "$alerts_json" | jq --arg h "$h" '.[$h] = true')
+        else
+            if [ "$was_firing" = "true" ]; then
+                printf '🟢 RECOVER [netlat] %s\n' "$h" >&2
+            fi
+            alerts_json=$(echo "$alerts_json" | jq --arg h "$h" '.[$h] = false')
+        fi
+    done
+    echo "$alerts_json" > "$ALERT_STATE"
+}
+
+# --- dispatch ----------------------------------------------------------------
+
+sub="${1:-probe}"
+shift 2>/dev/null || true
+
+case "$sub" in
+    probe)       cmd_probe "$@" ;;
+    tail)        cmd_tail "$@" ;;
+    stats)       cmd_stats "$@" ;;
+    watch)       cmd_watch "$@" ;;
+    alert-check) cmd_alert_check "$@" ;;
+    -h|--help|help)
+        sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *) die "unknown sub: $sub (try: probe|tail|stats|watch|alert-check)" ;;
+esac

@@ -1,0 +1,17 @@
+# airgenome-log-rotate.timer — daily 04:30 KST on ubu / ubu2 / htz.
+#
+# systemd v242+ supports TZ spec in OnCalendar. Asia/Seoul pins KST regardless
+# of host local time (htz is CEST, ubu/ubu2 are KST already — both coalesce).
+
+[Unit]
+Description=airgenome log rotate (daily 04:30 KST)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Seoul
+AccuracySec=5min
+# 부팅 시 놓친 실행이 있으면 다음 부팅에 한 번 catch-up.
+Persistent=true
+Unit=airgenome-log-rotate.service
+
+[Install]
+WantedBy=timers.target

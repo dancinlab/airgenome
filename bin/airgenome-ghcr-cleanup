@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# bin/airgenome-ghcr-cleanup — GHCR retention policy enforcer.
+#
+# Purpose:
+#   Daily image build (bin/airgenome-build) pushes :dev / :dev-sshd / :base /
+#   :claude / :base-<sha> / :claude-<sha> / :<sha> / cache-* tags.  Older
+#   manifests become untagged (dangling digests) and accumulate indefinitely,
+#   eating toward the GHCR quota.  This script enforces a two-axis retention
+#   policy:
+#
+#     RULE A (age gate):   keep everything <= $RETAIN_DAYS days old (default 14)
+#     RULE B (recency):    keep the $RETAIN_RECENT newest version entries
+#                          unconditionally (default 5)
+#     RULE C (protected):  never delete a version whose tags intersect
+#                          $PROTECTED_TAGS  (default: dev dev-sshd base claude
+#                          latest local base-local claude-local).  Cache tags
+#                          (cache-*) are NOT protected — BuildKit refreshes.
+#
+#   A version is eligible for deletion iff ( age > RETAIN_DAYS )
+#                                      AND ( not in RETAIN_RECENT newest )
+#                                      AND ( no tag ∈ PROTECTED_TAGS ).
+#
+# Usage:
+#   bin/airgenome-ghcr-cleanup                    # dry-run (default)
+#   bin/airgenome-ghcr-cleanup --apply            # actually DELETE versions
+#   bin/airgenome-ghcr-cleanup --retain-days 14 --retain-recent 5
+#   bin/airgenome-ghcr-cleanup --json             # emit machine-readable plan
+#
+# Env (opt):
+#   GH_OWNER          default: need-singularity
+#   GH_PACKAGE        default: airgenome
+#   RETAIN_DAYS       default: 14
+#   RETAIN_RECENT     default: 5
+#   PROTECTED_TAGS    default: "dev dev-sshd base claude latest local base-local claude-local"
+#   STATE_DIR         default: $HOME/.airgenome   (log: ghcr_cleanup.jsonl)
+#   GH_TOKEN_FILE     default: $HOME/.config/airgenome/gh_token   (fallback; gh CLI preferred)
+#
+# Auth:
+#   Prefers `gh api` (uses ambient gh CLI token, scope: delete:packages OR
+#   write:packages + admin:packages for orgs).  Falls back to $GH_TOKEN_FILE
+#   curl when gh unavailable (htz cron path).
+#
+# Exit codes:
+#   0  success (dry-run or apply)
+#   1  transient error (auth / network) — safe to retry
+#   2  configuration error (bad flags)
+#
+# Safety:
+#   - Default is DRY-RUN.  Must pass --apply explicitly.
+#   - Protected tag list is hard-coded in default and covers every tag
+#     currently referenced by docker/compose.yml / bin/airgenome-claude-run.
+#   - All deletions are logged to $STATE_DIR/ghcr_cleanup.jsonl with the
+#     full digest so a mistaken delete is traceable (even if not recoverable).
+#
+# References:
+#   https://docs.github.com/en/rest/packages/packages
+
+set -euo pipefail
+
+# --------------------------------------------------------------------------
+# config
+# --------------------------------------------------------------------------
+GH_OWNER="${GH_OWNER:-need-singularity}"
+GH_PACKAGE="${GH_PACKAGE:-airgenome}"
+RETAIN_DAYS="${RETAIN_DAYS:-14}"
+RETAIN_RECENT="${RETAIN_RECENT:-5}"
+PROTECTED_TAGS_DEFAULT="dev dev-sshd base claude latest local base-local claude-local"
+PROTECTED_TAGS="${PROTECTED_TAGS:-$PROTECTED_TAGS_DEFAULT}"
+STATE_DIR="${STATE_DIR:-$HOME/.airgenome}"
+GH_TOKEN_FILE="${GH_TOKEN_FILE:-$HOME/.config/airgenome/gh_token}"
+
+APPLY=0
+EMIT_JSON=0
+
+# --------------------------------------------------------------------------
+# arg parse
+# --------------------------------------------------------------------------
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --apply)         APPLY=1 ;;
+        --dry-run)       APPLY=0 ;;
+        --json)          EMIT_JSON=1 ;;
+        --retain-days)   RETAIN_DAYS="$2"; shift ;;
+        --retain-recent) RETAIN_RECENT="$2"; shift ;;
+        --owner)         GH_OWNER="$2"; shift ;;
+        --package)       GH_PACKAGE="$2"; shift ;;
+        -h|--help)
+            sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *)
+            echo "unknown arg: $1" >&2
+            echo "try --help" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+mkdir -p "$STATE_DIR"
+LOG="$STATE_DIR/ghcr_cleanup.jsonl"
+
+log() { printf '[ghcr-cleanup %s] %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
+
+# --------------------------------------------------------------------------
+# auth helpers — gh CLI preferred, curl+token fallback.
+# --------------------------------------------------------------------------
+USE_GH=0
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    USE_GH=1
+fi
+
+api_get() {
+    # GET with pagination. `gh api --paginate` concatenates all pages; curl
+    # fallback walks Link: rel="next" manually so it matches on htz where
+    # `gh` is not installed.
+    local path="$1"
+    if [ "$USE_GH" = 1 ]; then
+        gh api --paginate -H 'Accept: application/vnd.github+json' "$path"
+        return
+    fi
+    if [ ! -r "$GH_TOKEN_FILE" ]; then
+        log "ERROR: gh CLI unavailable and $GH_TOKEN_FILE missing"
+        return 1
+    fi
+    local tok url tmp hdr body next acc
+    tok="$(cat "$GH_TOKEN_FILE")"
+    url="https://api.github.com${path}?per_page=100"
+    acc='['
+    local first=1
+    while [ -n "$url" ]; do
+        tmp="$(mktemp)"
+        hdr="$(mktemp)"
+        if ! curl -fsS \
+            -H "Authorization: Bearer $tok" \
+            -H 'Accept: application/vnd.github+json' \
+            -D "$hdr" \
+            -o "$tmp" \
+            "$url"; then
+            rm -f "$tmp" "$hdr"
+            return 1
+        fi
+        body="$(cat "$tmp")"
+        rm -f "$tmp"
+        # strip leading/trailing brackets, then splice into accumulator.
+        local inner
+        inner="$(printf '%s' "$body" | jq -c '.[]' | paste -sd, -)"
+        if [ -n "$inner" ]; then
+            if [ "$first" = 1 ]; then
+                acc="${acc}${inner}"
+                first=0
+            else
+                acc="${acc},${inner}"
+            fi
+        fi
+        # parse next from Link header
+        next="$(awk -F', ' '/^[Ll]ink:/ { for (i=1;i<=NF;i++) if (match($i, /<[^>]+>; rel="next"/)) { gsub(/.*<|>.*/, "", $i); print $i } }' "$hdr")"
+        rm -f "$hdr"
+        url="$next"
+    done
+    printf '%s]\n' "$acc"
+}
+
+api_delete() {
+    local path="$1"
+    if [ "$USE_GH" = 1 ]; then
+        gh api -X DELETE -H 'Accept: application/vnd.github+json' "$path"
+    else
+        local tok; tok="$(cat "$GH_TOKEN_FILE")"
+        curl -fsS -X DELETE \
+            -H "Authorization: Bearer $tok" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com${path}"
+    fi
+}
+
+# --------------------------------------------------------------------------
+# plan
+# --------------------------------------------------------------------------
+PKG_PATH="/orgs/${GH_OWNER}/packages/container/${GH_PACKAGE}"
+VERSIONS_PATH="${PKG_PATH}/versions"
+
+log "owner=$GH_OWNER package=$GH_PACKAGE retain_days=$RETAIN_DAYS retain_recent=$RETAIN_RECENT apply=$APPLY"
+log "protected tags: $PROTECTED_TAGS"
+
+# Gather all versions.  gh --paginate concatenates into a single JSON array.
+VERSIONS_JSON="$(api_get "$VERSIONS_PATH")" || {
+    log "ERROR: failed to list versions"
+    exit 1
+}
+
+TOTAL_COUNT="$(printf '%s' "$VERSIONS_JSON" | jq 'length')"
+log "total versions: $TOTAL_COUNT"
+
+if [ "$TOTAL_COUNT" = 0 ]; then
+    log "no versions — nothing to do"
+    exit 0
+fi
+
+# Cutoff: now - RETAIN_DAYS days, as ISO 8601 UTC.
+if date -u -v-1d +%FT%TZ >/dev/null 2>&1; then
+    # BSD date (macOS)
+    CUTOFF="$(date -u -v-"${RETAIN_DAYS}"d +%FT%TZ)"
+else
+    # GNU date (linux)
+    CUTOFF="$(date -u -d "${RETAIN_DAYS} days ago" +%FT%TZ)"
+fi
+log "age cutoff: $CUTOFF (versions older AND not in top-$RETAIN_RECENT AND unprotected are candidates)"
+
+# Build plan via jq.  The org API returns versions sorted by created_at desc
+# already, so we just index the first $RETAIN_RECENT.
+#
+# Output JSON: array of {id, created_at, tags, digest, reason, keep}
+#   reason: "protected-tag" | "recent-top-N" | "fresh" | "candidate"
+PLAN_JSON="$(
+    printf '%s' "$VERSIONS_JSON" | jq \
+        --arg cutoff "$CUTOFF" \
+        --argjson recent "$RETAIN_RECENT" \
+        --arg protected "$PROTECTED_TAGS" \
+        '
+        ($protected | split(" ")) as $prot
+        | [ . | to_entries[] | . as $e
+            | .value as $v
+            | ($v.metadata.container.tags // []) as $tags
+            | ([ $tags[] | select(. as $t | $prot | index($t)) ] | length) as $prot_hit
+            | {
+                id:         $v.id,
+                created_at: $v.created_at,
+                tags:       $tags,
+                digest:     $v.name,
+                idx:        $e.key
+              }
+            | . + (
+                if $prot_hit > 0 then { keep: true, reason: "protected-tag" }
+                elif .idx < $recent then { keep: true, reason: "recent-top-\($recent)" }
+                elif .created_at > $cutoff then { keep: true, reason: "fresh" }
+                else { keep: false, reason: "candidate" }
+                end
+            )
+          ]
+        '
+)"
+
+KEEP_COUNT="$(printf '%s' "$PLAN_JSON" | jq '[.[] | select(.keep)] | length')"
+DEL_COUNT="$(printf '%s' "$PLAN_JSON" | jq '[.[] | select(.keep | not)] | length')"
+
+log "plan: keep=$KEEP_COUNT delete=$DEL_COUNT"
+
+if [ "$EMIT_JSON" = 1 ]; then
+    printf '%s\n' "$PLAN_JSON"
+fi
+
+# Human-friendly table to stderr.
+{
+    printf '\n%-4s %-10s %-22s %-30s %-20s %s\n' "KEEP" "ID" "CREATED" "TAGS" "REASON" "DIGEST"
+    printf '%s\n' "$PLAN_JSON" | jq -r '
+        .[] | [
+            (if .keep then "Y" else "n" end),
+            (.id|tostring),
+            .created_at,
+            ((.tags // []) | join(",") | if . == "" then "-" else . end),
+            .reason,
+            (.digest[0:19])
+        ] | @tsv
+    ' | awk -F'\t' '{printf "%-4s %-10s %-22s %-30s %-20s %s\n",$1,$2,$3,$4,$5,$6}'
+    printf '\n'
+} >&2
+
+# --------------------------------------------------------------------------
+# apply (or dry-run)
+# --------------------------------------------------------------------------
+if [ "$DEL_COUNT" = 0 ]; then
+    log "nothing to delete"
+    printf '{"ts":"%s","event":"cleanup","apply":%d,"total":%s,"keep":%s,"delete":0}\n' \
+        "$(date -u +%FT%TZ)" "$APPLY" "$TOTAL_COUNT" "$KEEP_COUNT" >> "$LOG"
+    exit 0
+fi
+
+if [ "$APPLY" != 1 ]; then
+    log "DRY-RUN — pass --apply to actually delete $DEL_COUNT version(s)"
+    printf '{"ts":"%s","event":"cleanup","apply":0,"total":%s,"keep":%s,"delete":%s,"mode":"dry-run"}\n' \
+        "$(date -u +%FT%TZ)" "$TOTAL_COUNT" "$KEEP_COUNT" "$DEL_COUNT" >> "$LOG"
+    exit 0
+fi
+
+# apply — delete each candidate.
+DELETED=0
+FAILED=0
+printf '%s' "$PLAN_JSON" | jq -c '.[] | select(.keep | not)' | while IFS= read -r row; do
+    vid="$(printf '%s' "$row" | jq -r '.id')"
+    digest="$(printf '%s' "$row" | jq -r '.digest')"
+    created="$(printf '%s' "$row" | jq -r '.created_at')"
+    if api_delete "${VERSIONS_PATH}/${vid}" >/dev/null 2>&1; then
+        log "DELETED id=$vid created=$created digest=${digest:0:19}"
+        printf '{"ts":"%s","event":"delete","id":%s,"digest":"%s","created":"%s"}\n' \
+            "$(date -u +%FT%TZ)" "$vid" "$digest" "$created" >> "$LOG"
+        DELETED=$((DELETED + 1))
+    else
+        log "FAILED  id=$vid digest=${digest:0:19}"
+        printf '{"ts":"%s","event":"delete_fail","id":%s,"digest":"%s"}\n' \
+            "$(date -u +%FT%TZ)" "$vid" "$digest" >> "$LOG"
+        FAILED=$((FAILED + 1))
+    fi
+done
+
+log "apply complete (check journal for per-version status)"
+printf '{"ts":"%s","event":"cleanup","apply":1,"total":%s,"keep":%s,"delete":%s,"mode":"apply"}\n' \
+    "$(date -u +%FT%TZ)" "$TOTAL_COUNT" "$KEEP_COUNT" "$DEL_COUNT" >> "$LOG"

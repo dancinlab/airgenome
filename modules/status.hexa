@@ -1,0 +1,659 @@
+// modules/status.hexa — 3-host unified health snapshot (M11e 후속)
+//
+// 책임:
+//   1. Mac(local) + ubu/ubu2/htz(ssh fresh-probe) 동시 수집
+//   2. 호스트별: uptime, load, mem used/total, docker count, airgenome-claude 상태
+//      + port 2222 listener, image tag, systemd 서비스(active/enabled) 3종
+//   3. runaway 최근 30m verdict 분포 (ok/warn/danger/critical)
+//   4. dispatch: AG7 score per host, AG6 gate, claudx pool size/exhausted
+//   5. compact table (default) + --json (plain JSON line, scriptable)
+//
+// 제약:
+//   - use 없음 (Mac 에서 module_loader 파싱 실패 이슈 회피 — self-contained)
+//   - try/catch 미사용 (hexa-lang stage1)
+//   - Mac heavy compute 금지 (AG6) — Mac 은 uptime/vm_stat/sysctl 만
+//   - ssh fresh probe (`-S none -o ControlMaster=no -o ConnectTimeout=5 -o BatchMode=yes`)
+//     으로 stale mux 우회 (reference_cx_probe_fallback.md)
+//
+// 사용:
+//   airgenome status             — compact table
+//   airgenome status --json      — JSON (for dashboards/scripts)
+//
+// 목표 실행 시간: ≤ 5s (병렬 ssh 3-host, probe script stdin 전달).
+
+let HOME = env("HOME")
+let NEXUS = HOME + "/Dev/nexus"
+let AG_ROOT = HOME + "/Dev/airgenome"
+let DISPATCH_STATE = NEXUS + "/shared/dispatch_state.json"
+let INFRA_STATE = NEXUS + "/shared/infra_state.json"
+let CLAUDX_POOL = NEXUS + "/shared/.runtime/accounts/accounts.json"
+let CLAUDX_USAGE = NEXUS + "/shared/.runtime/accounts/usage-cache.json"
+let CLAUDX_EXHAUSTED = HOME + "/.airgenome/claudx/exhausted.json"
+let CLAUDX_ROTATIONS = HOME + "/.airgenome/claudx/rotations.jsonl"
+let SLOTS_DIR = HOME + "/.airgenome/cx_slots"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  유틸 — exec / jq / 문자열
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn sh(cmd: str) -> str {
+    return exec(cmd).trim()
+}
+
+fn void_guard(s: str) -> str {
+    // hexa-lang to_string(void) → "void" 버그 우회
+    if s == "void" { return "" }
+    return s
+}
+
+fn jqraw(expr: str, path: str) -> str {
+    return sh("jq -r '" + expr + " // empty' '" + path + "' 2>/dev/null")
+}
+
+// kv_get — "KEY=VAL\nKEY2=VAL2" 에서 KEY 값 추출. 없으면 "".
+fn kv_get(blob: str, key: str) -> str {
+    let lines = blob.split("\n")
+    let prefix = key + "="
+    let mut i = 0
+    while i < len(lines) {
+        let ln = lines[i]
+        i = i + 1
+        if ln == "" { continue }
+        if ln.starts_with(prefix) {
+            // 첫 '=' 이후 전부 (값에 '=' 포함 가능)
+            let idx = ln.index_of("=")
+            if idx < 0 { continue }
+            return ln.substring(idx + 1, len(ln))
+        }
+    }
+    return ""
+}
+
+fn json_esc(s: str) -> str {
+    // 최소 escape — backslash, double-quote. 일반 ASCII/UTF-8 통과.
+    let mut out = ""
+    let mut i = 0
+    while i < len(s) {
+        let c = s.substring(i, i + 1)
+        if c == "\\" { out = out + "\\\\" }
+        else if c == "\"" { out = out + "\\\"" }
+        else if c == "\n" { out = out + "\\n" }
+        else if c == "\r" { out = out + "\\r" }
+        else if c == "\t" { out = out + "\\t" }
+        else { out = out + c }
+        i = i + 1
+    }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Remote probe script (shipped via stdin — SSOT 는 이 파일)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 결과 KEY=VALUE lines. kv_get() 로 파싱.
+//   UPTIME, LOAD, MEM(used/total MB), DOCKERS, AGC_STATUS, IMAGE_TAG, P2222,
+//   SVC_CLAUDE{,_EN}, SVC_RUNAWAY{,_EN}, SVC_TG{,_EN}, VERDICTS (ok:N,warn:M,..)
+
+fn probe_script_path() -> str {
+    let p = "/tmp/agstatus_probe.sh"
+    // 매 실행마다 재생성 (idempotent, 한번에 race 안생김)
+    let body = "#!/usr/bin/env bash\n"
+        + "export LANG=C LC_ALL=C\n"
+        + "svc_state(){ local s u t; s=\"$1\"; u=\"$2\";"
+        + " if [ \"$s\" = \"user\" ]; then t=$(systemctl --user is-active \"$u\" 2>/dev/null | head -1);"
+        + " else t=$(systemctl is-active \"$u\" 2>/dev/null | head -1); fi;"
+        + " [ -z \"$t\" ] && t=inactive; echo \"$t\"; }\n"
+        + "svc_en(){ local s u t; s=\"$1\"; u=\"$2\";"
+        + " if [ \"$s\" = \"user\" ]; then t=$(systemctl --user is-enabled \"$u\" 2>/dev/null | head -1);"
+        + " else t=$(systemctl is-enabled \"$u\" 2>/dev/null | head -1); fi;"
+        + " [ -z \"$t\" ] && t=disabled; echo \"$t\"; }\n"
+        + "U=$(uptime -p 2>/dev/null | sed 's/^up //'); [ -z \"$U\" ] && U=unknown\n"
+        + "L=$(uptime | sed 's/.*load average[s]*: //' | tr -d ' ')\n"
+        + "M=$(free -m 2>/dev/null | awk '/^Mem:/{printf \"%d/%d\", $3, $2}'); [ -z \"$M\" ] && M='?/?'\n"
+        + "D=0; AGC=''; TAG=''; AGCS=''\n"
+        + "if command -v docker >/dev/null 2>&1; then\n"
+        + "  D=$(sudo -n docker ps --format '{{.Names}}' 2>/dev/null | wc -l | tr -d ' ');\n"
+        + "  AGC=$(sudo -n docker ps --filter name=airgenome-claude --format '{{.Names}}|{{.Status}}|{{.Image}}' 2>/dev/null | head -1);\n"
+        + "  TAG=$(echo \"$AGC\" | awk -F'|' '{print $3}' | awk -F':' '{print $NF}');\n"
+        + "  AGCS=$(echo \"$AGC\" | awk -F'|' '{print $2}');\n"
+        + "fi\n"
+        + "P=0\n"
+        + "if command -v ss >/dev/null 2>&1; then\n"
+        + "  P=$(ss -ltn 2>/dev/null | awk '$4 ~ /:2222$/' | wc -l | tr -d ' ')\n"
+        + "elif command -v netstat >/dev/null 2>&1; then\n"
+        + "  P=$(netstat -ltn 2>/dev/null | awk '$4 ~ /:2222$/' | wc -l | tr -d ' ')\n"
+        + "fi\n"
+        + "SC=$(svc_state user airgenome-claude); SCE=$(svc_en user airgenome-claude)\n"
+        + "SR=$(svc_state system airgenome-runaway); SRE=$(svc_en system airgenome-runaway)\n"
+        + "ST=$(svc_state system airgenome-tg); STE=$(svc_en system airgenome-tg)\n"
+        + "VER='ok:0'\n"
+        + "for C in /var/log/airgenome-runaway.log \"$HOME/.airgenome/runaway.jsonl\"; do\n"
+        + "  RAW=$( (sudo -n cat \"$C\" 2>/dev/null || cat \"$C\" 2>/dev/null) | tail -5000 )\n"
+        + "  [ -z \"$RAW\" ] && continue\n"
+        + "  VER=$(printf '%s\\n' \"$RAW\" | awk -v now=$(date +%s) -v win=1800 '\n"
+        + "    { if (!match($0,/\"ts\":\"[^\"]*\"/)) next;\n"
+        + "      ts=substr($0,RSTART+6,RLENGTH-7); gsub(/T/,\" \",ts); gsub(/Z$/,\"\",ts);\n"
+        + "      cmd=\"date -u -d \\\"\" ts \"\\\" +%s 2>/dev/null\"; cmd | getline ep; close(cmd);\n"
+        + "      if (ep==\"\" || (now-ep)>win) next;\n"
+        + "      if (!match($0,/\"verdict\":\"[^\"]*\"/)) next;\n"
+        + "      v=substr($0,RSTART+11,RLENGTH-12); c[v]++; }\n"
+        + "    END { o=\"\"; for (k in c) o=o (o==\"\"?\"\":\",\") k \":\" c[k]; if (o==\"\") o=\"ok:0\"; print o; }')\n"
+        + "  break\n"
+        + "done\n"
+        + "printf 'UPTIME=%s\\nLOAD=%s\\nMEM=%s\\nDOCKERS=%s\\nAGC_LINE=%s\\nAGC_STATUS=%s\\nIMAGE_TAG=%s\\nP2222=%s\\nSVC_CLAUDE=%s\\nSVC_CLAUDE_EN=%s\\nSVC_RUNAWAY=%s\\nSVC_RUNAWAY_EN=%s\\nSVC_TG=%s\\nSVC_TG_EN=%s\\nVERDICTS=%s\\n' \\\n"
+        + "  \"$U\" \"$L\" \"$M\" \"$D\" \"$AGC\" \"$AGCS\" \"$TAG\" \"$P\" \"$SC\" \"$SCE\" \"$SR\" \"$SRE\" \"$ST\" \"$STE\" \"$VER\"\n"
+    let _ = write_file(p, body)
+    let _ = exec("chmod +x '" + p + "' 2>/dev/null")
+    return p
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Probe — remote ssh + local Mac
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ssh_opts() -> str {
+    // fresh TCP probe — cx 와 동일 패턴 (reference_cx_probe_fallback).
+    return "-S none -o ControlMaster=no -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=3 -o ServerAliveCountMax=2"
+}
+
+// probe_remote — ssh+bash<probe.sh. 실패시 빈 문자열.
+fn probe_remote(alias: str, script: str) -> str {
+    let cmd = "timeout 8 ssh " + ssh_opts() + " '" + alias + "' bash -s < '" + script + "' 2>/dev/null"
+    return exec(cmd)
+}
+
+// probe_remote_parallel — 3호스트 병렬. 각자 stdout을 /tmp/ag_status_<alias>.out 에 저장.
+// 리턴: 모든 job 대기 후 "alias→출력" 블롭 map 시뮬레이션 (alias 마다 파일 읽음).
+fn probe_all_parallel(script: str) -> void {
+    let aliases = ["ubu", "ubu2", "hetzner"]
+    // Fire all three in background, capture to /tmp.
+    let mut cmd = ""
+    let mut i = 0
+    while i < len(aliases) {
+        let a = aliases[i]
+        let out = "/tmp/ag_status_" + a + ".out"
+        let _ = exec(": > '" + out + "' 2>/dev/null")
+        let this = "(timeout 8 ssh " + ssh_opts() + " '" + a + "' bash -s < '" + script + "' >'" + out + "' 2>&1) &"
+        if cmd == "" { cmd = this } else { cmd = cmd + " " + this }
+        i = i + 1
+    }
+    cmd = cmd + " wait"
+    let _ = exec(cmd)
+}
+
+fn probe_read(alias: str) -> str {
+    let out = "/tmp/ag_status_" + alias + ".out"
+    return void_guard(exec("cat '" + out + "' 2>/dev/null"))
+}
+
+// probe_mac — Mac 로컬 (AG6 — heavy 금지). uptime/vm_stat만.
+fn probe_mac() -> str {
+    // uptime 파싱 (macOS): "up X days, HH:MM, N users, load averages: A B C"
+    // Mac uptime: "H:MM  up X days, HH:MM, N users, load averages: A B C"
+    let up = sh("uptime | sed -E 's/.*up *//;s/, *[0-9]+ users?.*//' | sed 's/,$//'")
+    // Mac load 은 space-sep, Linux 는 ", " 양쪽 수용 → awk 로 항상 comma-sep 3-tuple.
+    let load = sh("uptime | awk -F'load averages*: ' '{gsub(\",\",\" \",$2); print $2}' | awk '{if(NF>=3) printf \"%s,%s,%s\", $1,$2,$3}'")
+    let mem_total_mb = sh("sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1048576)}'")
+    let mem_used_mb = sh("vm_stat 2>/dev/null | awk '/Pages active/{gsub(/\\./,\"\",$3); a=$3*4096/1048576} /Pages wired/{gsub(/\\./,\"\",$4); w=$4*4096/1048576} END{printf \"%d\", a+w}'")
+    let dockers = sh("command -v docker >/dev/null 2>&1 && (docker ps --format '{{.Names}}' 2>/dev/null | wc -l | tr -d ' ') || echo 0")
+
+    // Mac은 airgenome-claude 컨테이너 없음, systemd 없음. launchd com.airgenome.* count 만.
+    let lc = sh("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./' | wc -l | tr -d ' '")
+    return "UPTIME=" + up + "\n"
+         + "LOAD=" + load + "\n"
+         + "MEM=" + mem_used_mb + "/" + mem_total_mb + "\n"
+         + "DOCKERS=" + dockers + "\n"
+         + "AGC_LINE=\n"
+         + "AGC_STATUS=n/a\n"
+         + "IMAGE_TAG=n/a\n"
+         + "P2222=0\n"
+         + "SVC_CLAUDE=n/a\n"
+         + "SVC_CLAUDE_EN=n/a\n"
+         + "SVC_RUNAWAY=n/a\n"
+         + "SVC_RUNAWAY_EN=n/a\n"
+         + "SVC_TG=n/a\n"
+         + "SVC_TG_EN=n/a\n"
+         + "LAUNCHD_AG=" + lc + "\n"
+         + "VERDICTS=n/a\n"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Dispatch / AG7 / claudx
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ag7_score(host: str, kind: str) -> str {
+    return void_guard(jqraw(".scores.\"" + host + "\".\"" + kind + "\"", DISPATCH_STATE))
+}
+
+fn ag6_gate() -> str {
+    return void_guard(jqraw(".ag6_gate", DISPATCH_STATE))
+}
+
+fn dispatch_selection(kind: str) -> str {
+    return void_guard(jqraw(".selection.\"" + kind + "\"", DISPATCH_STATE))
+}
+
+fn dispatch_ts() -> str {
+    return void_guard(jqraw(".ts", DISPATCH_STATE))
+}
+
+fn infra_status(host: str) -> str {
+    return void_guard(jqraw(".hosts.\"" + host + "\".status", INFRA_STATE))
+}
+
+fn claudx_pool_size() -> int {
+    let s = void_guard(jqraw(".accounts | length", CLAUDX_POOL))
+    if s == "" { return 0 }
+    return to_int(s)
+}
+
+// claudx_active_count — usage-cache.json 의 _retry_at 아직 안지난 계정 수.
+fn claudx_exhausted_count() -> int {
+    let now = to_int(sh("date +%s"))
+    // jq 로 _retry_at > now 카운트
+    let expr = "[ to_entries[] | select(.value._retry_at != null and .value._retry_at > " + to_string(now) + ") ] | length"
+    let s = void_guard(sh("jq -r '" + expr + " // 0' '" + CLAUDX_USAGE + "' 2>/dev/null"))
+    if s == "" { return 0 }
+    return to_int(s)
+}
+
+fn claudx_recent_rotations() -> int {
+    // 최근 30분 rotations.jsonl 줄 수
+    let s = void_guard(sh("[ -f '" + CLAUDX_ROTATIONS + "' ] && awk -v now=$(date +%s) -v win=1800 '{ if (match($0,/\"ts\":[0-9]+/)) { v=substr($0,RSTART+5,RLENGTH-5); if (now-v<win) c++ } } END {print c+0}' '" + CLAUDX_ROTATIONS + "' || echo 0"))
+    if s == "" { return 0 }
+    return to_int(s)
+}
+
+// cx slot 사용량 (run.hexa 의 slots 로직 단순화)
+fn cx_slots_used(host: str) -> int {
+    let cmd = "ls -1d '" + SLOTS_DIR + "/" + host + "_'*/pid 2>/dev/null | while read p; do pid=$(cat \"$p\" 2>/dev/null); if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then echo 1; fi; done | wc -l | tr -d ' '"
+    let s = sh(cmd)
+    if s == "" { return 0 }
+    return to_int(s)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Verdict 분포 파싱 — "ok:N,warn:M,danger:P,critical:Q" → 4 ints
+// ═══════════════════════════════════════════════════════════════════════
+
+struct Verdicts {
+    ok: int, warn: int, danger: int, critical: int
+}
+
+fn parse_verdicts(s: str) -> Verdicts {
+    let mut v = Verdicts { ok: 0, warn: 0, danger: 0, critical: 0 }
+    if s == "" || s == "n/a" { return v }
+    let parts = s.split(",")
+    let mut i = 0
+    while i < len(parts) {
+        let kv = parts[i].split(":")
+        i = i + 1
+        if len(kv) < 2 { continue }
+        let key = kv[0].trim()
+        let val_i = to_int(kv[1].trim())
+        if key == "ok" { v.ok = val_i }
+        else if key == "warn" { v.warn = val_i }
+        else if key == "danger" { v.danger = val_i }
+        else if key == "critical" { v.critical = val_i }
+    }
+    return v
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Host record
+// ═══════════════════════════════════════════════════════════════════════
+
+struct HostRec {
+    host: str,
+    display: str,
+    ssh_alias: str,
+    reachable: bool,
+    uptime: str,
+    load: str,
+    mem: str,
+    dockers: str,
+    agc_status: str,
+    image_tag: str,
+    p2222: str,
+    svc_claude: str,
+    svc_claude_en: str,
+    svc_runaway: str,
+    svc_runaway_en: str,
+    svc_tg: str,
+    svc_tg_en: str,
+    verdicts: Verdicts,
+    ag7_compute: str,
+    ag7_gpu: str,
+    ag7_heavy: str,
+    infra_status: str,
+    cx_used: int
+}
+
+fn new_host_rec(host: str, display: str, alias: str) -> HostRec {
+    return HostRec {
+        host: host, display: display, ssh_alias: alias,
+        reachable: false,
+        uptime: "", load: "", mem: "", dockers: "",
+        agc_status: "", image_tag: "", p2222: "",
+        svc_claude: "", svc_claude_en: "",
+        svc_runaway: "", svc_runaway_en: "",
+        svc_tg: "", svc_tg_en: "",
+        verdicts: Verdicts { ok: 0, warn: 0, danger: 0, critical: 0 },
+        ag7_compute: "", ag7_gpu: "", ag7_heavy: "",
+        infra_status: "",
+        cx_used: 0
+    }
+}
+
+fn populate_from_blob(r: HostRec, blob: str) -> HostRec {
+    r.reachable = blob != ""
+    r.uptime = void_guard(kv_get(blob, "UPTIME"))
+    r.load = void_guard(kv_get(blob, "LOAD"))
+    r.mem = void_guard(kv_get(blob, "MEM"))
+    r.dockers = void_guard(kv_get(blob, "DOCKERS"))
+    r.agc_status = void_guard(kv_get(blob, "AGC_STATUS"))
+    r.image_tag = void_guard(kv_get(blob, "IMAGE_TAG"))
+    r.p2222 = void_guard(kv_get(blob, "P2222"))
+    r.svc_claude = void_guard(kv_get(blob, "SVC_CLAUDE"))
+    r.svc_claude_en = void_guard(kv_get(blob, "SVC_CLAUDE_EN"))
+    r.svc_runaway = void_guard(kv_get(blob, "SVC_RUNAWAY"))
+    r.svc_runaway_en = void_guard(kv_get(blob, "SVC_RUNAWAY_EN"))
+    r.svc_tg = void_guard(kv_get(blob, "SVC_TG"))
+    r.svc_tg_en = void_guard(kv_get(blob, "SVC_TG_EN"))
+    r.verdicts = parse_verdicts(void_guard(kv_get(blob, "VERDICTS")))
+    return r
+}
+
+fn attach_dispatch(r: HostRec) -> HostRec {
+    r.ag7_compute = ag7_score(r.host, "compute")
+    r.ag7_gpu = ag7_score(r.host, "gpu")
+    r.ag7_heavy = ag7_score(r.host, "heavy")
+    r.infra_status = infra_status(r.host)
+    r.cx_used = cx_slots_used(r.host)
+    return r
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Render — table
+// ═══════════════════════════════════════════════════════════════════════
+
+fn pad_right(s: str, n: int) -> str {
+    let mut out = s
+    while len(out) < n { out = out + " " }
+    return out
+}
+
+fn short_or(s: str, fallback: str) -> str {
+    if s == "" { return fallback }
+    return s
+}
+
+// truncate string if too long (no ellipsis — 공간 낭비 방지).
+fn trunc(s: str, n: int) -> str {
+    if len(s) <= n { return s }
+    return s.substring(0, n)
+}
+
+fn verdict_summary(v: Verdicts) -> str {
+    return "ok=" + to_string(v.ok)
+         + " warn=" + to_string(v.warn)
+         + " dgr=" + to_string(v.danger)
+         + " crit=" + to_string(v.critical)
+}
+
+fn svc_mark(active: str, enabled: str) -> str {
+    if active == "n/a" { return "-" }
+    let a_ok = active == "active"
+    let e_ok = enabled == "enabled"
+    if a_ok && e_ok { return "A+E" }
+    if a_ok { return "A" }
+    if active == "inactive" && enabled == "not-found" { return "—" }
+    if active == "inactive" { return "off" }
+    if active == "activating" { return "..." }
+    return trunc(active, 6)
+}
+
+fn render_table(records: list, ts: str, exhausted: int, pool_size: int, rot30: int, sel_compute: str, sel_gpu: str, sel_heavy: str, gate: str, dts: str, elapsed_ms: int) -> void {
+    println("⬡ airgenome status  " + ts + "  (probe " + to_string(elapsed_ms) + "ms)")
+    println("═══════════════════════════════════════════════════════════════════════════════")
+    println(pad_right("host", 7) + pad_right("infra", 8) + pad_right("uptime", 18) + pad_right("load", 18) + pad_right("mem MB", 14) + pad_right("dkr", 4) + pad_right("cx", 4))
+    let mut i = 0
+    while i < len(records) {
+        let r = records[i]
+        i = i + 1
+        let infra = short_or(r.infra_status, "?")
+        let up = trunc(short_or(r.uptime, "-"), 17)
+        let ld = trunc(short_or(r.load, "-"), 17)
+        let mm = trunc(short_or(r.mem, "-"), 13)
+        let dk = short_or(r.dockers, "-")
+        println(pad_right(r.display, 7) + pad_right(infra, 8) + pad_right(up, 18) + pad_right(ld, 18) + pad_right(mm, 14) + pad_right(dk, 4) + pad_right(to_string(r.cx_used), 4))
+    }
+    println("")
+    println("--- container (airgenome-claude) ---")
+    println(pad_right("host", 7) + pad_right("status", 28) + pad_right("image", 12) + pad_right(":2222", 6))
+    let mut j = 0
+    while j < len(records) {
+        let r = records[j]
+        j = j + 1
+        let st = trunc(short_or(r.agc_status, "-"), 27)
+        let tag = trunc(short_or(r.image_tag, "-"), 11)
+        let p = short_or(r.p2222, "-")
+        println(pad_right(r.display, 7) + pad_right(st, 28) + pad_right(tag, 12) + pad_right(p, 6))
+    }
+    println("")
+    println("--- systemd services (active + enabled) ---")
+    println(pad_right("host", 7) + pad_right("claude", 10) + pad_right("runaway", 10) + pad_right("tg", 10))
+    let mut k = 0
+    while k < len(records) {
+        let r = records[k]
+        k = k + 1
+        let sc = svc_mark(short_or(r.svc_claude, "n/a"), short_or(r.svc_claude_en, "n/a"))
+        let sr = svc_mark(short_or(r.svc_runaway, "n/a"), short_or(r.svc_runaway_en, "n/a"))
+        let st = svc_mark(short_or(r.svc_tg, "n/a"), short_or(r.svc_tg_en, "n/a"))
+        println(pad_right(r.display, 7) + pad_right(sc, 10) + pad_right(sr, 10) + pad_right(st, 10))
+    }
+    println("")
+    println("--- runaway verdicts (last 30m) ---")
+    println(pad_right("host", 7) + "ok      warn    danger  crit")
+    let mut m = 0
+    while m < len(records) {
+        let r = records[m]
+        m = m + 1
+        let v = r.verdicts
+        let row = pad_right(r.display, 7)
+               + pad_right(to_string(v.ok), 8)
+               + pad_right(to_string(v.warn), 8)
+               + pad_right(to_string(v.danger), 8)
+               + to_string(v.critical)
+        println(row)
+    }
+    println("")
+    println("--- dispatch / AG7 score (compute · gpu · heavy) ---")
+    println(pad_right("host", 7) + pad_right("compute", 10) + pad_right("gpu", 10) + "heavy")
+    let mut n = 0
+    while n < len(records) {
+        let r = records[n]
+        n = n + 1
+        let c = short_or(r.ag7_compute, "-")
+        let g = short_or(r.ag7_gpu, "-")
+        let h = short_or(r.ag7_heavy, "-")
+        println(pad_right(r.display, 7) + pad_right(c, 10) + pad_right(g, 10) + h)
+    }
+    println("  selection → compute=" + short_or(sel_compute, "?")
+          + "  gpu=" + short_or(sel_gpu, "?")
+          + "  heavy=" + short_or(sel_heavy, "?")
+          + "  ag6_gate=" + short_or(gate, "?")
+          + "  (dispatch_state " + short_or(dts, "?") + ")")
+    println("")
+    println("--- claudx pool ---")
+    println("  pool_size=" + to_string(pool_size)
+          + "  exhausted=" + to_string(exhausted)
+          + "  rotations(30m)=" + to_string(rot30)
+          + "  active=" + to_string(pool_size - exhausted))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Render — JSON
+// ═══════════════════════════════════════════════════════════════════════
+
+fn host_json(r: HostRec) -> str {
+    let v = r.verdicts
+    return "{"
+        + "\"host\":\"" + json_esc(r.host) + "\""
+        + ",\"display\":\"" + json_esc(r.display) + "\""
+        + ",\"reachable\":" + if r.reachable { "true" } else { "false" }
+        + ",\"infra_status\":\"" + json_esc(r.infra_status) + "\""
+        + ",\"uptime\":\"" + json_esc(r.uptime) + "\""
+        + ",\"load\":\"" + json_esc(r.load) + "\""
+        + ",\"mem\":\"" + json_esc(r.mem) + "\""
+        + ",\"dockers\":\"" + json_esc(r.dockers) + "\""
+        + ",\"cx_used\":" + to_string(r.cx_used)
+        + ",\"container\":{"
+        +   "\"status\":\"" + json_esc(r.agc_status) + "\""
+        +   ",\"image_tag\":\"" + json_esc(r.image_tag) + "\""
+        +   ",\"port_2222_listeners\":\"" + json_esc(r.p2222) + "\""
+        + "}"
+        + ",\"services\":{"
+        +   "\"claude\":{\"active\":\"" + json_esc(r.svc_claude) + "\",\"enabled\":\"" + json_esc(r.svc_claude_en) + "\"}"
+        +   ",\"runaway\":{\"active\":\"" + json_esc(r.svc_runaway) + "\",\"enabled\":\"" + json_esc(r.svc_runaway_en) + "\"}"
+        +   ",\"tg\":{\"active\":\"" + json_esc(r.svc_tg) + "\",\"enabled\":\"" + json_esc(r.svc_tg_en) + "\"}"
+        + "}"
+        + ",\"runaway_30m\":{"
+        +   "\"ok\":" + to_string(v.ok)
+        +   ",\"warn\":" + to_string(v.warn)
+        +   ",\"danger\":" + to_string(v.danger)
+        +   ",\"critical\":" + to_string(v.critical)
+        + "}"
+        + ",\"ag7\":{"
+        +   "\"compute\":\"" + json_esc(r.ag7_compute) + "\""
+        +   ",\"gpu\":\"" + json_esc(r.ag7_gpu) + "\""
+        +   ",\"heavy\":\"" + json_esc(r.ag7_heavy) + "\""
+        + "}"
+        + "}"
+}
+
+fn render_json(records: list, ts: str, exhausted: int, pool_size: int, rot30: int, sel_compute: str, sel_gpu: str, sel_heavy: str, gate: str, dts: str, elapsed_ms: int) -> void {
+    let mut hosts_part = "["
+    let mut i = 0
+    while i < len(records) {
+        if i > 0 { hosts_part = hosts_part + "," }
+        hosts_part = hosts_part + host_json(records[i])
+        i = i + 1
+    }
+    hosts_part = hosts_part + "]"
+
+    let out = "{"
+        + "\"ts\":\"" + json_esc(ts) + "\""
+        + ",\"elapsed_ms\":" + to_string(elapsed_ms)
+        + ",\"dispatch\":{"
+        +   "\"ts\":\"" + json_esc(dts) + "\""
+        +   ",\"ag6_gate\":\"" + json_esc(gate) + "\""
+        +   ",\"selection\":{"
+        +     "\"compute\":\"" + json_esc(sel_compute) + "\""
+        +     ",\"gpu\":\"" + json_esc(sel_gpu) + "\""
+        +     ",\"heavy\":\"" + json_esc(sel_heavy) + "\""
+        +   "}"
+        + "}"
+        + ",\"claudx\":{"
+        +   "\"pool_size\":" + to_string(pool_size)
+        +   ",\"exhausted\":" + to_string(exhausted)
+        +   ",\"rotations_30m\":" + to_string(rot30)
+        +   ",\"active\":" + to_string(pool_size - exhausted)
+        + "}"
+        + ",\"hosts\":" + hosts_part
+        + "}"
+    println(out)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  main
+// ═══════════════════════════════════════════════════════════════════════
+
+fn now_ms() -> int {
+    // Mac 은 `date +%s%3N` 미지원 (%3N → 문자 '3N' literal). perl 이 가장 안정.
+    let s = sh("perl -MTime::HiRes=time -e 'printf \"%d\", time()*1000' 2>/dev/null")
+    if s == "" { return to_int(sh("date +%s")) * 1000 }
+    return to_int(s)
+}
+
+fn run_status(as_json: bool) -> void {
+    let t0 = now_ms()
+
+    let script = probe_script_path()
+
+    // 병렬 fan-out (remote) + Mac local probe
+    probe_all_parallel(script)
+
+    // Mac probe (cheap — no ssh)
+    let mac_blob = probe_mac()
+
+    // Build records
+    let mut recs = []
+    // display 는 ASCII only — Unicode superscript 는 터미널 column-width 계산을 깨뜨림 (¹=1 char, 2 cols).
+    let rec_mac = populate_from_blob(attach_dispatch(new_host_rec("mac", "mac", "")), mac_blob)
+    recs = recs + [rec_mac]
+
+    let rec_ubu = populate_from_blob(attach_dispatch(new_host_rec("ubu", "ubu1", "ubu")), probe_read("ubu"))
+    recs = recs + [rec_ubu]
+
+    let rec_ubu2 = populate_from_blob(attach_dispatch(new_host_rec("ubu2", "ubu2", "ubu2")), probe_read("ubu2"))
+    recs = recs + [rec_ubu2]
+
+    let rec_htz = populate_from_blob(attach_dispatch(new_host_rec("htz", "htz1", "hetzner")), probe_read("hetzner"))
+    recs = recs + [rec_htz]
+
+    // Dispatch / claudx aggregates
+    let gate = ag6_gate()
+    let sel_c = dispatch_selection("compute")
+    let sel_g = dispatch_selection("gpu")
+    let sel_h = dispatch_selection("heavy")
+    let dts = dispatch_ts()
+    let pool_size = claudx_pool_size()
+    let exh = claudx_exhausted_count()
+    let rot30 = claudx_recent_rotations()
+
+    let elapsed = now_ms() - t0
+
+    let ts = ts_iso()
+    if as_json {
+        render_json(recs, ts, exh, pool_size, rot30, sel_c, sel_g, sel_h, gate, dts, elapsed)
+    } else {
+        render_table(recs, ts, exh, pool_size, rot30, sel_c, sel_g, sel_h, gate, dts, elapsed)
+    }
+}
+
+fn self_test() -> void {
+    // L0 parse-check. runtime smoke — kv_get / parse_verdicts / json_esc.
+    let blob = "UPTIME=foo\nLOAD=1.0,2.0,3.0\nMEM=100/200\nVERDICTS=ok:5,warn:1,danger:0,critical:2\n"
+    if kv_get(blob, "UPTIME") != "foo" { panic("self_test FAIL kv_get") }
+    if kv_get(blob, "LOAD") != "1.0,2.0,3.0" { panic("self_test FAIL kv_get LOAD") }
+    let v = parse_verdicts(kv_get(blob, "VERDICTS"))
+    if v.ok != 5 || v.warn != 1 || v.critical != 2 { panic("self_test FAIL parse_verdicts") }
+    if json_esc("a\"b\\c") != "a\\\"b\\\\c" { panic("self_test FAIL json_esc") }
+    println("⬡ status self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    // argv 규약: [hexa_bin, script, user_args...]  (index 2부터 user)
+    //   $HEXA run modules/status.hexa [--json|self-test]
+    let mut mode = "table"
+    let mut i = 2
+    while i < len(a) {
+        let t = a[i]
+        if t == "--json" || t == "-j" { mode = "json" }
+        else if t == "self-test" { self_test(); return }
+        else if t == "--help" || t == "-h" {
+            println("usage: airgenome status [--json]")
+            return
+        }
+        i = i + 1
+    }
+    if mode == "json" { run_status(true) } else { run_status(false) }
+}
+
+main()

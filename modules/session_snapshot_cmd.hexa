@@ -1,0 +1,521 @@
+// session_snapshot_cmd.hexa — 명령 레벨 session snapshot/resume (D1 골화)
+//
+// 배경:
+//   D1 사고 (2026-04-10) 골화세트 = launcher_cap + session_snapshot/resume + resource_coordinator.
+//   launcher_cap (Hetzner) 과 resource_coordinator 는 배포됨.
+//   본 모듈은 "명령 레벨" snapshot — 장기 hexa 작업 crash/kill 후 cmd+env 를 복원한다.
+//
+// 대상 범위 (명시적 비대상 포함):
+//   [대상]   명령줄 + env + 진행 체크포인트 (숫자 progress + 자유 텍스트)
+//   [비대상] Claude Code 대화 히스토리 (API 제약, archive v1 session_snapshot.hexa 참조)
+//   [비대상] hexa VM in-memory state 직렬화
+//
+// SSOT 파일:
+//   ~/.airgenome/sessions/<session_id>.jsonl
+//     각 줄 = {ts, event, host, pid, cmd, env_keep, progress, checkpoint, exit}
+//     첫 줄 event="start", 중간 event="checkpoint", 마지막 event="end"|"resume"
+//
+// 서브커맨드:
+//   airgenome session-snapshot list            — 30분 이내 활성 세션 요약 (JSON)
+//   airgenome session-snapshot save <id> <cmd> — 새 세션 시작 (JSONL append start)
+//   airgenome session-snapshot tick <id> <progress> <checkpoint_text>
+//                                              — 진행 체크포인트 append
+//   airgenome session-snapshot end  <id> <exit_code>
+//                                              — 종료 마킹
+//   airgenome session-snapshot resume <id>     — 마지막 체크포인트부터 재실행
+//                                                 (launcher_cap 중복 회피: 같은 cmd 활성 PID 있으면 abort)
+//   airgenome session-snapshot show <id>       — JSONL 본문 그대로
+//   airgenome session-snapshot gc              — 7일 이상 된 파일 삭제
+//
+// 규칙 준수:
+//   R1  HEXA-FIRST
+//   R17 좀비 방지   — resume 전 중복 PID 검사
+//   R19 SILENT EXIT 금지 — stderr 로 실패 보고
+//   R20 pgrep -f substring 금지 — comm 기반 + grep -F 고정문자열 비교
+
+fn se_home() -> str {
+    let h = env("HOME")
+    if h == "" { return "/tmp" }
+    return h
+}
+
+fn sess_dir() -> str {
+    let d = se_home() + "/.airgenome/sessions"
+    exec("mkdir -p '" + d + "'")
+    return d
+}
+
+fn sess_path(id: str) -> str {
+    return sess_dir() + "/" + id + ".jsonl"
+}
+
+fn now_ts() -> int {
+    let raw = exec("date +%s").trim()
+    let mut v = 0
+    try { v = to_int(to_float(raw)) } catch e {}
+    return v
+}
+
+fn now_iso() -> str {
+    let raw = exec("date -u +%FT%TZ").trim()
+    if raw == "" { return "unknown" }
+    return raw
+}
+
+fn hostname() -> str {
+    let h = exec("hostname -s").trim()
+    if h == "" { return "unknown" }
+    return h
+}
+
+fn mypid() -> int {
+    let raw = exec("echo $PPID").trim()
+    let mut v = 0
+    try { v = to_int(to_float(raw)) } catch e {}
+    return v
+}
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "").replace("\t", " ")
+}
+
+fn err(msg: str) -> void {
+    exec("echo '[session-snapshot] " + msg.replace("'", "") + "' >&2")
+}
+
+// env_keep: 재현에 필요한 whitelist env 만 기록 (비밀 누출 방지)
+// 저장 포맷: "K1=V1\nK2=V2" 를 json_escape 해서 단일 문자열 필드로 삽입
+// (중첩 object 를 쓰면 hexa-lang substr 버그 등으로 파싱 fragile — 단순 문자열로 우회)
+let ENV_WHITELIST = ["AIRGENOME_ROOT", "AIRGENOME_RING_NAME", "HEXA_LOCAL", "HEXA", "AIRGENOME_SESSION_ID"]
+
+fn snapshot_env_str() -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(ENV_WHITELIST) {
+        let k = ENV_WHITELIST[i]
+        let v = env(k)
+        if v != "" {
+            if out != "" { out = out + "\n" }
+            out = out + k + "=" + v
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  SAVE — start marker
+// ──────────────────────────────────────────────────────────────────────
+fn cmd_save(id: str, cmdline: str) -> int {
+    if id == "" || cmdline == "" {
+        err("usage: session-snapshot save <id> <cmd>")
+        return 2
+    }
+    let fp = sess_path(id)
+    let entry = "{\"ts\":" + to_string(now_ts()) +
+        ",\"iso\":\"" + now_iso() + "\"" +
+        ",\"event\":\"start\"" +
+        ",\"host\":\"" + json_escape(hostname()) + "\"" +
+        ",\"pid\":" + to_string(mypid()) +
+        ",\"cmd\":\"" + json_escape(cmdline) + "\"" +
+        ",\"env_keep\":\"" + json_escape(snapshot_env_str()) + "\"" +
+        ",\"progress\":0" +
+        ",\"checkpoint\":\"\"}"
+    try { append_file(fp, entry + "\n") } catch e {
+        err("append failed " + fp)
+        return 1
+    }
+    println(id)
+    return 0
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  TICK — progress checkpoint
+// ──────────────────────────────────────────────────────────────────────
+fn cmd_tick(id: str, progress_s: str, checkpoint: str) -> int {
+    if id == "" {
+        err("usage: session-snapshot tick <id> <progress> <checkpoint>")
+        return 2
+    }
+    let fp = sess_path(id)
+    let fe = exec("[ -f '" + fp + "' ] && echo y || echo n").trim()
+    if fe != "y" {
+        err("session not found: " + id)
+        return 1
+    }
+    let mut progress = 0
+    try { progress = to_int(to_float(progress_s)) } catch e {}
+    let entry = "{\"ts\":" + to_string(now_ts()) +
+        ",\"iso\":\"" + now_iso() + "\"" +
+        ",\"event\":\"checkpoint\"" +
+        ",\"progress\":" + to_string(progress) +
+        ",\"checkpoint\":\"" + json_escape(checkpoint) + "\"}"
+    try { append_file(fp, entry + "\n") } catch e {
+        err("append failed " + fp)
+        return 1
+    }
+    return 0
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  END
+// ──────────────────────────────────────────────────────────────────────
+fn cmd_end(id: str, exit_s: str) -> int {
+    if id == "" {
+        err("usage: session-snapshot end <id> [exit_code]")
+        return 2
+    }
+    let fp = sess_path(id)
+    let fe = exec("[ -f '" + fp + "' ] && echo y || echo n").trim()
+    if fe != "y" {
+        err("session not found: " + id)
+        return 1
+    }
+    let mut ec = 0
+    try { ec = to_int(to_float(exit_s)) } catch e {}
+    let entry = "{\"ts\":" + to_string(now_ts()) +
+        ",\"iso\":\"" + now_iso() + "\"" +
+        ",\"event\":\"end\"" +
+        ",\"exit\":" + to_string(ec) + "}"
+    try { append_file(fp, entry + "\n") } catch e {
+        err("append failed " + fp)
+        return 1
+    }
+    return 0
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  SHOW — dump raw
+// ──────────────────────────────────────────────────────────────────────
+fn cmd_show(id: str) -> int {
+    let fp = sess_path(id)
+    let fe = exec("[ -f '" + fp + "' ] && echo y || echo n").trim()
+    if fe != "y" {
+        err("session not found: " + id)
+        return 1
+    }
+    let body = read_file(fp)
+    print(body)
+    return 0
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  헬퍼 — JSONL 을 파싱해서 필요한 필드만 추출 (최소 파서)
+//
+//  hexa 에서 완전한 JSON 파서 없이 문자열 슬라이싱으로 값을 꺼낸다.
+//  entry 는 한 줄 JSON 이므로 `"key":` 뒤의 토큰을 취하는 단순 전략.
+// ──────────────────────────────────────────────────────────────────────
+fn jq_str(line: str, key: str) -> str {
+    let needle = "\"" + key + "\":\""
+    if line.contains(needle) == false { return "" }
+    let after = line.split(needle)[1]
+    // 다음 닫는 따옴표까지 — 단, \" 이스케이프는 고려 (minimal)
+    let parts = after.split("\"")
+    return parts[0].replace("\\\\", "\\").replace("\\\"", "\"").replace("\\n", "\n")
+}
+
+fn jq_int(line: str, key: str) -> int {
+    let needle = "\"" + key + "\":"
+    if line.contains(needle) == false { return 0 }
+    let after = line.split(needle)[1]
+    // 숫자 구간 = 다음 , 또는 } 까지
+    let mut s = after.split(",")[0]
+    s = s.split("}")[0]
+    s = s.trim()
+    let mut v = 0
+    try { v = to_int(to_float(s)) } catch e {}
+    return v
+}
+
+// 세션 파일에서 start entry + 마지막 checkpoint 를 뽑아 요약 리턴:
+// "<start_ts>\t<last_ts>\t<progress>\t<event>\t<pid>\t<cmd>\t<env_str>\t<checkpoint>"
+// env_str 은 "K1=V1\nK2=V2" 포맷 (줄바꿈은 탭이 아니라 \n — jq_str 이 \\n→\n 복원)
+fn session_summary_tsv(id: str) -> str {
+    let fp = sess_path(id)
+    let fe = exec("[ -f '" + fp + "' ] && echo y || echo n").trim()
+    if fe != "y" { return "" }
+    let body = read_file(fp)
+    let lines = body.split("\n")
+    let mut start_ts = 0
+    let mut last_ts = 0
+    let mut progress = 0
+    let mut last_event = "start"
+    let mut pid = 0
+    let mut cmd = ""
+    let mut env_str = ""
+    let mut checkpoint = ""
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line == "" { i = i + 1; continue }
+        let ev = jq_str(line, "event")
+        let ts = jq_int(line, "ts")
+        if ts > last_ts { last_ts = ts }
+        if ev == "start" {
+            start_ts = ts
+            pid = jq_int(line, "pid")
+            cmd = jq_str(line, "cmd")
+            env_str = jq_str(line, "env_keep")
+        }
+        if ev == "checkpoint" {
+            progress = jq_int(line, "progress")
+            checkpoint = jq_str(line, "checkpoint")
+        }
+        last_event = ev
+        i = i + 1
+    }
+    let tab = "\t"
+    // env_str 안의 \n 은 "\x01" 로 치환 → split("\t") 안전, cmd 에 \n 없다고 가정
+    let env_safe = env_str.replace("\n", "\x01")
+    return to_string(start_ts) + tab + to_string(last_ts) + tab + to_string(progress) + tab + last_event + tab + to_string(pid) + tab + cmd + tab + env_safe + tab + checkpoint
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  LIST — 30분 이내 활성 세션
+// ──────────────────────────────────────────────────────────────────────
+fn cmd_list() -> int {
+    let d = sess_dir()
+    let raw = exec("ls -1 '" + d + "'/*.jsonl 2>/dev/null").trim()
+    if raw == "" {
+        println("[]")
+        return 0
+    }
+    let files = raw.split("\n")
+    let now = now_ts()
+    let mut out = "["
+    let mut first = true
+    let mut i = 0
+    while i < len(files) {
+        let fp = files[i].trim()
+        if fp == "" { i = i + 1; continue }
+        let base = exec("basename '" + fp + "' .jsonl").trim()
+        let sum = session_summary_tsv(base)
+        if sum != "" {
+            let cols = sum.split("\t")
+            let start_ts = to_int(to_float(cols[0]))
+            let last_ts = to_int(to_float(cols[1]))
+            let progress = to_int(to_float(cols[2]))
+            let event = cols[3]
+            let pid = cols[4]
+            let cmd = cols[5]
+            let env_str = cols[6].replace("\x01", "\n")
+            let checkpoint = cols[7]
+            let age = now - last_ts
+            let mut stale = false
+            if age > 1800 { stale = true }   // 30분
+            let mut active = false
+            if event != "end" && stale == false { active = true }
+            if first == false { out = out + "," }
+            let stale_s = if stale { "true" } else { "false" }
+            let active_s = if active { "true" } else { "false" }
+            out = out + "{\"id\":\"" + json_escape(base) + "\"" +
+                ",\"start_ts\":" + to_string(start_ts) +
+                ",\"last_ts\":" + to_string(last_ts) +
+                ",\"age_s\":" + to_string(age) +
+                ",\"progress\":" + to_string(progress) +
+                ",\"event\":\"" + event + "\"" +
+                ",\"pid\":" + pid +
+                ",\"cmd\":\"" + json_escape(cmd) + "\"" +
+                ",\"env_keep\":\"" + json_escape(env_str) + "\"" +
+                ",\"checkpoint\":\"" + json_escape(checkpoint) + "\"" +
+                ",\"stale\":" + stale_s +
+                ",\"active\":" + active_s + "}"
+            first = false
+        }
+        i = i + 1
+    }
+    out = out + "]"
+    println(out)
+    return 0
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  RESUME — 마지막 체크포인트부터 재실행
+//
+//  중복 실행 방지 (launcher_cap 연동 취지):
+//    1. 세션 event=="end" 이면 이미 완료 — abort (override: --force)
+//    2. 같은 cmd 토큰이 현재 실행 중이면 abort
+//       — pgrep -f 대신 ps -o args= 전체 추출 후 grep -F 고정문자열 매칭 (R20 준수)
+// ──────────────────────────────────────────────────────────────────────
+fn cmd_resume(id: str, force: bool) -> int {
+    if id == "" {
+        err("usage: session-snapshot resume <id> [--force]")
+        return 2
+    }
+    let sum = session_summary_tsv(id)
+    if sum == "" {
+        err("session not found: " + id)
+        return 1
+    }
+    let cols = sum.split("\t")
+    let event = cols[3]
+    let cmd = cols[5]
+    let env_str = cols[6].replace("\x01", "\n")
+    let checkpoint = cols[7]
+    if cmd == "" {
+        err("resume: no command recorded in " + id)
+        return 1
+    }
+    if event == "end" && force == false {
+        err("session already ended: " + id + " (use --force to re-run)")
+        return 1
+    }
+    // 중복 실행 검사: 정확 문자열 매칭 (comm 전수 argv 중 본 cmd 포함)
+    // 짧은 cmd 는 false positive 위험 — len>=8 조건
+    if len(cmd) >= 8 {
+        // hexa 의 grep 인자 내 특수문자 회피: json_escape 한 cmd 를 다시 literal 로 복구
+        // exec 에는 작은따옴표로 감싸 '{cmd}' 를 전달
+        let cmd_esc = cmd.replace("'", "'\\''")
+        let hits = exec("ps -axo pid=,args= 2>/dev/null | grep -F -- '" + cmd_esc + "' | grep -v -F ' grep ' | grep -v -F 'session-snapshot' | wc -l | tr -d ' '").trim()
+        let mut n = 0
+        try { n = to_int(to_float(hits)) } catch e {}
+        if n > 0 && force == false {
+            err("command already running (n=" + to_string(n) + "): " + cmd + " (use --force)")
+            return 1
+        }
+    }
+    // resume 마커 append
+    let entry = "{\"ts\":" + to_string(now_ts()) +
+        ",\"iso\":\"" + now_iso() + "\"" +
+        ",\"event\":\"resume\"" +
+        ",\"from_checkpoint\":\"" + json_escape(checkpoint) + "\"}"
+    try { append_file(sess_path(id), entry + "\n") } catch e {}
+
+    // env 복원 — env_str 은 "K1=V1\nK2=V2" 포맷
+    let mut env_prefix = ""
+    if env_str != "" {
+        let lines = env_str.split("\n")
+        let mut k = 0
+        while k < len(lines) {
+            let ln = lines[k].trim()
+            if ln != "" && ln.contains("=") {
+                let eq_idx = ln.split("=")
+                let key = eq_idx[0].trim()
+                // = 이후 전체가 값 (= 자체가 값에 포함될 수 있음)
+                let mut val = ""
+                let mut m = 1
+                while m < len(eq_idx) {
+                    if m > 1 { val = val + "=" }
+                    val = val + eq_idx[m]
+                    m = m + 1
+                }
+                if key != "" {
+                    env_prefix = env_prefix + key + "='" + val.replace("'", "'\\''") + "' "
+                }
+            }
+            k = k + 1
+        }
+    }
+    // 체크포인트 및 session id 도 주입 → 대상 스크립트가 읽어 이어갈 수 있도록
+    env_prefix = env_prefix + "AIRGENOME_SESSION_ID='" + id + "' "
+    env_prefix = env_prefix + "AIRGENOME_RESUME_CHECKPOINT='" + checkpoint.replace("'", "'\\''") + "' "
+
+    let full = env_prefix + cmd
+    println("[resume] " + id + " cp=\"" + checkpoint + "\"")
+    println("[resume] " + full)
+    // 실행 — 실패해도 append 없음 (타겟 스크립트가 tick/end 로 직접 표시)
+    let rc_s = exec(full + "; echo __RC__=$?").trim()
+    // 마지막 줄 __RC__ 추출
+    let lines = rc_s.split("\n")
+    let mut rc = 0
+    let last = lines[len(lines) - 1]
+    if last.contains("__RC__=") {
+        let n = last.split("=")[1]
+        try { rc = to_int(to_float(n)) } catch e {}
+    }
+    // 타겟이 end 를 쓰지 않았으면 대신 써 준다 (이벤트 tail 체크)
+    let tail = exec("tail -1 '" + sess_path(id) + "' 2>/dev/null").trim()
+    if tail.contains("\"event\":\"end\"") == false {
+        let ee = "{\"ts\":" + to_string(now_ts()) + ",\"iso\":\"" + now_iso() + "\",\"event\":\"end\",\"exit\":" + to_string(rc) + ",\"synthetic\":true}"
+        try { append_file(sess_path(id), ee + "\n") } catch e {}
+    }
+    return rc
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  GC — 7일 이상
+// ──────────────────────────────────────────────────────────────────────
+fn cmd_gc() -> int {
+    let d = sess_dir()
+    let out = exec("find '" + d + "' -name '*.jsonl' -mtime +7 -print -delete 2>/dev/null").trim()
+    if out == "" { println("gc: nothing expired") } else { println("gc removed:\n" + out) }
+    return 0
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  DISPATCH
+// ──────────────────────────────────────────────────────────────────────
+fn main() -> void {
+    let a = args()
+    // hexa run <file> <sub> <args...>  → argv[2]=sub
+    if len(a) < 3 {
+        println("usage: airgenome session-snapshot <list|save|tick|end|show|resume|gc>")
+        return
+    }
+    let sub = a[2]
+    if sub == "list" { let _ = cmd_list(); return }
+    if sub == "gc"   { let _ = cmd_gc(); return }
+    if sub == "save" {
+        let id = if len(a) >= 4 { a[3] } else { "" }
+        // cmdline = a[4..] 공백 join
+        let mut cmdline = ""
+        let mut i = 4
+        while i < len(a) {
+            if cmdline != "" { cmdline = cmdline + " " }
+            cmdline = cmdline + a[i]
+            i = i + 1
+        }
+        let _ = cmd_save(id, cmdline); return
+    }
+    if sub == "tick" {
+        let id = if len(a) >= 4 { a[3] } else { "" }
+        let prog = if len(a) >= 5 { a[4] } else { "0" }
+        let mut note = ""
+        let mut i = 5
+        while i < len(a) {
+            if note != "" { note = note + " " }
+            note = note + a[i]
+            i = i + 1
+        }
+        let _ = cmd_tick(id, prog, note); return
+    }
+    if sub == "end" {
+        let id = if len(a) >= 4 { a[3] } else { "" }
+        let ec = if len(a) >= 5 { a[4] } else { "0" }
+        let _ = cmd_end(id, ec); return
+    }
+    if sub == "show" {
+        let id = if len(a) >= 4 { a[3] } else { "" }
+        let _ = cmd_show(id); return
+    }
+    if sub == "resume" {
+        let id = if len(a) >= 4 { a[3] } else { "" }
+        let mut force = false
+        let mut i = 4
+        while i < len(a) {
+            if a[i] == "--force" { force = true }
+            i = i + 1
+        }
+        let _ = cmd_resume(id, force); return
+    }
+    if sub == "self-test" {
+        // 빠른 스모크 — tmp 세션 id 로 save→tick→end→show→list→resume cycle
+        let id = "selftest-" + to_string(now_ts())
+        let c1 = cmd_save(id, "echo 'hello from resume'")
+        let c2 = cmd_tick(id, "50", "halfway")
+        let c3 = cmd_tick(id, "80", "almost done")
+        // end 는 일부러 건드리지 않고 resume → synthetic end 추가 확인
+        let c4 = cmd_show(id)
+        println("--- list (should include " + id + ") ---")
+        let c5 = cmd_list()
+        println("--- resume (should execute echo) ---")
+        let c6 = cmd_resume(id, false)
+        println("[self-test] save=" + to_string(c1) + " tick=" + to_string(c2) + "/" + to_string(c3) + " show=" + to_string(c4) + " list=" + to_string(c5) + " resume=" + to_string(c6))
+        // 흔적 제거
+        exec("rm -f '" + sess_path(id) + "'")
+        return
+    }
+    println("unknown subcommand: " + sub)
+}
+
+main()

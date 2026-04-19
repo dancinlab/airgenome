@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.airgenome.log-rotate</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/ghost</string>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+	</dict>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/ghost/Dev/airgenome/bin/airgenome-logs</string>
+		<string>rotate</string>
+	</array>
+
+	<!-- 04:30 KST daily. launchd StartCalendarInterval is local time.
+	     Mac is KST, so 04:30 is correct.  LLM reminder: if Mac TZ drifts,
+	     this drifts with it — acceptable (no cross-zone coordination
+	     required for rotation). -->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>4</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+	</dict>
+
+	<!-- RunAtLoad=false: don't rotate at load-time; wait for schedule.
+	     If Mac was asleep at 04:30, launchd's Persistent semantics replay
+	     missed fires automatically on wake — no extra daemon needed. -->
+	<key>RunAtLoad</key>
+	<false/>
+
+	<key>StandardOutPath</key>
+	<string>/Users/ghost/.airgenome/log-rotate.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/ghost/.airgenome/log-rotate.stderr.log</string>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/ghost</string>
+</dict>
+</plist>

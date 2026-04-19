@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# bin/pool-refresh — claudx pool auto-refresh (airgenome M11e, 2026-04-19)
+#
+# 목적:
+#   - claudx pool 의 local_exhausted 계정 자동 복구.
+#   - interceptor 가 429 시 markExhausted() 로 exhausted.json 에 entry 찍음
+#     (5h TTL). 토큰은 살아있는데 pool 에서만 빠진 상태가 대부분 →
+#     keychain 조회로 토큰 유효성 검증 후 valid 면 즉시 clear.
+#   - 토큰이 실제 만료된 계정은 cl-refresh 에 위임 (CLI primary + direct POST).
+#
+# 설계 원칙:
+#   - pool.js / cl-refresh / keychain_map SSOT 재사용. 중복 구현 금지.
+#   - claude CLI 호출 금지 (cl-refresh 가 담당). 이 스크립트는 pool 상태 스윕 전용.
+#   - kill/STOP 금지, sudo 금지, TTL 기반 non-destructive.
+#
+# 사용:
+#   pool-refresh                   전체 스윕 (exhausted + expired 점검)
+#   pool-refresh --dry-run         실제 변경 없이 상태만 출력
+#   pool-refresh --status          현재 pool 상태표 (node pool.js status 래퍼)
+#   pool-refresh --expired-only    토큰 expiresAt 만 점검 (cl-refresh 위임)
+#   pool-refresh --force-clear-exh 유효 토큰 여부 무시하고 expired exh 전체 clear
+#   pool-refresh -h|--help
+#
+# 종료 코드:
+#   0 — 스윕 완료 (idempotent)
+#   1 — 치명 오류 (jq/필수 파일 누락)
+#   2 — usage 오류
+#
+# SSOT paths:
+#   accounts:     $NEXUS/shared/.runtime/accounts/accounts.json
+#   usage-cache:  $NEXUS/shared/.runtime/accounts/usage-cache.json
+#   exhausted:    ~/.airgenome/claudx/exhausted.json
+#   keychain map: $NEXUS/shared/config/claude_keychain_map.json
+#   log:          ~/.airgenome/claudx/pool-refresh.log
+
+set -uo pipefail
+set +x  # 토큰 blob 노출 방지
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AIRGENOME_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+NEXUS_ROOT="${NEXUS:-$HOME/Dev/nexus}"
+
+CLAUDX_POOL="${CLAUDX_POOL:-$NEXUS_ROOT/shared/.runtime/accounts/accounts.json}"
+CLAUDX_USAGE="${CLAUDX_USAGE:-$NEXUS_ROOT/shared/.runtime/accounts/usage-cache.json}"
+CLAUDX_STATE="${CLAUDX_STATE:-$HOME/.airgenome/claudx}"
+KEYMAP="${KEYMAP:-$NEXUS_ROOT/shared/config/claude_keychain_map.json}"
+EXHAUSTED="$CLAUDX_STATE/exhausted.json"
+POOL_JS="$AIRGENOME_ROOT/shared/claudx/pool.js"
+CL_REFRESH="${CL_REFRESH:-$NEXUS_ROOT/shared/bin/cl-refresh}"
+
+LOG="$CLAUDX_STATE/pool-refresh.log"
+LOCK="$CLAUDX_STATE/pool-refresh.lock"
+
+mkdir -p "$CLAUDX_STATE"
+
+dry_run=0
+mode="sweep"   # sweep | status | expired-only | force-clear
+
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run)          dry_run=1 ;;
+        --status)           mode="status" ;;
+        --expired-only)     mode="expired-only" ;;
+        --force-clear-exh)  mode="force-clear" ;;
+        -h|--help)
+            sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *)
+            echo "pool-refresh: unknown arg '$arg'" >&2
+            exit 64
+            ;;
+    esac
+done
+
+# ── util ──────────────────────────────────────────────────────────────
+ts_utc() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+log() {
+    # dry-run 에서도 분석 위해 log 는 남김
+    printf '[%s] %s\n' "$(ts_utc)" "$*" >> "$LOG" 2>/dev/null || true
+}
+info() { echo "pool-refresh: $*" >&2; }
+die()  { info "$*"; exit 1; }
+
+require() { command -v "$1" >/dev/null 2>&1 || die "$1 필요"; }
+require jq
+
+[ -f "$CLAUDX_POOL" ] || die "accounts.json 없음: $CLAUDX_POOL"
+[ -f "$KEYMAP" ]      || die "keychain map 없음: $KEYMAP"
+
+# lock — 중복 실행 방지 (launchd StartInterval 과 run-now 가 겹칠 때)
+acquire_lock() {
+    if [ -f "$LOCK" ]; then
+        local pid
+        pid=$(cat "$LOCK" 2>/dev/null || echo)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            info "이미 실행 중 (pid=$pid) — exit"
+            exit 0
+        fi
+    fi
+    echo "$$" > "$LOCK"
+    trap 'rm -f "$LOCK"' EXIT INT TERM
+}
+
+# ── status ────────────────────────────────────────────────────────────
+if [ "$mode" = "status" ]; then
+    node "$POOL_JS" status
+    exit 0
+fi
+
+acquire_lock
+
+# ── keychain 유효성 체크 ──────────────────────────────────────────────
+# 성공: stdout=expiresAt_ms  return=0
+# 실패: stdout=""             return=1 (missing hex/keychain entry/blob malformed)
+# 만료: stdout=expiresAt_ms   return=2 (token expired)
+hex8() { jq -r --arg n "$1" '.map[$n] // empty' "$KEYMAP" 2>/dev/null; }
+
+check_token() {
+    local name="$1" h8 blob ea now_ms
+    h8=$(hex8 "$name")
+    [ -n "$h8" ] || { echo ""; return 1; }
+    blob=$(security find-generic-password -l "Claude Code-credentials-$h8" -a ghost -w 2>/dev/null) || true
+    [ -n "$blob" ] || { echo ""; return 1; }
+    ea=$(printf '%s' "$blob" | jq -r '.claudeAiOauth.expiresAt // 0' 2>/dev/null)
+    [ -n "$ea" ] && [ "$ea" != "null" ] || { echo ""; return 1; }
+    now_ms=$(($(date +%s) * 1000))
+    echo "$ea"
+    # 60s buffer 로 "곧 만료" 도 만료로 처리
+    if [ "$ea" -lt "$((now_ms + 60000))" ] 2>/dev/null; then
+        return 2
+    fi
+    return 0
+}
+
+# ── exhausted.json 의 expired entry prune (claudx 와 동일 로직) ───────
+prune_expired_exh() {
+    [ -f "$EXHAUSTED" ] || return 0
+    local now cleaned orig
+    now=$(date +%s)
+    orig=$(cat "$EXHAUSTED" 2>/dev/null || echo '{}')
+    cleaned=$(printf '%s' "$orig" | jq --argjson now "$now" \
+        'with_entries(select((.value.until // 0 | tonumber) > $now))' 2>/dev/null) || return 0
+    if [ -n "$cleaned" ] && [ "$cleaned" != "$orig" ]; then
+        if [ "$dry_run" = "1" ]; then
+            info "[DRY] prune_expired_exh — 쓰기 생략"
+        else
+            printf '%s\n' "$cleaned" > "$EXHAUSTED.tmp.$$" && mv "$EXHAUSTED.tmp.$$" "$EXHAUSTED"
+            log "pruned expired exh entries"
+            info "pruned expired exh entries"
+        fi
+    fi
+}
+
+# ── exhausted 중 토큰 유효한 계정 clear ──────────────────────────────
+clear_valid_exh() {
+    [ -f "$EXHAUSTED" ] || { echo "0 0 0"; return; }
+    local now=$(date +%s)
+    local attempted=0 cleared=0 skipped=0
+
+    # 명단: until>now 인 계정만 (+ "" 빈 키 제거)
+    local names
+    names=$(jq -r --argjson now "$now" \
+        'to_entries | map(select(.key != "" and ((.value.until // 0 | tonumber) > $now))) | .[].key' \
+        "$EXHAUSTED" 2>/dev/null)
+
+    local name ea rc
+    for name in $names; do
+        attempted=$((attempted + 1))
+        ea=$(check_token "$name")
+        rc=$?
+        case "$rc" in
+            0)
+                # 토큰 valid → clear
+                if [ "$mode" = "force-clear" ] || [ "$mode" = "sweep" ]; then
+                    if [ "$dry_run" = "1" ]; then
+                        info "[DRY] $name — token valid (expiresAt=$ea), would clear exh"
+                    else
+                        node "$POOL_JS" clear "$name" >/dev/null 2>&1
+                        log "cleared exh: $name (token valid until $ea)"
+                        info "cleared exh: $name (token valid, next refresh in $(( (ea - $(date +%s)*1000) / 60000 ))min)"
+                    fi
+                    cleared=$((cleared + 1))
+                fi
+                ;;
+            2)
+                # 토큰 만료 — cl-refresh 로 위임 (단일 acct, background 안 됨, CAP 보장됨)
+                # force-clear 모드면 강제 clear 만 하고 skip
+                if [ "$mode" = "force-clear" ]; then
+                    if [ "$dry_run" = "1" ]; then
+                        info "[DRY] $name — token expired, would force-clear exh"
+                    else
+                        node "$POOL_JS" clear "$name" >/dev/null 2>&1
+                        log "force-cleared exh: $name (token expired)"
+                    fi
+                    cleared=$((cleared + 1))
+                else
+                    info "$name — token expired (expiresAt=$ea) → cl-refresh 위임"
+                    skipped=$((skipped + 1))
+                fi
+                ;;
+            1|*)
+                info "$name — keychain read 실패 (hex 없음/blob 누락)"
+                skipped=$((skipped + 1))
+                ;;
+        esac
+    done
+
+    echo "$attempted $cleared $skipped"
+}
+
+# ── expired token 인 계정에 cl-refresh 트리거 ─────────────────────────
+# cl-refresh 는 _retry_at backoff 존중하므로 cascade 걱정 없음.
+# 여기서는 cl-refresh 를 --force 없이 호출 — backoff 활성 계정은 자동 skip.
+kick_cl_refresh() {
+    local targets=()
+    local names name ea rc
+    names=$(jq -r '.accounts[].name' "$CLAUDX_POOL" 2>/dev/null)
+    for name in $names; do
+        ea=$(check_token "$name")
+        rc=$?
+        if [ "$rc" = "2" ]; then
+            targets+=("$name")
+        fi
+    done
+
+    if [ ${#targets[@]} -eq 0 ]; then
+        info "cl-refresh: 만료 토큰 없음 — skip"
+        echo "0 0"
+        return
+    fi
+
+    if [ ! -x "$CL_REFRESH" ]; then
+        info "cl-refresh 실행 불가: $CL_REFRESH"
+        echo "${#targets[@]} 0"
+        return
+    fi
+
+    if [ "$dry_run" = "1" ]; then
+        info "[DRY] cl-refresh 타겟: ${targets[*]}"
+        echo "${#targets[@]} 0"
+        return
+    fi
+
+    # cl-refresh 1회 호출 (target 없이) — backoff 필터가 알아서 스킵.
+    # 단일 acct 호출은 cl-refresh <name> 을 돌리면 force=0 이라도 backoff 체크됨.
+    # 배치 호출이 CAP 산정 더 정확 → 그냥 전체 호출.
+    info "cl-refresh 호출 (targets=${targets[*]})"
+    log "kicking cl-refresh (targets=${targets[*]})"
+    # 60s timeout (cl-refresh 내부에도 CLI_TIMEOUT=30 이 걸려있음)
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 60 "$CL_REFRESH" >/dev/null 2>&1 || true
+    else
+        # macOS default: no coreutils timeout — perl fallback
+        perl -e 'alarm 60; exec @ARGV' "$CL_REFRESH" >/dev/null 2>&1 || true
+    fi
+    log "cl-refresh done"
+    echo "${#targets[@]} 1"
+}
+
+# ── main ──────────────────────────────────────────────────────────────
+log "=== pool-refresh start (mode=$mode dry_run=$dry_run) ==="
+
+# 1) expired exh entry prune (always)
+prune_expired_exh
+
+# 2) 모드별 액션
+attempted=0
+cleared=0
+skipped=0
+kicked_targets=0
+kicked_rc=0
+
+case "$mode" in
+    sweep|force-clear)
+        read -r attempted cleared skipped <<<"$(clear_valid_exh)"
+        read -r kicked_targets kicked_rc <<<"$(kick_cl_refresh)"
+        ;;
+    expired-only)
+        read -r kicked_targets kicked_rc <<<"$(kick_cl_refresh)"
+        ;;
+esac
+
+# 3) pool 상태 요약 출력
+pool_ok=0
+pool_cap=0
+pool_retry=0
+pool_exh=0
+if [ -x "$(command -v node)" ] && [ -f "$POOL_JS" ]; then
+    while IFS=$'\t' read -r _ _ _ tag; do
+        case "$tag" in
+            ok) pool_ok=$((pool_ok + 1)) ;;
+            session_cap|week_exhausted) pool_cap=$((pool_cap + 1)) ;;
+            retry_at=*) pool_retry=$((pool_retry + 1)) ;;
+            local_exh_until=*) pool_exh=$((pool_exh + 1)) ;;
+        esac
+    done < <(node "$POOL_JS" status 2>/dev/null)
+fi
+
+summary="attempted=$attempted cleared=$cleared skipped=$skipped cl_refresh_kicked=$kicked_targets pool_ok=$pool_ok pool_cap=$pool_cap pool_retry=$pool_retry pool_exh=$pool_exh"
+log "=== pool-refresh done $summary ==="
+info "$summary"
+
+exit 0

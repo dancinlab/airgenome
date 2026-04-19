@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+# bin/airgenome-logs — unified log access + rotation for airgenome.
+#
+# Logs are scattered across:
+#   ~/.airgenome/*.log              (launchd/systemd stdout/stderr + service logs)
+#   ~/.airgenome/*.jsonl            (append-only structured events)
+#   ~/.airgenome/logs/<comp>/*      (archived, after first rotate)
+#   journalctl --user -u airgenome-*.service  (remote hosts)
+#
+# Usage:
+#   airgenome-logs                           list discoverable components
+#   airgenome-logs tail <component> [-n N]   tail live file (last N=200 lines)
+#   airgenome-logs grep <pattern> [comp]     ripgrep across live + archive
+#   airgenome-logs stats [comp]              size / line count / age per component
+#   airgenome-logs rotate [--dry-run] [--force]
+#                                           run rotation pass (called by timer)
+#   airgenome-logs archive [component]      list archived files per component
+#   airgenome-logs journal <unit> [args...]  journalctl --user -u airgenome-<unit>
+#
+# Rotation policy (see ROTATE section below):
+#   *.jsonl  — daily rotate, suffix YYYY-MM-DD, gzip after 1 day
+#   *.log    — size > 50MB rotate, gzip, otherwise daily rotate
+#   .gz keep 30 days, then delete
+#   State files excluded: *.json (non -jsonl), tg_offset.json, *_state.*, *.lock,
+#                         *.tsv, refresh-*, slots.jsonl (live cursor).
+#
+# Safe for live writers (launchd/systemd services that don't reopen on HUP):
+#   uses copy+truncate (cp + : > file). FD offset drifts by rotate_size (few ms
+#   window) but append is preserved. logrotate's `copytruncate` semantics.
+
+set -eu
+
+STATE_DIR="${AIRGENOME_STATE_DIR:-$HOME/.airgenome}"
+LOGS_DIR="$STATE_DIR/logs"
+ARCHIVE_RETAIN_DAYS="${AIRGENOME_LOG_RETAIN:-30}"
+ROTATE_MAX_BYTES="${AIRGENOME_LOG_MAX_BYTES:-52428800}"   # 50 MiB
+ROTATE_MARKER="$STATE_DIR/.log_rotate.last"
+
+# --- helpers ----------------------------------------------------------------
+
+die() { printf 'airgenome-logs: %s\n' "$*" >&2; exit 1; }
+
+today() { date -u +%Y-%m-%d; }
+now_iso() { date -u +%FT%TZ; }
+
+# Components are inferred from filenames. A "component" is the base stem:
+#   compute_tick.log              -> compute_tick
+#   compute-tick.stdout.log       -> compute-tick    (stdout/stderr stripped)
+#   hexa_brain.jsonl              -> hexa_brain
+#   hexa_brain.stderr.log         -> hexa_brain
+# Result after rotate goes under ~/.airgenome/logs/<component>/
+component_of() {
+    local f="$1" base
+    base="$(basename "$f")"
+    base="${base%.log}"
+    base="${base%.jsonl}"
+    base="${base%.stdout}"
+    base="${base%.stderr}"
+    base="${base%_loop}"            # "compute_tick_loop.log" -> compute_tick
+    printf '%s\n' "$base"
+}
+
+# Skip-list (substring match against basename). Do NOT rotate these.
+skip_file() {
+    local name
+    name="$(basename "$1")"
+    case "$name" in
+        *.json|*.tsv|*.lock|*.tmp|*.pid|*_seen.tsv|built_sha|*.off|*.last*)
+            return 0 ;;
+        tg_offset*|refresh-*|idle_counter|session_now.json|last_resume.json)
+            return 0 ;;
+        slots.jsonl|cli-sessions.json|cl-state.json|host_slots*|queue*)
+            return 0 ;;
+        host_blacklist*|ag3_*|coordinator_state*|stability_state*)
+            return 0 ;;
+        accounts.json|config.json|menubar_config.json|hexa_*.json)
+            return 0 ;;
+    esac
+    return 1
+}
+
+# List candidate live files (top-level only, not already under logs/).
+list_live() {
+    find "$STATE_DIR" -maxdepth 1 -type f \( -name '*.log' -o -name '*.jsonl' \) 2>/dev/null | sort
+}
+
+# List all components (live + archived).
+list_components() {
+    local f comp
+    {
+        for f in $(list_live); do
+            skip_file "$f" && continue
+            component_of "$f"
+        done
+        if [ -d "$LOGS_DIR" ]; then
+            find "$LOGS_DIR" -maxdepth 1 -mindepth 1 -type d -exec basename {} \; 2>/dev/null
+        fi
+    } | sort -u
+}
+
+# Files matching a component (both live + archived). Prints stable paths.
+files_for() {
+    local comp="$1"
+    # Live candidates — any top-level file whose component_of matches.
+    local f
+    for f in $(list_live); do
+        [ "$(component_of "$f")" = "$comp" ] && printf '%s\n' "$f"
+    done
+    # Archive
+    if [ -d "$LOGS_DIR/$comp" ]; then
+        find "$LOGS_DIR/$comp" -type f 2>/dev/null | sort
+    fi
+}
+
+# --- actions ---------------------------------------------------------------
+
+cmd_list() {
+    printf '# airgenome log components (state_dir=%s)\n' "$STATE_DIR"
+    printf '# live files: %s\n' "$(list_live | wc -l | tr -d ' ')"
+    printf '\n'
+    local comp n live_bytes arch_bytes
+    for comp in $(list_components); do
+        n=0; live_bytes=0; arch_bytes=0
+        while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            n=$((n+1))
+            sz=$(wc -c <"$f" 2>/dev/null | tr -d ' ')
+            if [[ "$f" == "$LOGS_DIR/"* ]]; then
+                arch_bytes=$((arch_bytes + sz))
+            else
+                live_bytes=$((live_bytes + sz))
+            fi
+        done < <(files_for "$comp")
+        printf '  %-28s files=%-3d live=%s archive=%s\n' \
+            "$comp" "$n" "$(hfmt $live_bytes)" "$(hfmt $arch_bytes)"
+    done
+}
+
+hfmt() {
+    local b="$1"
+    if   [ "$b" -ge 1073741824 ]; then awk -v b="$b" 'BEGIN{printf "%.1fG", b/1073741824}'
+    elif [ "$b" -ge 1048576    ]; then awk -v b="$b" 'BEGIN{printf "%.1fM", b/1048576}'
+    elif [ "$b" -ge 1024       ]; then awk -v b="$b" 'BEGIN{printf "%.1fK", b/1024}'
+    else printf '%dB' "$b"
+    fi
+}
+
+cmd_tail() {
+    local comp="${1:-}" n="${2:-200}"
+    [ -z "$comp" ] && die "tail: component required.  try: airgenome-logs"
+    # If 2nd arg is "-n N", accept either form.
+    if [ "$n" = "-n" ] && [ -n "${3:-}" ]; then n="$3"; fi
+    local live=""
+    while IFS= read -r f; do
+        [[ "$f" == "$LOGS_DIR/"* ]] && continue
+        live="$live $f"
+    done < <(files_for "$comp")
+    [ -z "$live" ] && die "tail: no live files for component '$comp'"
+    # shellcheck disable=SC2086
+    tail -n "$n" -F $live
+}
+
+cmd_grep() {
+    local pat="${1:-}" comp="${2:-}"
+    [ -z "$pat" ] && die "grep: pattern required"
+    local targets=""
+    if [ -n "$comp" ]; then
+        while IFS= read -r f; do
+            targets="$targets $f"
+        done < <(files_for "$comp")
+    else
+        targets="$STATE_DIR"
+        [ -d "$LOGS_DIR" ] && targets="$targets $LOGS_DIR"
+    fi
+    # Prefer rg if available — faster + gzip support via `-z`.
+    if command -v rg >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        rg -z --no-messages --color=never -n "$pat" $targets
+    else
+        # shellcheck disable=SC2086
+        grep -rn --color=never "$pat" $targets 2>/dev/null
+        # Plus zgrep for .gz files
+        # shellcheck disable=SC2086
+        find $targets -name '*.gz' 2>/dev/null | while read -r g; do
+            zgrep -Hn "$pat" "$g" 2>/dev/null || true
+        done
+    fi
+}
+
+cmd_stats() {
+    local comp="${1:-}"
+    if [ -n "$comp" ]; then
+        local f sz lines age
+        printf '%-60s %10s %10s %s\n' FILE BYTES LINES AGE
+        files_for "$comp" | while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            sz=$(wc -c <"$f" 2>/dev/null | tr -d ' ')
+            if [[ "$f" == *.gz ]]; then
+                lines=$(gzcat "$f" 2>/dev/null | wc -l | tr -d ' ')
+            else
+                lines=$(wc -l <"$f" 2>/dev/null | tr -d ' ')
+            fi
+            age=$(stat -f '%Sm' -t '%Y-%m-%d' "$f" 2>/dev/null \
+                  || stat -c '%y' "$f" 2>/dev/null | cut -d' ' -f1)
+            printf '%-60s %10s %10s %s\n' "$f" "$(hfmt $sz)" "$lines" "$age"
+        done
+    else
+        cmd_list
+    fi
+}
+
+cmd_archive() {
+    local comp="${1:-}"
+    [ -d "$LOGS_DIR" ] || { echo "(no archive yet)"; return 0; }
+    if [ -n "$comp" ]; then
+        [ -d "$LOGS_DIR/$comp" ] && ls -lah "$LOGS_DIR/$comp/" \
+            || echo "(no archive for component '$comp')"
+    else
+        find "$LOGS_DIR" -type f \( -name '*.gz' -o -name '*.log' -o -name '*.jsonl' \) \
+             -printf '%T@\t%p\n' 2>/dev/null | sort -rn | head -50 | cut -f2- \
+          || find "$LOGS_DIR" -type f | sort | head -50
+    fi
+}
+
+cmd_journal() {
+    local unit="${1:-}"
+    [ -z "$unit" ] && die "journal: unit name required (e.g. gate, harvest)"
+    shift
+    # Normalize: accept 'gate' or 'airgenome-gate' or 'airgenome-gate.service'
+    case "$unit" in
+        airgenome-*) ;;
+        *) unit="airgenome-$unit" ;;
+    esac
+    journalctl --user -u "$unit" --no-pager "$@"
+}
+
+# --- rotate ----------------------------------------------------------------
+
+cmd_rotate() {
+    local dry=0 force=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run|-n) dry=1 ;;
+            --force|-f)   force=1 ;;
+            *) die "rotate: unknown arg '$1'" ;;
+        esac
+        shift
+    done
+
+    # De-dup guard — don't rotate twice same day unless --force
+    if [ "$force" -ne 1 ] && [ -f "$ROTATE_MARKER" ]; then
+        local last
+        last="$(cat "$ROTATE_MARKER" 2>/dev/null || true)"
+        if [ "$last" = "$(today)" ]; then
+            printf '[%s] rotate: already ran today (%s). use --force to override.\n' \
+                "$(now_iso)" "$last"
+            return 0
+        fi
+    fi
+
+    mkdir -p "$LOGS_DIR"
+    local rotated=0 skipped=0 pruned=0
+
+    # Phase 1: rotate live *.log and *.jsonl files.
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        if skip_file "$f"; then skipped=$((skipped+1)); continue; fi
+
+        local sz comp stem ext dst_dir dst
+        sz=$(wc -c <"$f" 2>/dev/null | tr -d ' ')
+        comp="$(component_of "$f")"
+        stem="$(basename "$f")"
+        ext="${stem##*.}"                 # log | jsonl
+        stem="${stem%.*}"
+
+        # Skip empty files — nothing to archive.
+        if [ "$sz" -eq 0 ]; then skipped=$((skipped+1)); continue; fi
+
+        # jsonl: daily rotate regardless of size.
+        # log:   size > ROTATE_MAX_BYTES or daily if file mtime < today (stale).
+        local do_rotate=0
+        if [ "$ext" = "jsonl" ]; then
+            do_rotate=1
+        else
+            if [ "$sz" -ge "$ROTATE_MAX_BYTES" ]; then
+                do_rotate=1
+            else
+                # mtime-based daily rotate: if last modified before today, rotate.
+                local mtime_day
+                mtime_day=$(stat -f '%Sm' -t '%Y-%m-%d' "$f" 2>/dev/null \
+                            || stat -c '%y' "$f" 2>/dev/null | cut -d' ' -f1)
+                [ "$mtime_day" != "$(today)" ] && do_rotate=1
+            fi
+        fi
+
+        if [ "$do_rotate" -eq 0 ]; then skipped=$((skipped+1)); continue; fi
+
+        dst_dir="$LOGS_DIR/$comp"
+        dst="$dst_dir/${stem}.$(today).$ext"
+        # Disambiguate if already exists (multiple rotates same day).
+        local i=0
+        while [ -e "$dst" ] || [ -e "$dst.gz" ]; do
+            i=$((i+1))
+            dst="$dst_dir/${stem}.$(today).${i}.$ext"
+        done
+
+        printf '[%s] rotate: %s  (%s) -> %s.gz\n' \
+            "$(now_iso)" "$f" "$(hfmt $sz)" "$dst"
+        if [ "$dry" -eq 1 ]; then
+            rotated=$((rotated+1))
+            continue
+        fi
+
+        mkdir -p "$dst_dir"
+        # copytruncate: cp then truncate in-place (preserve writer FD)
+        cp -p "$f" "$dst"
+        : > "$f"
+        gzip -f -9 "$dst"
+        rotated=$((rotated+1))
+    done < <(list_live)
+
+    # Phase 2: prune archives older than retention.
+    if [ -d "$LOGS_DIR" ]; then
+        while IFS= read -r old; do
+            [ -z "$old" ] && continue
+            printf '[%s] prune: %s\n' "$(now_iso)" "$old"
+            [ "$dry" -eq 0 ] && rm -f "$old"
+            pruned=$((pruned+1))
+        done < <(find "$LOGS_DIR" -type f -name '*.gz' -mtime +"$ARCHIVE_RETAIN_DAYS" 2>/dev/null)
+    fi
+
+    # Phase 3: mark done.
+    [ "$dry" -eq 0 ] && printf '%s\n' "$(today)" > "$ROTATE_MARKER"
+
+    printf '[%s] rotate: rotated=%d skipped=%d pruned=%d dry=%d\n' \
+        "$(now_iso)" "$rotated" "$skipped" "$pruned" "$dry"
+}
+
+# --- main ------------------------------------------------------------------
+
+mkdir -p "$STATE_DIR"
+
+sub="${1:-list}"
+[ $# -gt 0 ] && shift
+
+case "$sub" in
+    ls|list)     cmd_list "$@" ;;
+    tail)        cmd_tail "$@" ;;
+    grep)        cmd_grep "$@" ;;
+    stats)       cmd_stats "$@" ;;
+    archive)     cmd_archive "$@" ;;
+    journal|j)   cmd_journal "$@" ;;
+    rotate)      cmd_rotate "$@" ;;
+    help|-h|--help)
+        sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *) die "unknown subcommand '$sub' (try: list | tail | grep | stats | archive | journal | rotate)" ;;
+esac
