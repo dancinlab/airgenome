@@ -75,6 +75,55 @@ fn host_name() -> str {
     return exec("hostname").trim()
 }
 
+// uname -s → "Darwin" or "Linux". Used to skip Mac-absolute paths on Linux.
+fn uname_s() -> str {
+    return exec("uname -s 2>/dev/null").trim()
+}
+
+// Multi-host binary resolution — 2026-04-20.
+// 문제: tg.json 의 claude_bin/cx_bin 이 Mac 절대경로 (/Users/ghost/.local/bin/claude) 이지만
+//       ubu/ubu2 에서 tg_bot 이 실행되면 sshfs mount 를 통해 그 경로로 bash 가 읽기 성공
+//       → Mac Mach-O binary 를 Linux sh 가 해석 → `Syntax error: "(" unexpected`.
+// 해결: 후보 경로 순회, Linux 에서는 /Users/ghost/* 스킵, 첫 유효 경로 반환.
+// 실패 시 PATH 에 있는 `command -v <name>` 로 마지막 해결 시도. 모두 실패 시 원본 반환.
+fn resolve_bin(name: str, raw: str) -> str {
+    let os = uname_s()
+    let is_darwin = os == "Darwin"
+    let repo_guess = HOME + "/Dev/airgenome/bin/" + name
+    let candidates = [
+        raw,
+        HOME + "/.local/bin/" + name,
+        "/usr/local/bin/" + name,
+        "/opt/airgenome/bin/" + name,
+        repo_guess
+    ]
+    let mut i = 0
+    while i < len(candidates) {
+        let cand = candidates[i]
+        if cand != "" {
+            // Linux 에서 /Users/ghost/* 는 Mac shim 위험 → skip
+            let mut skip = false
+            if !is_darwin {
+                // hexa-lang: 문자열 시작 검사는 str_sub 으로.
+                if len(cand) >= 13 {
+                    let head = str_sub(cand, 0, 13)
+                    if head == "/Users/ghost/" { skip = true }
+                }
+            }
+            if !skip {
+                let ok = exec("test -x '" + cand + "' && echo y || echo n").trim()
+                if ok == "y" { return cand }
+            }
+        }
+        i = i + 1
+    }
+    // PATH fallback
+    let which = exec("command -v " + name + " 2>/dev/null").trim()
+    if which != "" && to_string(which) != "void" { return which }
+    // last resort — return original raw so downstream error is descriptive
+    return raw
+}
+
 // hexa-lang has no string slice — use `awk` on a temp file (heredoc leaks via exec).
 // start/end are 0-based, end-exclusive.
 fn str_sub(s: str, start: int, end: int) -> str {
@@ -173,18 +222,19 @@ fn load_config() -> Config {
     if dt_s != "" { dt = to_int(dt_s) }
     if dt <= 0 { dt = 180 }
 
-    let mut claude_fallback = cb
-    if claude_fallback == "" { claude_fallback = "claude" }
-    let mut cx_fallback = xb
-    if cx_fallback == "" { cx_fallback = "cx" }
+    // Multi-host binary resolution — 2026-04-20.
+    // raw 값이 Mac 경로여도 Linux host 에서는 skip 되고 $HOME/.local/bin/claude 등으로 fallback.
+    let claude_resolved = resolve_bin("claude", cb)
+    let cx_resolved = resolve_bin("cx", xb)
+    log_line("INFO", "bin_resolved claude=" + claude_resolved + " cx=" + cx_resolved + " os=" + uname_s())
 
     return Config {
         token: tok,
         whitelist: wl_list,
         primary_host: ph,
         dispatch: dispatch,
-        claude_bin: claude_fallback,
-        cx_bin: cx_fallback,
+        claude_bin: claude_resolved,
+        cx_bin: cx_resolved,
         dispatch_timeout: dt,
         bot_username: bu
     }
@@ -318,6 +368,16 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
     let dispatch_mode = cfg.dispatch
     let claude = cfg.claude_bin
     let cx = cfg.cx_bin
+    // Pre-flight: verify resolved bin is executable on this host (multi-host guard).
+    // Linux 에서 Mac shim 을 실수로 실행하지 않도록 resolve_bin 이 이미 걸러냈지만,
+    // 결과가 여전히 비실행 파일이면 여기서 안전하게 실패.
+    let active_bin = claude
+    if dispatch_mode == "cx" { active_bin = cx }
+    let bin_ok = exec("test -x '" + active_bin + "' && echo y || echo n").trim()
+    if bin_ok != "y" {
+        log_line("WARN", "dispatch abort — bin not executable: " + active_bin)
+        return "dispatch 실패: " + dispatch_mode + " 바이너리 실행불가 (" + active_bin + ") — host=" + host_name() + " os=" + uname_s()
+    }
     // Write text to temp file (hexa exec heredoc quirk — the shell body leaks
     // into captured stdout when using <<'TAG'\n...\nTAG\n patterns).
     let tmp = HOME + "/.airgenome/.tg_in." + to_string(ts_epoch())
@@ -958,7 +1018,24 @@ fn self_test() -> void {
     let r_unk = route_command(dummy_cfg, 1, "/doesnotexist")
     if !r_unk.handled { panic("self_test FAIL [router unknown not handled]") }
 
-    // 11. telegram getMe (non-critical — logs but doesn't fail)
+    // 11. multi-host bin resolution — 2026-04-20
+    println("  host=" + host_name() + " os=" + uname_s())
+    println("  claude_bin -> " + cfg.claude_bin)
+    println("  cx_bin     -> " + cfg.cx_bin)
+    let claude_ok = exec("test -x '" + cfg.claude_bin + "' && echo y || echo n").trim()
+    let cx_ok = exec("test -x '" + cfg.cx_bin + "' && echo y || echo n").trim()
+    println("  claude executable: " + claude_ok + "    cx executable: " + cx_ok)
+    // On Linux, fail self-test if resolved claude path starts with /Users/ghost/
+    if uname_s() != "Darwin" {
+        if len(cfg.claude_bin) >= 13 {
+            let head = str_sub(cfg.claude_bin, 0, 13)
+            if head == "/Users/ghost/" {
+                panic("self_test FAIL [Linux 에서 Mac shim 경로 선택됨: " + cfg.claude_bin + "]")
+            }
+        }
+    }
+
+    // 12. telegram getMe (non-critical — logs but doesn't fail)
     let getme = exec("curl -sS --max-time 5 '" + api_base(cfg.token) + "/getMe' 2>&1")
     if !getme.contains("\"ok\":true") {
         println("  getMe not ok (network?): " + truncate(getme, 100))
