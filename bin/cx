@@ -26,10 +26,12 @@
 #   4. 세션 종료 후 genome 기록
 #
 # 사용:
-#   cx                         # 기본 claude TUI
+#   cx                         # 기본 claude TUI (docker-ssh default on v5)
 #   cx "~/Dev/foo"             # arg 전달 (forward)
 #   cx --force-host mac        # 강제 라우팅
 #   cx --show                  # 선택만, 실행 안 함
+#   cx --no-docker-ssh         # 이번 호출만 host ssh 강제 (opt-out)
+#   CX_NO_DOCKER_SSH=1 cx ...  # 셸 전체 opt-out
 #
 # Why 별도 이름: Mac 의 `claude` 가 shell 함수 wrapper (터미널 제목 설정) 라 shadow 하면 충돌.
 
@@ -452,9 +454,12 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
             _probe_cmd="true"
         fi
         _cand_docker_port=$(jq_host "$cand" '.hosts[$h].docker_ssh_port // empty')
-        # docker-ssh alias 후보 — <alias>-d 가 ~/.ssh/config 에 있으면 우선 사용.
-        # 없으면 -p<port> -l root 로 override (hostname 은 기존 ssh_alias 에서 resolve).
-        _cand_dssh_alias="${cand_alias}-d"
+        # docker-ssh alias 후보:
+        #   1) hosts.json 의 docker_ssh_alias (명시적 override)
+        #   2) {ssh_alias}-d (기본 규칙, 예: ubu→ubu-d)
+        # 둘 다 없으면 <ssh_alias>-d 로 시도 → ssh -G 로 resolve 실패하면 skip.
+        _cand_dssh_alias=$(jq_host "$cand" '.hosts[$h].docker_ssh_alias // empty')
+        [ -n "$_cand_dssh_alias" ] || _cand_dssh_alias="${cand_alias}-d"
         _try_dssh=0
         if [ "$docker_ssh_mode" = 1 ] && [ -n "$_cand_docker_port" ] && [ "$_cand_docker_port" != "null" ]; then
             _try_dssh=1
@@ -466,26 +471,37 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
             command -v timeout >/dev/null 2>&1 || _to=gtimeout
             _ok=0
             if [ "$_try_dssh" = 1 ]; then
-                # 1a) <alias>-d 가 ssh config 에 있으면 그대로.
-                if ssh -G "$_cand_dssh_alias" 2>/dev/null | awk '/^port /{exit (($2+0)>0)?0:1}'; then
-                    _dssh_target="$_cand_dssh_alias"
-                    _dssh_extra=()
+                # <alias>-d 가 ssh config 에 있고 port > 1 이면 docker-ssh 시도.
+                # 없으면 조용히 host ssh fallback (A+C 미배포 호스트 보호).
+                # bash 3.2 set -u 호환: 빈 배열 참조 회피 위해 두 케이스 분기 명령 분리.
+                _dssh_port=$(ssh -G "$_cand_dssh_alias" 2>/dev/null | awk '/^port /{print $2; exit}')
+                _dssh_ok=0
+                if [ -n "$_dssh_port" ] && [ "$_dssh_port" -gt 1 ] 2>/dev/null; then
+                    # <alias>-d 로 바로 접속
+                    if "$_to" "$_connect_t" ssh -o ControlPath=none -o ControlMaster=no \
+                        -o ConnectTimeout="$_connect_t" -o BatchMode=yes \
+                        "$_cand_dssh_alias" "$_probe_cmd" 2>/dev/null; then
+                        printf '%s' "$_cand_dssh_alias" > "$probe_dir/$cand.ok.dssh"
+                        _dssh_ok=1
+                    fi
                 else
-                    # 1b) -p <port> -l root 로 override (alias 는 그대로 hostname resolve 용도).
-                    _dssh_target="$cand_alias"
-                    _dssh_extra=( -p "$_cand_docker_port" -l root -o StrictHostKeyChecking=accept-new )
+                    # <alias>-d 없으면 cand_alias + -p <port> -l root 로 override 시도
+                    if "$_to" "$_connect_t" ssh -o ControlPath=none -o ControlMaster=no \
+                        -o ConnectTimeout="$_connect_t" -o BatchMode=yes \
+                        -p "$_cand_docker_port" -l root -o StrictHostKeyChecking=accept-new \
+                        "$cand_alias" "$_probe_cmd" 2>/dev/null; then
+                        # 이 경우 연결 단계에서도 같은 override 를 해야 함 — 지원 포기.
+                        # 사용자에게 <alias>-d 블록 추가 권장 (A+C 배포가 기본 전제).
+                        : # skip — host ssh fallback 로 흐름
+                    fi
                 fi
-                if "$_to" "$_connect_t" ssh -o ControlPath=none -o ControlMaster=no \
-                    -o ConnectTimeout="$_connect_t" -o BatchMode=yes \
-                    "${_dssh_extra[@]}" "$_dssh_target" "$_probe_cmd" 2>/dev/null; then
-                    printf '%s' "$_dssh_target" > "$probe_dir/$cand.ok.dssh"
-                    # docker-ssh 성공도 .ok 로 카운트 (동시에 .ok.dssh 기록 → 연결 단계가 읽음)
+                if [ "$_dssh_ok" = 1 ]; then
                     printf '%s' "$cand_alias" > "$probe_dir/$cand.ok"
                     _ok=1
                 fi
             fi
             if [ "$_ok" != 1 ]; then
-                # 2) host ssh fallback
+                # host ssh fallback (또는 docker-ssh off 모드)
                 if "$_to" "$_connect_t" ssh -o ControlPath=none -o ControlMaster=no \
                     -o ConnectTimeout="$_connect_t" -o BatchMode=yes \
                     "$cand_alias" "$_probe_cmd" 2>/dev/null; then
@@ -493,7 +509,11 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
                     _ok=1
                 fi
             fi
-            [ "$_ok" = 1 ] || echo fail > "$probe_dir/$cand.fail"
+            # fail reason: docker-ssh 시도 여부에 따라 분류 (blacklist 기록용).
+            #   dssh+host 모두 실패 → "ssh_probe_fail" (host sshd 포화 or alias 오류)
+            #   docker-ssh 만 시도 (host ssh 건너뜀) → "ssh_probe_fail"
+            # 세밀한 banner/connect 구분은 ssh stderr 캡쳐 필요 — 현재는 요약 reason 으로 충분.
+            [ "$_ok" = 1 ] || echo "ssh_probe_fail" > "$probe_dir/$cand.fail"
         ) >/dev/null 2>&1 &
         probe_pids+=($!)
         disown "$!" 2>/dev/null || true
@@ -854,15 +874,24 @@ if [ "$host" != "mac" ]; then
         remote_user=$(ssh_target_user "$alias")
     fi
     if [ "$remote_user" = "root" ]; then
+        # (1) claudx-injected --dangerously-skip-permissions 제거 — root 에서 거부됨
+        # (2) 프로젝트 settings.json 의 defaultMode: bypassPermissions 도 동일하게 거부되므로
+        #     --permission-mode default 를 명시 주입하여 override. 이미 --permission-mode
+        #     가 있으면 존중.
         _safe_fwd=()
+        _has_pm=0
         for _arg in ${fwd[@]+"${fwd[@]}"}; do
             case "$_arg" in
                 --dangerously-skip-permissions|--allow-dangerously-skip-permissions) ;;
+                --permission-mode|--permission-mode=*) _has_pm=1; _safe_fwd+=("$_arg") ;;
                 *) _safe_fwd+=("$_arg") ;;
             esac
         done
-        fwd=("${_safe_fwd[@]}")
-        unset _safe_fwd _arg
+        fwd=(${_safe_fwd[@]+"${_safe_fwd[@]}"})
+        if [ "$_has_pm" = 0 ]; then
+            fwd=("--permission-mode" "default" ${fwd[@]+"${fwd[@]}"})
+        fi
+        unset _safe_fwd _arg _has_pm
     fi
     unset remote_user
 fi
