@@ -433,9 +433,14 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
             + "'bash -lc \"timeout " + timeout_s + " /Users/ghost/Dev/airgenome/bin/claudx -p "
             + "\\\"$(cat '" + mac_tmp + "')\\\" --max-turns 1 2>&1\"' 2>&1; echo _RC_=$?"
     } else if dispatch_mode == "cx" {
-        // Mac bot → local cx (claudx pool 직접).
-        cmd = "timeout " + timeout_s + " '" + cx + "' --docker --force-host ubu1 -p "
-            + "\"$(cat '" + tmp + "')\" 2>&1; echo _RC_=$?"
+        // Mac bot → local claudx (pool rotation + cx auto-pick, no host force).
+        // Why no --force-host: 특정 host 강제 시 해당 host down 시 전체 실패. auto-pick
+        // 이 score-based 로 alive host 선택 + mac fallback 으로 안전.
+        let mut claudx_bin = HOME + "/Dev/airgenome/bin/claudx"
+        let agroot = env("AIRGENOME")
+        if agroot != "" { claudx_bin = agroot + "/bin/claudx" }
+        cmd = "timeout " + timeout_s + " '" + claudx_bin + "' -p "
+            + "\"$(cat '" + tmp + "')\" --max-turns 1 2>&1; echo _RC_=$?"
     } else {
         // dispatch=cl (Mac 전용 경로 — Linux bot 은 cx 권장).
         cmd = "NO_CLAUDX=1 timeout " + timeout_s + " '" + claude + "'"
