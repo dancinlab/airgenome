@@ -119,12 +119,34 @@ fn load_config() -> Config {
     if exists != "y" {
         panic("config missing: " + CONFIG_PATH)
     }
-    let token_file = exec("jq -r '.bot_token_file // empty' '" + CONFIG_PATH + "' 2>/dev/null").trim()
-    if token_file == "" { panic("tg.json missing bot_token_file") }
-    let tok_exists = exec("test -f '" + token_file + "' && echo y || echo n").trim()
-    if tok_exists != "y" { panic("bot token file missing: " + token_file) }
+    let token_file_raw = exec("jq -r '.bot_token_file // empty' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+    if token_file_raw == "" { panic("tg.json missing bot_token_file") }
+    // Resolve token path — 2026-04-20 code-level multi-host compatibility.
+    // tg.json bot_token_file 은 Mac 절대경로 (/Users/ghost/Dev/secret/tg_bot_token) 지만
+    // ubu/ubu2 에서 실행 시 sshfs mount (/home/aiden/mac_home/...) 로도 접근 가능.
+    // 후보 리스트 순회 → 첫 존재하는 경로 사용. 모두 실패 시 panic.
+    let tok_candidates = [
+        token_file_raw,
+        HOME + "/Dev/secret/tg_bot_token",
+        HOME + "/mac_home/Dev/secret/tg_bot_token",
+        "/Users/ghost/Dev/secret/tg_bot_token",
+        HOME + "/.airgenome/tg_bot_token"
+    ]
+    let mut token_file = ""
+    let mut ci = 0
+    while ci < len(tok_candidates) {
+        let cand = tok_candidates[ci]
+        if cand != "" {
+            let ok = exec("test -f '" + cand + "' && echo y || echo n").trim()
+            if ok == "y" { token_file = cand; break }
+        }
+        ci = ci + 1
+    }
+    if token_file == "" {
+        panic("bot token file missing — tried: " + token_file_raw + ", $HOME/Dev/secret/, $HOME/mac_home/..., /Users/ghost/...")
+    }
     let tok = exec("cat '" + token_file + "' 2>/dev/null").trim()
-    if tok == "" { panic("bot token empty") }
+    if tok == "" { panic("bot token empty at " + token_file) }
 
     // whitelist array of ints
     let wl_raw = exec("jq -r '.whitelist[]? // empty' '" + CONFIG_PATH + "' 2>/dev/null").trim()
