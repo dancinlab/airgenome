@@ -1758,3 +1758,911 @@ cx: no remote session → -c stripped (fresh start on ubu)
 cx → ubu (ubu)
 cx: no remote session → -c stripped (fresh start on ubu)
 {"ts":"2026-04-19T06:54:43Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":40221}
+{"ts":"2026-04-19T06:55:55Z","host":"mac","duration_s":4,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1475}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":733}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1430}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2238}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1335}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2533}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2551}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2437}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2775}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:11Z","host":"ubu","duration_s":11,"exit":2,"rtt_ms":2627}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:11Z","host":"ubu","duration_s":11,"exit":2,"rtt_ms":3252}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:11Z","host":"ubu","duration_s":11,"exit":2,"rtt_ms":3186}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:12Z","host":"ubu","duration_s":11,"exit":2,"rtt_ms":1555}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:12Z","host":"ubu","duration_s":12,"exit":2,"rtt_ms":2606}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:12Z","host":"ubu","duration_s":12,"exit":2,"rtt_ms":2932}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:12Z","host":"ubu","duration_s":12,"exit":2,"rtt_ms":1596}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:12Z","host":"ubu","duration_s":12,"exit":2,"rtt_ms":1604}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T06:56:12Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":916}
+{"ts":"2026-04-19T07:01:01Z","host":"mac","duration_s":5,"exit":1,"rtt_ms":0}
+{"ts":"2026-04-19T07:06:22Z","host":"mac","duration_s":5,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:06:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1870}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:06:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":2411}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:06:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1873}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:06:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":2418}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:06:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":2418}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:06:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1878}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:06:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1790}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:06:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1877}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:06:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1869}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:14Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1150}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:14Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1048}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:14Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":863}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:14Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1207}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:15Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1176}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:15Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1225}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:15Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1047}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:15Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1582}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:15Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1265}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:11:15Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1238}
+{"ts":"2026-04-19T07:11:20Z","host":"mac","duration_s":5,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":2053}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":2003}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1479}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1744}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1684}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1607}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1743}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1976}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1670}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:07Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1668}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:08Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":1787}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:08Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":2077}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:08Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":2057}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:08Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":1951}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:08Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2025}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:08Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2001}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:08Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2045}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:08Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":1992}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:12:08Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":2014}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:56Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":417}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:56Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":508}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:57Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":453}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:57Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":416}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:57Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":880}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:57Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":984}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:57Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":836}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:57Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1002}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1012}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1257}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1098}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1183}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1252}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1066}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1097}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":888}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1333}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1330}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:16:59Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1257}
+{"ts":"2026-04-19T07:17:02Z","host":"mac","duration_s":10,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:22:37Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":2450}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:22:37Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":2225}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:22:37Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":2206}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:22:38Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":2064}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:22:38Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":1858}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:22:38Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":1843}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:22:38Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":2761}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:22:38Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":1802}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:22:38Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":2713}
+{"ts":"2026-04-19T07:22:45Z","host":"mac","duration_s":6,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:24:21Z","host":"ubu","duration_s":106,"exit":255,"rtt_ms":2706}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:24:23Z","host":"ubu","duration_s":108,"exit":255,"rtt_ms":2424}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:24:23Z","host":"ubu","duration_s":107,"exit":255,"rtt_ms":2738}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:24:23Z","host":"ubu","duration_s":107,"exit":255,"rtt_ms":3103}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:24:23Z","host":"ubu","duration_s":107,"exit":255,"rtt_ms":2759}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:24:23Z","host":"ubu","duration_s":107,"exit":255,"rtt_ms":2579}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:24:23Z","host":"ubu","duration_s":107,"exit":255,"rtt_ms":2591}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T07:24:59Z","host":"ubu","duration_s":143,"exit":2,"rtt_ms":3267}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T07:25:00Z","host":"ubu","duration_s":144,"exit":2,"rtt_ms":2794}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T07:25:00Z","host":"ubu","duration_s":144,"exit":2,"rtt_ms":2745}
+{"ts":"2026-04-19T07:28:04Z","host":"mac","duration_s":4,"exit":1,"rtt_ms":0}
+{"ts":"2026-04-19T07:30:39Z","host":"mac","duration_s":3,"exit":1,"rtt_ms":0}
+{"ts":"2026-04-19T07:36:19Z","host":"mac","duration_s":7,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:00Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":549}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:00Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":541}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":635}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:01Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":407}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:01Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":397}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:02Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":351}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:04Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":548}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:04Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1066}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:04Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":639}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:04Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":929}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":833}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":844}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":848}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1602}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1533}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:05Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":1642}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:09Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":476}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:09Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":478}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:39:09Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":448}
+{"ts":"2026-04-19T07:39:11Z","host":"mac","duration_s":5,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:53Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":873}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:54Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":886}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:54Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":918}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:55Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":778}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:55Z","host":"ubu","duration_s":4,"exit":2,"rtt_ms":861}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:55Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":539}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:57Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1496}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:57Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1727}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:57Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1997}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:57Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1566}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:57Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1920}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:57Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1843}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:58Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1484}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":2179}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:58Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1671}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:41:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":2257}
+{"ts":"2026-04-19T07:44:18Z","host":"mac","duration_s":3,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:29Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":545}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:29Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":546}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:29Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":518}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:41Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":447}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:43Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":497}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:43Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":512}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:44Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":649}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:44Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":632}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:45Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":550}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:47Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1345}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:47Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":934}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:47Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":998}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:47Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1018}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:48Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":921}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:48Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1077}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:48Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1053}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:48Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":854}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:48Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":634}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:44:48Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":982}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:46Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":237}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:46Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":209}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:46Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":237}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:46Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":204}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:48Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":215}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:49Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":205}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:49Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":191}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:49Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":213}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":210}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":204}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":216}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":220}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":217}
+{"ts":"2026-04-19T07:49:54Z","host":"mac","duration_s":3,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:49:57Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":224}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:50:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":196}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:50:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":206}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:50:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":216}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:50:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":215}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:32Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":275}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:32Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":241}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:33Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":318}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:33Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":326}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:33Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":335}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:33Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":345}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:33Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":325}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:33Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":313}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":269}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":307}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":307}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":307}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:37Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":359}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:37Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":349}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:37Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":331}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:37Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":334}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:37Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":338}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:37Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":330}
+{"ts":"2026-04-19T07:52:44Z","host":"mac","duration_s":4,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:52:44Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":230}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":222}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":215}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":213}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:24Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":207}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:24Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":213}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:24Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:33Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":236}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:33Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":208}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:34Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":204}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:34Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":219}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:35Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":307}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:35Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":305}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:35Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":306}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:55:35Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":223}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:15Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":220}
+{"ts":"2026-04-19T07:58:19Z","host":"mac","duration_s":4,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:20Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":197}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:20Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":197}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:20Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":206}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:21Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":216}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:21Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":203}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:21Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":200}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:21Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":199}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:21Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":202}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":219}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":228}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":223}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:24Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:24Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":212}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":228}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":225}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T07:58:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":213}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:16Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:51Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":237}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:51Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":237}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:52Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":204}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:52Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":200}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:52Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:52Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":220}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:52Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":213}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:53Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":211}
+{"ts":"2026-04-19T08:03:53Z","host":"mac","duration_s":2,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:54Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":207}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":189}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":202}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":211}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:56Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":196}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:56Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":198}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:56Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:56Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":213}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:56Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":215}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:03:56Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":212}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:08:17Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":221}
+{"ts":"2026-04-19T08:08:44Z","host":"ubu2","duration_s":36,"exit":255,"rtt_ms":1243}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:08:52Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":240}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:08:52Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":240}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":224}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:24Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":202}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:24Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":233}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:24Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":240}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:24Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":234}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:24Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":208}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:26Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":207}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:26Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":197}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:26Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":213}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:26Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":214}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:27Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":205}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:27Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":205}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":206}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":222}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":207}
+{"ts":"2026-04-19T08:09:28Z","host":"mac","duration_s":3,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T08:09:33Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":220}
+{"ts":"2026-04-19T08:11:47Z","host":"ubu","duration_s":0,"exit":1,"rtt_ms":228}
+{"ts":"2026-04-19T08:15:02Z","host":"mac","duration_s":2,"exit":1,"rtt_ms":0}
+{"ts":"2026-04-19T08:20:37Z","host":"mac","duration_s":3,"exit":1,"rtt_ms":0}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:10Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3148}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:10Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3133}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:10Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3133}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:10Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3177}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:11Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":3160}
+{"ts":"2026-04-19T08:26:20Z","host":"mac","duration_s":9,"exit":1,"rtt_ms":0}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:27Z","host":"ubu2","duration_s":4,"exit":2,"rtt_ms":3337}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:27Z","host":"ubu2","duration_s":4,"exit":2,"rtt_ms":3222}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:27Z","host":"ubu2","duration_s":4,"exit":2,"rtt_ms":3232}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:27Z","host":"ubu2","duration_s":4,"exit":2,"rtt_ms":3358}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:28Z","host":"ubu2","duration_s":3,"exit":2,"rtt_ms":3196}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:28Z","host":"ubu2","duration_s":3,"exit":2,"rtt_ms":3314}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:28Z","host":"ubu2","duration_s":2,"exit":2,"rtt_ms":3598}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:28Z","host":"ubu2","duration_s":2,"exit":2,"rtt_ms":3682}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:28Z","host":"ubu2","duration_s":3,"exit":2,"rtt_ms":3327}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:28Z","host":"ubu2","duration_s":3,"exit":2,"rtt_ms":3312}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3287}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3211}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:29Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3155}
+cx: probe fail → ubu (next)
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T08:26:29Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3152}
