@@ -15,7 +15,7 @@
 //   airgenome cli            — 인터랙티브 TUI (숫자 선택)
 //   airgenome status         — launchd + ring 파일 + state 한눈에
 //   airgenome slots [opts]   — bin/cx slot 상태 (기본 JSON, --human/--reset/--watch)
-//   airgenome netlat [sub]   — Mac→ubu/ubu2/htz 네트워크 latency (probe|tail|stats|watch|alert-check)
+//   airgenome netlat [sub]   — Mac→ubu1/ubu2/htz 네트워크 latency (probe|tail|stats|watch|alert-check)
 //   airgenome install [mode] — mode=all|mac-safe. mac-safe=ring-sync+throttle (AG6)
 //   airgenome uninstall      — 모든 com.airgenome.* bootout
 //   airgenome self-test      — 모든 module self-test 일괄
@@ -61,7 +61,7 @@ let AGENT_LABELS = [
 // - probe: ssh outbound + infra_state.json 갱신 (blowup 감지 전제)
 // - dispatch: jq 파싱 + dispatch_state.json 갱신 (best_host 선택)
 // - menubar: T4 Cocoa status item (build 된 경우만 등록, 없으면 skip)
-// 나머지 (harvest/label/forecast) 는 ubu/htz 에서 실행.
+// 나머지 (harvest/label/forecast) 는 ubu1/htz 에서 실행.
 let MAC_SAFE_AGENTS = [
     "com.airgenome.ring-sync",
     "com.airgenome.predictive-throttle",
@@ -222,14 +222,24 @@ fn install_set(labels: [str], label: str) -> void {
     println("⬡ " + label + " — installed " + to_string(installed) + " / " + to_string(len(labels)) + " agents")
 }
 
+// cmd_install — "all" 은 shared/launchagents/ 전수 동적 스캔.
+// 하드코딩 AGENT_LABELS 는 drift 원인 (2026-04, 12개 누락 관측) → 디렉토리 SSOT 전환.
+// fallback 으로 AGENT_LABELS 유지 (스캔 결과 빈 경우).
 fn cmd_install(mode: str) -> void {
     if mode == "mac-safe" {
         println("⬡ airgenome install mac-safe (AG6 준수: ring-sync + throttle + probe + dispatch + menubar)")
         install_set(MAC_SAFE_AGENTS, "mac-safe")
-    } else {
-        println("⬡ airgenome install all (전 7개 LaunchAgent — AG6 주의: Mac heavy compute 유발 가능)")
-        install_set(AGENT_LABELS, "all")
+        return
     }
+    let raw = exec("ls '" + ag_root() + "/shared/launchagents'/com.airgenome.*.plist 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/\\.plist$//' | sort -u").trim()
+    if raw == "" {
+        println("⬡ airgenome install all (fallback AGENT_LABELS — shared/launchagents 스캔 실패)")
+        install_set(AGENT_LABELS, "all")
+        return
+    }
+    let labels = raw.split("\n")
+    println("⬡ airgenome install all — shared/launchagents 동적 스캔 " + to_string(len(labels)) + "개 plist")
+    install_set(labels, "all")
 }
 
 fn cmd_uninstall() -> void {
@@ -240,6 +250,426 @@ fn cmd_uninstall() -> void {
         let _ = exec("rm -f '" + env("HOME") + "/Library/LaunchAgents/" + label + ".plist'")
         println("[uninstall] " + label)
         i = i + 1
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  airgenome init — one-shot 완정성 배포 (M12 fullness guarantee)
+//
+//  기존 install / install-agents / deploy / airgenome-sync 이 각각 부분집합만
+//  커버하던 것을 단일 엔트리로 통합. 어떤 호스트에서든 수작업 없이 부팅.
+//
+//  사용:
+//    airgenome init                         # 전 target (mac + 모든 원격)
+//    airgenome init --target=mac            # Mac LaunchAgents 전 17개
+//    airgenome init --target=ubu1           # hosts.json 의 ubu1 host 원격 설치
+//    airgenome init --target=ubu2
+//    airgenome init --target=htz
+//    airgenome init --target=all            # 기본값과 동일
+//    airgenome init --dry-run               # 실제 변경 없이 계획 출력
+//
+//  Mac target: shared/launchagents/*.plist 전부를 ~/Library/LaunchAgents 로 복사 +
+//              launchctl bootout + bootstrap (idempotent). 실패 plist 개별 보고.
+//  원격 target: shared/systemd/* 을 /etc/systemd/system 에 배치 + daemon-reload +
+//               enable + start. Docker airgenome-claude 컨테이너 pull + 재시작.
+//               ~/.airgenome/docker_authorized_keys → 컨테이너 내부 /root/.ssh/authorized_keys.
+//  SSOT: hosts.json 의 ip/ssh_user/ssh_key (fallback key = $HOME/.ssh/id_ed25519).
+//  Fallback: rsync 없으면 tar|ssh|tar pipe 로 전송 (컨테이너 환경).
+// ═══════════════════════════════════════════════════════════════════════
+
+fn list_launchagent_plists() -> [str] {
+    let dir = ag_root() + "/shared/launchagents"
+    let raw = exec("ls -1 '" + dir + "'/com.airgenome.*.plist 2>/dev/null | xargs -n1 basename 2>/dev/null | sed 's/.plist$//'").trim()
+    if raw == "" { return [] }
+    return raw.split("\n")
+}
+
+fn list_systemd_units() -> [str] {
+    let dir = ag_root() + "/shared/systemd"
+    let raw = exec("ls -1 '" + dir + "' 2>/dev/null | grep -E '\\.(service|timer|slice)$' || true").trim()
+    if raw == "" { return [] }
+    return raw.split("\n")
+}
+
+fn already_installed_plist(label: str) -> bool {
+    let rc = exec("launchctl print gui/$(id -u)/" + label + " >/dev/null 2>&1 && echo y || echo n").trim()
+    return rc == "y"
+}
+
+fn init_mac(dry_run: bool) -> int {
+    let src_dir = ag_root() + "/shared/launchagents"
+    let dst_dir = env("HOME") + "/Library/LaunchAgents"
+    let log_dir = env("HOME") + "/.airgenome"
+    let plists = list_launchagent_plists()
+
+    println("⬡ airgenome init mac  (plists=" + to_string(len(plists)) + ", dry_run=" + to_string(dry_run) + ")")
+    println("  src: " + src_dir)
+    println("  dst: " + dst_dir)
+
+    // OS 가드 — Linux container 에서는 plist 복사만 의미있고 launchctl 은 작동 X.
+    let uname = exec("uname -s").trim()
+    let is_mac = uname == "Darwin"
+    if !is_mac {
+        println("  [warn] non-Darwin (" + uname + ") — plist copy 는 진행, launchctl bootstrap 은 skip")
+    }
+
+    if !dry_run {
+        let _ = exec("mkdir -p '" + dst_dir + "' '" + log_dir + "'")
+    }
+
+    let mut i = 0
+    let mut ok = 0
+    let mut fail = 0
+    let mut failed_list = ""
+    while i < len(plists) {
+        let label = plists[i]
+        i = i + 1
+        let src = src_dir + "/" + label + ".plist"
+        let dst = dst_dir + "/" + label + ".plist"
+        let exists = exec("[ -f '" + src + "' ] && echo y || echo n").trim()
+        if exists != "y" {
+            println("  [skip]      " + label + "  — source missing")
+            fail = fail + 1
+            failed_list = failed_list + label + ","
+            continue
+        }
+
+        if dry_run {
+            let action = if already_installed_plist(label) { "reload" } else { "install" }
+            println("  [DRY " + action + "]  " + label)
+            ok = ok + 1
+            continue
+        }
+
+        let cp_rc = exec("cp '" + src + "' '" + dst + "' 2>&1; echo __RC_$?").trim()
+        if exec("echo '" + cp_rc + "' | grep -q '__RC_0' && echo y || echo n").trim() != "y" {
+            println("  [FAIL cp]   " + label + "  — " + cp_rc)
+            fail = fail + 1
+            failed_list = failed_list + label + ","
+            continue
+        }
+
+        if is_mac {
+            // bootout + 1s 유예 + bootstrap (idempotent).
+            let _ = exec("launchctl bootout gui/$(id -u)/" + label + " 2>/dev/null || true")
+            let _ = exec("sleep 1")
+            let bs = exec("launchctl bootstrap gui/$(id -u) '" + dst + "' 2>&1 || true").trim()
+            // bootstrap 성공 여부는 launchctl print 로 즉시 확인.
+            let loaded = exec("launchctl print gui/$(id -u)/" + label + " >/dev/null 2>&1 && echo y || echo n").trim()
+            if loaded == "y" {
+                println("  [ok]        " + label)
+                ok = ok + 1
+            } else {
+                println("  [FAIL reg]  " + label + "  — " + bs)
+                fail = fail + 1
+                failed_list = failed_list + label + ","
+            }
+        } else {
+            println("  [staged]    " + label + "  (no launchctl — copy only)")
+            ok = ok + 1
+        }
+    }
+    println("  → mac: " + to_string(ok) + " ok / " + to_string(fail) + " fail / " + to_string(len(plists)) + " total")
+    if fail > 0 { println("  failed: " + failed_list) }
+    return fail
+}
+
+// host_field — hosts.json 에서 single field 추출. jq 로 .hosts[key].field 읽기.
+fn host_field(key: str, field: str) -> str {
+    let q = ".hosts[\"" + key + "\"].\"" + field + "\" // \"\""
+    let out = exec("jq -r '" + q + "' '" + hosts_registry_path() + "' 2>/dev/null").trim()
+    if out == "null" { return "" }
+    return out
+}
+
+// target 이름 (ubu1/ubu2/htz) → hosts.json key (ubu1/ubu2/htz) 매핑 — 현재는 1:1 이지만
+// short_code 역매핑으로 legacy alias ('ubu' 등) 도 수용.
+// short_code 필드로 역매핑, 못 찾으면 원문 그대로.
+fn target_to_host_key(target: str) -> str {
+    // 1. direct key / short_code match.
+    let q = ".hosts | to_entries | map(select(.value.short_code == \"" + target + "\" or .key == \"" + target + "\")) | .[0].key // \"\""
+    let out = exec("jq -r '" + q + "' '" + hosts_registry_path() + "' 2>/dev/null").trim()
+    if out != "" && out != "null" { return out }
+    // 2. legacy alias fallback — 'ubu' was renamed to 'ubu1'.
+    if target == "ubu" {
+        let ck = exec("jq -r '.hosts.ubu1.short_code // empty' '" + hosts_registry_path() + "' 2>/dev/null").trim()
+        if ck != "" { return "ubu1" }
+    }
+    return target
+}
+
+fn expand_ssh_key(raw: str) -> str {
+    if raw == "" { return env("HOME") + "/.ssh/id_ed25519" }
+    // $HOME 치환
+    let mut out = raw
+    let home = env("HOME")
+    if raw.starts_with("$HOME") {
+        out = home + raw.substring(5, len(raw))
+    }
+    if raw.starts_with("~/") {
+        out = home + raw.substring(1, len(raw))
+    }
+    return out
+}
+
+// ssh_exec — 공용 ssh wrapper. stdout merge, timeout. remote_cmd 는 이미 quote 된 bash string.
+fn ssh_opts_str(key: str) -> str {
+    return "-i '" + key + "' -o ConnectTimeout=8 -o BatchMode=yes -o StrictHostKeyChecking=no -o ServerAliveInterval=5"
+}
+
+fn ssh_run(target: str, key: str, remote_cmd: str) -> str {
+    let cmd = "ssh " + ssh_opts_str(key) + " " + target + " " + "'" + remote_cmd + "'" + " 2>&1"
+    return exec(cmd)
+}
+
+// tar|ssh|tar — rsync 부재 대체. src_dir 의 내용을 원격 dst_dir 에 풀어 넣음.
+// trailing slash 주의: tar -C src . → 원격 dst/ 에 파일 직결 배치.
+fn tar_push_dir(target: str, key: str, src_dir: str, dst_dir: str) -> int {
+    let mkdir_cmd = "ssh " + ssh_opts_str(key) + " " + target + " \"mkdir -p '" + dst_dir + "'\" 2>&1"
+    let _ = exec(mkdir_cmd)
+    let pipe = "tar -C '" + src_dir + "' -cf - . | ssh " + ssh_opts_str(key) + " " + target + " \"tar -C '" + dst_dir + "' -xf -\" 2>&1"
+    let out = exec(pipe + "; echo __RC_$?").trim()
+    let ok = exec("echo '" + out + "' | grep -q '__RC_0' && echo y || echo n").trim()
+    if ok == "y" { return 0 }
+    println("    [tar-pipe FAIL] " + out)
+    return 1
+}
+
+// scp_file — 단일 파일 전송 (hosts_authorized_keys 등).
+fn scp_file(target: str, key: str, local_path: str, remote_path: str) -> int {
+    let cmd = "scp " + ssh_opts_str(key) + " '" + local_path + "' " + target + ":'" + remote_path + "' 2>&1"
+    let out = exec(cmd + "; echo __RC_$?").trim()
+    let ok = exec("echo '" + out + "' | grep -q '__RC_0' && echo y || echo n").trim()
+    if ok == "y" { return 0 }
+    println("    [scp FAIL] " + local_path + " → " + remote_path + "\n    " + out)
+    return 1
+}
+
+fn init_remote_host(host_key: str, dry_run: bool) -> int {
+    let ip = host_field(host_key, "ip")
+    let user = host_field(host_key, "ssh_user")
+    let key_raw = host_field(host_key, "ssh_key")
+    let key = expand_ssh_key(key_raw)
+    let alias = host_field(host_key, "ssh_alias")
+
+    if ip == "" || user == "" {
+        println("⬡ airgenome init " + host_key + "  — ❌ ip/ssh_user 누락 (hosts.json 확인)")
+        return 1
+    }
+    let target = user + "@" + ip
+
+    println("⬡ airgenome init " + host_key + "  (alias=" + alias + ", target=" + target + ", dry_run=" + to_string(dry_run) + ")")
+    println("  key: " + key)
+
+    // 1. reachability.
+    if !dry_run {
+        let rc = exec("ssh " + ssh_opts_str(key) + " " + target + " true 2>&1; echo __RC_$?").trim()
+        let ok = exec("echo '" + rc + "' | grep -q '__RC_0' && echo y || echo n").trim()
+        if ok != "y" {
+            println("  [FAIL ssh] 도달 불가 — " + rc)
+            return 1
+        }
+        println("  [ok ssh]")
+    } else {
+        println("  [DRY ssh check]")
+    }
+
+    // 2. 원격 airgenome ROOT 확보 (/root/Dev/airgenome).
+    let remote_root = "/root/Dev/airgenome"
+    if !dry_run {
+        let _ = ssh_run(target, key, "mkdir -p '" + remote_root + "'")
+    }
+
+    // 3. systemd units 배포: shared/systemd/* → /etc/systemd/system/.
+    let units = list_systemd_units()
+    println("  systemd units: " + to_string(len(units)))
+    let local_systemd = ag_root() + "/shared/systemd"
+    if dry_run {
+        let mut i = 0
+        while i < len(units) {
+            println("    [DRY unit]   " + units[i])
+            i = i + 1
+        }
+    } else {
+        let push_rc = tar_push_dir(target, key, local_systemd, "/etc/systemd/system")
+        if push_rc != 0 {
+            println("  [FAIL tar-pipe systemd]")
+            return 1
+        }
+        println("  [ok systemd staged]  /etc/systemd/system/{" + to_string(len(units)) + " units}")
+        let _ = ssh_run(target, key, "systemctl daemon-reload")
+        println("  [ok daemon-reload]")
+    }
+
+    // 4. 주요 unit enable + start (timer 만 주기 관리, service 는 timer 가 트리거).
+    let enable_list = [
+        "airgenome-runaway.service",
+        "airgenome-tg.service",
+        "airgenome-harvest.timer",
+        "airgenome-label.timer",
+        "airgenome-forecast.timer",
+        "airgenome-git-sync.timer",
+        "airgenome-log-rotate.timer",
+        "airgenome-pull.timer"
+    ]
+    let mut ei = 0
+    let mut e_fail = 0
+    while ei < len(enable_list) {
+        let u = enable_list[ei]
+        ei = ei + 1
+        // htz 인 경우 build timer 도 enable.
+        // (build 는 enable_list 외에서 host_key=="htz" 일 때만 추가 처리)
+        if dry_run {
+            println("    [DRY enable] " + u)
+            continue
+        }
+        let unit_exists = exec("ssh " + ssh_opts_str(key) + " " + target + " \"test -f /etc/systemd/system/" + u + " && echo y || echo n\"").trim()
+        if unit_exists != "y" {
+            println("    [skip]       " + u + "  — unit file 부재")
+            continue
+        }
+        let out = ssh_run(target, key, "systemctl enable --now " + u + " 2>&1 | tail -3")
+        let act = ssh_run(target, key, "systemctl is-active " + u).trim()
+        if act == "active" {
+            println("    [ok]         " + u)
+        } else {
+            println("    [FAIL]       " + u + "  active=" + act)
+            println("      " + out)
+            e_fail = e_fail + 1
+        }
+    }
+
+    // 5. htz 전용 build timer.
+    if host_key == "htz" && !dry_run {
+        let _ = ssh_run(target, key, "systemctl enable --now airgenome-build.timer 2>&1 | tail -3")
+        let act = ssh_run(target, key, "systemctl is-active airgenome-build.timer").trim()
+        println("    [" + act + "]  airgenome-build.timer (htz only)")
+    }
+
+    // 6. docker airgenome-claude — 존재 시 pull + restart (idempotent).
+    if !dry_run {
+        let has_docker = exec("ssh " + ssh_opts_str(key) + " " + target + " \"command -v docker >/dev/null 2>&1 && echo y || echo n\"").trim()
+        if has_docker == "y" {
+            let has_container = exec("ssh " + ssh_opts_str(key) + " " + target + " \"docker ps -a --format '{{.Names}}' | grep -x airgenome-claude && echo y || echo n\" 2>/dev/null | tail -1").trim()
+            if has_container == "y" {
+                println("  [docker] airgenome-claude 존재 — pull + restart")
+                let _ = ssh_run(target, key, "docker pull ghcr.io/need-singularity/airgenome:dev 2>&1 | tail -2")
+                let _ = ssh_run(target, key, "docker restart airgenome-claude 2>&1 | tail -2")
+                // authorized_keys 배포 — ~/.airgenome/docker_authorized_keys → container:/root/.ssh/authorized_keys
+                let local_keys = env("HOME") + "/.airgenome/docker_authorized_keys"
+                let has_keys = exec("[ -f '" + local_keys + "' ] && echo y || echo n").trim()
+                if has_keys == "y" {
+                    let _ = scp_file(target, key, local_keys, "/tmp/docker_authorized_keys")
+                    let _ = ssh_run(target, key, "docker cp /tmp/docker_authorized_keys airgenome-claude:/root/.ssh/authorized_keys && docker exec airgenome-claude chmod 600 /root/.ssh/authorized_keys")
+                    println("  [ok] docker_authorized_keys → container /root/.ssh/authorized_keys")
+                } else {
+                    println("  [skip] docker_authorized_keys 로컬 부재 — " + local_keys)
+                }
+            } else {
+                println("  [skip docker] airgenome-claude 컨테이너 부재 — docker/compose 또는 bin/airgenome-claude-run 선행 필요")
+            }
+        } else {
+            println("  [skip docker] docker 미설치")
+        }
+    } else {
+        println("  [DRY docker] pull + restart airgenome-claude + authorized_keys 배포")
+    }
+
+    println("  → " + host_key + ": enable fail=" + to_string(e_fail))
+    return e_fail
+}
+
+fn enabled_remote_hosts() -> [str] {
+    let raw = exec("jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!=\"self\")) | .[].key' '" + hosts_registry_path() + "' 2>/dev/null").trim()
+    if raw == "" { return [] }
+    return raw.split("\n")
+}
+
+fn init_self_test(target: str) -> void {
+    println("")
+    println("⬡ airgenome init self-test (target=" + target + ")")
+    if target == "mac" || target == "all" {
+        let uname = exec("uname -s").trim()
+        if uname == "Darwin" {
+            let loaded = exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./' | wc -l | tr -d ' '").trim()
+            let total = len(list_launchagent_plists())
+            println("  mac launchd: " + loaded + " / " + to_string(total) + " loaded")
+            let missing = exec("for p in '" + ag_root() + "/shared/launchagents'/com.airgenome.*.plist; do n=$(basename \"$p\" .plist); launchctl list \"$n\" >/dev/null 2>&1 || echo \"  ✗ $n\"; done").trim()
+            if missing != "" { println(missing) }
+        } else {
+            println("  mac launchd: (skip — non-Darwin)")
+        }
+    }
+    if target != "mac" {
+        let mut hosts = []
+        if target == "all" {
+            hosts = enabled_remote_hosts()
+        } else {
+            hosts = [target_to_host_key(target)]
+        }
+        let mut i = 0
+        while i < len(hosts) {
+            let h = hosts[i]
+            i = i + 1
+            let ip = host_field(h, "ip")
+            let user = host_field(h, "ssh_user")
+            let key = expand_ssh_key(host_field(h, "ssh_key"))
+            if ip == "" || user == "" { continue }
+            let t = user + "@" + ip
+            let units_active = ssh_run(t, key, "systemctl list-units 'airgenome-*' --state=active --no-legend --no-pager 2>/dev/null | wc -l").trim()
+            let units_fail = ssh_run(t, key, "systemctl list-units 'airgenome-*' --state=failed --no-legend --no-pager 2>/dev/null | wc -l").trim()
+            println("  " + h + " (" + t + "): active=" + units_active + ", failed=" + units_fail)
+            if units_fail != "0" && units_fail != "" {
+                let fails = ssh_run(t, key, "systemctl list-units 'airgenome-*' --state=failed --no-legend --no-pager 2>/dev/null | awk '{print \"    ✗ \" $1}'")
+                println(fails)
+            }
+        }
+    }
+}
+
+fn cmd_init(target: str, dry_run: bool) -> void {
+    // bin/airgenome-init (bash) 가 존재하면 우선 위임 — 상세 로깅/카운터 + sshd drop-in/
+    // skip-docker 등 엣지케이스까지 커버. hexa fallback 은 toolchain 부재 시 backup.
+    let bash_bin = ag_root() + "/bin/airgenome-init"
+    let bash_ok = exec("[ -x '" + bash_bin + "' ] && echo y || echo n").trim()
+    if bash_ok == "y" {
+        let mut flags = " --target=" + target
+        if dry_run { flags = flags + " --dry-run" }
+        println("⬡ airgenome init → " + bash_bin + flags)
+        let out = exec("AIRGENOME_ROOT='" + ag_root() + "' '" + bash_bin + "' " + flags + " 2>&1")
+        print(out)
+        return
+    }
+
+    // ── hexa fallback ─────────────────────────────────────────────────────
+    println("⬡ airgenome init — target=" + target + " dry_run=" + to_string(dry_run) + "  (hexa fallback; bin/airgenome-init 부재)")
+    let mut total_fail = 0
+    if target == "mac" || target == "all" || target == "" {
+        total_fail = total_fail + init_mac(dry_run)
+    }
+    if target == "all" || target == "" {
+        let hosts = enabled_remote_hosts()
+        let mut i = 0
+        while i < len(hosts) {
+            let h = hosts[i]
+            i = i + 1
+            total_fail = total_fail + init_remote_host(h, dry_run)
+        }
+    } else if target != "mac" {
+        let key_name = target_to_host_key(target)
+        total_fail = total_fail + init_remote_host(key_name, dry_run)
+    }
+
+    // self-test 자동 실행 (dry-run 은 건너뜀).
+    if !dry_run {
+        init_self_test(target)
+    }
+
+    println("")
+    if total_fail == 0 {
+        println("⬡ airgenome init — 완료 (fail=0)")
+    } else {
+        println("⬡ airgenome init — " + to_string(total_fail) + " 실패 — 위 ❌ 확인 후 재시도 (airgenome init --target=<failed>).")
     }
 }
 
@@ -333,21 +763,23 @@ fn cmd_logs(agent: str, lines: int) -> void {
     }
 }
 
-// cmd_remote — ssh ubu/htz 에 airgenome 모듈 원격 실행.
+// cmd_remote — ssh ubu1/htz 에 airgenome 모듈 원격 실행.
 // 사용: airgenome remote <host> <module> [args...]
-//   airgenome remote ubu harvest
+//   airgenome remote ubu1 harvest       (legacy 'ubu' 도 수용)
 //   airgenome remote htz probe
-//   airgenome remote ubu ring-count   — 간편 명령 (forge/genomes.ring wc -l)
+//   airgenome remote ubu1 ring-count    — 간편 명령 (forge/genomes.ring wc -l)
 fn cmd_remote(host: str, rest: str) -> void {
-    if host != "ubu" && host != "htz" && host != "hetzner" {
-        println("❌ unknown host: " + host + " (ubu | htz | hetzner)")
+    if host != "ubu" && host != "ubu1" && host != "htz" && host != "hetzner" {
+        println("❌ unknown host: " + host + " (ubu1 | htz | hetzner)")
         return
     }
-    let ssh_host = if host == "htz" { "hetzner" } else { host }
-    // ring 경로: forge/genomes.ring — ubu = $AIRGENOME, htz = /root/Dev/airgenome
-    let ring_root = if host == "ubu" { "$AIRGENOME" } else { "/root/Dev/airgenome" }
-    // modules 경로: 원격 deploy 구조가 다름 — ubu = ~/airgenome-v2, htz = /root/Dev/airgenome
-    let module_root = if host == "ubu" { "~/airgenome-v2" } else { "/root/Dev/airgenome" }
+    // ssh_alias: ubu1 host key 의 ssh_alias 는 여전히 'ubu' (Mac ssh config legacy)
+    let ssh_host = if host == "htz" { "hetzner" } else { if host == "ubu1" { "ubu" } else { host } }
+    let is_ubu = host == "ubu" || host == "ubu1"
+    // ring 경로: forge/genomes.ring — ubu1 = $AIRGENOME, htz = /root/Dev/airgenome
+    let ring_root = if is_ubu { "$AIRGENOME" } else { "/root/Dev/airgenome" }
+    // modules 경로: 원격 deploy 구조가 다름 — ubu1 = ~/airgenome-v2, htz = /root/Dev/airgenome
+    let module_root = if is_ubu { "~/airgenome-v2" } else { "/root/Dev/airgenome" }
 
     // 간편 명령 ring-count — 모듈 실행 없이 ring 개수만
     if rest == "ring-count" {
@@ -394,7 +826,7 @@ fn slots_dir() -> str {
 
 fn host_capacity_default(host: str, kind: str) -> int {
     if host == "mac" { return 8 }
-    if host == "ubu" || host == "ubu2" { return 2 }
+    if host == "ubu" || host == "ubu1" || host == "ubu2" { return 2 }
     if host == "htz" || host == "hetzner" { return 4 }
     if kind == "self" { return 8 }
     if kind == "lan" { return 2 }
@@ -542,10 +974,10 @@ fn cmd_doctor() -> void {
     let ld_detail = to_string(agent_count) + " com.airgenome.* agent(s) loaded"
     fails = fails + doctor_check("launchd", ld_ok, ld_detail)
 
-    // 4. ring freshness — unified/ubu/htz 중 하나라도 5분 이내 수정이면 OK
+    // 4. ring freshness — unified/ubu1/htz 중 하나라도 5분 이내 수정이면 OK
     let now = to_int(exec("date +%s").trim())
     let mut freshest = 0
-    let rings = ["genomes.ring", "genomes.ubu.ring", "genomes.htz.ring", "genomes.unified.ring"]
+    let rings = ["genomes.ring", "genomes.ubu1.ring", "genomes.htz.ring", "genomes.unified.ring"]
     let mut i = 0
     while i < len(rings) {
         let p = ag_forge() + "/" + rings[i]
@@ -634,7 +1066,7 @@ fn cmd_watch(interval_s: int) -> void {
     let clear_seq = exec("printf '\\033[2J\\033[H'")
     let fd = ag_forge()
     let r_mac = fd + "/genomes.ring"
-    let r_ubu = fd + "/genomes.ubu.ring"
+    let r_ubu = fd + "/genomes.ubu1.ring"
     let r_htz = fd + "/genomes.htz.ring"
     let r_uni = fd + "/genomes.unified.ring"
     let mut prev_mac = ring_count(r_mac)
@@ -674,7 +1106,7 @@ fn cmd_watch(interval_s: int) -> void {
         let c_uni = ring_count(r_uni)
         println("Rings (entries, Δ since last tick):")
         println("  mac      " + to_string(c_mac) + "\t(Δ " + to_string(c_mac - prev_mac) + ")")
-        println("  ubu      " + to_string(c_ubu) + "\t(Δ " + to_string(c_ubu - prev_ubu) + ")")
+        println("  ubu1     " + to_string(c_ubu) + "\t(Δ " + to_string(c_ubu - prev_ubu) + ")")
         println("  htz      " + to_string(c_htz) + "\t(Δ " + to_string(c_htz - prev_htz) + ")")
         println("  unified  " + to_string(c_uni) + "\t(Δ " + to_string(c_uni - prev_uni) + ")")
 
@@ -701,9 +1133,9 @@ fn print_help() -> void {
     println("       airgenome help <subcommand>   — 상세 도움말")
     println("")
     println("GENOME PIPELINE")
-    println("  harvest                  /proc 스캔 → forge/genomes.ring append (Mac 금지, ubu/htz)")
+    println("  harvest                  /proc 스캔 → forge/genomes.ring append (Mac 금지, ubu1/htz)")
     println("  label                    anomaly label 부여 (labeled_anomaly.jsonl)")
-    println("  merge                    genomes.{mac,ubu,htz} → genomes.unified.ring")
+    println("  merge                    genomes.{mac,ubu1,htz} → genomes.unified.ring")
     println("  forecast                 Holt's linear 1-step 예측 (forge/forecast_state.json)")
     println("  forecast-eval            held-out MAE 평가 (forge/forecast_eval_report.json)")
     println("")
@@ -725,10 +1157,11 @@ fn print_help() -> void {
     println("  cli                      인터랙티브 TUI — 숫자 선택 dispatch")
     println("")
     println("PROTECTION / BOT")
-    println("  runaway-guard [sub]      ubu 폭주 감지/대응 (self-test|run-once|loop)")
+    println("  runaway-guard [sub]      ubu1 폭주 감지/대응 (self-test|run-once|loop)")
     println("  tg-bot                   Telegram bot (iOS → claude dispatcher, M15)")
     println("")
     println("DEPLOY / LIFECYCLE")
+    println("  init [--target=T] [--dry-run]  수작업 없는 완정성 배포 (mac/ubu1/ubu2/htz/all)")
     println("  deploy [sub]             전 hosts 에 stack 배포 (self-test|status|verify)")
     println("  install-agents [sub]     AG6-safe LaunchAgent 설치 (mac-safe 기본)")
     println("  install [mode]           legacy install (mode=all|mac-safe, 권장: install-agents)")
@@ -738,11 +1171,11 @@ fn print_help() -> void {
     println("  menubar                  Mac menubar 실행 (built binary 필요)")
     println("")
     println("REMOTE / META")
-    println("  remote <host> <sub>      ubu/htz 원격 airgenome subcommand 실행")
+    println("  remote <host> <sub>      ubu1/htz 원격 airgenome subcommand 실행")
     println("  help [sub]               이 도움말 — sub 지정시 상세")
     println("")
     println("EXTERNAL TOOLS (bash, PATH=$AIRGENOME/bin)")
-    println("  cx [args]                Claude CLI router (ubu/ubu2 우선, docker-ssh 기본)")
+    println("  cx [args]                Claude CLI router (ubu1/ubu2 우선, docker-ssh 기본)")
     println("  claudx [args]            limit-resilient Claude launcher (12 account pool)")
     println("  claudx-observe           rotation/usage 실시간 추적")
     println("  enq <kind> -- <cmd>      AI-native queue frontend (compute|heavy|gpu slots)")
@@ -750,7 +1183,7 @@ fn print_help() -> void {
     println("  container_manage <sub>   docker compose wrapper (status|start|logs|exec|pull)")
     println("  rtt_probe <host>         keystroke RTT 측정 (menubar V6 + cx auto-switch)")
     println("  stability_monitor        Mac tick-based 감시자 (claude 절대 보호)")
-    println("  hexa_heal [check|heal]   hexa_real binary drift 감지/복구 (ubu golden)")
+    println("  hexa_heal [check|heal]   hexa_real binary drift 감지/복구 (ubu1 golden)")
     println("  airgenome-logs <sub>     통합 로그 tail/grep/rotate (~/.airgenome/*.log)")
     println("  airgenome-build          daily docker image build (htz timer)")
     println("  airgenome-claude-run     docker run for airgenome-claude service (직접 호출 X)")
@@ -771,7 +1204,7 @@ fn print_help_sub(sub: str) -> void {
         println("airgenome harvest — /proc 스캔해 호스트 hexagon genome 을 ring 에 append")
         println("  source: modules/harvest.hexa")
         println("  출력:   forge/genomes.ring (호스트별)")
-        println("  주의:   Mac 금지 (AG6) — ubu/htz 에서만 timer 로 실행")
+        println("  주의:   Mac 금지 (AG6) — ubu1/htz 에서만 timer 로 실행")
         return
     }
     if sub == "label" {
@@ -781,7 +1214,7 @@ fn print_help_sub(sub: str) -> void {
         return
     }
     if sub == "merge" {
-        println("airgenome merge — genomes.{mac,ubu,htz}.ring → genomes.unified.ring")
+        println("airgenome merge — genomes.{mac,ubu1,htz}.ring → genomes.unified.ring")
         println("  source: modules/genome_merge.hexa")
         println("  호출:   ring-sync timer 직후 실행")
         return
@@ -844,7 +1277,7 @@ fn print_help_sub(sub: str) -> void {
     if sub == "status" {
         println("airgenome status [--json] — 3-host 통합 상태")
         println("  source: modules/status.hexa")
-        println("  수집:   Mac(local) + ubu/ubu2/htz(ssh fresh probe)")
+        println("  수집:   Mac(local) + ubu1/ubu2/htz(ssh fresh probe)")
         println("  표시:   uptime, load, mem, docker, port 2222, runaway verdict, AG7 score")
         return
     }
@@ -912,6 +1345,17 @@ fn print_help_sub(sub: str) -> void {
         println("  권장: install-agents (AG6 검증 포함)")
         return
     }
+    if sub == "init" {
+        println("airgenome init [--target=T] [--dry-run] — 수작업 없는 one-shot 배포")
+        println("  target: mac | ubu1 | ubu2 | htz | all(기본)")
+        println("  mac:    shared/launchagents/*.plist 17개 → ~/Library/LaunchAgents + launchctl bootstrap")
+        println("  원격:   shared/systemd/* → /etc/systemd/system + daemon-reload + enable --now")
+        println("          docker airgenome-claude 있으면 pull + restart + authorized_keys 배포")
+        println("  SSOT:   hosts.json 의 ip/ssh_user/ssh_key (fallback key=$HOME/.ssh/id_ed25519)")
+        println("  fallback: rsync 부재 환경은 tar|ssh|tar pipe 로 전송 (컨테이너 호환)")
+        println("  self-test: 완료 후 자동 systemctl is-active / launchctl list 검증")
+        return
+    }
     if sub == "uninstall" {
         println("airgenome uninstall — com.airgenome.* LaunchAgent 전부 bootout + plist 제거")
         return
@@ -927,8 +1371,8 @@ fn print_help_sub(sub: str) -> void {
         return
     }
     if sub == "remote" {
-        println("airgenome remote <ubu|htz|hetzner> <sub> [args...]")
-        println("  예:  airgenome remote ubu harvest")
+        println("airgenome remote <ubu1|htz|hetzner> <sub> [args...]")
+        println("  예:  airgenome remote ubu1 harvest")
         println("       airgenome remote htz ring-count")
         return
     }
@@ -974,6 +1418,22 @@ fn main() -> void {
         cmd_install(mode)
         return
     }
+    if sub == "init" {
+        // airgenome init [--target=X] [--dry-run]
+        let mut tgt = "all"
+        let mut dry = false
+        let mut ii = 3
+        while ii < len(a) {
+            let tok = a[ii]
+            if tok.starts_with("--target=") { tgt = tok.substring(9, len(tok)) }
+            else if tok == "--target" && ii + 1 < len(a) { tgt = a[ii + 1]; ii = ii + 1 }
+            else if tok == "--dry-run" { dry = true }
+            else if tok == "mac" || tok == "all" || tok == "ubu1" || tok == "ubu" || tok == "ubu2" || tok == "htz" { tgt = tok }
+            ii = ii + 1
+        }
+        cmd_init(tgt, dry)
+        return
+    }
     if sub == "uninstall" { cmd_uninstall(); return }
     if sub == "self-test" { cmd_self_test_all(); return }
     if sub == "menubar" { cmd_menubar(); return }
@@ -989,7 +1449,7 @@ fn main() -> void {
     }
     if sub == "remote" {
         if len(a) < 5 {
-            println("usage: airgenome remote <ubu|htz> <sub> [args...]")
+            println("usage: airgenome remote <ubu1|htz> <sub> [args...]")
             return
         }
         let host = a[3]
