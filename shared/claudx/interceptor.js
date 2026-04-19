@@ -22,7 +22,10 @@
 // Env:
 //   CLAUDX_BUDGET_DAILY   $5 기본값
 //   CLAUDX_BUDGET_MONTHLY $50 기본값  (hive pre_provider 호환)
-//   CLAUDX_PREEMPT_PCT    0.15 (remaining < 15% 면 선제 swap 준비)
+//   CLAUDX_PREEMPT_PCT       0.30 (soft: min(req,tok) remaining < 30% → pool score +50 (soft prefer next))
+//   CLAUDX_PREEMPT_HARD_PCT  0.15 (hard: < 15% → markExhausted 300s)
+//   CLAUDX_PREEMPT_PENALTY   50   (soft 진입 시 pool.addScorePenalty delta)
+//   CLAUDX_PREEMPT_PEN_TTL   300  (penalty TTL 초)
 //   CLAUDX_CACHE_TTL_SEC  86400
 //   CLAUDX_NO_CACHE       1 → 캐시 전면 비활성
 //   CLAUDX_NO_BUDGET      1 → budget cap 비활성
@@ -82,7 +85,10 @@ const SCRUB = process.env.CLAUDX_SCRUB !== '0';
 const BUDGET_DAILY = parseFloat(process.env.CLAUDX_BUDGET_DAILY || '5');
 const BUDGET_MONTHLY = parseFloat(process.env.CLAUDX_BUDGET_MONTHLY || '50');
 const NO_BUDGET = process.env.CLAUDX_NO_BUDGET === '1';
-const PREEMPT_PCT = parseFloat(process.env.CLAUDX_PREEMPT_PCT || '0.15');
+const PREEMPT_PCT = parseFloat(process.env.CLAUDX_PREEMPT_PCT || '0.30');
+const PREEMPT_HARD_PCT = parseFloat(process.env.CLAUDX_PREEMPT_HARD_PCT || '0.15');
+const PREEMPT_PENALTY = parseFloat(process.env.CLAUDX_PREEMPT_PENALTY || '50');
+const PREEMPT_PEN_TTL = parseInt(process.env.CLAUDX_PREEMPT_PEN_TTL || '300', 10);
 const CACHE_TTL = parseInt(process.env.CLAUDX_CACHE_TTL_SEC || '86400', 10);
 const NO_CACHE = process.env.CLAUDX_NO_CACHE === '1';
 const NO_REDACT = process.env.CLAUDX_NO_REDACT === '1';
@@ -512,10 +518,16 @@ function preemptSwapCheck(resp, acct) {
   const tokLim = parseInt(readHeader(resp, 'anthropic-ratelimit-input-tokens-limit') || '1', 10);
   const rPct = lim > 0 ? rem / lim : 1;
   const tPct = tokLim > 0 ? tokRem / tokLim : 1;
-  if (rPct < PREEMPT_PCT || tPct < PREEMPT_PCT) {
-    // short-term 마크. 완전 exhausted 아니라 당분간만 피함
-    pool.markExhausted(acct, 300); // 5분 pause
-    logEvent({ event: 'preempt_swap_prepared', acct, req_rem_pct: rPct, tok_rem_pct: tPct });
+  // AND 가 아닌 weighted: 둘 중 하나라도 임계 미만이면 발동.
+  //  - HARD (< 15% 기본): 완전 exhausted 마크 (5분) → 전체 pool 에서 제외
+  //  - SOFT (< 30% 기본): pool.addScorePenalty(+50, 300s) → sort 후순위로만 내림 (fallback 가능)
+  const minPct = Math.min(rPct, tPct);
+  if (minPct < PREEMPT_HARD_PCT) {
+    pool.markExhausted(acct, 300);
+    logEvent({ event: 'preempt_hard', acct, req_rem_pct: rPct, tok_rem_pct: tPct, threshold: PREEMPT_HARD_PCT });
+  } else if (minPct < PREEMPT_PCT) {
+    pool.addScorePenalty(acct, PREEMPT_PENALTY, PREEMPT_PEN_TTL);
+    logEvent({ event: 'preempt_soft', acct, req_rem_pct: rPct, tok_rem_pct: tPct, threshold: PREEMPT_PCT, delta: PREEMPT_PENALTY, ttl: PREEMPT_PEN_TTL });
   }
 }
 

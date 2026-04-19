@@ -25,6 +25,7 @@ const USAGE_CACHE =
   path.join(HOME, 'Dev', 'nexus', 'shared', '.runtime', 'accounts', 'usage-cache.json');
 const EXHAUSTED = path.join(STATE_DIR, 'exhausted.json');
 const STICKY = path.join(STATE_DIR, 'sticky.json');
+const PENALTY = path.join(STATE_DIR, 'penalty.json');
 
 function mkdirp(p) {
   try { fs.mkdirSync(p, { recursive: true }); } catch (_) {}
@@ -70,6 +71,7 @@ function loadPool(excludeNames, opts) {
   const acc = readJSON(POOL_CFG, { accounts: [] });
   const usage = readJSON(USAGE_CACHE, {});
   const exhausted = readJSON(EXHAUSTED, {});
+  const penalty = readJSON(PENALTY, {});
   const now = Math.floor(Date.now() / 1000);
   const softSession = (opts && opts.sessionCap) || 95;
   const softWeek = (opts && opts.weekCap) || 100;
@@ -87,13 +89,16 @@ function loadPool(excludeNames, opts) {
     const oauth = creds && creds.claudeAiOauth;
     if (!oauth || !oauth.accessToken) continue;
     if (oauth.expiresAt && oauth.expiresAt < Date.now()) continue;
+    const pen = penalty[a.name];
+    const penDelta = (pen && pen.until > now) ? (Number(pen.delta) || 0) : 0;
     out.push({
       name: a.name,
       config_dir: a.config_dir,
       token: oauth.accessToken,
       week_pct: u.week_all_pct || 0,
       session_pct: u.session_pct || 0,
-      score: (u.week_all_pct || 0) * 2 + (u.session_pct || 0),
+      penalty: penDelta,
+      score: (u.week_all_pct || 0) * 2 + (u.session_pct || 0) + penDelta,
     });
   }
   out.sort((x, y) => x.score - y.score);
@@ -148,6 +153,33 @@ function clearExhausted(name) {
   writeJSON(EXHAUSTED, ex);
 }
 
+// score penalty (2026-04-19 · M13g): "soft prefer next" — markExhausted 만큼은 아닌데
+// 다음 request 에서 이 계정을 피하고 싶을 때 점수만 올려 sort 후순위로 내림. TTL 만료시
+// 자동 복구. delta > 0 = 덜 선호 (score 오름차순 정렬 기준).
+function addScorePenalty(name, delta, seconds) {
+  if (!name) return;
+  const pen = readJSON(PENALTY, {});
+  const until = Math.floor(Date.now() / 1000) + (seconds || 300);
+  pen[name] = { delta: Number(delta) || 0, until, ts: new Date().toISOString() };
+  writeJSON(PENALTY, pen);
+}
+
+function clearPenalty(name) {
+  const pen = readJSON(PENALTY, {});
+  if (name) delete pen[name]; else for (const k of Object.keys(pen)) delete pen[k];
+  writeJSON(PENALTY, pen);
+}
+
+function listPenalties() {
+  const pen = readJSON(PENALTY, {});
+  const now = Math.floor(Date.now() / 1000);
+  const out = {};
+  for (const [k, v] of Object.entries(pen)) {
+    if (v && v.until && v.until > now) out[k] = v;
+  }
+  return out;
+}
+
 function statusTable() {
   const acc = readJSON(POOL_CFG, { accounts: [] });
   const usage = readJSON(USAGE_CACHE, {});
@@ -178,13 +210,16 @@ module.exports = {
   pickBest,
   markExhausted,
   clearExhausted,
+  addScorePenalty,
+  clearPenalty,
+  listPenalties,
   stickyGet,
   stickySet,
   stickyClear,
   currentAccountName,
   basenameToAcct,
   statusTable,
-  paths: { POOL_CFG, USAGE_CACHE, EXHAUSTED, STATE_DIR, STICKY },
+  paths: { POOL_CFG, USAGE_CACHE, EXHAUSTED, STATE_DIR, STICKY, PENALTY },
 };
 
 // CLI: node pool.js {pick|status|clear [name]}
@@ -203,6 +238,25 @@ if (require.main === module) {
   } else if (cmd === 'clear') {
     clearExhausted(process.argv[3]);
     process.stdout.write('cleared\n');
+  } else if (cmd === 'penalty') {
+    const sub = process.argv[3] || 'list';
+    if (sub === 'add') {
+      const name = process.argv[4];
+      const delta = parseFloat(process.argv[5] || '50');
+      const ttl = parseInt(process.argv[6] || '300', 10);
+      if (!name) { process.stderr.write('usage: node pool.js penalty add <name> <delta> <ttl_sec>\n'); process.exit(2); }
+      addScorePenalty(name, delta, ttl);
+      process.stdout.write(`added\t${name}\t${delta}\t${ttl}\n`);
+    } else if (sub === 'list') {
+      const pen = listPenalties();
+      for (const [k, v] of Object.entries(pen)) process.stdout.write([k, v.delta, 'until=' + v.until].join('\t') + '\n');
+    } else if (sub === 'clear') {
+      clearPenalty(process.argv[4]);
+      process.stdout.write('cleared\n');
+    } else {
+      process.stderr.write('usage: node pool.js penalty {add|list|clear} ...\n');
+      process.exit(2);
+    }
   } else if (cmd === 'sticky') {
     const sub = process.argv[3] || 'get';
     const sid = process.argv[4];
