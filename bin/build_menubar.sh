@@ -22,15 +22,17 @@ echo "[1/3] hexa_v2 transpile → C"
 "$HXV2" "$SRC" "$OUT_C"
 
 echo "[2/3] FFI marshalling post-process (TAG_STR 포인터 + msg_float ABI)"
-# hexa_v2 0.x codegen 버그 우회:
-#   1) (X.tag==TAG_INT?X.i:(int64_t)X.f) 는 TAG_STR 일 때 포인터 소실
-#      → hexa_ffi_marshal_arg(X) 로 교체 (TAG_STR 포인터, FLOAT bit-reinterpret 등 전부 처리)
-#   2) msg_float 은 int64_t arg typedef 로 호출 → ARM64 ABI 에서 d0 아닌 x2 에 전달되어 CGFloat 소실
-#      → __ffi_ftyp_msg_float 시그니처를 double 로, 호출부도 double 로
+# hexa_v2 0.x codegen 버그 우회 — 2026-04-19 업데이트 (AG-Q4 루트원인):
+#   hexa_v2 codegen 이 `(X.tag==TAG_INT?X.i:(int64_t)X.f)` → `(HX_IS_INT(X)?HX_INT_U(X):(int64_t)HX_FLOAT(X))` 로 변경됐으나
+#   TAG_STR 포인터 처리가 여전히 누락됨. 문자열 인자가 float bit 로 reinterpret 되어 garbage 전달 →
+#   objc_getClass("NSApplication") 등 전부 NULL 반환 → 메뉴바 아이콘 안뜨는 주증상.
+#   1) TAG_STR 패치: 새 codegen 패턴도 `hexa_ffi_marshal_arg(X)` 로 치환 (4-way switch — STR/INT/FLOAT/BOOL 전부 처리)
+#   2) msg_float CGFloat ABI: `double _da1` helper 로 ARM64 d0 레지스터 경유 강제
 perl -i -pe 's/\(([a-zA-Z_]\w*)\.tag==TAG_INT\?\1\.i:\(int64_t\)\1\.f\)/hexa_ffi_marshal_arg($1)/g' "$OUT_C"
+perl -i -pe 's/\(HX_IS_INT\(([a-zA-Z_]\w*)\)\?HX_INT_U\(\1\):\(int64_t\)HX_FLOAT\(\1\)\)/hexa_ffi_marshal_arg($1)/g' "$OUT_C"
 # msg_float 특화 — CGFloat ABI 수정
 perl -i -pe 's{typedef int64_t \(\*__ffi_ftyp_msg_float\)\(int64_t, int64_t, int64_t\);}{typedef int64_t (*__ffi_ftyp_msg_float)(int64_t, int64_t, double);}' "$OUT_C"
-perl -i -pe 's{HexaVal msg_float\(HexaVal obj, HexaVal sel, HexaVal a1\) \{\n    int64_t __r = \(\(__ffi_ftyp_msg_float\)__ffi_sym_msg_float\)\(hexa_ffi_marshal_arg\(obj\), hexa_ffi_marshal_arg\(sel\), hexa_ffi_marshal_arg\(a1\)\);}{HexaVal msg_float(HexaVal obj, HexaVal sel, HexaVal a1) \{\n    double _da1 = (a1.tag==TAG_FLOAT?a1.f:(a1.tag==TAG_INT?(double)a1.i:0.0));\n    int64_t __r = ((__ffi_ftyp_msg_float)__ffi_sym_msg_float)(hexa_ffi_marshal_arg(obj), hexa_ffi_marshal_arg(sel), _da1);}s' "$OUT_C"
+perl -i -0pe 's{HexaVal msg_float\(HexaVal obj, HexaVal sel, HexaVal a1\) \{\n    int64_t __r = \(\(__ffi_ftyp_msg_float\)__ffi_sym_msg_float\)\(hexa_ffi_marshal_arg\(obj\), hexa_ffi_marshal_arg\(sel\), \(HX_IS_FLOAT\(a1\)\?HX_FLOAT\(a1\):\(double\)HX_INT\(a1\)\)\);}{HexaVal msg_float(HexaVal obj, HexaVal sel, HexaVal a1) \{\n    double _da1 = (HX_IS_FLOAT(a1)?HX_FLOAT(a1):(HX_IS_INT(a1)?(double)HX_INT(a1):0.0));\n    int64_t __r = ((__ffi_ftyp_msg_float)__ffi_sym_msg_float)(hexa_ffi_marshal_arg(obj), hexa_ffi_marshal_arg(sel), _da1);}s' "$OUT_C"
 
 echo "[3/3] clang compile → native binary (AppKit + CoreFoundation link)"
 clang -O2 -I"${HEXA_LANG:-$HOME/Dev/hexa-lang}/self" -framework AppKit -framework CoreFoundation -o "$OUT_BIN" "$OUT_C"
