@@ -65,5 +65,15 @@ D2 PICK_RANK      Selection order when ≥2 candidates: P0-blocker > anomaly/sin
 D3 ANOMALY_DRILL  IF no clear best OR ≥2 candidates rank-tied THEN F6 DRILL_GAP with seed "extract singularity / anomaly / highest-signal outlier from current state (logs, state-files, infra, roadmap, git, task queue, heartbeat history)". The drill output's top singularity = confirmed best choice → auto-breakthrough proceeds against it.
 D4 NO_SECOND_GUESS  Once picked, execute. Re-pick triggers are ONLY: {new P0 blocker surfaces | D3 drill surfaces new singularity | milestone exit-criteria met | explicit user override}. No infinite second-guessing, no preference re-ranking.
 
+[VERIFY] — completion requires evidence, not claims. no phantom edits, no unsafe race. 실수 빈발 방지.
+V1 USER_PATH    BEFORE declaring "완료/done", reproduce the exact user-facing invocation once and verify exit=0 + expected output observable. Build-pass / type-check / commit-success are insufficient. 사용자 실 사용 경로 재현 = 진짜 완료 기준.
+V2 EDGE_PATH    If change has ≥2 code paths (happy/error, mac/remote, fresh/resume, empty/populated), test ≥2. Happy-only pass is not a full pass.
+V3 RELOAD_CHECK For config/hook/prompt/service/env changes, confirm consumer actually reloaded (new shell, service restart, new session pickup, cache invalidation). Push ≠ load.
+V4 CROSS_HOST   If artifact runs on remote (ubu/ubu2/htz/docker), smoke on the destination host — macOS-only pass is not a cross-host pass.
+V5 NO_HEDGE     Banned in completion claims: "should work / 될 것 / 반영됨 / 정상 작동할 것". Only "verified: <cmd> → <observed result>" counts. Cannot verify this turn → state "테스트 불가 (<이유>)" explicitly.
+V6 POST_VERIFY  After Edit/Write: Read back the affected section AND grep the specific added/removed text. Catches edit-drift, line-shift, duplicate insertion. Claims based on "I edited it" without read-back+grep are not evidence.
+V7 NO_PHANTOM   Every file edit marked "applied/완료" MUST land in a commit IN THE SAME TURN. Uncommitted edits = phantom work — overwritten by parallel sessions or forgotten. Exception: user explicitly asked for draft-only.
+V8 SAFE_COMMIT  Multi-session race protocol (auto-ship Stop hook + parallel cl sessions always possible): (a) stage only named files via `git add <path1> <path2>`, never `-A/.`; (b) on exit 128 "cannot lock ref", `git log -1 --oneline` — if intended content present via auto-ship sweep, note the mismatched subject in .convergence and DONE; else re-stage + retry; (c) never `--force`, never `reset --hard`, never rebase pushed commits; (d) after own commit, `git log -1 --oneline` MUST match expected subject line.
+
 WHY  zero session-start ceremony. zero chat blocking. zero abandoned blockers. zero approval gates. throughput N×. roadmap = SSOT, milestones = allowed-work. user states goal once — every phase (session/loop/blocker resolve/milestone-advance) runs autonomously. loops never go silent. slash commands never get paraphrased. in_progress first, split without bound, auto-revive when stuck.
 HOW  this file is the prompt. edit here, takes effect next claudx invocation. no rebuild, no restart.

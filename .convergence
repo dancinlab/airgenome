@@ -113,4 +113,28 @@
 @file: .session_defaults:23 (L8 appended to [LOOP])
 @rollback: remove L8. Prior behavior allowed cron+chain indifferently; L8 just makes chain the stated default.
 
+[session-defaults-verify-section]
+@state: converged
+@date: 2026-04-20
+@scope: .session_defaults :: [VERIFY] V1-V8
+@decision: Introduce a completion-evidence regime. Every task must end with a reproducible user-path test, read-back verification of edits, a same-turn commit of any applied edit, and a multi-session-safe commit protocol. Remove hedge-language from completion claims.
+@rules:
+  - V1 USER_PATH: reproduce exact user-facing invocation, verify exit=0 and expected output observable before declaring done. Build-pass / commit-success are not sufficient.
+  - V2 EDGE_PATH: when change has multiple code paths, test at least two (happy/error, mac/remote, fresh/resume, empty/populated).
+  - V3 RELOAD_CHECK: for config/hook/prompt/service/env changes, confirm the consumer reloaded (push is not load).
+  - V4 CROSS_HOST: if artifact runs on ubu/ubu2/htz/docker, smoke on the destination host, not Mac alone.
+  - V5 NO_HEDGE: ban hedging phrases from completion claims; only verified-observation counts; state "테스트 불가 (이유)" explicitly when unverifiable this turn.
+  - V6 POST_VERIFY: after Edit/Write, Read the affected section AND grep for added/removed text. Catches edit-drift / line-shift / duplicate insertion.
+  - V7 NO_PHANTOM: every applied edit MUST commit in the same turn; uncommitted edits get overwritten or forgotten under multi-session activity.
+  - V8 SAFE_COMMIT: multi-session race protocol. Stage only named files (no -A/.); on exit-128 race, accept auto-ship sweep if content present (log the subject mismatch) else re-stage + retry; no --force, no reset --hard, no rebase on pushed commits; verify HEAD matches expected subject after commit.
+@why: User corrective 2026-04-20 — two compounding failure modes observed repeatedly in this session and prior ones. (a) "자꾸 됐다고 해서 써보면 안되는 경우가 많아서" — completion claimed from commit/build success without reproducing the user-facing path. (b) "commit 누락 많아서 유령 되버리는 경우도 많아서" — edits marked applied but never committed, overwritten by parallel sessions. Combined with the observed auto-ship Stop hook and parallel cl sessions swallowing commits under mismatched subjects (3 occurrences in this single session: 89530b09 and 93a30928 sweeping DECIDE/F6 edits into docs/claudx-loop subjects), a safe multi-session commit protocol is mandatory.
+@effect:
+  - Completion reports must carry an observed-result line; hedge language is explicitly banned.
+  - Every applied edit lands in the same turn, removing the phantom-edit failure mode.
+  - Commits use named-file staging, exit-128 is handled non-destructively, and HEAD verification catches silent auto-ship sweeps.
+  - Read-back + grep after edits catches line-shift / duplicate-insert / wrong-path mistakes at the source rather than at user-reproduction.
+  - Cross-host and reload-check rules close the macOS-only-passes and push-equals-reload anti-patterns.
+@file: .session_defaults:68-76 (VERIFY section appended at end of body)
+@rollback: remove [VERIFY] section. V7-V8 are the load-bearing rules — leaving V1-V6 without them preserves the test-before-done discipline but reopens the phantom-edit and race-clobber paths.
+
 @__raw__
