@@ -884,13 +884,22 @@ fn run_loop() -> void {
 
 fn main() -> void {
     let a = args()
+    // hexa `args()` layout 은 호출 방식에 따라 달라짐 — 안전하게 전 슬롯 스캔.
     let mut sub = ""
-    if len(a) >= 3 { sub = a[2] }
+    let mut ai = 0
+    while ai < len(a) {
+        let av = a[ai]
+        if av == "self-test" { sub = "self-test" }
+        if av == "run-once" { sub = "run-once" }
+        ai = ai + 1
+    }
 
     if sub == "self-test" { self_test(); return }
+    if sub == "run-once" { run_once(); return }
 
     // env flags
     if env("RUNAWAY_TEST") == "1" { run_once(); return }
+    if env("RUNAWAY_SELF_TEST") == "1" { self_test(); return }
 
     run_loop()
 }

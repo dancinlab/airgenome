@@ -266,7 +266,7 @@ fn send_message(token: str, chat_id: int, text: str) -> bool {
 fn send_chunks(token: str, chat_id: int, text: str) -> void {
     let total = len(text)
     if total == 0 {
-        let _ = send_message(token, chat_id, "(empty response)")
+        let _ = send_message(token, chat_id, "(빈 응답)")
         return
     }
     let mut pos = 0
@@ -290,7 +290,7 @@ fn send_chunks(token: str, chat_id: int, text: str) -> void {
 
 fn dispatch_claude(cfg: Config, text: str) -> str {
     if env("TG_DRY") == "1" {
-        return "[DRY] would dispatch: " + text
+        return "[DRY] 디스패치 예정: " + text
     }
     let timeout_s = to_string(cfg.dispatch_timeout)
     let dispatch_mode = cfg.dispatch
@@ -310,7 +310,7 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
     }
     cmd = cmd + "; rm -f '" + tmp + "'"
     let out = exec(cmd)
-    if to_string(out) == "void" { return "(dispatch returned void)" }
+    if to_string(out) == "void" { return "(디스패치 결과 void)" }
     return out
 }
 
@@ -461,20 +461,20 @@ fn run_local(local_cmd: str, timeout_s: int) -> str {
 // ─── /help ────────────────────────────────────────────────────────────
 fn cmd_help() -> str {
     let b = ""
-    let mut s = b + "airgenome tg bot — commands\n"
+    let mut s = b + "airgenome tg bot — 명령어 목록\n"
     s = s + "\n"
-    s = s + "/status           — 3-host health (uptime, load, docker ps, task count)\n"
-    s = s + "/wake             — agent / background activity last 30min\n"
-    s = s + "/soak <min>       — runaway guard soak for N minutes (default 15)\n"
-    s = s + "/deploy <svc>     — restart service (confirm required)\n"
+    s = s + "/status           — 전체 호스트 건강 요약 (uptime, load, docker, claude/hexa 수)\n"
+    s = s + "/wake             — 최근 30분 에이전트/백그라운드 활동 요약\n"
+    s = s + "/soak <min>       — runaway guard soak 실행 (기본 15분, 최대 120분)\n"
+    s = s + "/deploy <svc>     — 서비스 재기동 (confirm 토큰 필요)\n"
     s = s + "                    svc: airgenome-claude | airgenome-runaway | tg-bot\n"
-    s = s + "/logs <host> [N]  — last N journalctl lines (default 20)\n"
+    s = s + "/logs <host> [N]  — journalctl 최근 N줄 (기본 20)\n"
     s = s + "                    host: ubu | ubu2 | hetzner\n"
-    s = s + "/tail             — airgenome status summary (1-min)\n"
-    s = s + "/drill            — live drill/hexa heavy processes\n"
-    s = s + "/help             — this list\n"
+    s = s + "/tail             — airgenome 1분 상태 요약\n"
+    s = s + "/drill            — 고부하 프로세스 점검 (CPU 상위)\n"
+    s = s + "/help             — 이 도움말\n"
     s = s + "\n"
-    s = s + "(no-slash text → claude -p dispatch)\n"
+    s = s + "(/로 시작하지 않는 메시지는 claude -p 로 디스패치됩니다)\n"
     return s
 }
 
@@ -488,8 +488,8 @@ fn host_status_block(alias: str) -> str {
     let mut s = "[" + alias + "]\n"
     s = s + "  up:     " + truncate(up, 120) + "\n"
     s = s + "  load:   " + truncate(load, 80) + "\n"
-    s = s + "  docker: " + truncate(docker, 20) + " containers\n"
-    s = s + "  claude: " + truncate(claude_n, 20) + " hexa: " + truncate(hexa_n, 20) + "\n"
+    s = s + "  docker: " + truncate(docker, 20) + " 컨테이너\n"
+    s = s + "  claude: " + truncate(claude_n, 20) + "  hexa: " + truncate(hexa_n, 20) + "\n"
     return s
 }
 
@@ -503,13 +503,13 @@ fn mac_status_block() -> str {
     s = s + "  up:     " + truncate(up, 120) + "\n"
     s = s + "  load:   " + truncate(load, 80) + "\n"
     s = s + "  tg-bot pid: " + truncate(tg_running, 20) + "\n"
-    s = s + "  claude: " + truncate(claude_n, 20) + " hexa: " + truncate(hexa_n, 20) + "\n"
+    s = s + "  claude: " + truncate(claude_n, 20) + "  hexa: " + truncate(hexa_n, 20) + "\n"
     return s
 }
 
 fn cmd_status() -> str {
     let b = ""
-    let mut s = b + "status @ " + ts_iso() + "\n\n"
+    let mut s = b + "# 호스트 상태 (" + ts_iso() + ")\n\n"
     s = s + mac_status_block() + "\n"
     s = s + host_status_block("ubu") + "\n"
     s = s + host_status_block("ubu2") + "\n"
@@ -520,17 +520,17 @@ fn cmd_status() -> str {
 // ─── /wake — recent activity ─────────────────────────────────────────
 fn cmd_wake() -> str {
     let b = ""
-    let mut s = b + "wake @ " + ts_iso() + " (last 30min)\n\n"
+    let mut s = b + "# 최근 활동 (" + ts_iso() + ", 최근 30분)\n\n"
     // Mac: recent tg_bot log + executor.jsonl + dispatch log tail
     let tg_tail = run_local("tail -n 8 " + HOME + "/.airgenome/tg_bot.log 2>/dev/null", CMD_TIMEOUT_SHORT)
-    s = s + "[mac tg_bot recent]\n" + truncate(tg_tail, 800) + "\n\n"
+    s = s + "[mac tg_bot 최근]\n" + truncate(tg_tail, 800) + "\n\n"
     let exec_tail = run_local("tail -n 6 " + HOME + "/.airgenome/executor.jsonl 2>/dev/null", CMD_TIMEOUT_SHORT)
-    s = s + "[mac executor recent]\n" + truncate(exec_tail, 800) + "\n\n"
+    s = s + "[mac executor 최근]\n" + truncate(exec_tail, 800) + "\n\n"
     // Remote: journalctl --since 30min ago airgenome-claude
     let ubu_log = run_remote("ubu", "journalctl --user -u airgenome-claude --since '30 min ago' -n 5 --no-pager 2>&1 | tail -n 5", CMD_TIMEOUT_MED)
-    s = s + "[ubu claude recent]\n" + truncate(ubu_log, 800) + "\n\n"
+    s = s + "[ubu claude 최근]\n" + truncate(ubu_log, 800) + "\n\n"
     let ubu2_log = run_remote("ubu2", "journalctl --user -u airgenome-claude --since '30 min ago' -n 5 --no-pager 2>&1 | tail -n 5", CMD_TIMEOUT_MED)
-    s = s + "[ubu2 claude recent]\n" + truncate(ubu2_log, 800) + "\n"
+    s = s + "[ubu2 claude 최근]\n" + truncate(ubu2_log, 800) + "\n"
     return s
 }
 
@@ -540,7 +540,7 @@ fn cmd_soak(mins: int) -> str {
     if m <= 0 { m = 15 }
     if m > 120 { m = 120 }   // cap to protect tg bot loop
     let b = ""
-    let mut s = b + "soak " + to_string(m) + "m @ " + ts_iso() + "\n"
+    let mut s = b + "# soak " + to_string(m) + "분 시작 (" + ts_iso() + ")\n"
     // Kick off runaway_guard RUNAWAY_TEST=1 (single measurement) repeatedly
     // on ubu — collect summary via journalctl at end.
     let before = run_remote("ubu", "date +%s", CMD_TIMEOUT_SHORT)
@@ -553,7 +553,7 @@ fn cmd_soak(mins: int) -> str {
         + "  sleep 5; "
         + "done' >/dev/null 2>&1 &"
     let _ = run_remote("ubu", "echo '' > /tmp/tg_soak.log 2>/dev/null; " + soak_cmd + " echo started", CMD_TIMEOUT_SHORT)
-    s = s + "started on ubu — polling every 5s, results to /tmp/tg_soak.log\n"
+    s = s + "ubu 에서 시작됨 — 5초 간격 polling, 결과: /tmp/tg_soak.log\n"
     // Wait locally (cap at 120m already).
     let _ = exec("sleep " + to_string(m * 60))
     // Summarize
@@ -564,10 +564,10 @@ fn cmd_soak(mins: int) -> str {
         "grep -oE '\"verdict\":\"[a-z]+\"' /tmp/tg_soak.log 2>/dev/null | sort | uniq -c | sort -rn | head -5",
         CMD_TIMEOUT_SHORT)
     let last5 = run_remote("ubu", "tail -n 5 /tmp/tg_soak.log 2>/dev/null", CMD_TIMEOUT_SHORT)
-    s = s + "\nsoak done — elapsed " + to_string(end_epoch - start_epoch) + "s\n"
-    s = s + "samples: " + truncate(lines_s, 20) + " lines\n"
-    s = s + "\nverdict histogram:\n" + truncate(verdict_tail, 400) + "\n"
-    s = s + "\nlast 5 samples:\n" + truncate(last5, 1000) + "\n"
+    s = s + "\nsoak 완료 — 경과 " + to_string(end_epoch - start_epoch) + "초\n"
+    s = s + "샘플 수: " + truncate(lines_s, 20) + " 줄\n"
+    s = s + "\nverdict 히스토그램:\n" + truncate(verdict_tail, 400) + "\n"
+    s = s + "\n최근 5개 샘플:\n" + truncate(last5, 1000) + "\n"
     return s
 }
 
@@ -609,36 +609,36 @@ fn do_restart_service(service: str) -> str {
         // Mac — launchd kickstart (self-restart). This will terminate us; log first.
         log_line("WARN", "self-restart via launchctl kickstart -k com.airgenome.tg-bot")
         let r = run_local("launchctl kickstart -k gui/$(id -u)/com.airgenome.tg-bot 2>&1; echo RC=$?", CMD_TIMEOUT_SHORT)
-        return "tg-bot kickstart initiated (self-restart)\n" + truncate(r, 400)
+        return "✅ tg-bot 재기동 시작 (self-restart)\n" + truncate(r, 400)
     }
     // Remote systemd user service — restart on ubu AND ubu2 when applicable.
     if service == "airgenome-claude" {
         let r1 = run_remote("ubu",  "systemctl --user restart airgenome-claude 2>&1; systemctl --user is-active airgenome-claude 2>&1", CMD_TIMEOUT_MED)
         let r2 = run_remote("ubu2", "systemctl --user restart airgenome-claude 2>&1; systemctl --user is-active airgenome-claude 2>&1", CMD_TIMEOUT_MED)
-        return "airgenome-claude restart:\n[ubu]  " + truncate(r1, 200) + "\n[ubu2] " + truncate(r2, 200)
+        return "✅ airgenome-claude 재기동 완료:\n[ubu]  " + truncate(r1, 200) + "\n[ubu2] " + truncate(r2, 200)
     }
     if service == "airgenome-runaway" {
         // Runs on ubu under root systemd
         let r = run_remote("ubu", "sudo -n systemctl restart airgenome-runaway 2>&1; systemctl is-active airgenome-runaway 2>&1", CMD_TIMEOUT_MED)
-        return "airgenome-runaway restart on ubu:\n" + truncate(r, 400)
+        return "✅ airgenome-runaway 재기동 완료 (ubu):\n" + truncate(r, 400)
     }
-    return "unknown service"
+    return "❌ 알 수 없는 서비스"
 }
 
 fn cmd_deploy(chat_id: int, argv: list) -> str {
     if len(argv) < 2 {
-        return "usage: /deploy <service>\n  service: airgenome-claude | airgenome-runaway | tg-bot\n  step 1: /deploy <svc>  → bot replies with confirm token\n  step 2: /deploy <svc> confirm <token>"
+        return "사용법: /deploy <service>\n  service: airgenome-claude | airgenome-runaway | tg-bot\n  1단계: /deploy <svc>  → bot 이 confirm 토큰 발급\n  2단계: /deploy <svc> confirm <token>"
     }
     let svc = argv[1].trim()
-    if !safe_token(svc) { return "invalid service name" }
-    if !service_allowed(svc) { return "service not allowed: " + svc }
+    if !safe_token(svc) { return "❌ 서비스 이름이 올바르지 않습니다" }
+    if !service_allowed(svc) { return "❌ 허용되지 않은 서비스: " + svc }
     if len(argv) >= 4 {
         let kw = argv[2].trim()
-        if kw != "confirm" { return "unknown modifier — expected 'confirm <token>'" }
+        if kw != "confirm" { return "❌ 알 수 없는 옵션 — 'confirm <token>' 형식이 필요합니다" }
         let tok = argv[3].trim()
-        if !safe_token(tok) { return "invalid token" }
+        if !safe_token(tok) { return "❌ 토큰 형식이 올바르지 않습니다" }
         if !deploy_token_valid(chat_id, svc, tok) {
-            return "token invalid or expired — request a fresh one with `/deploy " + svc + "`"
+            return "❌ 토큰이 유효하지 않거나 만료됨 — `/deploy " + svc + "` 로 새 토큰을 발급받으세요"
         }
         log_line("WARN", "deploy EXEC chat=" + to_string(chat_id) + " svc=" + svc)
         return do_restart_service(svc)
@@ -646,20 +646,20 @@ fn cmd_deploy(chat_id: int, argv: list) -> str {
     // 1-step: issue token and instructions.
     let tok = deploy_token(chat_id, svc)
     let b = ""
-    let mut s = b + "confirm restart of " + svc + "?\n"
-    s = s + "reply: /deploy " + svc + " confirm " + tok + "\n"
-    s = s + "(token valid ~2 min)"
+    let mut s = b + "⚠️  " + svc + " 재기동을 확인해 주세요\n"
+    s = s + "회신: /deploy " + svc + " confirm " + tok + "\n"
+    s = s + "(토큰 유효 시간: 약 2분)"
     return s
 }
 
 // ─── /logs <host> [lines] ─────────────────────────────────────────────
 fn cmd_logs(argv: list) -> str {
     if len(argv) < 2 {
-        return "usage: /logs <host> [lines]\n  host: ubu | ubu2 | hetzner"
+        return "사용법: /logs <host> [lines]\n  host: ubu | ubu2 | hetzner"
     }
     let h = argv[1].trim()
-    if !safe_token(h) { return "invalid host" }
-    if !ssh_alias_allowed(h) { return "host not allowed: " + h }
+    if !safe_token(h) { return "❌ 호스트 이름이 올바르지 않습니다" }
+    if !ssh_alias_allowed(h) { return "❌ 허용되지 않은 호스트: " + h }
     let mut n = 20
     if len(argv) >= 3 {
         let ns = argv[2].trim()
@@ -674,7 +674,7 @@ fn cmd_logs(argv: list) -> str {
             + " | tail -n " + to_string(n)
     let out = run_remote(h, rcmd, CMD_TIMEOUT_MED)
     let b = ""
-    let mut s = b + "[" + h + " journal last " + to_string(n) + "]\n"
+    let mut s = b + "# " + h + " journal 최근 " + to_string(n) + "줄\n"
     s = s + truncate(out, 3500)
     return s
 }
@@ -686,11 +686,11 @@ fn cmd_tail(argv: list) -> str {
     if len(argv) >= 2 { tag = argv[1].trim() }
     // Mac-side: recent tg + executor + dashboard stderr (cheap)
     let b = ""
-    let mut s = b + "tail @ " + ts_iso() + "\n\n"
+    let mut s = b + "# 1분 요약 (" + ts_iso() + ")\n\n"
     let grep_part = ""
     let mut grep_cmd = grep_part
     if tag != "" {
-        if !safe_token(tag) { return "invalid tag" }
+        if !safe_token(tag) { return "❌ 태그 형식이 올바르지 않습니다" }
         grep_cmd = " | grep -E " + shell_quote(tag) + " | tail -n 8"
     } else {
         grep_cmd = " | tail -n 8"
@@ -699,29 +699,29 @@ fn cmd_tail(argv: list) -> str {
     s = s + "[mac tg]\n" + truncate(mac_tg, 700) + "\n\n"
     let ubu_sum = run_remote("ubu", "journalctl --user -u airgenome-claude --since '1 min ago' --no-pager 2>&1 | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
     let ubu2_sum = run_remote("ubu2", "journalctl --user -u airgenome-claude --since '1 min ago' --no-pager 2>&1 | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
-    s = s + "[journal lines last 1min]  ubu=" + truncate(ubu_sum, 10) + "  ubu2=" + truncate(ubu2_sum, 10) + "\n"
+    s = s + "[최근 1분 journal 줄수]  ubu=" + truncate(ubu_sum, 10) + "  ubu2=" + truncate(ubu2_sum, 10) + "\n"
     let ubu_claude = run_remote("ubu", "pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
     let ubu2_claude = run_remote("ubu2", "pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
     let htz_claude = run_remote("hetzner", "pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
-    s = s + "[claude pid count]         ubu=" + truncate(ubu_claude, 10) + "  ubu2=" + truncate(ubu2_claude, 10) + "  htz=" + truncate(htz_claude, 10) + "\n"
+    s = s + "[claude 프로세스 수]     ubu=" + truncate(ubu_claude, 10) + "  ubu2=" + truncate(ubu2_claude, 10) + "  htz=" + truncate(htz_claude, 10) + "\n"
     return s
 }
 
 // ─── /drill — heavy processes ────────────────────────────────────────
 fn cmd_drill() -> str {
     let b = ""
-    let mut s = b + "drill @ " + ts_iso() + "\n\n"
+    let mut s = b + "# 고부하 프로세스 점검 (" + ts_iso() + ")\n\n"
     // Top heavy on ubu — top CPU processes excluding idle kernel threads
     let heavy_cmd = "ps -eo pid,pcpu,pmem,comm --sort=-pcpu 2>/dev/null | awk 'NR==1 || $2>5' | head -10"
     let u1 = run_remote("ubu", heavy_cmd, CMD_TIMEOUT_SHORT)
-    s = s + "[ubu heavy]\n" + truncate(u1, 900) + "\n\n"
+    s = s + "[ubu 고부하]\n" + truncate(u1, 900) + "\n\n"
     let u2 = run_remote("ubu2", heavy_cmd, CMD_TIMEOUT_SHORT)
-    s = s + "[ubu2 heavy]\n" + truncate(u2, 900) + "\n\n"
+    s = s + "[ubu2 고부하]\n" + truncate(u2, 900) + "\n\n"
     let h1 = run_remote("hetzner", heavy_cmd, CMD_TIMEOUT_SHORT)
-    s = s + "[htz heavy]\n" + truncate(h1, 900) + "\n\n"
+    s = s + "[htz 고부하]\n" + truncate(h1, 900) + "\n\n"
     // Local: top CPU Mac-side (ps sort by cpu)
     let mac_top = run_local("ps -Aceo pid,pcpu,pmem,comm -r 2>/dev/null | head -10", CMD_TIMEOUT_SHORT)
-    s = s + "[mac heavy]\n" + truncate(mac_top, 900) + "\n"
+    s = s + "[mac 고부하]\n" + truncate(mac_top, 900) + "\n"
     return s
 }
 
@@ -753,7 +753,7 @@ fn route_command(cfg: Config, chat_id: int, text: str) -> CmdResult {
     }
     // Only handle recognized commands. Unknown /foo → fall through to claude.
     if cmd0 == "start" {
-        return CmdResult { handled: true, reply: "airgenome tg bot ready — /help for commands" }
+        return CmdResult { handled: true, reply: "airgenome tg bot 준비 완료 — /help 로 명령어 목록 확인" }
     }
     if cmd0 == "help" {
         return CmdResult { handled: true, reply: cmd_help() }
@@ -787,7 +787,7 @@ fn route_command(cfg: Config, chat_id: int, text: str) -> CmdResult {
     // Unknown slash command — be explicit (don't silently dispatch to claude).
     return CmdResult {
         handled: true,
-        reply: "unknown command: /" + cmd0 + "\ntry /help"
+        reply: "❌ 알 수 없는 명령: /" + cmd0 + "\n/help 로 명령어 목록을 확인하세요"
     }
 }
 
@@ -807,7 +807,7 @@ fn handle_update(cfg: Config, u: Update) -> void {
     let cr = route_command(cfg, u.chat_id, u.text)
     if cr.handled {
         let mut body = cr.reply
-        if body == "" { body = "(empty)" }
+        if body == "" { body = "(응답 없음)" }
         if body == "void" { body = "(void)" }
         send_chunks(cfg.token, u.chat_id, body)
         log_line("INFO", "cmd_reply uid=" + to_string(u.update_id) + " len=" + to_string(len(body)))
@@ -815,10 +815,10 @@ fn handle_update(cfg: Config, u: Update) -> void {
     }
 
     // Freeform text → claude dispatch (original behavior).
-    let _ = send_message(cfg.token, u.chat_id, "⏳ dispatching…")
+    let _ = send_message(cfg.token, u.chat_id, "⏳ 디스패치 중…")
     let reply = dispatch_claude(cfg, u.text).trim()
     let mut body = reply
-    if body == "" { body = "(empty reply)" }
+    if body == "" { body = "(빈 응답)" }
     if body == "void" { body = "(void)" }   // to_string(void) guard
     send_chunks(cfg.token, u.chat_id, body)
     log_line("INFO", "replied uid=" + to_string(u.update_id) + " len=" + to_string(len(body)))

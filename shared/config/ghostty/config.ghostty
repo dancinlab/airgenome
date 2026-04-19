@@ -4,12 +4,6 @@ bell-features = no-system,no-audio,attention,title,border
 
 keybind = super+shift+r=reload_config
 
-keybind = super+ctrl+digit_0=text:cd ~/Dev/hexa-os\n
-keybind = super+ctrl+digit_1=text:cd ~/Dev/nexus\n
-keybind = super+ctrl+digit_2=text:cd ~/Dev/anima\n
-keybind = super+ctrl+digit_3=text:cd ~/Dev/n6-architecture\n
-keybind = super+ctrl+digit_4=text:cd ~/Dev/hexa-lang\n
-keybind = super+ctrl+digit_5=text:cd ~/mango/prism\n
-keybind = super+ctrl+digit_6=text:cd ~/mango/prism-manager\n
-keybind = super+ctrl+digit_8=text:cd ~/Dev/papers\n
-keybind = super+ctrl+digit_9=text:cd ~/Dev/contact\n
+# cmd+ctrl+digit_N bindings moved to ~/.skhdrc (skhd OS-level daemon) — they now
+# open a NEW Ghostty window with fixed title + cd + cl, instead of typing text
+# into the current tab (which broke inside Claude Code CLI).

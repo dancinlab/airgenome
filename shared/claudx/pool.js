@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 const HOME = process.env.HOME || process.env.USERPROFILE;
 const STATE_DIR = process.env.CLAUDX_STATE || path.join(HOME, '.airgenome', 'claudx');
@@ -26,6 +27,12 @@ const USAGE_CACHE =
 const EXHAUSTED = path.join(STATE_DIR, 'exhausted.json');
 const STICKY = path.join(STATE_DIR, 'sticky.json');
 const PENALTY = path.join(STATE_DIR, 'penalty.json');
+const KEYCHAIN_MAP = path.join(STATE_DIR, 'keychain_map.json');
+// SSOT keychain map maintained by bin/remote_account_sync + cl-refresh.
+// Format: { map: { claudeN: "<hex8>" } }. We prefer this over brute-force discovery.
+const KEYCHAIN_SSOT =
+  process.env.CLAUDX_KEYCHAIN_SSOT ||
+  path.join(HOME, 'Dev', 'nexus', 'shared', 'config', 'claude_keychain_map.json');
 
 function mkdirp(p) {
   try { fs.mkdirSync(p, { recursive: true }); } catch (_) {}
@@ -66,6 +73,143 @@ function currentAccountName() {
   return basenameToAcct(process.env.CLAUDE_CONFIG_DIR || '');
 }
 
+// ------------------------------------------------------------------
+// Mac Keychain fallback (M11e · cross-host claude)
+//
+// On macOS, `claude` stores OAuth tokens in the login keychain rather than
+// writing `.credentials.json`. Without this fallback, loadPool returns empty
+// on Mac and claudx rotation cannot function.
+//
+// Lookup strategy (cheapest → safest):
+//   1) in-memory _keychainMap (per-process)
+//   2) $CLAUDX_STATE/keychain_map.json (persisted cache)
+//   3) SSOT map at shared/config/claude_keychain_map.json (hand-maintained)
+//   4) brute-force pair `security dump-keychain` hashes with known accounts
+//      — only triggered when a config_dir has no known mapping.
+//
+// All keychain invocations are gated behind process.platform === 'darwin' so
+// Linux/Windows hot paths are unaffected.
+// ------------------------------------------------------------------
+
+let _keychainMap = null; // { [config_dir]: "<hex8>" }
+let _dumpedHashes = null; // string[] of hex8 candidates from `security dump-keychain`
+
+function _loadKeychainMap() {
+  if (_keychainMap) return _keychainMap;
+  // 1) local cache first (writable, per-host)
+  const cached = readJSON(KEYCHAIN_MAP, null);
+  if (cached && typeof cached === 'object' && cached.map && typeof cached.map === 'object') {
+    _keychainMap = Object.assign({}, cached.map);
+  } else {
+    _keychainMap = {};
+  }
+  // 2) merge SSOT (name → hex8) by resolving each account's config_dir.
+  //    SSOT keys are account names (claude1..12), so we need accounts.json
+  //    to translate. We only merge entries not already in the local cache.
+  const ssot = readJSON(KEYCHAIN_SSOT, null);
+  const ssotMap = ssot && ssot.map && typeof ssot.map === 'object' ? ssot.map : null;
+  let changed = false;
+  if (ssotMap) {
+    const acc = readJSON(POOL_CFG, { accounts: [] });
+    for (const a of acc.accounts || []) {
+      const hex = ssotMap[a.name];
+      if (!hex || !a.config_dir) continue;
+      if (!_keychainMap[a.config_dir]) {
+        _keychainMap[a.config_dir] = String(hex);
+        changed = true;
+      }
+    }
+  }
+  // Persist on first SSOT materialization so subsequent runs (and hosts that
+  // no longer reach the nexus SSOT) can resolve purely from the local cache.
+  if (changed) _persistKeychainMap();
+  return _keychainMap;
+}
+
+function _persistKeychainMap() {
+  try {
+    writeJSON(KEYCHAIN_MAP, { schema_version: 1, updated_at: new Date().toISOString(), map: _keychainMap || {} });
+  } catch (_) {}
+}
+
+function _dumpKeychainHashes() {
+  if (_dumpedHashes) return _dumpedHashes;
+  if (process.platform !== 'darwin') { _dumpedHashes = []; return _dumpedHashes; }
+  try {
+    const out = execSync('security dump-keychain 2>/dev/null', { timeout: 2000, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+    const hashes = new Set();
+    const re = /"Claude Code-credentials-([0-9a-f]{8})"/g;
+    let m;
+    while ((m = re.exec(out)) !== null) hashes.add(m[1]);
+    _dumpedHashes = Array.from(hashes);
+  } catch (_) {
+    _dumpedHashes = [];
+  }
+  return _dumpedHashes;
+}
+
+// Try to resolve a keychain hex8 for a given config_dir. Returns null if
+// nothing can be matched. Results are cached & persisted on success.
+function _resolveKeychainHex(configDir) {
+  if (!configDir) return null;
+  if (process.platform !== 'darwin') return null;
+  const m = _loadKeychainMap();
+  if (m[configDir]) return m[configDir];
+
+  // Brute-force discovery: iterate unknown hashes, read each entry, and parse
+  // the JSON to see if its stored path (if present) references config_dir.
+  // Claude Code's blob is pure OAuth JSON (no path), so we can't disambiguate
+  // from the blob itself. Instead we rely on the fact that brand-new accounts
+  // produce exactly one new hash — we record any leftover hashes but won't
+  // mis-assign them. For paired brute-force we lean on the SSOT first.
+  // (Re-read SSOT each call is cheap compared to the keychain syscall.)
+  const ssot = readJSON(KEYCHAIN_SSOT, null);
+  const ssotMap = ssot && ssot.map && typeof ssot.map === 'object' ? ssot.map : null;
+  if (ssotMap) {
+    const acctName = basenameToAcct(configDir);
+    if (acctName && ssotMap[acctName]) {
+      m[configDir] = String(ssotMap[acctName]);
+      _persistKeychainMap();
+      return m[configDir];
+    }
+  }
+  // Last resort: if there is exactly one unclaimed dumped hash and exactly one
+  // unresolved config_dir in the pool, pair them. Otherwise bail — silent
+  // no-op is preferable to a wrong assignment.
+  const dumped = _dumpKeychainHashes();
+  if (dumped && dumped.length) {
+    const claimed = new Set(Object.values(m));
+    const leftover = dumped.filter(h => !claimed.has(h));
+    if (leftover.length === 1) {
+      m[configDir] = leftover[0];
+      _persistKeychainMap();
+      return m[configDir];
+    }
+  }
+  return null;
+}
+
+function _readKeychainCreds(configDir) {
+  if (process.platform !== 'darwin') return null;
+  const hex = _resolveKeychainHex(configDir);
+  if (!hex) return null;
+  let raw;
+  try {
+    raw = execSync(`security find-generic-password -s "Claude Code-credentials-${hex}" -w 2>/dev/null`, {
+      timeout: 300,
+      encoding: 'utf8',
+    });
+  } catch (_) {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw.trim());
+  } catch (_) {
+    return null;
+  }
+}
+
 function loadPool(excludeNames, opts) {
   const exclude = new Set(excludeNames || []);
   const acc = readJSON(POOL_CFG, { accounts: [] });
@@ -84,9 +228,20 @@ function loadPool(excludeNames, opts) {
     if ((u.week_all_pct || 0) >= softWeek) continue;
     if ((u.session_pct || 0) >= softSession) continue;
     if (u._retry_at && u._retry_at > now) continue;
-    const cred = path.join(remapPath(a.config_dir), '.credentials.json');
-    const creds = readJSON(cred, null);
-    const oauth = creds && creds.claudeAiOauth;
+    const remapped = remapPath(a.config_dir);
+    const cred = path.join(remapped, '.credentials.json');
+    let creds = readJSON(cred, null);
+    let oauth = creds && creds.claudeAiOauth;
+    // Mac fallback: no .credentials.json → read from macOS Keychain. Only when
+    // the config_dir is the true Mac path (not a remap to linux fs) AND we are
+    // actually running on darwin. This keeps Linux behavior identical.
+    if ((!oauth || !oauth.accessToken) && process.platform === 'darwin' && remapped === a.config_dir) {
+      const kc = _readKeychainCreds(a.config_dir);
+      if (kc && kc.claudeAiOauth) {
+        creds = kc;
+        oauth = kc.claudeAiOauth;
+      }
+    }
     if (!oauth || !oauth.accessToken) continue;
     if (oauth.expiresAt && oauth.expiresAt < Date.now()) continue;
     const pen = penalty[a.name];

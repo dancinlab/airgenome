@@ -9496,3 +9496,185 @@ cx: no remote session → -c stripped (fresh start on ubu)
 {"ts":"2026-04-19T14:40:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":228}
 {"ts":"2026-04-19T14:44:58Z","host":"mac","duration_s":387,"exit":137,"rtt_ms":3481}
 {"ts":"2026-04-19T15:02:26Z","host":"mac","duration_s":84,"exit":143,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:35Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:35Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:37Z","host":"mac","duration_s":1,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:37Z","host":"mac","duration_s":1,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:37Z","host":"mac","duration_s":1,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:37Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:37Z","host":"mac","duration_s":1,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:37Z","host":"mac","duration_s":1,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:37Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:38Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /login 은 Mac 에서 'CLAUDE_CONFIG_DIR=$HOME/.claude-<n> claude' — 원격 /login 은 Mac keychain 미반영 (오늘 1회)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:38Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":721}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:38Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":757}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:38Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":379}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:38Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":809}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:38Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":819}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:38Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":410}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:38Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":421}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:39Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":265}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:39Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":262}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:39Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:40Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → mac slot=cx: infra_state stale → pick_mode=priority fallback
+{"ts":"2026-04-19T15:04:40Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":0}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:41Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":267}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:41Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":264}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:41Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":271}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:43Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":296}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:43Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":300}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:43Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":302}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:43Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":302}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:44Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":303}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:44Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":307}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:44Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":312}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:44Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":314}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:46Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":258}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) dssh=ubu2-d slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: docker-ssh → ubu2-d (host sshd bypass)
+{"ts":"2026-04-19T15:04:46Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":254}
+{"ts":"2026-04-19T15:06:18Z","host":"ubu","duration_s":1,"exit":1,"rtt_ms":221}
+{"ts":"2026-04-19T15:06:31Z","host":"ubu","duration_s":4,"exit":0,"rtt_ms":246}
+{"ts":"2026-04-19T15:06:39Z","host":"ubu2","duration_s":3,"exit":0,"rtt_ms":244}
+{"ts":"2026-04-19T15:06:48Z","host":"ubu2","duration_s":5,"exit":1,"rtt_ms":253}
+{"ts":"2026-04-19T15:06:50Z","host":"htz","duration_s":7,"exit":0,"rtt_ms":3333}
+{"ts":"2026-04-19T15:07:24Z","host":"ubu","duration_s":29,"exit":255,"rtt_ms":303}
+{"ts":"2026-04-19T15:08:29Z","host":"ubu","duration_s":60,"exit":255,"rtt_ms":293}
+{"ts":"2026-04-19T15:08:54Z","host":"ubu","duration_s":0,"exit":1,"rtt_ms":242}
+{"ts":"2026-04-19T15:08:55Z","host":"ubu2","duration_s":0,"exit":1,"rtt_ms":230}
+{"ts":"2026-04-19T15:09:06Z","host":"htz","duration_s":7,"exit":0,"rtt_ms":3388}
+{"ts":"2026-04-19T15:09:33Z","host":"ubu","duration_s":0,"exit":1,"rtt_ms":216}
+{"ts":"2026-04-19T15:09:39Z","host":"ubu","duration_s":0,"exit":1,"rtt_ms":210}
+{"ts":"2026-04-19T15:09:42Z","host":"ubu2","duration_s":1,"exit":1,"rtt_ms":244}
+{"ts":"2026-04-19T15:10:09Z","host":"ubu","duration_s":0,"exit":1,"rtt_ms":206}
+{"ts":"2026-04-19T15:10:39Z","host":"ubu2","duration_s":2228,"exit":255,"rtt_ms":3487}
+{"ts":"2026-04-19T15:10:53Z","host":"ubu","duration_s":93,"exit":255,"rtt_ms":3361}
+{"ts":"2026-04-19T15:11:50Z","host":"ubu","duration_s":0,"exit":1,"rtt_ms":248}
+{"ts":"2026-04-19T15:11:51Z","host":"ubu","duration_s":0,"exit":1,"rtt_ms":250}
+{"ts":"2026-04-19T15:12:01Z","host":"ubu","duration_s":0,"exit":1,"rtt_ms":251}
+{"ts":"2026-04-19T15:12:07Z","host":"ubu2","duration_s":0,"exit":1,"rtt_ms":232}
+{"ts":"2026-04-19T15:13:10Z","host":"ubu2","duration_s":0,"exit":1,"rtt_ms":245}
+{"ts":"2026-04-19T15:13:18Z","host":"ubu2","duration_s":1,"exit":1,"rtt_ms":236}
+{"ts":"2026-04-19T15:13:24Z","host":"ubu2","duration_s":1,"exit":1,"rtt_ms":228}
+{"ts":"2026-04-19T15:13:31Z","host":"ubu2","duration_s":1,"exit":1,"rtt_ms":234}
+{"ts":"2026-04-19T15:15:04Z","host":"ubu2","duration_s":4,"exit":0,"rtt_ms":241}
+{"ts":"2026-04-19T15:15:50Z","host":"ubu","duration_s":4,"exit":0,"rtt_ms":214}
+{"ts":"2026-04-19T15:15:54Z","host":"ubu2","duration_s":4,"exit":0,"rtt_ms":214}
+{"ts":"2026-04-19T15:16:04Z","host":"htz","duration_s":7,"exit":0,"rtt_ms":3000}
+{"ts":"2026-04-19T15:16:30Z","host":"ubu2","duration_s":4,"exit":1,"rtt_ms":208}
+{"ts":"2026-04-19T15:16:38Z","host":"ubu","duration_s":29,"exit":255,"rtt_ms":266}
+{"ts":"2026-04-19T15:16:52Z","host":"ubu","duration_s":103,"exit":255,"rtt_ms":257}
+{"ts":"2026-04-19T15:17:25Z","host":"ubu","duration_s":135,"exit":255,"rtt_ms":254}
