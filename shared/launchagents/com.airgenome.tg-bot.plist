@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.tg-bot</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost/Dev/airgenome</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/.hx/bin/hexa</string>
+        <string>run</string>
+        <string>/Users/ghost/Dev/airgenome/bin/tg_bot.hexa</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+        <key>PATH</key>
+        <string>/Users/ghost/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/.airgenome/tg_bot.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/.airgenome/tg_bot.stderr.log</string>
+</dict>
+</plist>

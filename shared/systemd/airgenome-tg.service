@@ -1,0 +1,35 @@
+[Unit]
+Description=airgenome Telegram bot (M15) — iOS → Mac/ubu claude dispatcher
+Documentation=file:/opt/airgenome/bin/tg_bot.hexa
+After=network-online.target
+Wants=network-online.target
+# Cooperate with slice isolation
+Slice=airgenome-bkgnd.slice
+
+[Service]
+Type=simple
+# Ubuntu deployment assumes rsync to /opt/airgenome and hexa at /usr/local/bin/hexa.
+WorkingDirectory=/opt/airgenome
+ExecStart=/usr/local/bin/hexa run /opt/airgenome/bin/tg_bot.hexa
+Environment=HEXA_LOCAL=1
+Environment=AIRGENOME_ROOT=/opt/airgenome
+Environment=HOME=/home/ghost
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+Restart=always
+RestartSec=10
+# Kill children if service exits (prevents zombie curl processes)
+KillMode=mixed
+TimeoutStopSec=15
+
+# Resource fence (M15 is long-poll HTTP — tiny footprint)
+Nice=5
+CPUQuota=10%
+MemoryMax=128M
+TasksMax=32
+
+StandardOutput=append:/var/log/airgenome-tg.log
+StandardError=append:/var/log/airgenome-tg.log
+
+[Install]
+WantedBy=default.target

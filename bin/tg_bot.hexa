@@ -1,0 +1,524 @@
+// bin/tg_bot.hexa — M15 Telegram bot (iOS → Mac/ubu claude dispatcher)
+//
+// 책임:
+//   1. ~/.airgenome/tg.json 로드 → bot_token_file 에서 token 읽기
+//   2. primary_host == hostname 검증 (아니면 STANDBY 종료 — dual-host 안전)
+//   3. single-instance lock (~/.airgenome/tg_leader.lock, mkdir atomic)
+//   4. Long-poll getUpdates (timeout=25s)
+//   5. whitelist chat_id filter (아니면 WARN 만)
+//   6. message.text → claude -p "<text>" 디스패치 (NO_CLAUDX=1), stdout → sendMessage
+//   7. 4096자 chunk 분할 전송
+//   8. offset 영속 (~/.airgenome/tg_offset.json)
+//   9. 에러 백오프 5s
+//
+// hexa-lang quirks 회피:
+//   - list.push(x) no-op → `list = list + [x]`
+//   - to_string(void) → "void" JSON 오염 가드 (숫자 함수 void 반환 금지)
+//   - 전역 let 상수 if 비교 X (로컬 복사)
+//   - exec() 결과 trim
+//   - use "..." import 금지 (stage0 parse error)
+//   - try/catch 없음
+//
+// Usage:
+//   포그라운드:  ~/.hx/bin/hexa run bin/tg_bot.hexa
+//   ONCE:        TG_ONCE=1 ~/.hx/bin/hexa run bin/tg_bot.hexa  (한 번 poll 후 exit)
+//   self-test:   ~/.hx/bin/hexa run bin/tg_bot.hexa self-test
+//   dry dispatch: TG_DRY=1 ~/.hx/bin/hexa run bin/tg_bot.hexa  (claude 호출 대신 echo)
+
+let HOME = env("HOME")
+let CONFIG_PATH = HOME + "/.airgenome/tg.json"
+let OFFSET_PATH = HOME + "/.airgenome/tg_offset.json"
+let LOCK_DIR = HOME + "/.airgenome/tg_leader.lock"
+let LOG_PATH = HOME + "/.airgenome/tg_bot.log"
+let POLL_TIMEOUT = 25
+let HTTP_TIMEOUT = 40
+let BACKOFF = 5
+let CHUNK_SIZE = 4000   // < telegram 4096 limit, safe margin for JSON-escape inflation
+
+// ═══════════════════════════════════════════════════════════════════════
+//  UTIL
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn ts_epoch() -> int {
+    return to_int(exec("date +%s").trim())
+}
+
+fn json_safe(s: str) -> str {
+    // Telegram sendMessage accepts plain text — we only need to escape for
+    // our own JSON log lines. Strip control chars + quotes + backslash.
+    let a = s.replace("\\", "\\\\")
+    let b = a.replace("\"", "\\\"")
+    let c = b.replace("\n", "\\n")
+    let d = c.replace("\r", "")
+    let e = d.replace("\t", " ")
+    return e
+}
+
+fn log_line(level: str, msg: str) -> void {
+    let _ = exec("mkdir -p '" + HOME + "/.airgenome'")
+    let line = "{\"ts\":\"" + ts_iso() + "\",\"level\":\"" + level + "\",\"msg\":\"" + json_safe(msg) + "\"}"
+    let _ = exec("printf '%s\\n' " + shell_quote(line) + " >> '" + LOG_PATH + "'")
+    println("[" + level + "] " + msg)
+}
+
+fn shell_quote(s: str) -> str {
+    // single-quote wrap + escape embedded single-quote with '\''
+    let esc = s.replace("'", "'\\''")
+    return "'" + esc + "'"
+}
+
+fn host_name() -> str {
+    return exec("hostname").trim()
+}
+
+// hexa-lang has no string slice — use `awk` on a temp file (heredoc leaks via exec).
+// start/end are 0-based, end-exclusive.
+fn str_sub(s: str, start: int, end: int) -> str {
+    let e = end
+    let mut st = start
+    if st < 0 { st = 0 }
+    if e <= st { return "" }
+    let len_n = e - st
+    let tmp = HOME + "/.airgenome/.tg_sub." + to_string(ts_epoch())
+    let _ = write_file(tmp, s)
+    // awk substr is 1-based; read whole file (RS=\0) so newlines preserved. ORS="" → no trailing NL.
+    let prog = "BEGIN{RS=\"\\0\";ORS=\"\"} {print substr($0," + to_string(st + 1) + "," + to_string(len_n) + ")}"
+    let cmd = "awk " + shell_quote(prog) + " '" + tmp + "' 2>/dev/null; rm -f '" + tmp + "'"
+    let out = exec(cmd)
+    if to_string(out) == "void" { return "" }
+    return out
+}
+
+fn truncate(s: str, n: int) -> str {
+    // Safe prefix of up to n chars for log messages.
+    if len(s) <= n { return s }
+    return str_sub(s, 0, n)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════════════════════
+
+struct Config {
+    token: str,
+    whitelist: list,      // list of int
+    primary_host: str,
+    dispatch: str,        // "cl" or "cx"
+    claude_bin: str,
+    cx_bin: str,
+    dispatch_timeout: int,
+    bot_username: str
+}
+
+fn load_config() -> Config {
+    let exists = exec("test -f '" + CONFIG_PATH + "' && echo y || echo n").trim()
+    if exists != "y" {
+        panic("config missing: " + CONFIG_PATH)
+    }
+    let token_file = exec("jq -r '.bot_token_file // empty' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+    if token_file == "" { panic("tg.json missing bot_token_file") }
+    let tok_exists = exec("test -f '" + token_file + "' && echo y || echo n").trim()
+    if tok_exists != "y" { panic("bot token file missing: " + token_file) }
+    let tok = exec("cat '" + token_file + "' 2>/dev/null").trim()
+    if tok == "" { panic("bot token empty") }
+
+    // whitelist array of ints
+    let wl_raw = exec("jq -r '.whitelist[]? // empty' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+    let wl = []
+    let mut wl_list = wl
+    if wl_raw != "" {
+        let parts = wl_raw.split("\n")
+        let mut i = 0
+        while i < len(parts) {
+            let s = parts[i].trim()
+            if s != "" { wl_list = wl_list + [to_int(s)] }
+            i = i + 1
+        }
+    }
+
+    let ph = exec("jq -r '.primary_host // empty' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+    let dispatch = exec("jq -r '.dispatch // \"cl\"' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+    let cb = exec("jq -r '.claude_bin // empty' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+    let xb = exec("jq -r '.cx_bin // empty' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+    let dt_s = exec("jq -r '.dispatch_timeout // 180' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+    let bu = exec("jq -r '.bot_username // empty' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+
+    let mut dt = 180
+    if dt_s != "" { dt = to_int(dt_s) }
+    if dt <= 0 { dt = 180 }
+
+    let mut claude_fallback = cb
+    if claude_fallback == "" { claude_fallback = "claude" }
+    let mut cx_fallback = xb
+    if cx_fallback == "" { cx_fallback = "cx" }
+
+    return Config {
+        token: tok,
+        whitelist: wl_list,
+        primary_host: ph,
+        dispatch: dispatch,
+        claude_bin: claude_fallback,
+        cx_bin: cx_fallback,
+        dispatch_timeout: dt,
+        bot_username: bu
+    }
+}
+
+fn in_whitelist(chat_id: int, wl: list) -> bool {
+    let mut i = 0
+    while i < len(wl) {
+        if wl[i] == chat_id { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LOCK (mkdir-based — works on Mac without flock)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn acquire_lock() -> bool {
+    // mkdir is atomic on POSIX; succeeds only if dir not yet exist.
+    let r = exec("mkdir '" + LOCK_DIR + "' 2>&1; echo RC=$?").trim()
+    if r.contains("RC=0") { return true }
+    // Stale detection — if mtime older than 60s, remove and retry once.
+    let age = exec("stat -f %m '" + LOCK_DIR + "' 2>/dev/null || stat -c %Y '" + LOCK_DIR + "' 2>/dev/null").trim()
+    if age == "" { return false }
+    let now = ts_epoch()
+    let m = to_int(age)
+    if (now - m) > 60 {
+        let _ = exec("rmdir '" + LOCK_DIR + "' 2>/dev/null || rm -rf '" + LOCK_DIR + "'")
+        let r2 = exec("mkdir '" + LOCK_DIR + "' 2>&1; echo RC=$?").trim()
+        if r2.contains("RC=0") { return true }
+    }
+    return false
+}
+
+fn touch_lock() -> void {
+    // Use a sentinel file INSIDE the lock dir — `touch` of the dir-itself would
+    // (harmlessly) update dir mtime on Linux but the dir must exist first.
+    // We also touch the dir itself for Mac stat -f %m.
+    let _ = exec("[ -d '" + LOCK_DIR + "' ] && touch '" + LOCK_DIR + "/heartbeat' 2>/dev/null && touch '" + LOCK_DIR + "' 2>/dev/null || true")
+}
+
+fn release_lock() -> void {
+    let _ = exec("rm -rf '" + LOCK_DIR + "' 2>/dev/null")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  OFFSET PERSISTENCE
+// ═══════════════════════════════════════════════════════════════════════
+
+fn load_offset() -> int {
+    let exists = exec("test -f '" + OFFSET_PATH + "' && echo y || echo n").trim()
+    if exists != "y" { return 0 }
+    let s = exec("jq -r '.offset // 0' '" + OFFSET_PATH + "' 2>/dev/null").trim()
+    if s == "" { return 0 }
+    return to_int(s)
+}
+
+fn save_offset(off: int) -> void {
+    let _ = exec("mkdir -p '" + HOME + "/.airgenome'")
+    let line = "{\"offset\":" + to_string(off) + ",\"ts\":\"" + ts_iso() + "\"}"
+    let tmp = OFFSET_PATH + ".tmp"
+    let _ = exec("printf '%s\\n' " + shell_quote(line) + " > '" + tmp + "' && mv '" + tmp + "' '" + OFFSET_PATH + "'")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TELEGRAM API
+// ═══════════════════════════════════════════════════════════════════════
+
+fn api_base(token: str) -> str {
+    return "https://api.telegram.org/bot" + token
+}
+
+// Poll with long timeout. Returns raw JSON response or "" on failure.
+fn get_updates(token: str, offset: int) -> str {
+    let url = api_base(token) + "/getUpdates?offset=" + to_string(offset) + "&timeout=" + to_string(POLL_TIMEOUT)
+    let cmd = "curl -sS --max-time " + to_string(HTTP_TIMEOUT) + " '" + url + "' 2>/dev/null || true"
+    let out = exec(cmd)
+    // hexa-lang to_string(void) → "void" guard
+    if to_string(out) == "void" { return "" }
+    return out
+}
+
+// send plain text. returns true on ok.
+fn send_message(token: str, chat_id: int, text: str) -> bool {
+    let url = api_base(token) + "/sendMessage"
+    // Write text to temp file and use --data-urlencode text@<file> (curl reads the file).
+    let tmp = HOME + "/.airgenome/.tg_out." + to_string(ts_epoch()) + "." + to_string(chat_id)
+    let _ = write_file(tmp, text)
+    let cmd = "curl -sS --max-time " + to_string(HTTP_TIMEOUT)
+            + " -X POST '" + url + "'"
+            + " --data-urlencode 'chat_id=" + to_string(chat_id) + "'"
+            + " --data-urlencode 'text@" + tmp + "'"
+            + " 2>&1; rm -f '" + tmp + "'"
+    let out = exec(cmd)
+    if to_string(out) == "void" { return false }
+    if out.contains("\"ok\":true") { return true }
+    return false
+}
+
+fn send_chunks(token: str, chat_id: int, text: str) -> void {
+    let total = len(text)
+    if total == 0 {
+        let _ = send_message(token, chat_id, "(empty response)")
+        return
+    }
+    let mut pos = 0
+    let mut part = 1
+    while pos < total {
+        let remaining = total - pos
+        let mut take = CHUNK_SIZE
+        if take > remaining { take = remaining }
+        let piece = str_sub(text, pos, pos + take)
+        let _ = send_message(token, chat_id, piece)
+        pos = pos + take
+        part = part + 1
+        // tiny gap to avoid 429
+        if pos < total { let _ = exec("sleep 1") }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DISPATCH — claude/cx
+// ═══════════════════════════════════════════════════════════════════════
+
+fn dispatch_claude(cfg: Config, text: str) -> str {
+    if env("TG_DRY") == "1" {
+        return "[DRY] would dispatch: " + text
+    }
+    let timeout_s = to_string(cfg.dispatch_timeout)
+    let dispatch_mode = cfg.dispatch
+    let claude = cfg.claude_bin
+    let cx = cfg.cx_bin
+    // Write text to temp file (hexa exec heredoc quirk — the shell body leaks
+    // into captured stdout when using <<'TAG'\n...\nTAG\n patterns).
+    let tmp = HOME + "/.airgenome/.tg_in." + to_string(ts_epoch())
+    let _ = write_file(tmp, text)
+    let mut cmd = ""
+    if dispatch_mode == "cx" {
+        cmd = "NO_CLAUDX=1 timeout " + timeout_s + " " + cx
+            + " --docker --force-host ubu -p \"$(cat '" + tmp + "')\" 2>&1"
+    } else {
+        cmd = "NO_CLAUDX=1 timeout " + timeout_s + " " + claude
+            + " -p \"$(cat '" + tmp + "')\" --max-turns 1 2>&1"
+    }
+    cmd = cmd + "; rm -f '" + tmp + "'"
+    let out = exec(cmd)
+    if to_string(out) == "void" { return "(dispatch returned void)" }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  UPDATE PARSING — jq per update
+// ═══════════════════════════════════════════════════════════════════════
+
+struct Update {
+    update_id: int,
+    chat_id: int,
+    from_id: int,
+    text: str,
+    ok: bool
+}
+
+// Use jq to extract structured updates from raw response → newline-separated TSV.
+// Fields: update_id\tchat_id\tfrom_id\ttext
+// text is JSON-unescaped by jq; tabs/newlines stripped to keep 1-record-per-line.
+fn parse_updates(raw: str) -> list {
+    let out_list = []
+    let mut acc = out_list
+    if raw == "" { return acc }
+    // jq filter: select only updates with message.text
+    let filter = ".result[]? | select(.message.text != null) | [(.update_id|tostring), (.message.chat.id|tostring), (.message.from.id|tostring), (.message.text|gsub(\"\\t\";\" \")|gsub(\"\\n\";\" \"))] | @tsv"
+    // Write raw to temp file (hexa exec heredoc streams shell body to stdout — bug workaround).
+    let tmp = HOME + "/.airgenome/.tg_raw." + to_string(ts_epoch())
+    let _ = write_file(tmp, raw)
+    let cmd = "jq -r " + shell_quote(filter) + " '" + tmp + "' 2>/dev/null; rm -f '" + tmp + "'"
+    let tsv = exec(cmd).trim()
+    if tsv == "" { return acc }
+    let lines = tsv.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i]
+        if line != "" {
+            let f = line.split("\t")
+            if len(f) >= 4 {
+                let uid = to_int(f[0].trim())
+                let cid = to_int(f[1].trim())
+                let fid = to_int(f[2].trim())
+                let txt = f[3]
+                acc = acc + [Update {
+                    update_id: uid, chat_id: cid, from_id: fid, text: txt, ok: true
+                }]
+            }
+        }
+        i = i + 1
+    }
+    return acc
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════════════════════════════════
+
+fn handle_update(cfg: Config, u: Update) -> void {
+    let wl = cfg.whitelist
+    if !in_whitelist(u.chat_id, wl) {
+        log_line("WARN", "drop unauthorized chat_id=" + to_string(u.chat_id) + " from=" + to_string(u.from_id) + " text=" + u.text)
+        return
+    }
+    log_line("INFO", "dispatch uid=" + to_string(u.update_id) + " chat=" + to_string(u.chat_id) + " text=" + u.text)
+    // ack immediately so user knows we got it
+    let _ = send_message(cfg.token, u.chat_id, "⏳ dispatching…")
+    let reply = dispatch_claude(cfg, u.text).trim()
+    let mut body = reply
+    if body == "" { body = "(empty reply)" }
+    if body == "void" { body = "(void)" }   // to_string(void) guard
+    send_chunks(cfg.token, u.chat_id, body)
+    log_line("INFO", "replied uid=" + to_string(u.update_id) + " len=" + to_string(len(body)))
+}
+
+fn poll_once(cfg: Config) -> int {
+    let off = load_offset()
+    let raw = get_updates(cfg.token, off)
+    if raw == "" {
+        log_line("WARN", "empty getUpdates response — backoff")
+        let _ = exec("sleep " + to_string(BACKOFF))
+        return off
+    }
+    // check ok:true — if not, log and back off
+    if !raw.contains("\"ok\":true") {
+        log_line("ERROR", "telegram getUpdates not ok: " + truncate(raw, 200))
+        let _ = exec("sleep " + to_string(BACKOFF))
+        return off
+    }
+    let ups = parse_updates(raw)
+    let mut max_uid = off
+    let mut i = 0
+    while i < len(ups) {
+        let u = ups[i]
+        handle_update(cfg, u)
+        if u.update_id >= max_uid { max_uid = u.update_id + 1 }
+        i = i + 1
+    }
+    if max_uid > off {
+        save_offset(max_uid)
+    }
+    return max_uid
+}
+
+fn run_loop(cfg: Config) -> void {
+    let mut last_touch = ts_epoch()
+    while true {
+        touch_lock()
+        let _off = poll_once(cfg)
+        let now = ts_epoch()
+        // periodic heartbeat log (every 5 min)
+        if (now - last_touch) >= 300 {
+            log_line("INFO", "heartbeat offset=" + to_string(_off))
+            last_touch = now
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SELF TEST
+// ═══════════════════════════════════════════════════════════════════════
+
+fn self_test() -> void {
+    // 1. config load
+    let cfg = load_config()
+    if cfg.token == "" { panic("self_test FAIL [token empty]") }
+    if len(cfg.whitelist) == 0 { panic("self_test FAIL [whitelist empty]") }
+
+    // 2. whitelist check
+    if !in_whitelist(cfg.whitelist[0], cfg.whitelist) {
+        panic("self_test FAIL [whitelist self-check]")
+    }
+    if in_whitelist(99, cfg.whitelist) {
+        panic("self_test FAIL [whitelist unexpected match]")
+    }
+
+    // 3. json_safe
+    if json_safe("a\"b\\c") != "a\\\"b\\\\c" {
+        panic("self_test FAIL [json_safe]")
+    }
+
+    // 4. shell_quote
+    let q = shell_quote("a'b")
+    if q != "'a'\\''b'" { panic("self_test FAIL [shell_quote got " + q + "]") }
+
+    // 5. offset roundtrip
+    save_offset(42)
+    let o = load_offset()
+    if o != 42 { panic("self_test FAIL [offset roundtrip got " + to_string(o) + "]") }
+    save_offset(0)   // reset
+
+    // 6. telegram getMe (non-critical — logs but doesn't fail)
+    let getme = exec("curl -sS --max-time 5 '" + api_base(cfg.token) + "/getMe' 2>&1")
+    if !getme.contains("\"ok\":true") {
+        println("  getMe not ok (network?): " + truncate(getme, 100))
+    } else {
+        println("  ✓ getMe ok")
+    }
+
+    println("  ✅ tg_bot self_test PASS")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() -> void {
+    let a = args()
+    // Scan argv for known subcommands (argv offset varies:
+    //   `hexa run bin/tg_bot.hexa self-test` → a[2]="self-test"
+    //   `hexa_stage0.real bin/tg_bot.hexa self-test` → a[2]="self-test"
+    // We just grep the list.
+    let mut sub = ""
+    let mut i = 0
+    while i < len(a) {
+        let tok = a[i]
+        if tok == "self-test" { sub = "self-test" }
+        i = i + 1
+    }
+
+    if sub == "self-test" { self_test(); return }
+
+    let cfg = load_config()
+
+    // primary-host guard
+    let hn = host_name()
+    if cfg.primary_host != "" {
+        if hn != cfg.primary_host {
+            log_line("INFO", "STANDBY host=" + hn + " primary=" + cfg.primary_host + " — exiting")
+            return
+        }
+    }
+
+    // lock
+    if !acquire_lock() {
+        log_line("INFO", "another instance holds lock — exit")
+        return
+    }
+    // NOTE: hexa has no atexit — release on normal exit only. Stale detected
+    //       by mtime (60s) in acquire_lock().
+
+    log_line("INFO", "tg_bot starting host=" + hn + " primary=" + cfg.primary_host + " dispatch=" + cfg.dispatch)
+
+    if env("TG_ONCE") == "1" {
+        let _ = poll_once(cfg)
+        release_lock()
+        return
+    }
+
+    run_loop(cfg)
+    release_lock()
+}
+
+main()
