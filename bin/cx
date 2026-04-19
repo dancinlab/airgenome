@@ -1156,23 +1156,26 @@ fi
 #   (CLAUDX_POOL/USAGE 는 CLAUDE_CONFIG_DIR 와 독립).
 # 미지원: docker_mode=1 (native docker exec) — 컨테이너 내부에 tmp dir 주입 경로 별도 필요.
 if [ "$ignore_settings" = "1" ]; then
+    _cx_ig_orig_cwd="$CALLER_CWD"
+    # airgenome/bin/claude shim 의 .session_defaults 주입도 함께 off — 완전한 clean 세션.
+    export NEXUS_SESSION_LAX=1
     if [ "$host" = "mac" ]; then
         _cx_ig_dir=$(mktemp -d -t cx-ignore.XXXXXX)
         printf '{}\n' > "$_cx_ig_dir/settings.json"
         export CLAUDE_CONFIG_DIR="$_cx_ig_dir"
         CALLER_CWD="$_cx_ig_dir"
         trap 'rm -rf "$_cx_ig_dir" 2>/dev/null' EXIT
-        echo "cx: --ignore-settings → CLAUDE_CONFIG_DIR=$_cx_ig_dir (local, Mac keychain 유지)" >&2
+        echo "cx: --ignore-settings → CLAUDE_CONFIG_DIR=$_cx_ig_dir + NEXUS_SESSION_LAX=1 (local, keychain 유지)" >&2
     elif [ "$docker_mode" = "1" ] && [ -z "$dssh_alias" ]; then
         echo "cx: --ignore-settings 는 --docker (native docker exec) 모드 미지원 — skip" >&2
         ignore_settings=0
     else
         # Remote (ssh 또는 docker-ssh): remote-side 에서 tmp dir 생성 + .credentials 심링크.
-        # cwd 는 tmp dir 로 교체, env 는 CLAUDE_CONFIG_DIR 덮어쓰기.
+        # cwd 는 tmp dir 로 교체, env 는 CLAUDE_CONFIG_DIR 덮어쓰기 + NEXUS_SESSION_LAX.
         remote_env_prefix=$(printf '%s' "$remote_env_prefix" | sed -E 's|CLAUDE_CONFIG_DIR="[^"]*" ||g')
-        remote_env_prefix='CLAUDE_CONFIG_DIR="$_d" '"$remote_env_prefix"
+        remote_env_prefix='CLAUDE_CONFIG_DIR="$_d" NEXUS_SESSION_LAX=1 '"$remote_env_prefix"
         remote_cwd_prefix='_d=$(mktemp -d -t cx-ignore.XXXXXX 2>/dev/null || mktemp -d); printf "{}\n" > "$_d/settings.json"; [ -f "$HOME/.claude/.credentials.json" ] && ln -sf "$HOME/.claude/.credentials.json" "$_d/.credentials.json"; trap '"'"'rm -rf "$_d" 2>/dev/null'"'"' EXIT; cd "$_d"; '
-        echo "cx: --ignore-settings → remote tmp CLAUDE_CONFIG_DIR (credentials symlink 유지)" >&2
+        echo "cx: --ignore-settings → remote tmp CLAUDE_CONFIG_DIR + NEXUS_SESSION_LAX=1 (credentials symlink 유지)" >&2
     fi
 fi
 
@@ -1344,6 +1347,10 @@ printf '{"ts":"%s","host":"%s","duration_s":%d,"exit":%d,"rtt_ms":%d}\n' \
 # id = unix_ts + short host — 충돌 가능성 무시할 수준 (같은 second 연속 호출 희귀).
 # 실패해도 cx rc 에 영향 주지 않음.
 cx_sid="$(date +%s)-${host}-$$"
+# --ignore-settings 의 tmp cwd 가 resume 에 들어가면 다음 --resume-last 가 엉뚱한 dir 로 → 원본 복원.
+if [ "${ignore_settings:-0}" = "1" ] && [ -n "${_cx_ig_orig_cwd:-}" ]; then
+    CALLER_CWD="$_cx_ig_orig_cwd"
+fi
 cx_sess_save "$cx_sid" "$rc" "$dur" "$rtt" 2>/dev/null || true
 unset cx_sid
 

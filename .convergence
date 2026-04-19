@@ -137,4 +137,32 @@
 @file: .session_defaults:68-76 (VERIFY section appended at end of body)
 @rollback: remove [VERIFY] section. V7-V8 are the load-bearing rules — leaving V1-V6 without them preserves the test-before-done discipline but reopens the phantom-edit and race-clobber paths.
 
+[cx-ignore-settings]
+@state: converged
+@date: 2026-04-20
+@scope: bin/cx :: --ignore-settings flag + CX_IGNORE_SETTINGS=1 env
+@decision: cx 레벨에서 hooks / skills / CLAUDE.md / memory 를 한 번에 bypass 하는 단일 opt-in toggle 노출. default 는 기존대로 전부 enabled — 완전 additive (L0 호환).
+@why: user 요청 (2026-04-20) — "settings.json(훅,스킬) claude.md 등 작성 ignore 가능?" · 디버깅/깔끔한 샌드박스 세션이 필요할 때 CLAUDE_CONFIG_DIR 을 직접 갈아끼우는 수동 공작 없이 cx 한 플래그로 처리.
+@strategy:
+  - 빈 settings.json 만 있는 임시 CLAUDE_CONFIG_DIR 로 교체 → hooks/skills/user CLAUDE.md/memory 무력화
+  - cwd 를 임시 dir 로 이동 → project CLAUDE.md 도 skip
+  - NEXUS_SESSION_LAX=1 자동 주입 → airgenome/bin/claude shim 의 .session_defaults 주입 OFF (진짜 clean)
+  - keychain 유지: Mac 은 system keychain → HOME 불변으로 무관. Linux 원격은 $HOME/.claude/.credentials.json 을 tmp dir 에 symlink.
+  - claudx rotation 유지: CLAUDX_POOL/USAGE 는 CLAUDE_CONFIG_DIR 와 독립 env → 영향 없음.
+  - resume 정확도: 종료 직전 CALLER_CWD 를 원본으로 복원 후 snapshot 저장 → `cx --resume-last` 가 엉뚱한 tmp dir 로 안 감.
+@usage:
+  - cx --ignore-settings        # one-shot clean 세션
+  - CX_IGNORE_SETTINGS=1 cx ... # 셸 전체
+  - 세션 env whitelist 에 포함 — resume 시 플래그 자동 복원
+@not-supported:
+  - --docker (native docker exec, dssh_alias 없는) 모드 — 컨테이너 내부 tmp dir 주입 경로 별도 필요. 현재는 경고 후 skip (ignore_settings=0 으로 downgrade).
+  - docker-ssh (dssh_alias) 는 ssh 가 직접 컨테이너로 들어가므로 일반 원격 경로와 동일 — 지원.
+@file: bin/cx:32-36 (usage 주석), bin/cx:62 (session env whitelist), bin/cx:460-472 (arg parse), bin/cx:1150-1180 (apply block), bin/cx:1349-1354 (resume snapshot 원본 복원)
+@verified:
+  - bash -n bin/cx → OK
+  - cx --ignore-settings --force-host mac --show → "cx → mac" (arg accepted)
+  - CX_IGNORE_SETTINGS=1 cx --force-host mac --show → "cx → mac" (env accepted)
+  - 실제 claude 기동 end-to-end 는 TUI interactive → 이 turn 에서 수동 재현 불가 (V5 명시).
+@rollback: bin/cx 의 [cx-ignore-settings] 관련 diff 5곳 (usage, whitelist, arg parse, apply block, snapshot 복원) 역적용. 완전 additive — 제거해도 default 경로 무손상.
+
 @__raw__
