@@ -335,8 +335,17 @@ else
     # ServerAliveInterval=60 : 유휴 60s 마다 keep-alive, 3회 실패시 연결 종료 → 끊김 감지.
     # tty flag: stdin 이 tty 면 -t (TUI interactive), 아니면 -T (one-shot -p/--print, pipe-safe).
     #          Why: -t + 비-tty stdin 은 "Pseudo-terminal will not be allocated" + claude -p 입력 행.
-    # --add-dir /var/folders: Mac $TMPDIR paste 이미지 경로 read 허용 (mac-tmp.service sshfs 경유). 빠지면 interactive TUI image paste 시 401 재인증 루프.
-    inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude --add-dir /var/folders ${fwd[@]+"${fwd[@]}"})
+    # --add-dir /var/folders: Mac $TMPDIR paste 이미지 경로 read 허용 (mac-tmp.service sshfs 경유).
+    # (2026-04-19) mac-tmp sshfs mount 끊기면 --add-dir 가 있는 채로 Claude 가 해당 경로 stat 을
+    # 시도 → sshfs EIO → 인증 실패로 오판 → 401 재인증 루프. 매 호출 사전 probe 해서
+    # mount 살아있을 때만 주입. mount 복구되면 다음 호출에 자동 재활성.
+    add_dir_args=()
+    if ssh -S none -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes -T "$alias" "test -d /var/folders" 2>/dev/null; then
+        add_dir_args=(--add-dir /var/folders)
+    else
+        echo "cx: /var/folders mount unreachable → image paste disabled this session" >&2
+    fi
+    inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${add_dir_args[@]+"${add_dir_args[@]}"} ${fwd[@]+"${fwd[@]}"})
     if [ -n "$remote_scope_cmd" ]; then
         remote_cmd="if command -v systemd-run >/dev/null 2>&1; then $remote_scope_cmd $(printf '%q' "$inner_cmd"); else $inner_cmd; fi"
     else
