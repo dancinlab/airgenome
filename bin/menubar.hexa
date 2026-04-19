@@ -393,21 +393,19 @@ fn build_menu() -> *Void {
 
 // ───── 알림 — terminal-notifier (brew) 전용, osascript/NSUserNotification 폐기 ─
 // Why: NSUserNotification 은 CLI 실행본이라 app bundle icon 이 비어서 회색 placeholder.
-//      osascript 는 사용자 정책(2026-04-19)상 금지. brew terminal-notifier 의 -appIcon
-//      슬롯에 DNA 🧬 png 를 꽂으면 알림 카드 좌측 아이콘 자리가 실제 🧬 로 뜬다.
-// 추가 보험: title 에도 🧬 prefix (아이콘이 시스템 정책상 가려져도 텍스트로 식별 가능).
+//      osascript 는 사용자 정책(2026-04-19)상 금지. brew terminal-notifier 의 -sender
+//      플래그로 Airgenome.app (CFBundleIconFile=AppIcon.icns) 을 지시 → 좌측 아이콘이
+//      LaunchServices 에 의해 DNA 🧬 로 렌더. -appIcon/-contentImage 는 불필요 (우측
+//      contentImage 는 사용자 판단 제거).
+// 보조: title 에도 🧬 prefix (시스템 정책상 아이콘 가려지는 케이스 대비).
 fn post_notification(title: str, subtitle: str, info: str) -> void {
     let ne = cfg_notify_enabled
     if ne == 0 { return }
     let body = subtitle
     if info != "" { body = subtitle + " · " + info }
-    let icon = HOME + "/.airgenome/assets/dna.png"
-    // 절대경로 — LaunchAgent env 에 brew PATH 없어도 동작.
     let cmd = "/opt/homebrew/bin/terminal-notifier"
         + " -title \"🧬 " + title + "\""
         + " -message \"" + body + "\""
-        + " -appIcon \"" + icon + "\""
-        + " -contentImage \"" + icon + "\""
         + " -sender com.need-singularity.airgenome"
         + " -group airgenome"
         + " >/dev/null 2>&1 &"
