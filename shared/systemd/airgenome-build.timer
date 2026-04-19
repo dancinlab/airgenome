@@ -1,11 +1,12 @@
 [Unit]
-Description=airgenome image build (htz) — 5min cadence
-ConditionHost=hetzner|htz
+Description=airgenome image build (htz) — daily 04:00 KST
+ConditionHost=anima-ax102
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
-AccuracySec=30s
+# KST = Asia/Seoul. systemd 는 OnCalendar TZ 지정 지원 (v242+).
+OnCalendar=*-*-* 04:00:00 Asia/Seoul
+AccuracySec=1min
+Persistent=true
 Unit=airgenome-build.service
 
 [Install]

@@ -14,6 +14,7 @@
 //   airgenome doctor         — 통합 진단 (core/launchd/ring/throttle)
 //   airgenome cli            — 인터랙티브 TUI (숫자 선택)
 //   airgenome status         — launchd + ring 파일 + state 한눈에
+//   airgenome slots [opts]   — bin/cx slot 상태 (기본 JSON, --human/--reset/--watch)
 //   airgenome install [mode] — mode=all|mac-safe. mac-safe=ring-sync+throttle (AG6)
 //   airgenome uninstall      — 모든 com.airgenome.* bootout
 //   airgenome self-test      — 모든 module self-test 일괄
@@ -170,6 +171,17 @@ fn cmd_self_test_all() -> void {
     let _ = run_module_self_test("dispatch")
     let _ = run_module_self_test("probe")
     println("")
+    println("--- bin/runaway_guard ---")
+    let rg_path = airgenome_root() + "/bin/runaway_guard.hexa"
+    let rg_chk = exec("[ -f '" + rg_path + "' ] && echo y || echo n").trim()
+    if rg_chk == "y" {
+        let rg_cmd = hexa_bin() + " run '" + rg_path + "' self-test 2>&1 | tail -5"
+        let rg_out = exec(rg_cmd)
+        println(rg_out)
+    } else {
+        println("[skip] runaway_guard — file missing")
+    }
+    println("")
     println("--- core ---")
     let cmd = hexa_bin() + " run '" + airgenome_root() + "/core/test/core_test.hexa' 2>&1 | tail -3"
     let out = exec(cmd)
@@ -281,6 +293,142 @@ fn cmd_remote(host: str, rest: str) -> void {
     println("---")
     let out = exec("ssh -o ConnectTimeout=10 " + ssh_host + " \"" + remote_cmd + "\" 2>&1")
     print(out)
+}
+
+// cmd_slots — bin/cx 의 per-host slot 상태 조회/청소/watch.
+// SSOT: ${CLAUDX_STATE:-$HOME/.airgenome}/cx_slots/<host>_<i>/pid
+// used = pid 파일 프로세스 살아있는 slot 수, total = hosts.json 의 max_claude_concurrent
+//        (누락 시 kind 기본값 self=8/lan=2/remote=4).
+//
+// 사용:
+//   airgenome slots                — JSON (host/used/total/stale)
+//   airgenome slots --reset        — stale lock 일괄 청소
+//   airgenome slots --watch [sec]  — 실시간 표시 (기본 5초)
+fn slots_dir() -> str {
+    let state = env("CLAUDX_STATE")
+    let base = if state == "" { env("HOME") + "/.airgenome" } else { state }
+    return base + "/cx_slots"
+}
+
+fn host_capacity_default(host: str, kind: str) -> int {
+    if host == "mac" { return 8 }
+    if host == "ubu" || host == "ubu2" { return 2 }
+    if host == "htz" || host == "hetzner" { return 4 }
+    if kind == "self" { return 8 }
+    if kind == "lan" { return 2 }
+    if kind == "remote" { return 4 }
+    return 2
+}
+
+fn hosts_registry_path() -> str {
+    return airgenome_root() + "/shared/config/hosts.json"
+}
+
+// 한 host 에 대해 used/stale count 반환 — output 은 "used\tstale" tsv.
+fn slot_counts_tsv(host: str, cap: int) -> str {
+    let dir = slots_dir()
+    let script = "u=0; s=0; for i in $(seq 1 " + to_string(cap) + "); do d='" + dir + "/" + host + "_'$i; [ -d \"$d\" ] || continue; p=$(cat \"$d/pid\" 2>/dev/null); if [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null; then u=$((u+1)); else s=$((s+1)); fi; done; printf '%s\\t%s' \"$u\" \"$s\""
+    return exec(script).trim()
+}
+
+fn slot_reset_host(host: str, cap: int) -> int {
+    let dir = slots_dir()
+    let script = "removed=0; for i in $(seq 1 " + to_string(cap) + "); do d='" + dir + "/" + host + "_'$i; [ -d \"$d\" ] || continue; p=$(cat \"$d/pid\" 2>/dev/null); if [ -z \"$p\" ] || ! kill -0 \"$p\" 2>/dev/null; then rm -rf \"$d\" && removed=$((removed+1)); fi; done; printf '%s' \"$removed\""
+    let out = exec(script).trim()
+    return to_int(out)
+}
+
+fn slots_hosts_list() -> str {
+    // hosts.json 순서 보존 — jq 의 to_entries 는 순서 유지
+    return exec("jq -r '.hosts | to_entries | .[] | \"\\(.key)\\t\\(.value.kind // \"\")\\t\\(.value.max_claude_concurrent // \"\")\"' '" + hosts_registry_path() + "' 2>/dev/null").trim()
+}
+
+fn cmd_slots_show(as_json: bool) -> void {
+    let dir = slots_dir()
+    let _ = exec("mkdir -p '" + dir + "' 2>/dev/null")
+    let rows = slots_hosts_list()
+    if rows == "" {
+        if as_json { println("{\"error\":\"hosts.json read failed\"}") }
+        else { println("❌ hosts.json 읽기 실패: " + hosts_registry_path()) }
+        return
+    }
+    let lines = rows.split("\n")
+    let mut i = 0
+    let mut json_parts = ""
+    if as_json {
+        json_parts = "{\"ts\":\"" + exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() + "\",\"dir\":\"" + dir + "\",\"hosts\":["
+    } else {
+        println("⬡ airgenome slots  (dir=" + dir + ")")
+        println("────────────────────────────────────────────────")
+        println("host    used / total   stale")
+    }
+    let mut first = true
+    while i < len(lines) {
+        let row = lines[i]
+        i = i + 1
+        if row == "" { continue }
+        let parts = row.split("\t")
+        if len(parts) < 2 { continue }
+        let host = parts[0]
+        let kind = parts[1]
+        let max_raw = if len(parts) >= 3 { parts[2] } else { "" }
+        let cap = if max_raw == "" { host_capacity_default(host, kind) } else { to_int(max_raw) }
+        let tsv = slot_counts_tsv(host, cap)
+        let uparts = tsv.split("\t")
+        let used = if len(uparts) >= 1 { to_int(uparts[0]) } else { 0 }
+        let stale = if len(uparts) >= 2 { to_int(uparts[1]) } else { 0 }
+        if as_json {
+            if !first { json_parts = json_parts + "," }
+            first = false
+            json_parts = json_parts + "{\"host\":\"" + host + "\",\"used\":" + to_string(used) + ",\"total\":" + to_string(cap) + ",\"stale\":" + to_string(stale) + "}"
+        } else {
+            let bar = if used >= cap { "FULL" } else if used == 0 { "idle" } else { "    " }
+            println("  " + host + "\t" + to_string(used) + " / " + to_string(cap) + "\t   " + to_string(stale) + "\t" + bar)
+        }
+    }
+    if as_json {
+        json_parts = json_parts + "]}"
+        println(json_parts)
+    }
+}
+
+fn cmd_slots_reset() -> void {
+    let rows = slots_hosts_list()
+    if rows == "" { println("❌ hosts.json 읽기 실패"); return }
+    let lines = rows.split("\n")
+    let mut i = 0
+    let mut total_removed = 0
+    while i < len(lines) {
+        let row = lines[i]
+        i = i + 1
+        if row == "" { continue }
+        let parts = row.split("\t")
+        if len(parts) < 2 { continue }
+        let host = parts[0]
+        let kind = parts[1]
+        let max_raw = if len(parts) >= 3 { parts[2] } else { "" }
+        let cap = if max_raw == "" { host_capacity_default(host, kind) } else { to_int(max_raw) }
+        let removed = slot_reset_host(host, cap)
+        if removed > 0 {
+            println("[reset] " + host + " — removed " + to_string(removed) + " stale lock(s)")
+        }
+        total_removed = total_removed + removed
+    }
+    println("⬡ airgenome slots --reset — removed " + to_string(total_removed) + " stale lock(s)")
+}
+
+fn cmd_slots_watch(interval_s: int) -> void {
+    let sec = if interval_s < 1 { 5 } else { interval_s }
+    let clear_seq = exec("printf '\\033[2J\\033[H'")
+    let mut tick = 0
+    while true {
+        print(clear_seq)
+        let ts = exec("date '+%Y-%m-%d %H:%M:%S %Z'").trim()
+        println("⬡ airgenome slots watch  " + ts + "  tick=" + to_string(tick) + "  refresh=" + to_string(sec) + "s  (ctrl-C exit)")
+        cmd_slots_show(false)
+        tick = tick + 1
+        let _ = exec("sleep " + to_string(sec))
+    }
 }
 
 // cmd_doctor — 통합 진단. 문제 있으면 ❌ 마크, 정상이면 ✅.
@@ -481,6 +629,8 @@ fn print_help() -> void {
     println("  logs [agent] [N]    ~/.airgenome/*.log 최근 tail (기본 all, N=20)")
     println("  remote <host> <sub> ubu/htz 원격 airgenome subcommand 실행")
     println("  status              launchd + ring + state 한눈에")
+    println("  slots [--json|--human|--reset|--watch [sec]]")
+    println("                      bin/cx per-host claude slot 상태 (기본 JSON)")
     println("  install [mode]      LaunchAgent bootstrap — mode=all|mac-safe (기본 all)")
     println("                      mac-safe: ring-sync + predictive-throttle만 (AG6 준수)")
     println("  uninstall           7 LaunchAgent bootout + plist 제거")
@@ -541,6 +691,22 @@ fn main() -> void {
         let mut ival = 2
         if len(a) >= 4 { ival = to_int(a[3]) }
         cmd_watch(ival)
+        return
+    }
+    if sub == "slots" {
+        // airgenome slots                 → JSON (used/total/stale)
+        // airgenome slots --human         → table
+        // airgenome slots --reset         → stale lock 청소
+        // airgenome slots --watch [sec]   → 5s 간격 실시간
+        let mut arg = ""
+        let mut ival = 5
+        if len(a) >= 4 { arg = a[3] }
+        if len(a) >= 5 { ival = to_int(a[4]) }
+        if arg == "--reset" { cmd_slots_reset(); return }
+        if arg == "--watch" { cmd_slots_watch(ival); return }
+        if arg == "--human" { cmd_slots_show(false); return }
+        if arg == "" || arg == "--json" { cmd_slots_show(true); return }
+        println("usage: airgenome slots [--json|--human|--reset|--watch [sec]]")
         return
     }
     if sub == "harvest" { let _ = run_module("harvest"); return }

@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# airgenome/bin/hexa_shim — 옵션 B: 모든 hexa 호출을 airgenome-claude 컨테이너로 자동 라우팅.
+#
+# 원리 (= bin/claude shim 과 동일 패턴):
+#   실제 hexa 는 옆에 hexa_real 로 백업되어 있음 (호스트 설치 시점에 mv 된 원본).
+#   이 shim 이 hexa 자리에 놓여 모든 호출을 가로챔.
+#   컨테이너 안에서 호출된 경우 (AIRGENOME_HEXA_INSIDE=1) / 컨테이너 부재 / bypass env →
+#   바로 real hexa 로 exec.
+#   그 외엔 docker exec airgenome-claude /root/.hx/bin/hexa 로 전달.
+#
+# 안전망:
+#   NO_HEXA_SHIM=1          → shim 우회
+#   AIRGENOME_HEXA_INSIDE=1 → 재귀 방지 (컨테이너 안에서 이 shim 거쳐도 real 로)
+#   컨테이너 미가동        → real fallback
+#   real hexa 미존재       → exit 127 (명시적 에러)
+#
+# 경로 remap (Mac 경로 → 컨테이너 경로):
+#   ubu  : /home/aiden/mac_home/...        → /mac_home/... (sshfs 마운트 기준)
+#   ubu2 : /home/summer/mac_home/...       → /mac_home/...
+#   htz  : bind mount 없음 — 제외 대상 (호스트에 shim 배포 안함)
+#
+# 컨테이너 내부 hexa 바이너리:
+#   /root/.hx/bin/hexa (이미지에 포함되어 있어야 함).
+#   부재시 shim 이 실패 감지 → real fallback.
+#
+# 파일 경로: /home/<user>/.hx/bin/hexa → 이 shim
+#            /home/<user>/.hx/bin/hexa_real → 백업된 원본 binary
+#
+# 배포 스크립트: airgenome/bin/hexa_shim_deploy (별도)
+
+set -u
+
+# ─── 1. 재귀 가드 / bypass ───
+if [ "${AIRGENOME_HEXA_INSIDE:-0}" = "1" ] || [ "${NO_HEXA_SHIM:-0}" = "1" ]; then
+    exec "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")/hexa_real" "$@"
+fi
+
+# ─── 2. real hexa 경로 ───
+SELF="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+SELF_DIR="$(dirname "$SELF")"
+REAL="$SELF_DIR/hexa_real"
+
+if [ ! -x "$REAL" ]; then
+    echo "hexa_shim: real hexa not found at $REAL" >&2
+    exit 127
+fi
+
+# ─── 3. 컨테이너 가동 확인 (미가동이면 bare metal fallback) ───
+# sudo -n 실패 or docker 미설치 or 컨테이너 없음 → real 로 exec
+if ! command -v docker >/dev/null 2>&1; then
+    exec "$REAL" "$@"
+fi
+
+# docker ps 는 sudo 필요할 수 있음 — sudo -n 으로 prompt 금지
+DOCKER=""
+if docker info >/dev/null 2>&1; then
+    DOCKER="docker"
+elif sudo -n docker info >/dev/null 2>&1; then
+    DOCKER="sudo -n docker"
+else
+    exec "$REAL" "$@"
+fi
+
+if ! $DOCKER ps --filter name=airgenome-claude --filter status=running --format '{{.Names}}' 2>/dev/null | grep -q '^airgenome-claude$'; then
+    exec "$REAL" "$@"
+fi
+
+# ─── 4. 컨테이너 내부 hexa 존재 확인 (stub 이면 fallback) ───
+# stub 검출: 바이너리 크기 < 10KB 면 stub 취급 (실제 hexa 는 2MB+)
+# 실제 /root/.hx/bin/hexa 바이너리 설치가 이 shim 동작의 선결 조건.
+# 부재/stub 시 조용히 real fallback → 기능 손실 없이 배포만 가능.
+CONTAINER_HEXA="${AIRGENOME_CONTAINER_HEXA:-/root/.hx/bin/hexa}"
+if ! $DOCKER exec airgenome-claude test -x "$CONTAINER_HEXA" 2>/dev/null; then
+    # fallback. stderr debug 는 NOISY → NO_HEXA_SHIM_WARN 으로만 출력.
+    [ "${HEXA_SHIM_DEBUG:-0}" = "1" ] && echo "hexa_shim: $CONTAINER_HEXA missing in container, fallback real" >&2
+    exec "$REAL" "$@"
+fi
+
+# ─── 5. 경로 remap (host CWD → 컨테이너 CWD) ───
+# ubu/ubu2 의 $HOME/mac_home 은 Mac sshfs reverse-mount 경로.
+# 컨테이너 내부에서는 /mac_home 으로 bind 되어 있음.
+# 그 외 경로 (예: /home/aiden/Dev/foo) 는 컨테이너 bind mount 없으면 실패 — 그 경우 real fallback.
+HOST_CWD="$(pwd -P 2>/dev/null || pwd)"
+HOST_HOME="${HOME:-/home/$USER}"
+CONTAINER_CWD="$HOST_CWD"
+
+# $HOME/mac_home/XXX → /mac_home/XXX
+if [ "${HOST_CWD#$HOST_HOME/mac_home}" != "$HOST_CWD" ]; then
+    CONTAINER_CWD="/mac_home${HOST_CWD#$HOST_HOME/mac_home}"
+elif [ "$HOST_CWD" = "$HOST_HOME/mac_home" ]; then
+    CONTAINER_CWD="/mac_home"
+else
+    # non-mac_home cwd — 컨테이너에 해당 경로가 없을 가능성 높음 → real fallback
+    # 단, /workspace/airgenome 같은 이미지 포함 경로는 예외.
+    case "$HOST_CWD" in
+        /root/*|/opt/airgenome*|/workspace/*)
+            : # 컨테이너에도 있음 가정 — 그대로
+            ;;
+        *)
+            exec "$REAL" "$@"
+            ;;
+    esac
+fi
+
+# 컨테이너에 해당 CWD 가 실제 존재하는지 확인 (docker exec 가 -w 로 없는 경로 열면 exit 126)
+if ! $DOCKER exec airgenome-claude test -d "$CONTAINER_CWD" 2>/dev/null; then
+    exec "$REAL" "$@"
+fi
+
+# ─── 6. 인자 remap: `hexa run /abs/path/...hexa` 의 path 도 변환 ───
+# 단, 복잡한 인자 파싱 실패 리스크 → 일단 CWD 만 remap 하고 인자는 그대로.
+# 대부분 nexus_cli drill 케이스는 상대경로 사용 → 문제 없음.
+# 절대경로 케이스는 real fallback 정책 채택 (false match 회피).
+for arg in "$@"; do
+    case "$arg" in
+        /home/*|/Users/*|/root/Dev/*)
+            # 절대 호스트 경로 인자 감지 → 안전하게 real fallback
+            exec "$REAL" "$@"
+            ;;
+    esac
+done
+
+# ─── 7. docker exec 으로 전달 ───
+# -i 는 stdin 전달용 (drill 등 stdin 사용 가능성), -T 는 tty 없을 때 안전.
+# TERM/HOME env 전달.
+exec $DOCKER exec -i \
+    -e AIRGENOME_HEXA_INSIDE=1 \
+    -e HOME=/root \
+    -e "TERM=${TERM:-xterm-256color}" \
+    -w "$CONTAINER_CWD" \
+    airgenome-claude \
+    "$CONTAINER_HEXA" "$@"

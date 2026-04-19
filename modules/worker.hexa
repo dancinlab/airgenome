@@ -1,0 +1,462 @@
+// modules/worker.hexa — distributed Claude worker (queue poller)
+//
+// 책임:
+//   1. Poll pending/ for tasks — atomic claim via mv (rename)
+//   2. Claimed task → execute `claude -p` on target host (ubu/ubu2/htz/mac)
+//      - 원격: ssh <alias> docker exec [-e CLAUDE_CONFIG_DIR=...] airgenome-claude claude -p ...
+//      - mac : 로컬 claude -p (fallback only — AG6 준수, prefer remote)
+//   3. Result → results/<id>.out + done/<id>.json (또는 failed)
+//   4. 루프 지속 — poll 간격 기본 3s, empty 시 지수백오프 최대 10s
+//   5. SIGTERM 에 soft stop (deregister + exit)
+//
+// 서브커맨드 (run.hexa 의 dispatch/worker 래퍼가 호출):
+//   worker run --id <wid> --host <host>
+//   worker dispatch --prompt <p> [--host X] [--account claudeN] [--timeout N]
+//   worker list
+//   worker stop <wid>
+//   worker status
+//
+// env:
+//   AIRGENOME_DISPATCH_ROOT — queue root override
+//   AIRGENOME_WORKER_POLL_S — poll interval (default 3)
+//
+// 제약:
+//   - use "../core/core" + "worker_queue" 만
+//   - try/catch 미사용
+//   - hexa-lang list.push no-op → list = list + [x]
+
+use "../core/core"
+use "worker_queue"
+
+let HOSTS_JSON = airgenome_root() + "/shared/config/hosts.json"
+
+fn poll_interval_s() -> int {
+    let e = env("AIRGENOME_WORKER_POLL_S")
+    if e == "" { return 3 }
+    let n = to_int(e)
+    if n < 1 { return 3 }
+    return n
+}
+
+// host_alias — hosts.json 에서 ssh_alias 조회. mac 은 빈 문자열.
+fn host_alias(host: str) -> str {
+    if host == "mac" { return "" }
+    return exec("jq -r --arg h '" + host + "' '.hosts[$h].ssh_alias // \"\"' '" + HOSTS_JSON + "' 2>/dev/null").trim()
+}
+
+// host_enabled — hosts.json enabled flag.
+fn host_enabled(host: str) -> bool {
+    let out = exec("jq -r --arg h '" + host + "' '.hosts[$h].enabled // false' '" + HOSTS_JSON + "' 2>/dev/null").trim()
+    return out == "true"
+}
+
+// list_remote_hosts — enabled && kind != self.
+fn list_remote_hosts() -> str {
+    return exec("jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!=\"self\")) | .[].key' '" + HOSTS_JSON + "' 2>/dev/null").trim()
+}
+
+// pick_account — target host 의 airgenome-claude 컨테이너에서 auth 가 살아있는 계정 하나 고르기.
+// 전략: accounts.json 의 이름을 하나씩 claude -p 1-shot 으로 테스트는 비용 커서,
+//       단순히 "최신 mtime .credentials.json" 을 가진 계정을 우선. 실패 시 401 로 bail.
+// 반환: claude 계정명 (e.g. "claude9") 또는 "".
+fn pick_account(host: str) -> str {
+    let alias = host_alias(host)
+    if alias == "" { return "" }
+    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes '" + alias + "' 'docker exec airgenome-claude bash -c \"ls -1t /root/.claude-claude*/.credentials.json 2>/dev/null | head -1 | sed -E \\\"s|^/root/\\.(claude-claude[0-9]+)/.*|\\1|; s|^claude-||\\\"\"' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+// exec_remote — 원격 airgenome-claude 컨테이너에서 claude -p 실행.
+// stdout 을 지정 경로에 캡쳐. exit code 반환.
+fn exec_remote(host: str, account: str, prompt: str, stdout_path: str) -> int {
+    let alias = host_alias(host)
+    if alias == "" { return 127 }
+    // prompt 를 shell-escape — 단일 따옴표 이스케이프 간단히
+    let p_esc = exec("cat <<'AG_EOF_WORKER_PROMPT'\n" + prompt + "\nAG_EOF_WORKER_PROMPT\n")
+    // 위 방법은 interpreter 상에서 바로 쉘 호출로 변환 — 대신 파일 경유 가장 안전.
+    // prompt 를 임시 파일에 저장, ssh 로 cat | claude -p 입력.
+    let pf = "/tmp/agworker_prompt_" + exec("date +%s").trim() + "_" + exec("od -An -N2 -tu2 /dev/urandom | tr -d ' \\n'").trim() + ".txt"
+    write_file(pf, prompt)
+    // ssh 로 원격에 prompt 업로드 (scp 없이 stdin 전달)
+    // claude -p "$(cat)" 로 stdin prompt 를 사용하도록. timeout은 systemd-run 없이 외부 timeout 으로.
+    let remote_cmd = "docker exec -i -e CLAUDE_CONFIG_DIR=/root/.claude-" + account + " airgenome-claude claude -p --max-turns 6"
+    let full = "ssh -S none -o ControlPath=none -o ControlMaster=no -o ConnectTimeout=10 -o BatchMode=yes -T '" + alias + "' " + shell_q(remote_cmd) + " < '" + pf + "' > '" + stdout_path + "' 2>&1; rc=$?; rm -f '" + pf + "'; echo RC=$rc"
+    let out = exec(full).trim()
+    // 마지막 RC= 파싱
+    let rc_s = exec("echo '" + out + "' | tail -1 | sed -n 's/^RC=\\([0-9]*\\)$/\\1/p'").trim()
+    if rc_s == "" { return 1 }
+    return to_int(rc_s)
+}
+
+// shell_q — 단일 따옴표 안전 인코딩 ('foo' 형태)
+fn shell_q(s: str) -> str {
+    // '  →  '\''
+    let mut out = "'"
+    let mut i = 0
+    while i < len(s) {
+        let ch = s[i]
+        if ch == "'" {
+            out = out + "'\\''"
+        } else {
+            out = out + ch
+        }
+        i = i + 1
+    }
+    out = out + "'"
+    return out
+}
+
+// exec_mac — mac 로컬 claude -p. Claude Code session env (CLAUDE_CONFIG_DIR) 존중.
+fn exec_mac(account: str, prompt: str, stdout_path: str) -> int {
+    let pf = "/tmp/agworker_prompt_" + exec("date +%s").trim() + "_" + exec("od -An -N2 -tu2 /dev/urandom | tr -d ' \\n'").trim() + ".txt"
+    write_file(pf, prompt)
+    let env_prefix = ""
+    let ep2 = if account == "auto" || account == "" { env_prefix } else { "CLAUDE_CONFIG_DIR=\"$HOME/.claude-" + account + "\" " }
+    let full = ep2 + "claude -p --max-turns 6 < '" + pf + "' > '" + stdout_path + "' 2>&1; rc=$?; rm -f '" + pf + "'; echo RC=$rc"
+    let out = exec(full).trim()
+    let rc_s = exec("echo '" + out + "' | tail -1 | sed -n 's/^RC=\\([0-9]*\\)$/\\1/p'").trim()
+    if rc_s == "" { return 1 }
+    return to_int(rc_s)
+}
+
+// resolve_host — task 의 host_pick 해석. "any" → 현재 worker 의 host.
+fn resolve_host(host_pick: str, worker_host: str) -> str {
+    if host_pick == "any" || host_pick == "" { return worker_host }
+    return host_pick
+}
+
+// run_one — claimed task 하나 처리. 성공 시 true.
+fn run_one(claimed_path: str, worker_id: str, worker_host: str) -> bool {
+    let id = exec("jq -r '.id' '" + claimed_path + "' 2>/dev/null").trim()
+    let prompt = exec("jq -r '.prompt' '" + claimed_path + "' 2>/dev/null")
+    let acct = exec("jq -r '.account' '" + claimed_path + "' 2>/dev/null").trim()
+    let host_pick = exec("jq -r '.host_pick' '" + claimed_path + "' 2>/dev/null").trim()
+    let target = resolve_host(host_pick, worker_host)
+
+    if target != "mac" && !host_enabled(target) {
+        finalize_failed(id, "target host disabled: " + target, worker_host)
+        exec("rm -f '" + claimed_path + "'")
+        return false
+    }
+
+    // account 해석 — "auto" 면 target host 에서 pick
+    let mut resolved_acct = acct
+    if acct == "auto" || acct == "" {
+        if target == "mac" {
+            resolved_acct = ""  // mac 은 현재 session 기본 auth
+        } else {
+            resolved_acct = pick_account(target)
+            if resolved_acct == "" {
+                finalize_failed(id, "no account on " + target, worker_host)
+                exec("rm -f '" + claimed_path + "'")
+                return false
+            }
+        }
+    }
+
+    mark_running(claimed_path)
+    let stdout_tmp = q_logs() + "/" + id + "." + worker_id + ".out"
+    let t0 = to_int(exec("date +%s").trim())
+    let mut rc = 1
+    if target == "mac" {
+        rc = exec_mac(resolved_acct, prompt, stdout_tmp)
+    } else {
+        rc = exec_remote(target, resolved_acct, prompt, stdout_tmp)
+    }
+    let t1 = to_int(exec("date +%s").trim())
+    let dur = t1 - t0
+
+    finalize_done(id, rc, dur, target, resolved_acct, stdout_tmp)
+    unmark_running(claimed_path)
+    exec("rm -f '" + claimed_path + "'")
+    return true
+}
+
+// run_loop — 메인 워커 루프.
+fn run_loop(worker_id: str, worker_host: str) -> void {
+    register_worker(worker_id, worker_host)
+    println("[worker " + worker_id + "] started host=" + worker_host + " poll=" + to_string(poll_interval_s()) + "s")
+    let mut backoff = 1
+    let mut tick = 0
+    while true {
+        tick = tick + 1
+        // 주기적으로 stale reclaim (tick % 10 마다)
+        if tick % 10 == 0 {
+            let n = reclaim_stale()
+            if n > 0 { println("[worker " + worker_id + "] reclaimed " + to_string(n) + " stale task(s)") }
+        }
+        let pf = next_pending()
+        if pf == "" {
+            let _s = exec("sleep " + to_string(poll_interval_s()))
+            backoff = 1
+            continue
+        }
+        let claimed = claim_task(pf, worker_id)
+        if claimed == "" {
+            // 다른 worker 가 선점 — 즉시 다음 poll
+            continue
+        }
+        println("[worker " + worker_id + "] claimed " + claimed)
+        let ok = run_one(claimed, worker_id, worker_host)
+        if ok {
+            println("[worker " + worker_id + "] done")
+        } else {
+            println("[worker " + worker_id + "] failed")
+        }
+    }
+}
+
+// ─── sub-commands ────────────────────────────────────────────────────────
+
+fn cmd_run(worker_id: str, worker_host: str) -> void {
+    ensure_queue_dirs()
+    run_loop(worker_id, worker_host)
+}
+
+fn cmd_dispatch(prompt: str, account: str, host_pick: str, timeout_s: int) -> int {
+    ensure_queue_dirs()
+    let id = push_task(prompt, account, host_pick, timeout_s)
+    let eff_to = if timeout_s <= 0 { 300 } else { timeout_s }
+    // caller 가 result 를 stdout 으로 받도록 polling.
+    // stderr 에 push 알림.
+    exec("echo 'dispatch: queued id=" + id + " timeout=" + to_string(eff_to) + "s' >&2")
+    let r = poll_task(id, eff_to + 10)
+    let parts = r.split("|")
+    if len(parts) == 0 { return 2 }
+    let status = parts[0]
+    if status == "timeout" {
+        exec("echo 'dispatch: timeout after " + to_string(eff_to) + "s (id=" + id + ")' >&2")
+        return 124
+    }
+    if status == "failed" {
+        let reason = if len(parts) >= 2 { parts[1] } else { "" }
+        exec("echo 'dispatch: failed id=" + id + " reason=" + reason + "' >&2")
+        let res = result_path(id)
+        let chk = exec("[ -f '" + res + "' ] && echo y || echo n").trim()
+        if chk == "y" { print(exec("cat '" + res + "'")) }
+        return 1
+    }
+    // done — cat result
+    let res = result_path(id)
+    let chk = exec("[ -f '" + res + "' ] && echo y || echo n").trim()
+    if chk == "y" {
+        print(exec("cat '" + res + "'"))
+    }
+    let ex_s = if len(parts) >= 2 { parts[1] } else { "0" }
+    return to_int(ex_s)
+}
+
+fn cmd_list() -> void {
+    ensure_queue_dirs()
+    let w = q_workers()
+    let list = exec("ls -1 '" + w + "' 2>/dev/null | grep '\\.json$'").trim()
+    if list == "" {
+        println("{\"workers\":[]}")
+        return
+    }
+    // jq slurp 으로 합치기
+    let out = exec("jq -s '{workers: [.[] | . + {alive: (try (.pid | tostring) catch \"\")}]}' '" + w + "'/*.json 2>/dev/null")
+    // alive 판정은 shell 에서 보강
+    let items = exec("for f in '" + w + "'/*.json; do jq -c --arg al \"$(pid=$(jq -r .pid \"$f\" 2>/dev/null); kill -0 \"$pid\" 2>/dev/null && echo true || echo false)\" '. + {alive: ($al==\"true\")}' \"$f\" 2>/dev/null; done | jq -s '{workers: .}'")
+    println(items.trim())
+}
+
+fn cmd_stop(wid: str) -> void {
+    ensure_queue_dirs()
+    let pf = q_workers() + "/" + wid + ".pid"
+    let pid = exec("cat '" + pf + "' 2>/dev/null").trim()
+    if pid == "" {
+        println("worker " + wid + " not found")
+        return
+    }
+    exec("kill -TERM " + pid + " 2>/dev/null")
+    // 1s 대기 후 deregister
+    exec("sleep 1")
+    deregister_worker(wid)
+    println("worker " + wid + " stopped (pid=" + pid + ")")
+}
+
+fn cmd_status() -> void {
+    ensure_queue_dirs()
+    let p_cnt = to_int(exec("ls -1 '" + q_pending() + "' 2>/dev/null | wc -l | tr -d ' '").trim())
+    let c_cnt = to_int(exec("ls -1 '" + q_claimed() + "' 2>/dev/null | wc -l | tr -d ' '").trim())
+    let r_cnt = to_int(exec("ls -1 '" + q_running() + "' 2>/dev/null | wc -l | tr -d ' '").trim())
+    let d_cnt = to_int(exec("ls -1 '" + q_done() + "' 2>/dev/null | wc -l | tr -d ' '").trim())
+    let f_cnt = to_int(exec("ls -1 '" + q_failed() + "' 2>/dev/null | wc -l | tr -d ' '").trim())
+    println("⬡ airgenome worker status")
+    println("  queue root: " + queue_root())
+    println("  pending:    " + to_string(p_cnt))
+    println("  claimed:    " + to_string(c_cnt))
+    println("  running:    " + to_string(r_cnt))
+    println("  done:       " + to_string(d_cnt))
+    println("  failed:     " + to_string(f_cnt))
+    println("")
+    println("  workers:")
+    let wlist = exec("ls -1 '" + q_workers() + "' 2>/dev/null | grep '\\.json$'").trim()
+    if wlist == "" {
+        println("    (none)")
+    } else {
+        let items = wlist.split("\n")
+        let mut i = 0
+        while i < len(items) {
+            let f = q_workers() + "/" + items[i]
+            let id = exec("jq -r '.id' '" + f + "' 2>/dev/null").trim()
+            let host = exec("jq -r '.host' '" + f + "' 2>/dev/null").trim()
+            let pid = exec("jq -r '.pid' '" + f + "' 2>/dev/null").trim()
+            let alive = exec("kill -0 " + pid + " 2>/dev/null && echo alive || echo dead").trim()
+            println("    " + id + "\thost=" + host + "\tpid=" + pid + "\t" + alive)
+            i = i + 1
+        }
+    }
+    println("")
+    println("  current running tasks:")
+    let rlist = exec("ls -1 '" + q_running() + "' 2>/dev/null").trim()
+    if rlist == "" {
+        println("    (none)")
+    } else {
+        let items = rlist.split("\n")
+        let mut i = 0
+        while i < len(items) {
+            let f = q_running() + "/" + items[i]
+            let id = exec("jq -r '.id' '" + f + "' 2>/dev/null").trim()
+            let by = exec("jq -r '.claimed_by // \"\"' '" + f + "' 2>/dev/null").trim()
+            let host = exec("jq -r '.host_pick // \"any\"' '" + f + "' 2>/dev/null").trim()
+            println("    " + id + "\tby=" + by + "\thost_pick=" + host)
+            i = i + 1
+        }
+    }
+}
+
+// cmd_spawn — 원격/로컬 호스트에 worker 프로세스 spawn.
+// Mac worker: launchd 대신 nohup + detach (단순). 로그 ~/.airgenome/dispatch/logs/.
+// Remote worker: ssh <alias> "nohup airgenome worker run --id <host>.wN --host <host> ..."
+//   단, 원격 host 에도 airgenome CLI 가 없을 수 있음. 이 경우 Mac 의 worker 에 host=<x> 를 주면
+//   "Mac 에서 실행되는 worker 가 target=<x> 에 ssh 로 claude 실행" 하는 구조가 됨.
+//   → 여기선 Mac-orchestrated worker 만 지원. 각 worker 는 target host 지정 받아 자기 호출만.
+fn cmd_spawn(target_host: str, count: int) -> void {
+    ensure_queue_dirs()
+    let n = if count < 1 { 2 } else { count }
+    let log_dir = q_logs()
+    exec("mkdir -p '" + log_dir + "'")
+    // airgenome CLI 경로 — hexa run run.hexa worker run --id ... --host ...
+    let hb_candidates = [
+        env("HOME") + "/Dev/hexa-lang/hexa",
+        env("HOME") + "/.hx/bin/hexa",
+        "/Users/ghost/Dev/nexus/shared/bin/hexa"
+    ]
+    let mut hexa = ""
+    let mut hi = 0
+    while hi < len(hb_candidates) {
+        let chk = exec("[ -x '" + hb_candidates[hi] + "' ] && echo y || echo n").trim()
+        if chk == "y" { hexa = hb_candidates[hi]; hi = len(hb_candidates) } else { hi = hi + 1 }
+    }
+    if hexa == "" { println("spawn: hexa binary not found"); return }
+    let run_hexa = airgenome_root() + "/run.hexa"
+
+    let mut i = 1
+    while i <= n {
+        let wid = target_host + ".w" + to_string(i)
+        // 이미 살아있는지 확인
+        let pf = q_workers() + "/" + wid + ".pid"
+        let existing = exec("cat '" + pf + "' 2>/dev/null").trim()
+        if existing != "" {
+            let chk = exec("kill -0 " + existing + " 2>/dev/null && echo y || echo n").trim()
+            if chk == "y" {
+                println("[spawn] " + wid + " already running pid=" + existing + " (skip)")
+                i = i + 1
+                continue
+            }
+        }
+        let stdout_log = log_dir + "/worker." + wid + ".log"
+        let cmd = "nohup '" + hexa + "' run '" + run_hexa + "' worker run --id " + wid + " --host " + target_host + " > '" + stdout_log + "' 2>&1 & echo $!"
+        let new_pid = exec(cmd).trim()
+        println("[spawn] " + wid + " pid=" + new_pid + " log=" + stdout_log)
+        i = i + 1
+    }
+}
+
+fn print_usage() -> void {
+    println("airgenome worker <subcommand>")
+    println("  spawn <host> [--count N]        host 에 N 개 worker 띄움 (default 2)")
+    println("  run --id <wid> --host <host>    foreground worker 루프 (spawn 내부)")
+    println("  list                             worker JSON list")
+    println("  stop <wid>                       특정 worker 종료")
+    println("  status                           큐 + worker 상태 요약")
+    println("")
+    println("airgenome dispatch -p <prompt> [--host X] [--account claudeN] [--timeout N]")
+    println("  큐에 작업 push 후 worker 결과 stdout 리턴")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) < 3 { print_usage(); return }
+    let mode = a[2]
+    if mode == "self-test" {
+        // worker_queue 만 검증 (worker 루프는 integration test).
+        let _w = env("AIRGENOME_DISPATCH_ROOT")
+        println("  ⬡ worker — (self-test → worker_queue only)")
+        return
+    }
+    if mode == "run" {
+        let mut wid = ""
+        let mut host = ""
+        let mut i = 3
+        while i < len(a) {
+            let k = a[i]
+            if k == "--id" && i + 1 < len(a) { wid = a[i + 1]; i = i + 2 }
+            else if k == "--host" && i + 1 < len(a) { host = a[i + 1]; i = i + 2 }
+            else { i = i + 1 }
+        }
+        if wid == "" || host == "" {
+            println("usage: worker run --id <wid> --host <host>")
+            return
+        }
+        cmd_run(wid, host)
+        return
+    }
+    if mode == "spawn" {
+        if len(a) < 4 { println("usage: worker spawn <host> [--count N]"); return }
+        let host = a[3]
+        let mut cnt = 2
+        let mut i = 4
+        while i < len(a) {
+            let k = a[i]
+            if k == "--count" && i + 1 < len(a) { cnt = to_int(a[i + 1]); i = i + 2 }
+            else { i = i + 1 }
+        }
+        cmd_spawn(host, cnt)
+        return
+    }
+    if mode == "list" { cmd_list(); return }
+    if mode == "stop" {
+        if len(a) < 4 { println("usage: worker stop <wid>"); return }
+        cmd_stop(a[3])
+        return
+    }
+    if mode == "status" { cmd_status(); return }
+    if mode == "dispatch" {
+        // airgenome worker dispatch -p <prompt> [--host X] [--account Y] [--timeout N]
+        let mut prompt = ""
+        let mut host = ""
+        let mut acct = ""
+        let mut to_s = 300
+        let mut i = 3
+        while i < len(a) {
+            let k = a[i]
+            if (k == "-p" || k == "--prompt") && i + 1 < len(a) { prompt = a[i + 1]; i = i + 2 }
+            else if k == "--host" && i + 1 < len(a) { host = a[i + 1]; i = i + 2 }
+            else if k == "--account" && i + 1 < len(a) { acct = a[i + 1]; i = i + 2 }
+            else if k == "--timeout" && i + 1 < len(a) { to_s = to_int(a[i + 1]); i = i + 2 }
+            else { i = i + 1 }
+        }
+        if prompt == "" {
+            println("usage: airgenome dispatch -p <prompt> [--host X] [--account claudeN] [--timeout N]")
+            return
+        }
+        let _rc = cmd_dispatch(prompt, acct, host, to_s)
+        return
+    }
+    print_usage()
+}
+
+main()

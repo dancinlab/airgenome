@@ -222,6 +222,89 @@ infra_state_fresh() {
     [ "$age" -le "${CLAUDX_INFRA_MAX_AGE_SEC:-180}" ]
 }
 
+# ─── host blacklist (probe fail → N 분 skip) ─────────────────────────────────
+# SSOT: $HOME/.airgenome/host_blacklist.json (Mac 로컬, sshfs 안전).
+# Format: { "<host>": {"until": <epoch>, "reason": "<str>", "ts": "<iso>"}, ... }
+# TTL: CX_BLACKLIST_TTL (sec, 기본 1800 = 30분). 0 이면 blacklist 비활성.
+# CLI:
+#   cx --blacklist-show        → 활성 엔트리 목록
+#   cx --blacklist-clear [h]   → 특정/전체 엔트리 해제
+# 정책: priority-first 원칙 유지 — 순위 변경 없이 blacklist 된 호스트만 skip.
+CX_BL_FILE="${CLAUDX_STATE:-$HOME/.airgenome}/host_blacklist.json"
+CX_BL_TTL="${CX_BLACKLIST_TTL:-1800}"
+
+_bl_load_json() {
+    if [ -r "$CX_BL_FILE" ]; then
+        cat "$CX_BL_FILE"
+    else
+        echo '{}'
+    fi
+}
+
+# blacklist 조회: 해당 host 가 현재 blacklisted 면 until(epoch) + reason 을 tab 으로 echo,
+# 미기록/만료면 empty. 만료된 엔트리는 다음 기록 시 자동 prune 됨.
+bl_check() {
+    local host=$1 j now until reason
+    [ "${CX_BL_TTL:-1800}" -gt 0 ] 2>/dev/null || return 1
+    [ -r "$CX_BL_FILE" ] || return 1
+    now=$(date +%s)
+    j=$(_bl_load_json)
+    until=$(printf '%s' "$j" | jq -r --arg h "$host" '.[$h].until // empty' 2>/dev/null)
+    [ -n "$until" ] || return 1
+    [ "$until" -gt "$now" ] 2>/dev/null || return 1
+    reason=$(printf '%s' "$j" | jq -r --arg h "$host" '.[$h].reason // ""' 2>/dev/null)
+    printf '%s\t%s\n' "$until" "$reason"
+    return 0
+}
+
+# blacklist 기록: bl_mark <host> <reason>
+#   - TTL=0 이면 기록 생략
+#   - 기존 엔트리 merge (prune 포함)
+bl_mark() {
+    local host=$1 reason=$2 now until ttl j tmp
+    ttl="${CX_BL_TTL:-1800}"
+    [ "$ttl" -gt 0 ] 2>/dev/null || return 0
+    now=$(date +%s)
+    until=$((now + ttl))
+    mkdir -p "$(dirname "$CX_BL_FILE")" 2>/dev/null
+    j=$(_bl_load_json)
+    tmp=$(mktemp "${CX_BL_FILE}.XXXXXX") || return 1
+    printf '%s' "$j" | jq --arg h "$host" --arg r "$reason" \
+        --argjson u "$until" --argjson n "$now" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+        # 1) prune expired   2) set/override host
+        with_entries(select(.value.until > $n))
+        | .[$h] = {until: $u, reason: $r, ts: $ts}
+    ' > "$tmp" 2>/dev/null && mv "$tmp" "$CX_BL_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+# blacklist 해제: bl_clear [host]  (host 생략 시 전체)
+bl_clear() {
+    local host=${1:-} j tmp
+    [ -r "$CX_BL_FILE" ] || { echo '{}' ; return 0 ; }
+    if [ -z "$host" ]; then
+        rm -f "$CX_BL_FILE" 2>/dev/null
+        echo '{}'
+        return 0
+    fi
+    j=$(_bl_load_json)
+    tmp=$(mktemp "${CX_BL_FILE}.XXXXXX") || return 1
+    printf '%s' "$j" | jq --arg h "$host" 'del(.[$h])' > "$tmp" 2>/dev/null \
+        && mv "$tmp" "$CX_BL_FILE" 2>/dev/null || rm -f "$tmp"
+    cat "$CX_BL_FILE" 2>/dev/null || echo '{}'
+}
+
+# blacklist 전체 표시 (사람 읽기용 + prune)
+bl_show() {
+    local now j
+    now=$(date +%s)
+    j=$(_bl_load_json)
+    printf '%s' "$j" | jq --argjson n "$now" -r '
+        with_entries(select(.value.until > $n))
+        | to_entries | .[]
+        | "\(.key)\tuntil=\(.value.until)\treason=\(.value.reason // "")\tts=\(.value.ts // "")"
+    ' 2>/dev/null
+}
+
 # arg parsing — --force-host / --show / --docker 는 wrapper 전용, 나머지는 claude 로 forward
 force_host=""
 show_only=false
@@ -247,6 +330,21 @@ while [ $# -gt 0 ]; do
         --no-docker)     docker_mode=0; shift ;;
         --docker-ssh)    docker_ssh_mode=1; shift ;;
         --no-docker-ssh) docker_ssh_mode=0; shift ;;
+        --blacklist-show)
+            bl_show
+            exit 0 ;;
+        --blacklist-clear)
+            # 다음 arg 가 --* 로 시작하지 않으면 host 인자로 취급
+            if [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#--}" = "$2" ]; then
+                bl_clear "$2" >/dev/null
+                echo "cx: blacklist cleared for '$2'" >&2
+                shift 2
+            else
+                bl_clear >/dev/null
+                echo "cx: blacklist cleared (all)" >&2
+                shift
+            fi
+            exit 0 ;;
         --)              shift; fwd+=("$@"); break ;;
         *)               fwd+=("$1"); shift ;;
     esac
@@ -285,6 +383,10 @@ fi
 #        BannerTimeout 기본 120s 까지 대기 가능. 병렬+timeout 래핑 시 worst-case = max ConnectTimeout.
 host=""
 alias=""
+# dssh_alias: docker-ssh 로 연결할 target (port 2222 컨테이너 sshd).
+#   - 설정됨 → 최종 ssh 접속은 이 alias 로 (host sshd 우회, docker exec 레이어 없음)
+#   - 비어 있음 → 기존 host ssh 경로 (필요시 docker exec wrap)
+dssh_alias=""
 rtt=0
 
 # 분리: 원격 후보 + mac fallback 여부
@@ -294,6 +396,22 @@ for cand in "${candidates[@]}"; do
     if [ "$cand" = "mac" ]; then
         has_mac_fallback=1
     else
+        # blacklist 필터 (probe fail 로 최근 N분내 기록된 호스트 skip).
+        # --force-host 는 우회 (사용자 명시 의도 존중). priority-first 원칙 유지 —
+        # 순위 변경 없이 blacklist 된 호스트만 skip.
+        if [ -z "$force_host" ]; then
+            _bl=$(bl_check "$cand" 2>/dev/null)
+            if [ -n "$_bl" ]; then
+                _bl_until=$(printf '%s' "$_bl" | awk -F'\t' '{print $1}')
+                _bl_reason=$(printf '%s' "$_bl" | awk -F'\t' '{print $2}')
+                _bl_rem=$(( _bl_until - $(date +%s) ))
+                _bl_min=$(( _bl_rem / 60 ))
+                echo "cx: $cand blacklisted ${_bl_min}m (last fail: ${_bl_reason:-unknown}) — skip" >&2
+                unset _bl _bl_until _bl_reason _bl_rem _bl_min
+                continue
+            fi
+            unset _bl
+        fi
         # gate hot 필터 (infra_state 기반)
         if [ -z "$force_host" ] && host_hot "$cand"; then
             _util=$(jq -r --arg h "$cand" '
@@ -315,7 +433,14 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
     trap 'for p in "${probe_pids[@]}"; do kill "$p" 2>/dev/null; done; rm -rf "$probe_dir" 2>/dev/null' EXIT
     r0=$(now_ms)
     max_t=0
-    # 병렬 발사 — 각 cand 별 background ssh + timeout 래핑
+    # 병렬 발사 — 각 cand 별 background ssh + timeout 래핑.
+    # v5 2단계 probe:
+    #   1) docker-ssh port (host sshd 바이패스) — <host>-d alias 또는 -p<port>
+    #   2) 실패 시 host ssh 로 fallback (기존 경로)
+    # 결과 기록:
+    #   $probe_dir/<cand>.ok       → 선택된 ssh target alias (host ssh)
+    #   $probe_dir/<cand>.ok.dssh  → docker-ssh 성공 시 해당 alias (연결 단계에서 사용)
+    # .ok 가 존재해야 선정 후보로 간주. .dssh 는 host 선정 후 경로 결정에 쓰임.
     for cand in "${remote_to_probe[@]}"; do
         cand_alias=$(jq -r --arg h "$cand" '.hosts[$h].ssh_alias // ""' "$REG")
         [ -n "$cand_alias" ] || { echo no_alias > "$probe_dir/$cand.fail"; continue; }
@@ -326,29 +451,54 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
         else
             _probe_cmd="true"
         fi
-        # docker-ssh probe: docker_ssh_port 있고 docker_ssh_mode=1 이면 컨테이너 sshd 로 probe.
-        _probe_extra=()
         _cand_docker_port=$(jq_host "$cand" '.hosts[$h].docker_ssh_port // empty')
+        # docker-ssh alias 후보 — <alias>-d 가 ~/.ssh/config 에 있으면 우선 사용.
+        # 없으면 -p<port> -l root 로 override (hostname 은 기존 ssh_alias 에서 resolve).
+        _cand_dssh_alias="${cand_alias}-d"
+        _try_dssh=0
         if [ "$docker_ssh_mode" = 1 ] && [ -n "$_cand_docker_port" ] && [ "$_cand_docker_port" != "null" ]; then
-            _probe_extra=( -p "$_cand_docker_port" -l root -o StrictHostKeyChecking=accept-new )
+            _try_dssh=1
         fi
         (
             # timeout: ConnectTimeout 은 TCP handshake 만 커버. banner-hang 차단용으로
             # 외부 timeout 래퍼 필수. macOS 는 gtimeout 이 있을 수도, 없으면 `timeout`(coreutils).
             _to=timeout
             command -v timeout >/dev/null 2>&1 || _to=gtimeout
-            if "$_to" "$_connect_t" ssh -o ControlPath=none -o ControlMaster=no \
-                -o ConnectTimeout="$_connect_t" -o BatchMode=yes \
-                "${_probe_extra[@]}" "$cand_alias" "$_probe_cmd" 2>/dev/null; then
-                printf '%s' "$cand_alias" > "$probe_dir/$cand.ok"
-            else
-                echo fail > "$probe_dir/$cand.fail"
+            _ok=0
+            if [ "$_try_dssh" = 1 ]; then
+                # 1a) <alias>-d 가 ssh config 에 있으면 그대로.
+                if ssh -G "$_cand_dssh_alias" 2>/dev/null | awk '/^port /{exit (($2+0)>0)?0:1}'; then
+                    _dssh_target="$_cand_dssh_alias"
+                    _dssh_extra=()
+                else
+                    # 1b) -p <port> -l root 로 override (alias 는 그대로 hostname resolve 용도).
+                    _dssh_target="$cand_alias"
+                    _dssh_extra=( -p "$_cand_docker_port" -l root -o StrictHostKeyChecking=accept-new )
+                fi
+                if "$_to" "$_connect_t" ssh -o ControlPath=none -o ControlMaster=no \
+                    -o ConnectTimeout="$_connect_t" -o BatchMode=yes \
+                    "${_dssh_extra[@]}" "$_dssh_target" "$_probe_cmd" 2>/dev/null; then
+                    printf '%s' "$_dssh_target" > "$probe_dir/$cand.ok.dssh"
+                    # docker-ssh 성공도 .ok 로 카운트 (동시에 .ok.dssh 기록 → 연결 단계가 읽음)
+                    printf '%s' "$cand_alias" > "$probe_dir/$cand.ok"
+                    _ok=1
+                fi
             fi
+            if [ "$_ok" != 1 ]; then
+                # 2) host ssh fallback
+                if "$_to" "$_connect_t" ssh -o ControlPath=none -o ControlMaster=no \
+                    -o ConnectTimeout="$_connect_t" -o BatchMode=yes \
+                    "$cand_alias" "$_probe_cmd" 2>/dev/null; then
+                    printf '%s' "$cand_alias" > "$probe_dir/$cand.ok"
+                    _ok=1
+                fi
+            fi
+            [ "$_ok" = 1 ] || echo fail > "$probe_dir/$cand.fail"
         ) >/dev/null 2>&1 &
         probe_pids+=($!)
         disown "$!" 2>/dev/null || true
     done
-    unset _connect_t _probe_cmd cand_alias
+    unset _connect_t _probe_cmd cand_alias _cand_docker_port _cand_dssh_alias _try_dssh
 
     # CX_PICK_MODE: score (기본) | priority | priority_fallback
     #   score           → 모든 probe 결과를 기다린 뒤 score 최고. infra_state stale 이면 priority 로 폴백.
@@ -410,7 +560,10 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
         if [ -n "$best_cand" ]; then
             host=$best_cand
             alias=$best_alias
-            [ -n "${CX_DEBUG:-}" ] && echo "cx: score picks →$_pick_scores → picked=$host score=$best_score" >&2
+            if [ -f "$probe_dir/$best_cand.ok.dssh" ]; then
+                dssh_alias=$(cat "$probe_dir/$best_cand.ok.dssh")
+            fi
+            [ -n "${CX_DEBUG:-}" ] && echo "cx: score picks →$_pick_scores → picked=$host score=$best_score${dssh_alias:+ dssh=$dssh_alias}" >&2
         fi
         unset best_score best_cand best_alias _sc _pick_scores
     else
@@ -428,6 +581,9 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
             if [ -n "$pick" ]; then
                 host=$pick
                 alias=$(cat "$probe_dir/$pick.ok")
+                if [ -f "$probe_dir/$pick.ok.dssh" ]; then
+                    dssh_alias=$(cat "$probe_dir/$pick.ok.dssh")
+                fi
                 break
             fi
             [ "$all_done" = 1 ] && break
@@ -435,21 +591,41 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
         done
     fi
 
-    # 실패 후보 로그 (선택된 것 이전의 fail 만)
+    # 실패 후보 로그 + AG7 blacklist 기록.
+    # Priority 모드: first-responder-wins → 뒤쪽 후보는 probe 중단 가능성. host 이전까지만 기록.
+    # Score 모드:   모든 후보 probe 완료까지 대기 → 모든 fail 기록 안전.
+    # --force-host 는 skip. fail reason 은 파일 내용(no_alias/fail) 또는 "probe_timeout".
     for cand in "${remote_to_probe[@]}"; do
-        [ "$cand" = "$host" ] && break
-        [ -f "$probe_dir/$cand.fail" ] && echo "cx: probe fail → $cand (next)" >&2
+        if [ "$_cx_pick_mode" = "priority" ]; then
+            [ "$cand" = "$host" ] && break
+        fi
+        if [ -f "$probe_dir/$cand.fail" ]; then
+            echo "cx: probe fail → $cand (next)" >&2
+            if [ -z "$force_host" ]; then
+                _fail_reason=$(cat "$probe_dir/$cand.fail" 2>/dev/null)
+                [ -n "$_fail_reason" ] || _fail_reason="probe_timeout"
+                bl_mark "$cand" "$_fail_reason" 2>/dev/null || true
+                unset _fail_reason
+            fi
+        fi
     done
 
     [ -n "$host" ] && rtt=$(( $(now_ms) - r0 ))
 
-    # probe 성공 호스트 캡쳐 (probe_dir 삭제 전) — slot 획득 단계가 사용
+    # probe 성공 호스트 캡쳐 (probe_dir 삭제 전) — slot 획득 단계가 사용.
+    # probe_ok_dssh: 동일 index 에 docker-ssh target (없으면 빈 문자열).
     probe_ok_hosts=()
     probe_ok_aliases=()
+    probe_ok_dssh=()
     for cand in "${remote_to_probe[@]}"; do
         if [ -f "$probe_dir/$cand.ok" ]; then
             probe_ok_hosts+=("$cand")
             probe_ok_aliases+=("$(cat "$probe_dir/$cand.ok")")
+            if [ -f "$probe_dir/$cand.ok.dssh" ]; then
+                probe_ok_dssh+=("$(cat "$probe_dir/$cand.ok.dssh")")
+            else
+                probe_ok_dssh+=("")
+            fi
         fi
     done
 
@@ -480,8 +656,9 @@ if [ "${CX_SLOT_DISABLE:-0}" != "1" ] && [ "$show_only" != "true" ]; then
             slot_pool+=("$cand")
         done
         # 선택된 host 는 무조건 포함 (원격 probe fail 후 mac fallback 된 경우 대비)
-        case " ${slot_pool[*]} " in *" $host "*) : ;; *) slot_pool=("$host" "${slot_pool[@]:-}") ;; esac
-        [ "$has_mac_fallback" = 1 ] && case " ${slot_pool[*]} " in *" mac "*) : ;; *) slot_pool+=("mac") ;; esac
+        # bash 3.2 + set -u 에서 빈 array + [*]/[@] 는 unbound → [*]- / [@]+ 로 우회.
+        case " ${slot_pool[*]-} " in *" $host "*) : ;; *) slot_pool=("$host" ${slot_pool[@]+"${slot_pool[@]}"}) ;; esac
+        [ "$has_mac_fallback" = 1 ] && case " ${slot_pool[*]-} " in *" mac "*) : ;; *) slot_pool+=("mac") ;; esac
     fi
 
     _slot_deadline=$(( $(date +%s) + ${CX_SLOT_WAIT_SEC:-30} ))
@@ -496,7 +673,7 @@ if [ "${CX_SLOT_DISABLE:-0}" != "1" ] && [ "$show_only" != "true" ]; then
         _alt_host=""
         _alt_alias=""
         _alt_best=-999999
-        for cand in "${slot_pool[@]}"; do
+        for cand in ${slot_pool[@]+"${slot_pool[@]}"}; do
             [ "$cand" = "$host" ] && continue
             _used=$(slot_used_count "$cand")
             _cap=$(slot_host_capacity "$cand")
@@ -523,6 +700,17 @@ if [ "${CX_SLOT_DISABLE:-0}" != "1" ] && [ "$show_only" != "true" ]; then
             if [ -n "$slot_dir" ]; then
                 host=$_alt_host
                 alias=$_alt_alias
+                # docker-ssh target 재조회 (probe_ok_dssh 병렬 배열)
+                dssh_alias=""
+                _i=0
+                for _ph in ${probe_ok_hosts[@]+"${probe_ok_hosts[@]}"}; do
+                    if [ "$_ph" = "$_alt_host" ]; then
+                        dssh_alias="${probe_ok_dssh[$_i]:-}"
+                        break
+                    fi
+                    _i=$((_i + 1))
+                done
+                unset _i _ph
                 break
             fi
         fi
@@ -558,11 +746,11 @@ if [ "$show_only" = true ]; then
         _s=$(host_score "$host" 2>/dev/null)
         [ -n "$_s" ] && _pscore=" score=$_s"
     fi
-    echo "cx → $host${alias:+ ($alias)}${_pscore}${slot_info}"
+    echo "cx → $host${alias:+ ($alias)}${dssh_alias:+ dssh=$dssh_alias}${_pscore}${slot_info}"
     exit 0
 fi
 
-echo "cx → $host${alias:+ ($alias)}${slot_dir:+ slot=$(basename "$slot_dir")}" >&2
+echo "cx → $host${alias:+ ($alias)}${dssh_alias:+ dssh=$dssh_alias}${slot_dir:+ slot=$(basename "$slot_dir")}" >&2
 
 # CLAUDE_CONFIG_DIR 매핑: cl 이 Mac 절대경로(/Users/ghost/.claude-claudeN)로 export 하므로
 # 원격에는 basename 만 뽑아서 $HOME/<basename> 형태로 전달 (호스트별 HOME 상이: /home/aiden vs /home/summer).
@@ -625,23 +813,46 @@ remote_scope_cmd=""
 
 # cwd 매핑: 원격 /Users/ghost → $HOME/mac_home symlink 로 Mac 절대경로 그대로 resolve.
 # fallback: Mac HOME 밖이면 상대 경로 추출 시도 후 최후 $HOME.
+# docker-ssh 모드 (dssh_alias 설정): 컨테이너 compose mount 가 /mac_home — 경로 매핑 분기.
 remote_cwd_prefix=""
 if [ "$host" != "mac" ]; then
     caller_quoted=$(printf '%q' "$CALLER_CWD")
-    case "$CALLER_CWD" in
-        /Users/ghost/*)
-            rel="${CALLER_CWD#/Users/ghost/}"
-            rel_quoted=$(printf '%q' "$rel")
-            remote_cwd_prefix='cd '"$caller_quoted"' 2>/dev/null || cd "$HOME"/'"$rel_quoted"' 2>/dev/null || cd "$HOME"; '
-            ;;
-        *)
-            remote_cwd_prefix='cd '"$caller_quoted"' 2>/dev/null || cd "$HOME"; '
-            ;;
-    esac
+    if [ -n "$dssh_alias" ]; then
+        if [ -n "${CX_DOCKER_WORKDIR:-}" ]; then
+            remote_cwd_prefix='cd '"$(printf '%q' "$CX_DOCKER_WORKDIR")"' 2>/dev/null || cd /root; '
+        else
+            case "$CALLER_CWD" in
+                /Users/ghost/*)
+                    rel="${CALLER_CWD#/Users/ghost/}"
+                    rel_quoted=$(printf '%q' "$rel")
+                    remote_cwd_prefix='cd /mac_home/'"$rel_quoted"' 2>/dev/null || cd /workspace/'"$rel_quoted"' 2>/dev/null || cd /root; '
+                    ;;
+                *)
+                    remote_cwd_prefix='cd '"$caller_quoted"' 2>/dev/null || cd /root; '
+                    ;;
+            esac
+        fi
+    else
+        case "$CALLER_CWD" in
+            /Users/ghost/*)
+                rel="${CALLER_CWD#/Users/ghost/}"
+                rel_quoted=$(printf '%q' "$rel")
+                remote_cwd_prefix='cd '"$caller_quoted"' 2>/dev/null || cd "$HOME"/'"$rel_quoted"' 2>/dev/null || cd "$HOME"; '
+                ;;
+            *)
+                remote_cwd_prefix='cd '"$caller_quoted"' 2>/dev/null || cd "$HOME"; '
+                ;;
+        esac
+    fi
 fi
 
 if [ "$host" != "mac" ]; then
-    remote_user=$(ssh_target_user "$alias")
+    # docker-ssh 는 항상 root. host ssh 면 alias 의 ssh user 기준.
+    if [ -n "$dssh_alias" ]; then
+        remote_user=root
+    else
+        remote_user=$(ssh_target_user "$alias")
+    fi
     if [ "$remote_user" = "root" ]; then
         _safe_fwd=()
         for _arg in ${fwd[@]+"${fwd[@]}"}; do
@@ -678,7 +889,8 @@ try: d=json.load(open(p))
 except Exception: sys.exit(1)
 proj=d.get("projects",{}).get('"$_caller_q"',{}) if isinstance(d.get("projects",{}),dict) else {}
 sys.exit(0 if proj.get("lastSessionId") else 1)'"'"' 2>/dev/null'
-        if ! ssh -S none -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes -T "$alias" "$_sess_probe" >/dev/null 2>&1; then
+        _sess_probe_alias="${dssh_alias:-$alias}"
+        if ! ssh -S none -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes -T "$_sess_probe_alias" "$_sess_probe" >/dev/null 2>&1; then
             _new_fwd=()
             for _arg in ${fwd[@]+"${fwd[@]}"}; do
                 case "$_arg" in -c|--continue) ;; *) _new_fwd+=("$_arg") ;; esac
@@ -687,7 +899,7 @@ sys.exit(0 if proj.get("lastSessionId") else 1)'"'"' 2>/dev/null'
             echo "cx: no remote session → -c stripped (fresh start on $host)" >&2
             unset _new_fwd
         fi
-        unset _cfg_base _caller_q _sess_probe
+        unset _cfg_base _caller_q _sess_probe _sess_probe_alias
     fi
     unset _has_c _arg
 fi
@@ -721,6 +933,11 @@ else
         docker_mode=1
     fi
     # --no-docker override via env is already consumed by arg parsing above.
+    # docker-ssh (dssh_alias) 는 이미 컨테이너 내부 진입 → docker exec 레이어 불필요.
+    # v5: docker_mode 를 강제로 0 으로 내려 native 경로 재사용 (단, ssh target 은 dssh_alias).
+    if [ -n "$dssh_alias" ]; then
+        docker_mode=0
+    fi
 
     # --add-dir /var/folders: Mac $TMPDIR paste 이미지 경로 read 허용 (mac-tmp.service sshfs 경유).
     # (2026-04-19) mac-tmp sshfs mount 끊기면 --add-dir 가 있는 채로 Claude 가 해당 경로 stat 을
@@ -728,7 +945,7 @@ else
     # mount 살아있을 때만 주입. mount 복구되면 다음 호출에 자동 재활성.
     # docker 모드는 컨테이너에 /var/folders bind mount 가 없으므로 skip.
     add_dir_args=()
-    if [ "$docker_mode" != 1 ]; then
+    if [ "$docker_mode" != 1 ] && [ -z "$dssh_alias" ]; then
         if ssh -S none -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes -T "$alias" "test -d /var/folders" 2>/dev/null; then
             add_dir_args=(--add-dir /var/folders)
         else

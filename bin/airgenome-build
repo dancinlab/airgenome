@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# bin/airgenome-build — airgenome docker image build + push wrapper.
+#
+# Called by:
+#   shared/systemd/airgenome-build.service (daily 04:00 KST via .timer)
+#   ad-hoc:  ssh htz 'bin/airgenome-build'   (manual refresh)
+#
+# Responsibilities:
+#   1. cd $REPO; git pull --ff-only (current branch)
+#   2. stage docker_authorized_keys into build context (image-embedded fallback)
+#   3. GHCR login (gh_token file)
+#   4. docker buildx bake --push  (targets: base, claude, dev)
+#   5. record HEAD + duration to $STATE_DIR/build.jsonl + built_sha
+#
+# Env (opt):
+#   REPO              default: $HOME/Dev/airgenome
+#   STATE_DIR         default: $HOME/.airgenome
+#   REGISTRY          default: ghcr.io/need-singularity/airgenome
+#   GH_TOKEN_FILE     default: $HOME/.config/airgenome/gh_token
+#   GH_USER           default: need-singularity
+#   AUTH_KEYS_SRC     default: $STATE_DIR/docker_authorized_keys  (optional)
+#   SKIP_GIT_PULL     1 = do not pull (for manual retries)
+#   FORCE             1 = build even if HEAD unchanged since last built_sha
+#   NO_PUSH           1 = build only (no --push); emits :dev-local tag locally.
+#                         유용: token 갱신 전 파이프라인 스모크 테스트.
+#
+# Failure policy:
+#   - push 실패 시 registry 의 기존 tag 유지 (buildx --push 는 atomic per manifest
+#     가 아니지만, dev tag 만 이동하므로 실패 중 old digest 는 덮어쓰이지 않음).
+#   - 각 단계 실패 시 non-zero exit → systemd 가 journal 에 기록.
+#   - git pull 실패 (local divergence 등) → build 중단, 기존 image 유지.
+
+set -euo pipefail
+
+REPO="${REPO:-$HOME/Dev/airgenome}"
+STATE_DIR="${STATE_DIR:-$HOME/.airgenome}"
+REGISTRY="${REGISTRY:-ghcr.io/need-singularity/airgenome}"
+GH_TOKEN_FILE="${GH_TOKEN_FILE:-$HOME/.config/airgenome/gh_token}"
+GH_USER="${GH_USER:-need-singularity}"
+AUTH_KEYS_SRC="${AUTH_KEYS_SRC:-$STATE_DIR/docker_authorized_keys}"
+
+mkdir -p "$STATE_DIR"
+LOG="$STATE_DIR/build.jsonl"
+BUILT_SHA_FILE="$STATE_DIR/built_sha"
+
+log() { printf '[airgenome-build %s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
+
+# docker daemon 가용성 검증 (user instance 에서 Requires=docker.service 불가)
+if ! docker info >/dev/null 2>&1; then
+    log "ERROR: docker daemon 접근 불가 (권한? daemon down?)"
+    exit 3
+fi
+
+cd "$REPO"
+
+# ---------------------------------------------------------------
+# 1. git pull (current branch) — SKIP_GIT_PULL=1 로 우회 가능
+# ---------------------------------------------------------------
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "${SKIP_GIT_PULL:-0}" != "1" ]; then
+    log "git fetch + ff pull ($BRANCH)"
+    git fetch --quiet origin "$BRANCH" || log "WARN: git fetch failed (offline?)"
+    git merge --ff-only "origin/$BRANCH" 2>&1 \
+        | sed 's/^/  git: /' \
+        || log "WARN: ff-only merge failed (local divergence) — building HEAD anyway"
+fi
+
+HEAD_NEW="$(git rev-parse --short HEAD)"
+HEAD_OLD="$(cat "$BUILT_SHA_FILE" 2>/dev/null || echo "")"
+
+if [ "${FORCE:-0}" != "1" ] && [ "$HEAD_OLD" = "$HEAD_NEW" ]; then
+    log "up-to-date ($HEAD_NEW) — skipping build (FORCE=1 to override)"
+    printf '{"ts":"%s","event":"skip","head":"%s","reason":"unchanged"}\n' \
+        "$(date -u +%FT%TZ)" "$HEAD_NEW" >> "$LOG"
+    exit 0
+fi
+
+# ---------------------------------------------------------------
+# 2. authorized_keys → build context (image-embedded fallback)
+#    Dockerfile 은 현재 runtime bind 로만 주입하지만, 빌드 시점에 사본을
+#    shared/runtime/ 아래에 스테이징해두면 컨테이너 cold-start 에서도 사용 가능.
+# ---------------------------------------------------------------
+if [ -r "$AUTH_KEYS_SRC" ]; then
+    mkdir -p "$REPO/shared/runtime"
+    cp -f "$AUTH_KEYS_SRC" "$REPO/shared/runtime/docker_authorized_keys"
+    chmod 600 "$REPO/shared/runtime/docker_authorized_keys"
+    log "staged docker_authorized_keys ($(wc -c <"$AUTH_KEYS_SRC") bytes)"
+else
+    log "WARN: $AUTH_KEYS_SRC not found — image will rely on runtime bind only"
+fi
+
+# ---------------------------------------------------------------
+# 3. GHCR login (NO_PUSH 모드에서는 skip)
+# ---------------------------------------------------------------
+if [ "${NO_PUSH:-0}" != "1" ]; then
+    if [ -r "$GH_TOKEN_FILE" ]; then
+        cat "$GH_TOKEN_FILE" \
+            | docker login ghcr.io -u "$GH_USER" --password-stdin \
+            | sed 's/^/  ghcr: /'
+    else
+        log "ERROR: $GH_TOKEN_FILE missing — cannot push to GHCR"
+        exit 2
+    fi
+fi
+
+# ---------------------------------------------------------------
+# 4. buildx bake  (--push 또는 --load)
+# ---------------------------------------------------------------
+T0="$(date +%s)"
+BAKE_FLAGS=( -f docker/buildx.bake.hcl --set "*.args.GITSHA=$HEAD_NEW" )
+if [ "${NO_PUSH:-0}" = "1" ]; then
+    # --load 는 multi-platform 에서 실패하므로 platform 단일로 강제.
+    # registry cache export 도 비활성화 (토큰 권한 없이 로컬 스모크용).
+    BAKE_FLAGS+=(
+        --set "*.platform=linux/amd64"
+        --set "*.cache-to="
+        --set "*.cache-from="
+        --load
+    )
+    log "buildx bake --load (NO_PUSH=1, cache disabled) GITSHA=$HEAD_NEW"
+else
+    BAKE_FLAGS+=( --push )
+    log "buildx bake --push GITSHA=$HEAD_NEW"
+fi
+if docker buildx bake "${BAKE_FLAGS[@]}" 2>&1 \
+        | sed 's/^/  bake: /'; then
+    T1="$(date +%s)"
+    DUR=$(( T1 - T0 ))
+    echo "$HEAD_NEW" > "$BUILT_SHA_FILE"
+    MODE="build+push"
+    [ "${NO_PUSH:-0}" = "1" ] && MODE="build-only"
+    log "$MODE OK  sha=$HEAD_NEW  dur=${DUR}s"
+    printf '{"ts":"%s","event":"ok","mode":"%s","head":"%s","prev":"%s","branch":"%s","dur_sec":%d}\n' \
+        "$(date -u +%FT%TZ)" "$MODE" "$HEAD_NEW" "$HEAD_OLD" "$BRANCH" "$DUR" >> "$LOG"
+else
+    RC=$?
+    T1="$(date +%s)"
+    DUR=$(( T1 - T0 ))
+    log "ERROR: bake failed rc=$RC dur=${DUR}s  (existing image tag untouched on registry)"
+    printf '{"ts":"%s","event":"fail","head":"%s","branch":"%s","dur_sec":%d,"rc":%d}\n' \
+        "$(date -u +%FT%TZ)" "$HEAD_NEW" "$BRANCH" "$DUR" "$RC" >> "$LOG"
+    exit "$RC"
+fi

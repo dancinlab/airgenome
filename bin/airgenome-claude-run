@@ -105,11 +105,28 @@ fi
 
 # authorized_keys bind — 컨테이너 내부 sshd (port 2222) 의 PubkeyAuth 용.
 # SSOT: $HOME/.airgenome/docker_authorized_keys (Mac id_ed25519.pub 등 포함).
-# 파일 부재시 skip → sshd 는 뜨지만 인증 불가 (기존 host sshd 경로가 아직 동작 중인 상태 대비).
+# sshd StrictModes 가 root:root 0600 만 허용 → bind 전에 root 소유 복사본을
+# $STATE_DIR/docker_authorized_keys.root 로 준비 (매 start 마다 갱신).
 AUTH_KEYS_SRC="$STATE_DIR/docker_authorized_keys"
+AUTH_KEYS_ROOT="$STATE_DIR/docker_authorized_keys.root"
 auth_keys_bind=()
 if [ -r "$AUTH_KEYS_SRC" ]; then
-    auth_keys_bind=( -v "$AUTH_KEYS_SRC:/root/.ssh/authorized_keys:ro" )
+    # root 소유 복사본 생성 — 그대로 rebind 해도 sshd StrictModes 통과
+    if [ "$(id -u)" = "0" ]; then
+        cp -f "$AUTH_KEYS_SRC" "$AUTH_KEYS_ROOT"
+        chmod 600 "$AUTH_KEYS_ROOT"
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        sudo -n cp -f "$AUTH_KEYS_SRC" "$AUTH_KEYS_ROOT"
+        sudo -n chown 0:0 "$AUTH_KEYS_ROOT"
+        sudo -n chmod 600 "$AUTH_KEYS_ROOT"
+    else
+        # fallback: 원본 그대로 — sshd 가 거부하겠지만 그래도 bind 시도
+        cp -f "$AUTH_KEYS_SRC" "$AUTH_KEYS_ROOT" 2>/dev/null || true
+    fi
+    # file exists check; -r 로 하면 root 소유 0600 을 non-root 가 못 읽어 skip 됨
+    if [ -e "$AUTH_KEYS_ROOT" ]; then
+        auth_keys_bind=( -v "$AUTH_KEYS_ROOT:/root/.ssh/authorized_keys:ro" )
+    fi
 fi
 
 # MAC_HOME bind — Mac 호스트에선 실제 $HOME, 원격에선 sshfs reverse-mount.
@@ -140,6 +157,15 @@ if [ "$mhb_enable" = "1" ] && [ -d "$MAC_HOME" ]; then
     fi
 fi
 
+# hexa_shim 지원 — 호스트의 real hexa 바이너리를 컨테이너 내부로 bind.
+# shim (bin/hexa_shim) 은 `docker exec airgenome-claude /root/.hx/bin/hexa ...`
+# 로 호출을 위임하는데 이미지에 hexa 가 없으면 영구적으로 fallback 함.
+# 호스트 $HOME/.hx/bin/hexa_real (shim 배포 시 생성된 원본) 을 bind 해 해결.
+hexa_bind=()
+if [ -x "$HOME/.hx/bin/hexa_real" ]; then
+    hexa_bind+=( -v "$HOME/.hx/bin/hexa_real:/root/.hx/bin/hexa:ro" )
+fi
+
 exec $DOCKER run --rm \
     --name airgenome-claude \
     --init \
@@ -159,6 +185,7 @@ exec $DOCKER run --rm \
     -e "NODE_OPTIONS=--max-old-space-size=4096" \
     -v "$HOME/.airgenome:/root/.airgenome" \
     "${mac_home_binds[@]}" \
+    "${hexa_bind[@]}" \
     "${auth_keys_bind[@]}" \
     "${binds[@]}" \
     "${extra[@]}" \

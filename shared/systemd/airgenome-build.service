@@ -1,46 +1,35 @@
-# airgenome-build — hetzner ONLY. git HEAD 체크 후 buildx bake --push.
-# 설치: ssh htz; cp → ~/.config/systemd/user/, enable timer.
-# 이미지 SSOT: htz 가 5분마다 git pull 후 HEAD 변경 시 build + push.
+# airgenome-build — hetzner ONLY. daily docker image build + push to GHCR.
+# 설치: ssh htz 'mkdir -p ~/.config/systemd/user && cp -f ~/Dev/airgenome/shared/systemd/airgenome-build.{service,timer} ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now airgenome-build.timer'
+#
+# 이미지 SSOT: htz 가 daily 04:00 KST 에 현재 체크아웃 브랜치(feat/m11a-cross-host)
+# 를 pull → docker buildx bake --push → ghcr.io/need-singularity/airgenome:dev 갱신.
+# 수동 트리거: ssh htz 'systemctl --user start airgenome-build.service'
 
 [Unit]
-Description=airgenome image builder (htz SSOT — buildx bake + push)
-After=network-online.target docker.service
+Description=airgenome image builder (htz SSOT — daily buildx bake + GHCR push)
+After=network-online.target airgenome-git-sync.service
 Wants=network-online.target
-Requires=docker.service
-ConditionHost=hetzner|htz
+# NOTE: user instance 는 system unit(docker.service)을 Requires/After 로
+# 참조 불가. docker daemon 가용성은 ExecStart 내부에서 검증한다.
+# hosts lock: 설치 스크립트가 htz (anima-ax102) 에만 복사하는 것으로 제한.
+# ConditionHost 는 glob 만 지원 (| OR 불가) — anima-ax102 단일 매칭.
+ConditionHost=anima-ax102
 
 [Service]
 Type=oneshot
 EnvironmentFile=-%h/.config/airgenome/env
-Environment=REGISTRY=ghcr.io/need-singularity/airgenome
 Environment=REPO=%h/Dev/airgenome
 Environment=STATE_DIR=%h/.airgenome
+Environment=REGISTRY=ghcr.io/need-singularity/airgenome
 Environment=GH_TOKEN_FILE=%h/.config/airgenome/gh_token
+Environment=GH_USER=need-singularity
 
-ExecStart=/bin/bash -c ' \
-    set -euo pipefail; \
-    mkdir -p "$STATE_DIR"; \
-    cd "$REPO"; \
-    git fetch --quiet origin; \
-    HEAD_OLD=$(cat "$STATE_DIR/built_sha" 2>/dev/null || echo ""); \
-    HEAD_NEW=$(git rev-parse --short origin/main); \
-    echo "{\"ts\":\"$(date -u +%FT%TZ)\",\"old\":\"$HEAD_OLD\",\"new\":\"$HEAD_NEW\"}" \
-        >> "$STATE_DIR/build.jsonl"; \
-    if [ "$HEAD_OLD" = "$HEAD_NEW" ]; then \
-        echo "up-to-date ($HEAD_NEW)"; \
-        exit 0; \
-    fi; \
-    git pull --ff-only origin main; \
-    # GHCR 로그인 (token 파일 전제)
-    if [ -f "$GH_TOKEN_FILE" ]; then \
-        cat "$GH_TOKEN_FILE" | docker login ghcr.io -u need-singularity --password-stdin; \
-    fi; \
-    docker buildx bake -f docker/buildx.bake.hcl --push \
-        --set "*.args.GITSHA=$HEAD_NEW"; \
-    echo "$HEAD_NEW" > "$STATE_DIR/built_sha"; \
-    echo "built + pushed: $HEAD_NEW"'
+ExecStart=%h/Dev/airgenome/bin/airgenome-build
 
 StandardOutput=journal
 StandardError=journal
 
-TimeoutStartSec=1800
+# 빌드가 오래 걸릴 수 있음 (cache cold 시 ~20~30분). 여유 있게.
+TimeoutStartSec=2700
+
+# 실패해도 기존 image 유지 — oneshot 은 기본 Restart=no

@@ -1,0 +1,279 @@
+// modules/worker_queue.hexa — distributed Claude worker queue primitives
+//
+// 책임:
+//   1. Queue 디렉토리 생성 (pending/claimed/running/done/failed/results)
+//   2. Task push (pending/<id>.json) / claim (atomic mv → claimed/<id>.<worker>.json)
+//   3. 결과 기록 (results/<id>.out, done/<id>.json) + caller polling
+//   4. Stale claimed task 회수 (worker 크래시 대응)
+//
+// 제약:
+//   - use "../core/core" 만
+//   - try/catch 미사용
+//   - atomic: mv (rename) 기반 — POSIX 동일 FS 내 원자
+//   - Mac local FS 전제 ($HOME/.airgenome). sshfs 쓰지 말 것.
+//
+// Queue schema (pending/<id>.json):
+//   {"id":"t-<epoch>-<pid>","prompt":"...","account":"claude9|auto",
+//    "host_pick":"ubu2|any","timeout_s":300,"created":"ISO","caller":"pid"}
+//
+// Claim schema (claimed/<id>.<worker>.json — 같은 JSON + claimed_by):
+//   {... + "claimed_by":"ubu2.w1","claimed_at":"ISO"}
+//
+// Result:
+//   results/<id>.out  — stdout (텍스트)
+//   done/<id>.json    — {"id","exit":0,"duration_s":N,"host","account","ended":"ISO"}
+//   failed/<id>.json  — {"id","reason":"...","host"}
+
+use "../core/core"
+
+// Queue root — Mac local fs. CLAUDX_STATE 계열 env 존중.
+fn queue_root() -> str {
+    let custom = env("AIRGENOME_DISPATCH_ROOT")
+    if custom != "" { return custom }
+    return env("HOME") + "/.airgenome/dispatch"
+}
+
+fn q_pending() -> str { return queue_root() + "/pending" }
+fn q_claimed() -> str { return queue_root() + "/claimed" }
+fn q_running() -> str { return queue_root() + "/running" }
+fn q_done() -> str    { return queue_root() + "/done" }
+fn q_failed() -> str  { return queue_root() + "/failed" }
+fn q_results() -> str { return queue_root() + "/results" }
+fn q_logs() -> str    { return queue_root() + "/logs" }
+fn q_workers() -> str { return queue_root() + "/workers" }
+
+fn ensure_queue_dirs() -> void {
+    let dirs = q_pending() + " " + q_claimed() + " " + q_running() + " " + q_done() + " " + q_failed() + " " + q_results() + " " + q_logs() + " " + q_workers()
+    exec("mkdir -p " + dirs)
+}
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn new_task_id() -> str {
+    // t-<epoch_ms>-<pid>-<rand>
+    let epoch = exec("date +%s").trim()
+    let pid = exec("echo $$").trim()
+    let rnd = exec("od -An -N2 -tu2 /dev/urandom | tr -d ' \\n'").trim()
+    return "t-" + epoch + "-" + pid + "-" + rnd
+}
+
+// json 문자열 escape — 백슬래시, 따옴표, 개행만 최소 처리 (prompt 는 interactive 가 아닌 --prompt 인자).
+fn json_escape(s: str) -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(s) {
+        let ch = s[i]
+        if ch == "\\" { out = out + "\\\\" }
+        else if ch == "\"" { out = out + "\\\"" }
+        else if ch == "\n" { out = out + "\\n" }
+        else if ch == "\r" { out = out + "\\r" }
+        else if ch == "\t" { out = out + "\\t" }
+        else { out = out + ch }
+        i = i + 1
+    }
+    return out
+}
+
+// push — pending/<id>.json 생성. 반환: task id
+fn push_task(prompt: str, account: str, host_pick: str, timeout_s: int) -> str {
+    ensure_queue_dirs()
+    let id = new_task_id()
+    let p = q_pending() + "/" + id + ".json"
+    let tmp = p + ".tmp"
+    let acct = if account == "" { "auto" } else { account }
+    let hp = if host_pick == "" { "any" } else { host_pick }
+    let to_s = if timeout_s <= 0 { 300 } else { timeout_s }
+    let caller = exec("echo $PPID").trim()
+    let body = "{\"id\":\"" + id + "\",\"prompt\":\"" + json_escape(prompt) + "\",\"account\":\"" + acct + "\",\"host_pick\":\"" + hp + "\",\"timeout_s\":" + to_string(to_s) + ",\"created\":\"" + ts_iso() + "\",\"caller\":\"" + caller + "\"}\n"
+    write_file(tmp, body)
+    exec("mv -f '" + tmp + "' '" + p + "'")
+    return id
+}
+
+// poll — 결과 도달까지 대기. 반환: "done|<exit>" or "failed|<reason>" or "timeout".
+fn poll_task(id: str, timeout_s: int) -> str {
+    let deadline_cmd = "echo $(( $(date +%s) + " + to_string(timeout_s) + " ))"
+    let deadline = to_int(exec(deadline_cmd).trim())
+    let done_path = q_done() + "/" + id + ".json"
+    let failed_path = q_failed() + "/" + id + ".json"
+    while true {
+        let now = to_int(exec("date +%s").trim())
+        if now >= deadline {
+            return "timeout"
+        }
+        let d = exec("[ -f '" + done_path + "' ] && echo y || echo n").trim()
+        if d == "y" {
+            let ex = exec("jq -r '.exit // 0' '" + done_path + "' 2>/dev/null").trim()
+            return "done|" + ex
+        }
+        let f = exec("[ -f '" + failed_path + "' ] && echo y || echo n").trim()
+        if f == "y" {
+            let rsn = exec("jq -r '.reason // \"\"' '" + failed_path + "' 2>/dev/null").trim()
+            return "failed|" + rsn
+        }
+        let _s = exec("sleep 0.3")
+    }
+    return "timeout"
+}
+
+// result_path — caller 가 결과 파일 경로 구하기 편하게.
+fn result_path(id: str) -> str {
+    return q_results() + "/" + id + ".out"
+}
+
+// claim — pending/<id>.json 을 claimed/<id>.<worker>.json 으로 atomic rename.
+// 성공 시 claimed 경로 반환, 실패 시 "" (다른 worker 가 먼저 가져감).
+fn claim_task(pending_file: str, worker_id: str) -> str {
+    // pending_file 은 full path. basename 으로 id 추출.
+    let base = exec("basename '" + pending_file + "' .json").trim()
+    let dst = q_claimed() + "/" + base + "." + worker_id + ".json"
+    // mv 는 동일 FS 내 atomic. 이미 다른 worker 가 mv 했으면 pending 에 파일 없어 mv 실패.
+    let rc_line = exec("mv '" + pending_file + "' '" + dst + "' 2>&1; echo RC=$?").trim()
+    let rc_s = exec("echo '" + rc_line + "' | sed -n 's/.*RC=\\([0-9]*\\).*/\\1/p'").trim()
+    if rc_s != "0" { return "" }
+    // claimed_by 필드 추가 (jq 인플레이스)
+    let inflate = "tmp='" + dst + ".ia'; jq '. + {claimed_by:\"" + worker_id + "\",claimed_at:\"" + ts_iso() + "\"}' '" + dst + "' > \"$tmp\" && mv -f \"$tmp\" '" + dst + "'"
+    exec(inflate)
+    return dst
+}
+
+// next_pending — pending 디렉토리에서 가장 오래된 task 하나.
+// 반환: full path 또는 "".
+fn next_pending() -> str {
+    let out = exec("ls -1tr '" + q_pending() + "' 2>/dev/null | head -1").trim()
+    if out == "" { return "" }
+    return q_pending() + "/" + out
+}
+
+// mark_running — claimed task 에 "running" 상태 파일 추가 (progress / abort detect 용).
+fn mark_running(claimed_path: str) -> void {
+    // 원본 claimed_path 유지, running 복사본 생성 (tombstone + liveness 데이터)
+    let base = exec("basename '" + claimed_path + "'").trim()
+    let dst = q_running() + "/" + base
+    exec("cp -f '" + claimed_path + "' '" + dst + "'")
+}
+
+fn unmark_running(claimed_path: str) -> void {
+    let base = exec("basename '" + claimed_path + "'").trim()
+    exec("rm -f '" + q_running() + "/" + base + "'")
+}
+
+// finalize — 결과 파일 저장 + done JSON 생성.
+fn finalize_done(id: str, exit_code: int, duration_s: int, host: str, account: str, stdout_path: str) -> void {
+    let tgt = result_path(id)
+    // stdout_path 의 내용을 results/<id>.out 으로 이동 (mv 로 atomic)
+    let chk = exec("[ -f '" + stdout_path + "' ] && echo y || echo n").trim()
+    if chk == "y" {
+        exec("mv -f '" + stdout_path + "' '" + tgt + "'")
+    } else {
+        exec(": > '" + tgt + "'")
+    }
+    let body = "{\"id\":\"" + id + "\",\"exit\":" + to_string(exit_code) + ",\"duration_s\":" + to_string(duration_s) + ",\"host\":\"" + host + "\",\"account\":\"" + account + "\",\"ended\":\"" + ts_iso() + "\",\"result\":\"" + tgt + "\"}\n"
+    let done = q_done() + "/" + id + ".json"
+    let tmp = done + ".tmp"
+    write_file(tmp, body)
+    exec("mv -f '" + tmp + "' '" + done + "'")
+}
+
+fn finalize_failed(id: str, reason: str, host: str) -> void {
+    let body = "{\"id\":\"" + id + "\",\"reason\":\"" + json_escape(reason) + "\",\"host\":\"" + host + "\",\"ended\":\"" + ts_iso() + "\"}\n"
+    let failed = q_failed() + "/" + id + ".json"
+    let tmp = failed + ".tmp"
+    write_file(tmp, body)
+    exec("mv -f '" + tmp + "' '" + failed + "'")
+}
+
+// reclaim_stale — claimed/running 중 worker pid 가 죽은 것을 pending 으로 되돌림.
+// worker liveness 는 q_workers()/<wid>.pid 의 pid 로 kill -0 검사.
+fn reclaim_stale() -> int {
+    let list = exec("ls -1 '" + q_claimed() + "' 2>/dev/null").trim()
+    if list == "" { return 0 }
+    let lines = list.split("\n")
+    let mut i = 0
+    let mut n = 0
+    while i < len(lines) {
+        let fname = lines[i]
+        i = i + 1
+        if fname == "" { continue }
+        // claimed/<id>.<worker>.json — worker 추출 (id 에 . 포함 가능하므로 json 필드 사용)
+        let cpath = q_claimed() + "/" + fname
+        let wid = exec("jq -r '.claimed_by // \"\"' '" + cpath + "' 2>/dev/null").trim()
+        if wid == "" { continue }
+        let pid_file = q_workers() + "/" + wid + ".pid"
+        let pid = exec("cat '" + pid_file + "' 2>/dev/null").trim()
+        let mut alive = false
+        if pid != "" {
+            let chk = exec("kill -0 " + pid + " 2>/dev/null && echo y || echo n").trim()
+            if chk == "y" { alive = true }
+        }
+        if !alive {
+            // 원 pending 경로로 되돌리기 — id 필드 사용
+            let tid = exec("jq -r '.id // \"\"' '" + cpath + "' 2>/dev/null").trim()
+            if tid != "" {
+                let dst = q_pending() + "/" + tid + ".json"
+                // claim 제거 필드 (claimed_by/at) 복원
+                let sanitize = "jq 'del(.claimed_by,.claimed_at)' '" + cpath + "' > '" + dst + ".tmp' && mv -f '" + dst + ".tmp' '" + dst + "' && rm -f '" + cpath + "'"
+                exec(sanitize)
+                // running 도 제거
+                exec("rm -f '" + q_running() + "/" + fname + "' 2>/dev/null")
+                n = n + 1
+            }
+        }
+    }
+    return n
+}
+
+// worker registration — liveness 판정용 pid 파일.
+fn register_worker(worker_id: str, host: str) -> void {
+    ensure_queue_dirs()
+    let pf = q_workers() + "/" + worker_id + ".pid"
+    let info = q_workers() + "/" + worker_id + ".json"
+    exec("echo $$ > '" + pf + "'")
+    let body = "{\"id\":\"" + worker_id + "\",\"host\":\"" + host + "\",\"started\":\"" + ts_iso() + "\",\"pid\":" + exec("echo $$").trim() + "}\n"
+    write_file(info, body)
+}
+
+fn deregister_worker(worker_id: str) -> void {
+    exec("rm -f '" + q_workers() + "/" + worker_id + ".pid' '" + q_workers() + "/" + worker_id + ".json'")
+}
+
+fn self_test() -> void {
+    // env override 로 임시 queue root 사용
+    let tmp_root = "/tmp/agwq_test_" + exec("date +%s").trim()
+    exec("rm -rf '" + tmp_root + "'")
+    exec("AIRGENOME_DISPATCH_ROOT='" + tmp_root + "' true")  // env 만으로는 hexa-side 반영 안 됨
+    // 직접 디렉토리 생성으로 우회 — env 설정은 shell 레벨.
+    // 대신 queue_root() 를 overriding 하는 간접 검증: ensure_queue_dirs 는 env 참조.
+    // 이 self-test 는 env 를 실제로 바꿀 수 없어 소프트 검증만.
+
+    // 1. ts_iso 포맷
+    let ts = ts_iso()
+    if len(ts) < 19 { panic("self_test FAIL [ts_iso len]") }
+
+    // 2. json_escape 단순 케이스
+    let e1 = json_escape("hello \"world\"")
+    if !e1.contains("\\\"world\\\"") { panic("self_test FAIL [json_escape quote]") }
+    let e2 = json_escape("a\nb")
+    if !e2.contains("\\n") { panic("self_test FAIL [json_escape newline]") }
+
+    // 3. new_task_id 고유성 (2회 호출)
+    let id1 = new_task_id()
+    let _s = exec("sleep 0.01")
+    let id2 = new_task_id()
+    if id1 == id2 { panic("self_test FAIL [id collision]") }
+
+    println("  ✅ worker_queue self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" { self_test(); return }
+    }
+    self_test()
+}
+
+main()

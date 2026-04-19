@@ -7334,3 +7334,2165 @@ cx → htz (hetzner)
 cx: no remote session → -c stripped (fresh start on htz)
 cx: /var/folders mount unreachable → image paste disabled this session
 {"ts":"2026-04-19T12:22:53Z","host":"htz","duration_s":7,"exit":2,"rtt_ms":5004}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:27:26Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":280}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:27:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":286}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:27:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":286}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:27:59Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":271}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:27:59Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":339}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:27:59Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":242}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:27:59Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":301}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:27:59Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":240}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":296}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":481}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":1017}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":726}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":512}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":831}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":873}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":529}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":527}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":508}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":527}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1102}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":428}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T12:28:09Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":231}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:09Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":279}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:09Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":281}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:09Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":216}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:10Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":219}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:13Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":327}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T12:28:13Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":413}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T12:28:13Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":384}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:13Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":465}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:13Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":406}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:13Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":405}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:13Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":448}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:13Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":266}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:28:13Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":266}
+{"ts":"2026-04-19T12:29:20Z","host":"ubu2","duration_s":117,"exit":1,"rtt_ms":258}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:32:59Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":282}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:32:59Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":282}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":291}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":290}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":286}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":286}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:01Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":286}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":283}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":423}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":526}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":514}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":363}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":496}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":487}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":483}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":506}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":525}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":362}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:02Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":533}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:03Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":414}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:10Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":211}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:10Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":269}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:10Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":266}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:10Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":213}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:11Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":270}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:14Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":453}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:14Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":324}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:14Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":369}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:14Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":481}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:14Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":461}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:14Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":450}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:14Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":316}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:14Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":316}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:33:14Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":319}
+{"ts":"2026-04-19T12:34:28Z","host":"ubu2","duration_s":21367,"exit":255,"rtt_ms":198}
+{"ts":"2026-04-19T12:35:12Z","host":"ubu2","duration_s":4,"exit":1,"rtt_ms":256}
+{"ts":"2026-04-19T12:35:28Z","host":"ubu2","duration_s":5,"exit":1,"rtt_ms":254}
+{"ts":"2026-04-19T12:35:38Z","host":"ubu2","duration_s":5,"exit":1,"rtt_ms":255}
+{"ts":"2026-04-19T12:36:20Z","host":"ubu2","duration_s":1,"exit":1,"rtt_ms":256}
+{"ts":"2026-04-19T12:37:19Z","host":"ubu2","duration_s":1,"exit":1,"rtt_ms":252}
+{"ts":"2026-04-19T12:37:20Z","host":"ubu2","duration_s":1,"exit":1,"rtt_ms":253}
+{"ts":"2026-04-19T12:37:48Z","host":"ubu2","duration_s":8,"exit":0,"rtt_ms":256}
+{"ts":"2026-04-19T12:37:50Z","host":"ubu2","duration_s":2,"exit":1,"rtt_ms":246}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":283}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:00Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":268}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T12:38:01Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":231}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:01Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":292}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:02Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":233}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:02Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":281}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:02Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":277}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T12:38:04Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":479}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":635}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":493}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":656}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":416}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":538}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T12:38:04Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":628}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":515}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":509}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":551}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":516}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":522}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T12:38:11Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":221}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:11Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":277}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:11Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":221}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:11Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":210}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:12Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":220}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:16Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":292}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:16Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":355}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:16Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":372}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:16Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":377}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:16Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":372}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:16Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":298}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:16Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":455}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:38:16Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":469}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T12:38:16Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":350}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T12:40:00Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":274}
+{"ts":"2026-04-19T12:40:39Z","host":"ubu","duration_s":4,"exit":0,"rtt_ms":256}
+{"ts":"2026-04-19T12:40:51Z","host":"htz","duration_s":8,"exit":0,"rtt_ms":3426}
+{"ts":"2026-04-19T12:41:46Z","host":"ubu","duration_s":3,"exit":0,"rtt_ms":264}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:21Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":305}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:35:21Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":254}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:21Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":302}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:21Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":315}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:21Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":321}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":330}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":395}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":410}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":336}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":828}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":857}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":795}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":790}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":659}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":598}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":634}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":226}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:24Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":245}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":571}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":490}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":503}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":489}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":475}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:35:25Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":735}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":417}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":475}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:25Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":483}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:25Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":732}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:35:25Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":499}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:30Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:30Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":277}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:30Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":252}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:32Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":221}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:35:34Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":216}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:47Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":234}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:47Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":286}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:47Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":237}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:47Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":221}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:48Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:50Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:53Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":217}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:53Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":224}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":943}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:40:55Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":1368}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1067}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1371}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1007}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":732}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:40:55Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":1362}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":830}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":772}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":764}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":707}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1117}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":768}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:55Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":850}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:56Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":448}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:57Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":300}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:40:58Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":947}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":561}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":608}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":561}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:40:58Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":546}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":578}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":642}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":604}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":673}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":682}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:40:58Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":751}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":280}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":221}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:07Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":214}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:46:19Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":247}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:19Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":292}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:19Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":297}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:24Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":279}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:24Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":222}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:27Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":710}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":642}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":908}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":980}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":913}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":905}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":841}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":664}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":701}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:46:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":734}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":797}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:29Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":746}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:29Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":908}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:29Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":899}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:29Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":424}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":516}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":533}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":766}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1224}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":644}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":709}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":773}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":737}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":863}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":922}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:46:31Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":918}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:46:31Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":821}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:36Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":283}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:36Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":224}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:38Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":218}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:41Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":227}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:41Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":231}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:45Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":282}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:45Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":286}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":696}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":779}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":652}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":646}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:51:46Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":734}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":714}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:51:46Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":828}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":822}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":701}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":540}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":389}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:46Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":603}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:48Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":465}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:49Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1276}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:49Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":1341}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":737}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1257}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":724}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":738}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":744}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:51:50Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":878}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":677}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":874}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":907}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":907}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:51Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":671}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:51:51Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":642}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:51:51Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":625}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:02Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":294}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:03Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":295}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:04Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":913}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:05Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":862}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":776}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":778}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1096}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1069}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":777}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1301}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:05Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1358}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:06Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1385}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:06Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":749}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:06Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":745}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:08Z","host":"ubu","duration_s":3,"exit":2,"rtt_ms":494}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1528}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1831}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:57:11Z","host":"ubu2","duration_s":2,"exit":2,"rtt_ms":1907}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:57:11Z","host":"ubu2","duration_s":2,"exit":2,"rtt_ms":1803}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1673}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1884}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1851}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1778}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1716}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1690}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1658}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T13:57:11Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":1575}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":2093}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1935}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1903}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1748}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:11Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1817}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:12Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":955}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:13Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":317}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T13:57:13Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":328}
+{"ts":"2026-04-19T14:00:55Z","host":"ubu","duration_s":1,"exit":0,"rtt_ms":289}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:34Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":307}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":322}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:40Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":965}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:40Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":964}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:40Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1039}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:40Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1156}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:41Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1190}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:41Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1329}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:41Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1330}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:41Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":870}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:41Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":1129}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:41Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":775}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:41Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":760}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:41Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1185}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:43Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":863}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:49Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2266}
+cx: probe fail → ubu (next)
+cx: probe fail → ubu2 (next)
+cx: probe fail → htz (next)
+cx → mac
+{"ts":"2026-04-19T14:02:49Z","host":"mac","duration_s":1,"exit":1,"rtt_ms":0}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:49Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":2969}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:49Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":2763}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:49Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2761}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:50Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2620}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:50Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":3039}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:50Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2606}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:50Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2543}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:50Z","host":"ubu2","duration_s":2,"exit":2,"rtt_ms":2831}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:50Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2675}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:50Z","host":"ubu2","duration_s":2,"exit":2,"rtt_ms":2501}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:50Z","host":"ubu","duration_s":2,"exit":2,"rtt_ms":2645}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:50Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":2079}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:02:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1335}
+cx: probe fail → ubu (next)
+cx: probe fail → ubu2 (next)
+cx → htz (hetzner)
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:58Z","host":"htz","duration_s":7,"exit":2,"rtt_ms":4925}
+cx: probe fail → ubu (next)
+cx: probe fail → ubu2 (next)
+cx → htz (hetzner)
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:58Z","host":"htz","duration_s":7,"exit":2,"rtt_ms":4983}
+cx: probe fail → ubu (next)
+cx: probe fail → ubu2 (next)
+cx → htz (hetzner)
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:58Z","host":"htz","duration_s":6,"exit":2,"rtt_ms":5078}
+cx: probe fail → ubu (next)
+cx: probe fail → ubu2 (next)
+cx → htz (hetzner)
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:58Z","host":"htz","duration_s":6,"exit":2,"rtt_ms":4894}
+cx: probe fail → ubu (next)
+cx: probe fail → ubu2 (next)
+cx → htz (hetzner)
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:02:58Z","host":"htz","duration_s":6,"exit":2,"rtt_ms":4972}
+{"ts":"2026-04-19T14:03:04Z","host":"ubu","duration_s":86,"exit":0,"rtt_ms":314}
+{"ts":"2026-04-19T14:03:32Z","host":"ubu","duration_s":1,"exit":0,"rtt_ms":294}
+{"ts":"2026-04-19T14:07:49Z","host":"ubu","duration_s":1,"exit":0,"rtt_ms":267}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:05Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":281}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:08Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":277}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:11Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":281}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:12Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":298}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:12Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":306}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:12Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":301}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:13Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":516}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:13Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":454}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:13Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":566}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:13Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":512}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:13Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":573}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:14Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":425}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:14Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":515}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:14Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":579}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:16Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":287}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":881}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":1613}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":655}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":742}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":651}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":734}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":586}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":1668}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":804}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":1426}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":799}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":727}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:30Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":312}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:30Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":305}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:30Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":343}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:30Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":330}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:30Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":340}
+cx: probe fail → ubu (next)
+cx: probe fail → ubu2 (next)
+cx → htz (hetzner)
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:35Z","host":"htz","duration_s":7,"exit":2,"rtt_ms":3556}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:08:35Z","host":"ubu","duration_s":8,"exit":255,"rtt_ms":341}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:08:46Z","host":"ubu","duration_s":26,"exit":2,"rtt_ms":294}
+{"ts":"2026-04-19T14:09:03Z","host":"ubu2","duration_s":0,"exit":0,"rtt_ms":240}
+{"ts":"2026-04-19T14:10:31Z","host":"ubu2","duration_s":4,"exit":0,"rtt_ms":247}
+{"ts":"2026-04-19T14:10:49Z","host":"ubu2","duration_s":7,"exit":0,"rtt_ms":256}
+{"ts":"2026-04-19T14:11:05Z","host":"htz","duration_s":13,"exit":0,"rtt_ms":3492}
+{"ts":"2026-04-19T14:13:20Z","host":"ubu2","duration_s":0,"exit":0,"rtt_ms":271}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:13:22Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":300}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:13:24Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":227}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:28Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":279}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:30Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":318}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:30Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":318}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:30Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":323}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:31Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":427}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:31Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":538}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:31Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":478}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:31Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":549}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:31Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":796}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:31Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":522}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:31Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":456}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:31Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":480}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:47Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":276}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:51Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":289}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:13:52Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":308}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:56Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":867}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:13:56Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":917}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:01Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":284}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:01Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":283}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:02Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":315}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:02Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":333}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:02Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":330}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:03Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":339}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:10Z","host":"ubu","duration_s":8,"exit":255,"rtt_ms":975}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:10Z","host":"ubu","duration_s":8,"exit":255,"rtt_ms":1094}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:10Z","host":"ubu","duration_s":8,"exit":255,"rtt_ms":1015}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:14:12Z","host":"ubu","duration_s":8,"exit":255,"rtt_ms":902}
+{"ts":"2026-04-19T14:14:20Z","host":"ubu2","duration_s":1,"exit":0,"rtt_ms":295}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:14:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1356}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:14:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1347}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:14:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1096}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:14:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":1176}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:14:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":801}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:14:22Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":679}
+{"ts":"2026-04-19T14:18:07Z","host":"ubu2","duration_s":1,"exit":0,"rtt_ms":278}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:18:53Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":271}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:18:53Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":211}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:18:53Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":210}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:18:56Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":268}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:00Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":271}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:01Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":219}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:01Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":223}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:02Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":274}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:02Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":232}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:03Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":285}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:03Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":301}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:03Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":301}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:03Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":293}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:03Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":307}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:03Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":280}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:03Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":224}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:04Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":278}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:26Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":282}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:26Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":282}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:26Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":282}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:28Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":272}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:28Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":267}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:29Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":268}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:33Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":218}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:33Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":271}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:33Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":218}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:34Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":277}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:34Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":214}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:34Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":271}
+{"ts":"2026-04-19T14:19:37Z","host":"ubu2","duration_s":1,"exit":0,"rtt_ms":273}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:39Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":254}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:39Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":298}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:39Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":306}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:39Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":310}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:39Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":309}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:19:39Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":307}
+{"ts":"2026-04-19T14:21:30Z","host":"ubu2","duration_s":302,"exit":0,"rtt_ms":268}
+{"ts":"2026-04-19T14:23:24Z","host":"ubu2","duration_s":1,"exit":0,"rtt_ms":278}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:16Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":274}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:18Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":280}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:18Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":277}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:18Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":227}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:19Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":290}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:19Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":235}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:19Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":227}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:19Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":296}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:19Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":263}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:19Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":294}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:19Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":296}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:20Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":314}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:20Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":272}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:25Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":279}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:25Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":272}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:25Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":271}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:27Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":216}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:49Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":285}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:49Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":285}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:50Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":266}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:50Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":284}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:50Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":221}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:51Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":215}
+{"ts":"2026-04-19T14:24:54Z","host":"ubu2","duration_s":1,"exit":0,"rtt_ms":273}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:55Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":330}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:55Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":255}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:55Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":301}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:55Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":313}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:56Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":314}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:56Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":310}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:58Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":283}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:58Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":282}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:58Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":282}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:59Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":215}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:24:59Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":270}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:25:00Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":213}
+{"ts":"2026-04-19T14:28:56Z","host":"ubu2","duration_s":1,"exit":0,"rtt_ms":274}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:29:45Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":280}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:29:48Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":216}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:29:49Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":227}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:29:49Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":221}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:29:50Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":212}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:29:50Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":223}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:29:51Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":229}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:29:51Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":245}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:29:51Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":305}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:29:52Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":223}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:29:56Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":270}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:29:57Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":277}
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:29:57Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":268}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:30:08Z","host":"ubu","duration_s":17,"exit":2,"rtt_ms":273}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:30:09Z","host":"ubu","duration_s":18,"exit":2,"rtt_ms":259}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:30:09Z","host":"ubu","duration_s":18,"exit":2,"rtt_ms":250}
+cx → ubu (ubu)
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:30:09Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":241}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:15Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":295}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:15Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":295}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:15Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":295}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:16Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":279}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:16Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":219}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:16Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":220}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:21Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":300}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:22Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":301}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:22Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":422}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:22Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":389}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:22Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":357}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:23Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":350}
+{"ts":"2026-04-19T14:30:26Z","host":"ubu2","duration_s":1,"exit":0,"rtt_ms":409}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:27Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":391}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":376}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":440}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":374}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":379}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2)
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:30:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":379}
+{"ts":"2026-04-19T14:34:27Z","host":"ubu2","duration_s":0,"exit":0,"rtt_ms":289}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:01Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":224}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:04Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":219}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:06Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":236}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:06Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":233}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:06Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":218}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:07Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":228}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:07Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":219}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:07Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":221}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:22Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":227}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:35:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":223}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:35:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":229}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:35:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":234}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:24Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":225}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:25Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":245}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:25Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":246}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:25Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":246}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:25Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":227}
+{"ts":"2026-04-19T14:35:28Z","host":"ubu2","duration_s":1,"exit":0,"rtt_ms":224}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":223}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:28Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":225}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:28Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":230}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:29Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":280}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:29Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":274}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:29Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":330}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:29Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":228}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:29Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":254}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:29Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":250}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:31Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":242}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:31Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":298}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:31Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":298}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:32Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":224}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:32Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":225}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:33Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":224}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:40Z","host":"ubu","duration_s":8,"exit":255,"rtt_ms":238}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:35:40Z","host":"ubu","duration_s":8,"exit":255,"rtt_ms":246}
+{"ts":"2026-04-19T14:36:19Z","host":"ubu","duration_s":4117,"exit":255,"rtt_ms":270}
+{"ts":"2026-04-19T14:36:25Z","host":"ubu","duration_s":4991,"exit":255,"rtt_ms":279}
+{"ts":"2026-04-19T14:36:27Z","host":"ubu","duration_s":3331,"exit":255,"rtt_ms":376}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:36:53Z","host":"ubu","duration_s":90,"exit":255,"rtt_ms":225}
+cx → ubu (ubu) slot=ubu_2
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:26Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":3418}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:26Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":3438}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:26Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3475}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:27Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":3533}
+cx → ubu (ubu) slot=ubu_2
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:27Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":3516}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:27Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":3525}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":3513}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:28Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3514}
+cx → ubu (ubu) slot=ubu_2
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:28Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":3554}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:29Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3501}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:29Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":3527}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:30Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3444}
+cx → ubu (ubu) slot=ubu_2
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:30Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":3495}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:31Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3481}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:31Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":710}
+cx → ubu (ubu) slot=ubu_2
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:31Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":678}
+cx → mac slot=mac_2
+{"ts":"2026-04-19T14:38:32Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":3474}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:32Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":3516}
+cx → mac slot=mac_3
+{"ts":"2026-04-19T14:38:32Z","host":"mac","duration_s":0,"exit":1,"rtt_ms":3563}
+{"ts":"2026-04-19T14:38:33Z","host":"ubu","duration_s":1,"exit":0,"rtt_ms":3536}
+{"ts":"2026-04-19T14:38:33Z","host":"ubu","duration_s":1,"exit":0,"rtt_ms":3490}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:34Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":3598}
+cx → ubu (ubu) slot=ubu_2
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:34Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":3610}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:34Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":3495}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":3508}
+cx → mac slot=mac_2
+{"ts":"2026-04-19T14:38:36Z","host":"mac","duration_s":1,"exit":1,"rtt_ms":3496}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:36Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":3450}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:36Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":3507}
+cx → ubu (ubu) slot=ubu_2
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:36Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":3455}
+cx → htz (hetzner) slot=htz_1
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:36Z","host":"htz","duration_s":6,"exit":2,"rtt_ms":3545}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:37Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":3551}
+cx → ubu2 (ubu2) slot=ubu2_2
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:37Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":3560}
+cx → htz (hetzner) slot=htz_2
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:37Z","host":"htz","duration_s":6,"exit":2,"rtt_ms":3636}
+cx → ubu (ubu) slot=ubu_2
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:38Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":3449}
+cx → ubu (ubu) slot=ubu_1
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:38:39Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":3498}
+cx → htz (hetzner) slot=htz_3
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:39Z","host":"htz","duration_s":6,"exit":2,"rtt_ms":3500}
+cx → htz (hetzner) slot=htz_4
+cx: no remote session → -c stripped (fresh start on htz)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:38:40Z","host":"htz","duration_s":7,"exit":2,"rtt_ms":3506}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:40:21Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":238}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:40:22Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":220}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:22Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":230}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:22Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":249}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:22Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":238}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:23Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":224}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":230}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:23Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":235}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:40:24Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":223}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:24Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":236}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:25Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":227}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:26Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":225}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:26Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":235}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:27Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":240}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:27Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":234}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:28Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":229}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:28Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":269}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:28Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":264}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:28Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":258}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:29Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":228}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:40:29Z","host":"ubu2","duration_s":0,"exit":2,"rtt_ms":254}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:29Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":226}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:30Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":229}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:31Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":232}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:31Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":224}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:31Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":235}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:32Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":232}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:32Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":227}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:33Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":230}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:40:34Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":264}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu2 (ubu2) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu2)
+cx: /var/folders mount unreachable → image paste disabled this session
+{"ts":"2026-04-19T14:40:34Z","host":"ubu2","duration_s":1,"exit":2,"rtt_ms":261}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:34Z","host":"ubu","duration_s":1,"exit":2,"rtt_ms":283}
+{"ts":"2026-04-19T14:40:34Z","host":"ubu","duration_s":0,"exit":0,"rtt_ms":241}
+{"ts":"2026-04-19T14:40:34Z","host":"ubu","duration_s":0,"exit":0,"rtt_ms":249}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":233}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":240}
+cx: infra_state stale → pick_mode=priority fallback
+cx → ubu (ubu) slot=cx: infra_state stale → pick_mode=priority fallback
+cx: no remote session → -c stripped (fresh start on ubu)
+{"ts":"2026-04-19T14:40:35Z","host":"ubu","duration_s":0,"exit":2,"rtt_ms":228}
+{"ts":"2026-04-19T14:44:58Z","host":"mac","duration_s":387,"exit":137,"rtt_ms":3481}
+{"ts":"2026-04-19T15:02:26Z","host":"mac","duration_s":84,"exit":143,"rtt_ms":0}

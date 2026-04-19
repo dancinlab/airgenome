@@ -1,0 +1,35 @@
+# airgenome-claude Docker 컨테이너 context
+
+너는 airgenome-claude Docker 컨테이너 안에서 실행 중이야. 환경 차이 인지해라.
+
+## 실행 위치
+- Host: ubu(=ubu1) / ubu2 / htz 중 하나 (확인: `cat /etc/hostname` 또는 `uname -n`)
+- Mac 이 아님 — macOS 전용 명령 (launchctl, defaults, security, osascript, open) 사용 금지
+- Ubuntu 24.04, user=root
+
+## 파일시스템
+- Mac 프로젝트 파일 bind-mount: `/root/mac_home/` (= Mac 의 `/Users/ghost/`) — 읽기 정상, 쓰기는 sshfs 왕복 → 느림
+- htz 에는 mac_home bind 없음 — `/root/Dev/airgenome` 로컬 clone 참조
+- credentials: `$CLAUDE_CONFIG_DIR` (컨테이너 경로, 예: `/root/.claude-claude9`)
+- `/tmp`, `/root` 는 container-local (restart 시 소멸, bind mount 제외)
+
+## 사용 가능 도구
+- node 20.20.2, jq, rg, fd, cpulimit, tini, claude 2.1.114
+- docker 없음 (중첩 docker 금지), systemctl 없음
+- ssh 가능 — 단 Mac 으로의 ssh 는 sshfs reverse-mount 의존이라 비권장
+
+## 호출 경로
+- Mac 의 `cl` → `cx --docker` → ssh `<host>` → `docker exec airgenome-claude claude ...`
+- 목적: 입력렉 최소화 + 원격 폭주 격리
+- 응답은 stdout. TUI 색코드 잘 안 먹음
+
+## 제약
+- heavy compute OK (컨테이너 cpuset=0,1,8,9 mem=8g 캡) — AG6 Mac-zero 만족
+- Mac keychain 접근 불가 — token 은 `$CLAUDE_CONFIG_DIR/.credentials.json` 에 port 된 것
+- 상태 영속 필요하면 `/root/mac_home` 경유 Mac 저장 (쓰기 느림)
+- `.env`, `.credentials.json` 등 시크릿은 절대 로그/응답 노출 금지
+
+## 프로젝트 컨벤션
+- hexa-only: 새 `.sh`/`.py`/`.rs`/`.c` 파일 생성 금지
+- CLAUDE.md 폐기 방침 (생성 금지)
+- SSOT: hosts.json / accounts.json / .own — 하드코딩 대신 참조
