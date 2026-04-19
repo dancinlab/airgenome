@@ -47,6 +47,7 @@ let THROTTLE_STATE = HOME + "/Dev/airgenome/forge/predictive_throttle_state.json
 let THROTTLE_HIST  = HOME + "/Dev/airgenome/forge/throttle_history.jsonl"
 let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
 let INFRA_STATE    = HOME + "/Dev/nexus/shared/infra_state.json"
+let HOSTS_JSON     = HOME + "/Dev/airgenome/shared/config/hosts.json"
 let FORGE          = HOME + "/Dev/airgenome/forge"
 let CONFIG_DIR     = HOME + "/.airgenome"
 let CONFIG_PATH    = HOME + "/.airgenome/menubar_config.json"
@@ -126,21 +127,59 @@ fn file_age_sec(path: str) -> int {
     return now - mt
 }
 
+// ───── 호스트 SSOT — hosts.json 로드 (하드코딩 박멸) ─────────────
+// 각 리스트는 parallel arrays — 동일 index = 동일 호스트
+let mut host_keys = []       // ["ubu", "ubu2", "htz", "mac"]
+let mut host_displays = []   // ["U¹", "U²", "H¹", "M"]
+let mut host_threads = []    // [12, 12, 32, 0]
+let mut host_kinds = []      // ["lan", "lan", "remote", "self"]
+
+fn load_hosts() -> void {
+    // jq 한번으로 enabled 호스트 전체 TSV: key\tdisplay\tthreads\tkind
+    let raw = exec("jq -r '.hosts | to_entries | map(select(.value.enabled==true))[] | [.key, (.value.display_name // .key), (.value.threads // 0), .value.kind] | @tsv' '" + HOSTS_JSON + "' 2>/dev/null")
+    let lines = raw.split("\n")
+    let mut keys = []
+    let mut disps = []
+    let mut threads = []
+    let mut kinds = []
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line != "" {
+            let p = line.split("\t")
+            if len(p) >= 4 {
+                keys = keys + [p[0]]
+                disps = disps + [p[1]]
+                threads = threads + [to_int(p[2])]
+                kinds = kinds + [p[3]]
+            }
+        }
+        i = i + 1
+    }
+    // Fallback: hosts.json 읽기 실패 시 하드코딩으로 작동 유지
+    if len(keys) == 0 {
+        keys = ["ubu", "ubu2", "htz", "mac"]
+        disps = ["U¹", "U²", "H¹", "M"]
+        threads = [12, 12, 32, 0]
+        kinds = ["lan", "lan", "remote", "self"]
+    }
+    host_keys = keys
+    host_displays = disps
+    host_threads = threads
+    host_kinds = kinds
+}
+
 // ───── jq 배치 스냅샷 ────────────────────────────────────────────
 let mut snap_level = "?"
 let mut snap_pred_cpu = ""
 let mut snap_pred_ram = ""
 let mut snap_compute = ""
 let mut snap_gpu = ""
-let mut snap_mac_cpu = ""
-let mut snap_mac_ram = ""
-let mut snap_mac_pct = 0
-let mut snap_ubu_load = ""
-let mut snap_ubu_pct = 0
-let mut snap_ubu2_load = ""
-let mut snap_ubu2_pct = 0
-let mut snap_htz_load = ""
-let mut snap_htz_pct = 0
+// 호스트별 parallel arrays — index = host_keys index
+let mut snap_pcts = []       // list[int] — 호스트별 부하 퍼센트 (mac=cpu_pct, remote=load/threads*100)
+let mut snap_loads = []      // list[str] — remote 는 load avg, mac 은 ""
+let mut snap_cpu_raw = []    // list[str] — mac 은 cpu_pct%, remote 는 ""
+let mut snap_ram_raw = []    // list[str] — mac 은 ram_pct%, remote 는 ""
 let mut snap_infra_age = 0
 let mut snap_throttle_age = 0
 let mut snap_dispatch_age = 0
@@ -168,26 +207,72 @@ fn refresh_snapshot() -> void {
     snap_compute = field(dp, 0)
     snap_gpu = field(dp, 1)
 
-    let i_expr = "[.hosts.mac.cpu_pct, .hosts.mac.ram_pct, .hosts.ubu.load, .hosts.htz.load, ((.hosts.ubu.load // \"0\") | tonumber * 12.5 | floor), ((.hosts.htz.load // \"0\") | tonumber / 32 * 100 | floor), .hosts.ubu2.load, ((.hosts.ubu2.load // \"0\") | tonumber / 12 * 100 | floor)] | @tsv"
-    let i = jq_tsv(INFRA_STATE, i_expr)
-    let ip = i.split("\t")
-    snap_mac_cpu = field(ip, 0)
-    snap_mac_ram = field(ip, 1)
-    snap_ubu_load = field(ip, 2)
-    snap_htz_load = field(ip, 3)
-    let mac_cpu_s = snap_mac_cpu
-    if mac_cpu_s == "" { snap_mac_pct = 0 } else { snap_mac_pct = to_int(mac_cpu_s) }
-    let ubu_pct_s = field(ip, 4)
-    if ubu_pct_s == "" { snap_ubu_pct = 0 } else { snap_ubu_pct = to_int(ubu_pct_s) }
-    let htz_pct_s = field(ip, 5)
-    if htz_pct_s == "" { snap_htz_pct = 0 } else { snap_htz_pct = to_int(htz_pct_s) }
-    snap_ubu2_load = field(ip, 6)
-    let ubu2_pct_s = field(ip, 7)
-    if ubu2_pct_s == "" { snap_ubu2_pct = 0 } else { snap_ubu2_pct = to_int(ubu2_pct_s) }
+    // ── 호스트별 동적 스냅샷 — host_keys 순회해 infra_state 에서 추출
+    // 각 host 당 1줄 TSV: cpu_pct_or_load_raw \t ram_pct_or_blank \t load_str
+    // (mac kind==self 면 cpu_pct/ram_pct, 나머지는 load → threads 로 pct 환산)
+    let mut pcts = []
+    let mut loads = []
+    let mut cpus = []
+    let mut rams = []
+    let mut hi = 0
+    while hi < len(host_keys) {
+        let k = host_keys[hi]
+        let kind = host_kinds[hi]
+        let threads = host_threads[hi]
+
+        if kind == "self" {
+            // mac: cpu_pct + ram_pct 직접
+            let expr_self = "[(.hosts.\"" + k + "\".cpu_pct // 0), (.hosts.\"" + k + "\".ram_pct // 0)] | @tsv"
+            let row = jq_tsv(INFRA_STATE, expr_self)
+            let rp = row.split("\t")
+            let cp_s = field(rp, 0)
+            let rm_s = field(rp, 1)
+            let cp_i = 0
+            let mut cp_v = 0
+            if cp_s != "" { cp_v = to_int(cp_s) }
+            let _cp_ignore = cp_i
+            pcts = pcts + [cp_v]
+            loads = loads + [""]
+            cpus = cpus + [cp_s]
+            rams = rams + [rm_s]
+        } else {
+            // remote: load avg + threads 로 pct 환산
+            let expr_rem = ".hosts.\"" + k + "\".load // \"0\""
+            let lo_s = jq_tsv(INFRA_STATE, expr_rem)
+            let mut pct_v = 0
+            if threads > 0 && lo_s != "" {
+                // awk 로 load/threads*100 정수화 (hexa-lang float 연산 회피)
+                let pct_s = exec("echo '" + lo_s + "' | awk -v t=" + to_string(threads) + " '{if($1+0>0)printf \"%d\", $1/t*100; else print 0}'").trim()
+                if pct_s != "" { pct_v = to_int(pct_s) }
+            }
+            pcts = pcts + [pct_v]
+            loads = loads + [lo_s]
+            cpus = cpus + [""]
+            rams = rams + [""]
+        }
+        hi = hi + 1
+    }
+    snap_pcts = pcts
+    snap_loads = loads
+    snap_cpu_raw = cpus
+    snap_ram_raw = rams
 
     snap_infra_age = file_age_sec(INFRA_STATE)
     snap_throttle_age = file_age_sec(THROTTLE_STATE)
     snap_dispatch_age = file_age_sec(DISPATCH_STATE)
+}
+
+// 특정 host_key 의 snap_pcts 찾기 (없으면 0)
+fn host_pct(key: str) -> int {
+    let mut i = 0
+    while i < len(host_keys) {
+        if host_keys[i] == key {
+            if i < len(snap_pcts) { return snap_pcts[i] }
+            return 0
+        }
+        i = i + 1
+    }
+    return 0
 }
 
 fn ring_count(filename: str) -> str {
@@ -233,10 +318,11 @@ fn bar_blink(pct: int, phase: int) -> str {
 fn should_blink() -> bool {
     if snap_level == "STRESS" { return true }
     let hi = cfg_color_high
-    if snap_mac_pct  >= hi { return true }
-    if snap_ubu_pct  >= hi { return true }
-    if snap_ubu2_pct >= hi { return true }
-    if snap_htz_pct  >= hi { return true }
+    let mut i = 0
+    while i < len(snap_pcts) {
+        if snap_pcts[i] >= hi { return true }
+        i = i + 1
+    }
     return false
 }
 
@@ -245,6 +331,12 @@ fn is_stale() -> bool {
     if snap_infra_age > thresh { return true }
     if snap_throttle_age > thresh { return true }
     return false
+}
+
+// 특정 host_key 의 ring buffer 파일명 — mac 은 "genomes.ring", 나머지 "genomes.<key>.ring"
+fn ring_filename(key: str) -> str {
+    if key == "mac" { return "genomes.ring" }
+    return "genomes." + key + ".ring"
 }
 
 // ───── NSColor by 부하 — cfg_color_low/high 임계값 ────
@@ -271,26 +363,59 @@ fn attr_str(s: str, color: *Void) -> *Void {
 // dispatch target 도 title 에 안 붙임 — dropdown 에서 확인.
 fn compose_title_attr() -> *Void {
     let alloc = msg0(cls("NSMutableAttributedString"), sel("alloc"))
-    let prefix_icon = level_icon(snap_level)
     let base = msg1(alloc, sel("initWithString:"), nsstr(""))
-    // 포맷: M▅ U¹▂ U²▂ H¹▇ — Mac 은 단일이라 M, 나머지는 ¹² 첨자
-    let _unused_icon = prefix_icon
-    msg1(base, sel("appendAttributedString:"), attr_str("M", 0))
-    msg1(base, sel("appendAttributedString:"), attr_str(bar_blink(snap_mac_pct, blink_phase), pct_color(snap_mac_pct)))
-    msg1(base, sel("appendAttributedString:"), attr_str(" U¹", 0))
-    msg1(base, sel("appendAttributedString:"), attr_str(bar_blink(snap_ubu_pct, blink_phase), pct_color(snap_ubu_pct)))
-    msg1(base, sel("appendAttributedString:"), attr_str(" U²", 0))
-    msg1(base, sel("appendAttributedString:"), attr_str(bar_blink(snap_ubu2_pct, blink_phase), pct_color(snap_ubu2_pct)))
-    msg1(base, sel("appendAttributedString:"), attr_str(" H¹", 0))
-    msg1(base, sel("appendAttributedString:"), attr_str(bar_blink(snap_htz_pct, blink_phase), pct_color(snap_htz_pct)))
+    // 포맷: M▅ U¹▂ U²▂ H¹▇ — host_keys 순회 (mac 우선 정렬된 hosts.json 순서).
+    // level icon 은 dropdown 에서만. SSOT driven — 하드코딩 0.
+    // mac(self) 을 앞에 두기: hosts.json 이 순서 잡음. 필요 시 재정렬.
+    let mut i = 0
+    while i < len(host_keys) {
+        let display = host_displays[i]
+        let pct = 0
+        if i < len(snap_pcts) {
+            let mut p_tmp = snap_pcts[i]
+            let _p_ignore = 0
+            pct = p_tmp
+        }
+        if i > 0 { msg1(base, sel("appendAttributedString:"), attr_str(" ", 0)) }
+        msg1(base, sel("appendAttributedString:"), attr_str(display, 0))
+        msg1(base, sel("appendAttributedString:"), attr_str(bar_blink(pct, blink_phase), pct_color(pct)))
+        i = i + 1
+    }
     return base
 }
 
-// ───── sparkline ring buffer ────────────────────────────────────
-let mut spark_mac = []
-let mut spark_ubu = []
-let mut spark_ubu2 = []
-let mut spark_htz = []
+// ───── sparkline ring buffer — host_keys 병렬 리스트 ────────────
+let mut spark_buffers = []   // list[list[int]] — index 가 host_keys 와 동일
+
+fn ensure_spark_init() -> void {
+    if len(spark_buffers) == len(host_keys) { return }
+    let mut acc = []
+    let mut i = 0
+    while i < len(host_keys) {
+        acc = acc + [[]]
+        i = i + 1
+    }
+    spark_buffers = acc
+}
+
+// 매 tick snap_pcts 를 spark_buffers 에 push. host_keys 와 병렬.
+fn push_all_sparks() -> void {
+    let mut out = []
+    let mut i = 0
+    while i < len(host_keys) {
+        let p = 0
+        let mut p_tmp = 0
+        if i < len(snap_pcts) { p_tmp = snap_pcts[i] }
+        let b = []
+        let mut b_tmp = []
+        if i < len(spark_buffers) { b_tmp = spark_buffers[i] }
+        let _ign_p = p
+        let _ign_b = b
+        out = out + [spark_push(b_tmp, p_tmp)]
+        i = i + 1
+    }
+    spark_buffers = out
+}
 
 fn spark_push(buf: any, v: int) -> any {
     let nb = buf + [v]
@@ -319,11 +444,17 @@ fn spark_render(buf: any) -> str {
 
 // ───── state signature — rebuild skip ────────────────────────
 fn state_signature() -> str {
-    let stale_tag = "F"
+    let mut stale_tag = "F"
     if is_stale() { stale_tag = "T" }
+    let mut pct_sig = ""
+    let mut i = 0
+    while i < len(snap_pcts) {
+        pct_sig = pct_sig + "|" + to_string(snap_pcts[i])
+        i = i + 1
+    }
     return snap_level + "|" + snap_pred_cpu + "|" + snap_pred_ram
         + "|" + snap_compute + "|" + snap_gpu
-        + "|" + to_string(snap_mac_pct) + "|" + to_string(snap_ubu_pct) + "|" + to_string(snap_ubu2_pct) + "|" + to_string(snap_htz_pct)
+        + pct_sig
         + "|" + stale_tag
         + "|" + to_string(cfg_color_low) + "|" + to_string(cfg_color_high)
         + "|" + to_string(cfg_stale_sec) + "|" + to_string(cfg_spark_cap)
@@ -375,25 +506,63 @@ fn build_menu() -> *Void {
 
     menu_add_separator(menu)
 
-    // Hosts block + 갱신 age — stale 판별 투명화
-    menu_add_info(menu, "mac:  " + bar(snap_mac_pct) + "  cpu=" + snap_mac_cpu + "%  ram=" + snap_mac_ram + "%")
-    menu_add_info(menu, "ubu:  " + bar(snap_ubu_pct) + "  load=" + snap_ubu_load + "  (≈" + to_string(snap_ubu_pct) + "%)")
-    menu_add_info(menu, "ubu2: " + bar(snap_ubu2_pct) + "  load=" + snap_ubu2_load + "  (≈" + to_string(snap_ubu2_pct) + "%)")
-    menu_add_info(menu, "htz:  " + bar(snap_htz_pct) + "  load=" + snap_htz_load + "  (≈" + to_string(snap_htz_pct) + "%)")
+    // Hosts block + 갱신 age — host_keys 순회 (하드코딩 0)
+    let mut hi = 0
+    while hi < len(host_keys) {
+        let k = host_keys[hi]
+        let kind = host_kinds[hi]
+        let pct = 0
+        let mut pct_tmp = 0
+        if hi < len(snap_pcts) { pct_tmp = snap_pcts[hi] }
+        let _ign = pct
+        if kind == "self" {
+            // mac: cpu=% ram=%
+            let cpu_s = ""
+            let ram_s = ""
+            let mut cpu_tmp = ""
+            let mut ram_tmp = ""
+            if hi < len(snap_cpu_raw) { cpu_tmp = snap_cpu_raw[hi] }
+            if hi < len(snap_ram_raw) { ram_tmp = snap_ram_raw[hi] }
+            let _ign2 = cpu_s
+            let _ign3 = ram_s
+            menu_add_info(menu, k + ":  " + bar(pct_tmp) + "  cpu=" + cpu_tmp + "%  ram=" + ram_tmp + "%")
+        } else {
+            let load_s = ""
+            let mut load_tmp = ""
+            if hi < len(snap_loads) { load_tmp = snap_loads[hi] }
+            let _ign4 = load_s
+            menu_add_info(menu, k + ":  " + bar(pct_tmp) + "  load=" + load_tmp + "  (≈" + to_string(pct_tmp) + "%)")
+        }
+        hi = hi + 1
+    }
     menu_add_info(menu, "  updated: infra=" + to_string(snap_infra_age) + "s  throttle=" + to_string(snap_throttle_age) + "s  dispatch=" + to_string(snap_dispatch_age) + "s")
 
     menu_add_separator(menu)
 
-    // sparkline trend
-    menu_add_info(menu, "trend mac: " + spark_render(spark_mac))
-    menu_add_info(menu, "trend ubu: " + spark_render(spark_ubu))
-    menu_add_info(menu, "trend ubu2:" + spark_render(spark_ubu2))
-    menu_add_info(menu, "trend htz: " + spark_render(spark_htz))
+    // sparkline trend — host_keys 순회
+    let mut si = 0
+    while si < len(host_keys) {
+        let sk = host_keys[si]
+        let sbuf = []
+        let mut sbuf_tmp = []
+        if si < len(spark_buffers) { sbuf_tmp = spark_buffers[si] }
+        let _ign_sbuf = sbuf
+        menu_add_info(menu, "trend " + sk + ": " + spark_render(sbuf_tmp))
+        si = si + 1
+    }
 
     menu_add_separator(menu)
 
-    // Rings block
-    menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu=" + ring_count("genomes.ubu.ring") + "  ubu2=" + ring_count("genomes.ubu2.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
+    // Rings block — host_keys 순회 + unified 고정
+    let mut ring_line = "rings "
+    let mut ri = 0
+    while ri < len(host_keys) {
+        let rk = host_keys[ri]
+        ring_line = ring_line + " " + rk + "=" + ring_count(ring_filename(rk))
+        ri = ri + 1
+    }
+    ring_line = ring_line + "  unified=" + ring_count("genomes.unified.ring")
+    menu_add_info(menu, ring_line)
 
     // Slice block (airgenome-claude/stress.slice — TUI 보호 visibility, 2026-04-19)
     // remote_load.jsonl 최근 ubu 라인에서 slice_claude_mem / slice_stress_mem 추출 → GB 변환
@@ -445,6 +614,9 @@ fn main() -> void {
     load_config()
     cfg_mtime_cached = config_mtime()
 
+    // [AG-Q14] 호스트 SSOT 로드 — 모든 하드코딩 제거
+    load_hosts()
+
     // TEST MODE 감지 — 최초 실행 TextEdit 오픈도 skip
     let test_env = env_var("AIRGENOME_MENUBAR_TEST")
     if test_env == "1" {
@@ -470,10 +642,9 @@ fn main() -> void {
     msg0(item, sel("retain"))
 
     refresh_snapshot()
-    spark_mac = spark_push(spark_mac, snap_mac_pct)
-    spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
-    spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
-    spark_htz = spark_push(spark_htz, snap_htz_pct)
+    // host_keys 순회 spark push (나머지 main loop 에서도 동일 헬퍼 호출)
+    ensure_spark_init()
+    push_all_sparks()
 
     let button = msg0(item, sel("button"))
     if button != 0 {
@@ -522,7 +693,20 @@ fn main() -> void {
         }
 
         // [Track B gap 2] snapshot 상태 덤프 — 런타임 값 추적
-        println("TEST SNAP level=" + snap_level + " mac=" + to_string(snap_mac_pct) + " ubu=" + to_string(snap_ubu_pct) + " ubu2=" + to_string(snap_ubu2_pct) + " htz=" + to_string(snap_htz_pct) + " infra_age=" + to_string(snap_infra_age) + "s throttle_age=" + to_string(snap_throttle_age) + "s")
+        // Host snapshot 덤프 — host_keys 순회
+        let mut snap_dump = "TEST SNAP level=" + snap_level
+        let mut di = 0
+        while di < len(host_keys) {
+            let dk = host_keys[di]
+            let dp = 0
+            let mut dp_tmp = 0
+            if di < len(snap_pcts) { dp_tmp = snap_pcts[di] }
+            let _ign_dp = dp
+            snap_dump = snap_dump + " " + dk + "=" + to_string(dp_tmp)
+            di = di + 1
+        }
+        snap_dump = snap_dump + " infra_age=" + to_string(snap_infra_age) + "s throttle_age=" + to_string(snap_throttle_age) + "s"
+        println(snap_dump)
 
         // blink smoke — bar_blink 양 위상 + compose_title_attr phase=1 호출
         let hi = cfg_color_high
@@ -605,10 +789,8 @@ fn main() -> void {
             }
 
             refresh_snapshot()
-            spark_mac = spark_push(spark_mac, snap_mac_pct)
-            spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
-            spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
-            spark_htz = spark_push(spark_htz, snap_htz_pct)
+            ensure_spark_init()
+            push_all_sparks()
 
             if snap_level != prev_level {
                 post_notification("airgenome",

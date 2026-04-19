@@ -253,12 +253,8 @@ if [ "${CLAUDX_SAFE:-0}" != "1" ] && [ "$show_only" != true ]; then
     fi
 fi
 
-# M14 (2026-04-19): .session_defaults plain text 를 매 세션 system prompt 끝에 무손실 주입.
-# 파일 자체가 inject 텍스트 — cat 만 사용 (변환·파싱 0). NEXUS_SESSION_LAX=1 우회.
-SD_FILE="$CX_ROOT/.session_defaults"
-if [ "${NEXUS_SESSION_LAX:-0}" != "1" ] && [ -f "$SD_FILE" ] && [ "$show_only" != true ]; then
-    fwd=("--append-system-prompt" "$(cat "$SD_FILE")" ${fwd[@]+"${fwd[@]}"})
-fi
-
+# M14 session_defaults 주입은 $AIRGENOME/bin/claude PATH shim 이 전담 (SSOT 단일화,
+# 2026-04-19). claudx 는 host pick + rotate 만 책임. cx → command claude → shim 경로로
+# 모든 진입점 (improve_loop/cl/engine_anima 등) 이 자동 포함됨.
 # --- delegate to cx (host routing + ssh + env forward patched for claudx M13) ---
 exec "$CX_ROOT/bin/cx" ${fwd[@]+"${fwd[@]}"}

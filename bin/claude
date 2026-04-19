@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# airgenome/bin/claude — PATH shim. 단일 주입점 for .session_defaults.
+#
+# 원리: $AIRGENOME/bin 이 PATH 에서 real claude (/opt/homebrew/bin/claude 등)
+# 보다 앞에 있으므로, 모든 `claude`/`command claude`/`exec claude` 호출이
+# 이 shim 을 먼저 찾음. shim 이 --append-system-prompt 를 prepend 한 후 real
+# claude 로 exec.
+#
+# 효과: claudx 우회하는 모든 진입점 (improve_loop.sh, cl, cx mac fallback,
+# engine_anima.hexa 의 exec("claude -p ...") 등) 이 자동으로 session_defaults
+# 주입 받음. claudx 는 inject 제거 — shim 이 SSOT.
+#
+# 재귀 방지: AIRGENOME_CLAUDE_SHIM=1 env 로 중복 실행 감지.
+# 우회: NEXUS_SESSION_LAX=1 또는 args 에 --append-system-prompt 이미 있을 때.
+
+set -euo pipefail
+
+# --- real claude 해석: PATH 순회하며 self 와 다른 첫 실행파일 ---
+self=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
+real=""
+IFS=':' read -ra _paths <<< "$PATH"
+for p in "${_paths[@]}"; do
+    cand="$p/claude"
+    if [ -x "$cand" ]; then
+        resolved=$(readlink -f "$cand" 2>/dev/null || realpath "$cand" 2>/dev/null || echo "$cand")
+        if [ "$resolved" != "$self" ]; then
+            real="$cand"
+            break
+        fi
+    fi
+done
+if [ -z "$real" ]; then
+    echo "claude(shim): real claude not found in PATH" >&2
+    exit 127
+fi
+
+# --- 재귀 가드: 이미 shim 거쳤으면 바로 real 에 위임 ---
+if [ "${AIRGENOME_CLAUDE_SHIM:-}" = "1" ]; then
+    exec "$real" "$@"
+fi
+export AIRGENOME_CLAUDE_SHIM=1
+
+# --- inject 판정 ---
+SD="${AIRGENOME:-$HOME/Dev/airgenome}/.session_defaults"
+inject=1
+[ "${NEXUS_SESSION_LAX:-0}" = "1" ] && inject=0
+[ ! -f "$SD" ] && inject=0
+for a in "$@"; do
+    if [ "$a" = "--append-system-prompt" ] || [ "$a" = "--system-prompt" ] || [ "$a" = "--bare" ]; then
+        inject=0
+        break
+    fi
+done
+
+if [ "$inject" = "1" ]; then
+    exec "$real" --append-system-prompt "$(cat "$SD")" "$@"
+else
+    exec "$real" "$@"
+fi
