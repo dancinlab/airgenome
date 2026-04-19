@@ -363,6 +363,435 @@ fn parse_updates(raw: str) -> list {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  SLASH COMMANDS — host health / service control / log tail / drill
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Design:
+//   - every command runs in the tg_bot process (Mac) and shells out via ssh
+//     to reach ubu/ubu2/hetzner. Mac self-state via direct exec.
+//   - destructive commands (/deploy) require `confirm <token>` second arg
+//     and only from whitelisted chat_id.
+//   - shell injection blocked by whitelisting tokens BEFORE interpolation.
+//
+// Host map (bin/cx hosts.json SSOT):
+//   ubu  → ssh alias `ubu`,  slice: airgenome-claude.service
+//   ubu2 → ssh alias `ubu2`, slice: airgenome-claude.service
+//   htz  → ssh alias `hetzner`
+//   mac  → local (launchctl com.airgenome.tg-bot etc.)
+
+let CMD_TIMEOUT_SHORT = 15   // /status /drill — quick polls
+let CMD_TIMEOUT_MED   = 30   // /logs /tail
+// /soak: user-specified duration + margin
+
+// Whitelisted ssh aliases — anything not in this list is rejected.
+fn ssh_alias_allowed(h: str) -> bool {
+    if h == "ubu" { return true }
+    if h == "ubu2" { return true }
+    if h == "hetzner" { return true }
+    if h == "htz" { return true }
+    return false
+}
+
+// Whitelisted services for /deploy — anything not in this list is rejected.
+fn service_allowed(s: str) -> bool {
+    if s == "airgenome-claude" { return true }
+    if s == "airgenome-runaway" { return true }
+    if s == "tg-bot" { return true }
+    return false
+}
+
+// Canonical mac-only alias → actual ssh Host entry.
+fn ssh_host_of(h: str) -> str {
+    if h == "htz" { return "hetzner" }
+    return h
+}
+
+// Safe string token check — only [A-Za-z0-9_.-], empty allowed=false.
+// hexa-lang has no working string < / > / <= / >= — delegate to awk regex.
+fn safe_token(s: str) -> bool {
+    if s == "" { return false }
+    if len(s) > 64 { return false }
+    // awk -v s="$s" 'BEGIN{ if (s ~ /^[A-Za-z0-9_.-]+$/) print 1; else print 0 }'
+    let cmd = "awk -v s=" + shell_quote(s) + " 'BEGIN{ if (s ~ /^[A-Za-z0-9_.-]+$/) print 1; else print 0 }' 2>/dev/null"
+    let out = exec(cmd).trim()
+    if out == "1" { return true }
+    return false
+}
+
+// Split "command arg1 arg2..." by whitespace — collapses runs.
+fn split_ws(s: str) -> list {
+    let out = []
+    let mut acc = out
+    let tr = s.trim()
+    if tr == "" { return acc }
+    // Normalize tabs to spaces then split.
+    let norm = tr.replace("\t", " ")
+    let parts = norm.split(" ")
+    let mut i = 0
+    while i < len(parts) {
+        let p = parts[i].trim()
+        if p != "" { acc = acc + [p] }
+        i = i + 1
+    }
+    return acc
+}
+
+// Run a command with timeout and return combined stdout/stderr (trimmed).
+fn run_remote(alias: str, remote_cmd: str, timeout_s: int) -> str {
+    let host = ssh_host_of(alias)
+    if !ssh_alias_allowed(host) { return "(rejected alias: " + alias + ")" }
+    // ssh -o BatchMode=yes + ConnectTimeout + remote timeout wrapper.
+    let cmd = "timeout " + to_string(timeout_s + 5)
+            + " ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5"
+            + " " + host + " "
+            + shell_quote("timeout " + to_string(timeout_s) + " bash -lc " + shell_quote(remote_cmd))
+            + " 2>&1"
+    let out = exec(cmd)
+    if to_string(out) == "void" { return "(void)" }
+    return out.trim()
+}
+
+fn run_local(local_cmd: str, timeout_s: int) -> str {
+    let cmd = "timeout " + to_string(timeout_s) + " bash -lc " + shell_quote(local_cmd) + " 2>&1"
+    let out = exec(cmd)
+    if to_string(out) == "void" { return "(void)" }
+    return out.trim()
+}
+
+// ─── /help ────────────────────────────────────────────────────────────
+fn cmd_help() -> str {
+    let b = ""
+    let mut s = b + "airgenome tg bot — commands\n"
+    s = s + "\n"
+    s = s + "/status           — 3-host health (uptime, load, docker ps, task count)\n"
+    s = s + "/wake             — agent / background activity last 30min\n"
+    s = s + "/soak <min>       — runaway guard soak for N minutes (default 15)\n"
+    s = s + "/deploy <svc>     — restart service (confirm required)\n"
+    s = s + "                    svc: airgenome-claude | airgenome-runaway | tg-bot\n"
+    s = s + "/logs <host> [N]  — last N journalctl lines (default 20)\n"
+    s = s + "                    host: ubu | ubu2 | hetzner\n"
+    s = s + "/tail             — airgenome status summary (1-min)\n"
+    s = s + "/drill            — live drill/hexa heavy processes\n"
+    s = s + "/help             — this list\n"
+    s = s + "\n"
+    s = s + "(no-slash text → claude -p dispatch)\n"
+    return s
+}
+
+// ─── /status ──────────────────────────────────────────────────────────
+fn host_status_block(alias: str) -> str {
+    let up = run_remote(alias, "uptime 2>&1 | tr -s ' '", CMD_TIMEOUT_SHORT)
+    let load = run_remote(alias, "awk '{print $1\" \"$2\" \"$3}' /proc/loadavg 2>/dev/null", CMD_TIMEOUT_SHORT)
+    let docker = run_remote(alias, "command -v docker >/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | wc -l || echo 0", CMD_TIMEOUT_SHORT)
+    let claude_n = run_remote(alias, "pgrep -x claude 2>/dev/null | wc -l || echo 0", CMD_TIMEOUT_SHORT)
+    let hexa_n = run_remote(alias, "pgrep -x hexa 2>/dev/null | wc -l || echo 0", CMD_TIMEOUT_SHORT)
+    let mut s = "[" + alias + "]\n"
+    s = s + "  up:     " + truncate(up, 120) + "\n"
+    s = s + "  load:   " + truncate(load, 80) + "\n"
+    s = s + "  docker: " + truncate(docker, 20) + " containers\n"
+    s = s + "  claude: " + truncate(claude_n, 20) + " hexa: " + truncate(hexa_n, 20) + "\n"
+    return s
+}
+
+fn mac_status_block() -> str {
+    let up = run_local("uptime 2>&1 | tr -s ' '", CMD_TIMEOUT_SHORT)
+    let load = run_local("sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1\" \"$2\" \"$3}'", CMD_TIMEOUT_SHORT)
+    let tg_running = run_local("launchctl list 2>/dev/null | awk '$3==\"com.airgenome.tg-bot\"{print $1}'", CMD_TIMEOUT_SHORT)
+    let claude_n = run_local("pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
+    let hexa_n = run_local("pgrep -x hexa 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
+    let mut s = "[mac]\n"
+    s = s + "  up:     " + truncate(up, 120) + "\n"
+    s = s + "  load:   " + truncate(load, 80) + "\n"
+    s = s + "  tg-bot pid: " + truncate(tg_running, 20) + "\n"
+    s = s + "  claude: " + truncate(claude_n, 20) + " hexa: " + truncate(hexa_n, 20) + "\n"
+    return s
+}
+
+fn cmd_status() -> str {
+    let b = ""
+    let mut s = b + "status @ " + ts_iso() + "\n\n"
+    s = s + mac_status_block() + "\n"
+    s = s + host_status_block("ubu") + "\n"
+    s = s + host_status_block("ubu2") + "\n"
+    s = s + host_status_block("hetzner") + "\n"
+    return s
+}
+
+// ─── /wake — recent activity ─────────────────────────────────────────
+fn cmd_wake() -> str {
+    let b = ""
+    let mut s = b + "wake @ " + ts_iso() + " (last 30min)\n\n"
+    // Mac: recent tg_bot log + executor.jsonl + dispatch log tail
+    let tg_tail = run_local("tail -n 8 " + HOME + "/.airgenome/tg_bot.log 2>/dev/null", CMD_TIMEOUT_SHORT)
+    s = s + "[mac tg_bot recent]\n" + truncate(tg_tail, 800) + "\n\n"
+    let exec_tail = run_local("tail -n 6 " + HOME + "/.airgenome/executor.jsonl 2>/dev/null", CMD_TIMEOUT_SHORT)
+    s = s + "[mac executor recent]\n" + truncate(exec_tail, 800) + "\n\n"
+    // Remote: journalctl --since 30min ago airgenome-claude
+    let ubu_log = run_remote("ubu", "journalctl --user -u airgenome-claude --since '30 min ago' -n 5 --no-pager 2>&1 | tail -n 5", CMD_TIMEOUT_MED)
+    s = s + "[ubu claude recent]\n" + truncate(ubu_log, 800) + "\n\n"
+    let ubu2_log = run_remote("ubu2", "journalctl --user -u airgenome-claude --since '30 min ago' -n 5 --no-pager 2>&1 | tail -n 5", CMD_TIMEOUT_MED)
+    s = s + "[ubu2 claude recent]\n" + truncate(ubu2_log, 800) + "\n"
+    return s
+}
+
+// ─── /soak <min> — runaway guard soak ────────────────────────────────
+fn cmd_soak(mins: int) -> str {
+    let mut m = mins
+    if m <= 0 { m = 15 }
+    if m > 120 { m = 120 }   // cap to protect tg bot loop
+    let b = ""
+    let mut s = b + "soak " + to_string(m) + "m @ " + ts_iso() + "\n"
+    // Kick off runaway_guard RUNAWAY_TEST=1 (single measurement) repeatedly
+    // on ubu — collect summary via journalctl at end.
+    let before = run_remote("ubu", "date +%s", CMD_TIMEOUT_SHORT)
+    let start_epoch = to_int(before.trim())
+    // Spawn soak in background on ubu; tg waits by sleeping locally.
+    let soak_cmd = "nohup bash -lc '"
+        + "end=$(( $(date +%s) + " + to_string(m * 60) + " )); "
+        + "while [ $(date +%s) -lt $end ]; do "
+        + "  RUNAWAY_TEST=1 RUNAWAY_DRY_RUN=1 hexa run /opt/airgenome/bin/runaway_guard.hexa >> /tmp/tg_soak.log 2>&1; "
+        + "  sleep 5; "
+        + "done' >/dev/null 2>&1 &"
+    let _ = run_remote("ubu", "echo '' > /tmp/tg_soak.log 2>/dev/null; " + soak_cmd + " echo started", CMD_TIMEOUT_SHORT)
+    s = s + "started on ubu — polling every 5s, results to /tmp/tg_soak.log\n"
+    // Wait locally (cap at 120m already).
+    let _ = exec("sleep " + to_string(m * 60))
+    // Summarize
+    let after = run_remote("ubu", "date +%s", CMD_TIMEOUT_SHORT)
+    let end_epoch = to_int(after.trim())
+    let lines_s = run_remote("ubu", "wc -l < /tmp/tg_soak.log 2>/dev/null | tr -d ' '", CMD_TIMEOUT_SHORT)
+    let verdict_tail = run_remote("ubu",
+        "grep -oE '\"verdict\":\"[a-z]+\"' /tmp/tg_soak.log 2>/dev/null | sort | uniq -c | sort -rn | head -5",
+        CMD_TIMEOUT_SHORT)
+    let last5 = run_remote("ubu", "tail -n 5 /tmp/tg_soak.log 2>/dev/null", CMD_TIMEOUT_SHORT)
+    s = s + "\nsoak done — elapsed " + to_string(end_epoch - start_epoch) + "s\n"
+    s = s + "samples: " + truncate(lines_s, 20) + " lines\n"
+    s = s + "\nverdict histogram:\n" + truncate(verdict_tail, 400) + "\n"
+    s = s + "\nlast 5 samples:\n" + truncate(last5, 1000) + "\n"
+    return s
+}
+
+// ─── /deploy <svc> [confirm <token>] ─────────────────────────────────
+//
+// token generation: sha1(chat_id + service + minute bucket) — bot prints a
+// 4-char hex prompt, user replies "/deploy svc confirm <token>".
+fn deploy_token(chat_id: int, service: str) -> str {
+    // minute bucket so token is short-lived (~1-2 min window)
+    let bucket = ts_epoch() / 60
+    let seed = to_string(chat_id) + ":" + service + ":" + to_string(bucket)
+    // shasum first 4 hex chars
+    let h = exec("printf '%s' " + shell_quote(seed) + " | shasum -a 256 2>/dev/null | awk '{print $1}'").trim()
+    if to_string(h) == "void" { return "0000" }
+    return str_sub(h, 0, 4)
+}
+
+// Accept current or previous minute to absorb boundary races.
+fn deploy_token_valid(chat_id: int, service: str, supplied: str) -> bool {
+    let bucket = ts_epoch() / 60
+    let seeds = [
+        to_string(chat_id) + ":" + service + ":" + to_string(bucket),
+        to_string(chat_id) + ":" + service + ":" + to_string(bucket - 1)
+    ]
+    let mut i = 0
+    while i < len(seeds) {
+        let h = exec("printf '%s' " + shell_quote(seeds[i]) + " | shasum -a 256 2>/dev/null | awk '{print $1}'").trim()
+        if to_string(h) != "void" {
+            let prefix = str_sub(h, 0, 4)
+            if prefix == supplied { return true }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+fn do_restart_service(service: str) -> str {
+    if service == "tg-bot" {
+        // Mac — launchd kickstart (self-restart). This will terminate us; log first.
+        log_line("WARN", "self-restart via launchctl kickstart -k com.airgenome.tg-bot")
+        let r = run_local("launchctl kickstart -k gui/$(id -u)/com.airgenome.tg-bot 2>&1; echo RC=$?", CMD_TIMEOUT_SHORT)
+        return "tg-bot kickstart initiated (self-restart)\n" + truncate(r, 400)
+    }
+    // Remote systemd user service — restart on ubu AND ubu2 when applicable.
+    if service == "airgenome-claude" {
+        let r1 = run_remote("ubu",  "systemctl --user restart airgenome-claude 2>&1; systemctl --user is-active airgenome-claude 2>&1", CMD_TIMEOUT_MED)
+        let r2 = run_remote("ubu2", "systemctl --user restart airgenome-claude 2>&1; systemctl --user is-active airgenome-claude 2>&1", CMD_TIMEOUT_MED)
+        return "airgenome-claude restart:\n[ubu]  " + truncate(r1, 200) + "\n[ubu2] " + truncate(r2, 200)
+    }
+    if service == "airgenome-runaway" {
+        // Runs on ubu under root systemd
+        let r = run_remote("ubu", "sudo -n systemctl restart airgenome-runaway 2>&1; systemctl is-active airgenome-runaway 2>&1", CMD_TIMEOUT_MED)
+        return "airgenome-runaway restart on ubu:\n" + truncate(r, 400)
+    }
+    return "unknown service"
+}
+
+fn cmd_deploy(chat_id: int, argv: list) -> str {
+    if len(argv) < 2 {
+        return "usage: /deploy <service>\n  service: airgenome-claude | airgenome-runaway | tg-bot\n  step 1: /deploy <svc>  → bot replies with confirm token\n  step 2: /deploy <svc> confirm <token>"
+    }
+    let svc = argv[1].trim()
+    if !safe_token(svc) { return "invalid service name" }
+    if !service_allowed(svc) { return "service not allowed: " + svc }
+    if len(argv) >= 4 {
+        let kw = argv[2].trim()
+        if kw != "confirm" { return "unknown modifier — expected 'confirm <token>'" }
+        let tok = argv[3].trim()
+        if !safe_token(tok) { return "invalid token" }
+        if !deploy_token_valid(chat_id, svc, tok) {
+            return "token invalid or expired — request a fresh one with `/deploy " + svc + "`"
+        }
+        log_line("WARN", "deploy EXEC chat=" + to_string(chat_id) + " svc=" + svc)
+        return do_restart_service(svc)
+    }
+    // 1-step: issue token and instructions.
+    let tok = deploy_token(chat_id, svc)
+    let b = ""
+    let mut s = b + "confirm restart of " + svc + "?\n"
+    s = s + "reply: /deploy " + svc + " confirm " + tok + "\n"
+    s = s + "(token valid ~2 min)"
+    return s
+}
+
+// ─── /logs <host> [lines] ─────────────────────────────────────────────
+fn cmd_logs(argv: list) -> str {
+    if len(argv) < 2 {
+        return "usage: /logs <host> [lines]\n  host: ubu | ubu2 | hetzner"
+    }
+    let h = argv[1].trim()
+    if !safe_token(h) { return "invalid host" }
+    if !ssh_alias_allowed(h) { return "host not allowed: " + h }
+    let mut n = 20
+    if len(argv) >= 3 {
+        let ns = argv[2].trim()
+        if safe_token(ns) { n = to_int(ns) }
+    }
+    if n <= 0 { n = 20 }
+    if n > 200 { n = 200 }
+    // Try user-unit claude first (ubu/ubu2 has it), fall back to system journal.
+    let rcmd = "(journalctl --user -u airgenome-claude -n " + to_string(n) + " --no-pager 2>/dev/null"
+            + " || journalctl -u airgenome-claude -n " + to_string(n) + " --no-pager 2>/dev/null"
+            + " || journalctl -n " + to_string(n) + " --no-pager 2>&1)"
+            + " | tail -n " + to_string(n)
+    let out = run_remote(h, rcmd, CMD_TIMEOUT_MED)
+    let b = ""
+    let mut s = b + "[" + h + " journal last " + to_string(n) + "]\n"
+    s = s + truncate(out, 3500)
+    return s
+}
+
+// ─── /tail — 1-min airgenome status summary ──────────────────────────
+fn cmd_tail(argv: list) -> str {
+    // optional tag filter: /tail <tag> — if present, only lines matching tag.
+    let mut tag = ""
+    if len(argv) >= 2 { tag = argv[1].trim() }
+    // Mac-side: recent tg + executor + dashboard stderr (cheap)
+    let b = ""
+    let mut s = b + "tail @ " + ts_iso() + "\n\n"
+    let grep_part = ""
+    let mut grep_cmd = grep_part
+    if tag != "" {
+        if !safe_token(tag) { return "invalid tag" }
+        grep_cmd = " | grep -E " + shell_quote(tag) + " | tail -n 8"
+    } else {
+        grep_cmd = " | tail -n 8"
+    }
+    let mac_tg = run_local("tail -n 30 " + HOME + "/.airgenome/tg_bot.log 2>/dev/null" + grep_cmd, CMD_TIMEOUT_SHORT)
+    s = s + "[mac tg]\n" + truncate(mac_tg, 700) + "\n\n"
+    let ubu_sum = run_remote("ubu", "journalctl --user -u airgenome-claude --since '1 min ago' --no-pager 2>&1 | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
+    let ubu2_sum = run_remote("ubu2", "journalctl --user -u airgenome-claude --since '1 min ago' --no-pager 2>&1 | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
+    s = s + "[journal lines last 1min]  ubu=" + truncate(ubu_sum, 10) + "  ubu2=" + truncate(ubu2_sum, 10) + "\n"
+    let ubu_claude = run_remote("ubu", "pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
+    let ubu2_claude = run_remote("ubu2", "pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
+    let htz_claude = run_remote("hetzner", "pgrep -x claude 2>/dev/null | wc -l | tr -d ' '", CMD_TIMEOUT_SHORT)
+    s = s + "[claude pid count]         ubu=" + truncate(ubu_claude, 10) + "  ubu2=" + truncate(ubu2_claude, 10) + "  htz=" + truncate(htz_claude, 10) + "\n"
+    return s
+}
+
+// ─── /drill — heavy processes ────────────────────────────────────────
+fn cmd_drill() -> str {
+    let b = ""
+    let mut s = b + "drill @ " + ts_iso() + "\n\n"
+    // Top heavy on ubu — top CPU processes excluding idle kernel threads
+    let heavy_cmd = "ps -eo pid,pcpu,pmem,comm --sort=-pcpu 2>/dev/null | awk 'NR==1 || $2>5' | head -10"
+    let u1 = run_remote("ubu", heavy_cmd, CMD_TIMEOUT_SHORT)
+    s = s + "[ubu heavy]\n" + truncate(u1, 900) + "\n\n"
+    let u2 = run_remote("ubu2", heavy_cmd, CMD_TIMEOUT_SHORT)
+    s = s + "[ubu2 heavy]\n" + truncate(u2, 900) + "\n\n"
+    let h1 = run_remote("hetzner", heavy_cmd, CMD_TIMEOUT_SHORT)
+    s = s + "[htz heavy]\n" + truncate(h1, 900) + "\n\n"
+    // Local: top CPU Mac-side (ps sort by cpu)
+    let mac_top = run_local("ps -Aceo pid,pcpu,pmem,comm -r 2>/dev/null | head -10", CMD_TIMEOUT_SHORT)
+    s = s + "[mac heavy]\n" + truncate(mac_top, 900) + "\n"
+    return s
+}
+
+// ─── ROUTER ──────────────────────────────────────────────────────────
+//
+// Returns handled=true if text was a recognized /slash command (even if it
+// errored with a message). handled=false falls through to claude dispatch.
+struct CmdResult {
+    handled: bool,
+    reply: str
+}
+
+fn route_command(cfg: Config, chat_id: int, text: str) -> CmdResult {
+    let r_default = CmdResult { handled: false, reply: "" }
+    let tr = text.trim()
+    if tr == "" { return r_default }
+    let first = str_sub(tr, 0, 1)
+    if first != "/" { return r_default }
+
+    // Strip leading "/" and optional "@botname" suffix on first token.
+    let body = str_sub(tr, 1, len(tr))
+    let argv = split_ws(body)
+    if len(argv) == 0 { return r_default }
+    let mut cmd0 = argv[0]
+    // Telegram appends @bot_username to commands from groups — strip.
+    if cmd0.contains("@") {
+        let parts = cmd0.split("@")
+        cmd0 = parts[0]
+    }
+    // Only handle recognized commands. Unknown /foo → fall through to claude.
+    if cmd0 == "start" {
+        return CmdResult { handled: true, reply: "airgenome tg bot ready — /help for commands" }
+    }
+    if cmd0 == "help" {
+        return CmdResult { handled: true, reply: cmd_help() }
+    }
+    if cmd0 == "status" {
+        return CmdResult { handled: true, reply: cmd_status() }
+    }
+    if cmd0 == "wake" {
+        return CmdResult { handled: true, reply: cmd_wake() }
+    }
+    if cmd0 == "soak" {
+        let mut m = 15
+        if len(argv) >= 2 {
+            let ms = argv[1].trim()
+            if safe_token(ms) { m = to_int(ms) }
+        }
+        return CmdResult { handled: true, reply: cmd_soak(m) }
+    }
+    if cmd0 == "deploy" {
+        return CmdResult { handled: true, reply: cmd_deploy(chat_id, argv) }
+    }
+    if cmd0 == "logs" {
+        return CmdResult { handled: true, reply: cmd_logs(argv) }
+    }
+    if cmd0 == "tail" {
+        return CmdResult { handled: true, reply: cmd_tail(argv) }
+    }
+    if cmd0 == "drill" {
+        return CmdResult { handled: true, reply: cmd_drill() }
+    }
+    // Unknown slash command — be explicit (don't silently dispatch to claude).
+    return CmdResult {
+        handled: true,
+        reply: "unknown command: /" + cmd0 + "\ntry /help"
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  MAIN LOOP
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -372,8 +801,20 @@ fn handle_update(cfg: Config, u: Update) -> void {
         log_line("WARN", "drop unauthorized chat_id=" + to_string(u.chat_id) + " from=" + to_string(u.from_id) + " text=" + u.text)
         return
     }
-    log_line("INFO", "dispatch uid=" + to_string(u.update_id) + " chat=" + to_string(u.chat_id) + " text=" + u.text)
-    // ack immediately so user knows we got it
+    log_line("INFO", "handle uid=" + to_string(u.update_id) + " chat=" + to_string(u.chat_id) + " text=" + u.text)
+
+    // Slash-command router — runs in tg_bot, no claude call.
+    let cr = route_command(cfg, u.chat_id, u.text)
+    if cr.handled {
+        let mut body = cr.reply
+        if body == "" { body = "(empty)" }
+        if body == "void" { body = "(void)" }
+        send_chunks(cfg.token, u.chat_id, body)
+        log_line("INFO", "cmd_reply uid=" + to_string(u.update_id) + " len=" + to_string(len(body)))
+        return
+    }
+
+    // Freeform text → claude dispatch (original behavior).
     let _ = send_message(cfg.token, u.chat_id, "⏳ dispatching…")
     let reply = dispatch_claude(cfg, u.text).trim()
     let mut body = reply
@@ -459,7 +900,43 @@ fn self_test() -> void {
     if o != 42 { panic("self_test FAIL [offset roundtrip got " + to_string(o) + "]") }
     save_offset(0)   // reset
 
-    // 6. telegram getMe (non-critical — logs but doesn't fail)
+    // 6. safe_token whitelist
+    if !safe_token("ubu") { panic("self_test FAIL [safe_token ubu]") }
+    if safe_token("ubu; rm -rf /") { panic("self_test FAIL [safe_token injection]") }
+    if safe_token("") { panic("self_test FAIL [safe_token empty]") }
+
+    // 7. ssh_alias_allowed / service_allowed
+    if !ssh_alias_allowed("ubu") { panic("self_test FAIL [ssh ubu]") }
+    if ssh_alias_allowed("evilhost") { panic("self_test FAIL [ssh evilhost]") }
+    if !service_allowed("tg-bot") { panic("self_test FAIL [svc tg-bot]") }
+    if service_allowed("rm-rf") { panic("self_test FAIL [svc rm-rf]") }
+
+    // 8. split_ws
+    let parts = split_ws("  /deploy  tg-bot  confirm  abcd  ")
+    if len(parts) != 4 { panic("self_test FAIL [split_ws len=" + to_string(len(parts)) + "]") }
+    if parts[0] != "/deploy" { panic("self_test FAIL [split_ws[0]=" + parts[0] + "]") }
+
+    // 9. deploy_token roundtrip (current bucket)
+    let tok = deploy_token(42, "tg-bot")
+    if len(tok) != 4 { panic("self_test FAIL [deploy_token len=" + to_string(len(tok)) + "]") }
+    if !deploy_token_valid(42, "tg-bot", tok) { panic("self_test FAIL [deploy_token_valid]") }
+    if deploy_token_valid(42, "tg-bot", "0000") && tok != "0000" {
+        panic("self_test FAIL [deploy_token accepts bad token]")
+    }
+
+    // 10. router — /help is handled, freeform is not
+    let dummy_cfg = Config {
+        token: "t", whitelist: [1], primary_host: "", dispatch: "cl",
+        claude_bin: "claude", cx_bin: "cx", dispatch_timeout: 180, bot_username: ""
+    }
+    let r_help = route_command(dummy_cfg, 1, "/help")
+    if !r_help.handled { panic("self_test FAIL [router /help not handled]") }
+    let r_free = route_command(dummy_cfg, 1, "hello world")
+    if r_free.handled { panic("self_test FAIL [router freeform handled]") }
+    let r_unk = route_command(dummy_cfg, 1, "/doesnotexist")
+    if !r_unk.handled { panic("self_test FAIL [router unknown not handled]") }
+
+    // 11. telegram getMe (non-critical — logs but doesn't fail)
     let getme = exec("curl -sS --max-time 5 '" + api_base(cfg.token) + "/getMe' 2>&1")
     if !getme.contains("\"ok\":true") {
         println("  getMe not ok (network?): " + truncate(getme, 100))
