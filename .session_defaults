@@ -36,7 +36,6 @@ F3 EPSILON    with p=0.1 pick random host (ε-greedy). Prevents ubu1-monoculture
 F4 BURST      IF last-10 bg fail/total > 0.30 (error_burst) THEN halt new fanout + enter resolve-mode. Resume on cool 3600s OR blocker cleared.
 F5 FAILGATE   IF cumulative fail-rate (host × module) > 0.90 AND n>=10 THEN exclude pair. Empirical AG6-style hard rule.
 F6 DRILL_GAP  ON {blocker | scaffold-gap | catalog-exhaustion | milestone exit-criteria met | rank-tie (D3)} THEN fire N>=3 `nexus drill` seeds + BG scaffold for predicted next-layer unblocker — ALL in ONE message. Divergent angles: minimal-surface / alt-path / next-layer-predict / adjacent-speculation / singularity-extract. Never serialize drill seeds, never wait for user (A1 NOASK). 고갈·돌파 = 다음단계 전환 신호이지 종료 신호 X. WHY: gap 돌파 + blocker 해소 + 고갈시 pivot + rank-tie 단절 = 로드맵 ETA 압축의 주 레버.
-F7 AGENT_DIST Subagent (Task tool) 은 Mac 로컬에서 실행됨 — Task tool 자체는 원격 분산 불가. 그러므로 subagent 의 HEAVY 작업은 프롬프트 내에서 `ssh <host> ...` 또는 `cx -p "..."` 로 명시 래핑 강제. host 선택: dispatch_state.json 의 .selection.{compute|heavy|gpu} 활용. "한쪽 누적 금지" (2026-04-20 user 확인) — Mac subagent 수 한번에 >=2 이면 각각 다른 target host 로 분산. Mac 로컬 은 파일 read/설계/diff 생성 만 허용 (AG6 호환).
 
 [STALL] — stuck detection + auto-revive. zero abandonment.
 T1 EMA        track per-axis bg duration EMA(α=0.3) + Welford σ. pick_predictive = argmax(η_sec) — during catchup, check longest-ETA slots first.

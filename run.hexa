@@ -1159,6 +1159,7 @@ fn print_help() -> void {
     println("PROTECTION / BOT")
     println("  runaway-guard [sub]      ubu1 폭주 감지/대응 (self-test|run-once|loop)")
     println("  tg-bot                   Telegram bot (iOS → claude dispatcher, M15)")
+    println("  agent-run --prompt=...   F7 AGENT_DIST — dispatch best host 로 prompt ssh 래핑 (기본 dry-run)")
     println("")
     println("DEPLOY / LIFECYCLE")
     println("  init [--target=T] [--dry-run]  수작업 없는 완정성 배포 (mac/ubu1/ubu2/htz/all)")
@@ -1528,6 +1529,13 @@ fn main() -> void {
     }
     if sub == "install-agents" || sub == "install_agents" {
         let _ = run_bin_hexa("install_agents", argv_tail(a, 3))
+        return
+    }
+    if sub == "agent-run" || sub == "agent_run" {
+        // F7 AGENT_DIST — prompt 을 dispatch_state best host 로 ssh 래핑 발사.
+        //   --prompt=... [--host=auto|mac|ubu1|ubu2|htz] [--kind=compute|heavy|gpu]
+        //   [--timeout=300] [--output=file|stdout] [--dry-run|--no-dry-run]
+        let _ = run_bin_hexa("agent_run", argv_tail(a, 3))
         return
     }
     if sub == "netlat" {
