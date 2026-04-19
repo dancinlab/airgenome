@@ -81,14 +81,17 @@ host_hot() {
     [ "${util:-0}" -ge "${cap_s:-101}" ]
 }
 
-# arg parsing — --force-host / --show 는 wrapper 전용, 나머지는 claude 로 forward
+# arg parsing — --force-host / --show / --docker 는 wrapper 전용, 나머지는 claude 로 forward
 force_host=""
 show_only=false
+docker_mode=${CX_DOCKER:-0}
 fwd=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --force-host) force_host=$2; shift 2 ;;
         --show)       show_only=true; shift ;;
+        --docker)     docker_mode=1; shift ;;
+        --no-docker)  docker_mode=0; shift ;;
         --)           shift; fwd+=("$@"); break ;;
         *)            fwd+=("$1"); shift ;;
     esac
@@ -384,21 +387,99 @@ else
     # ServerAliveInterval=60 : 유휴 60s 마다 keep-alive, 3회 실패시 연결 종료 → 끊김 감지.
     # tty flag: stdin 이 tty 면 -t (TUI interactive), 아니면 -T (one-shot -p/--print, pipe-safe).
     #          Why: -t + 비-tty stdin 은 "Pseudo-terminal will not be allocated" + claude -p 입력 행.
+    # docker 모드 해석 (M14 P4):
+    #   1. CLI --docker / --no-docker 가 최우선
+    #   2. hosts.json 의 per-host "docker": true 가 기본값
+    #   Docker 모드면 ssh 이후 `sudo -n docker exec [-i] -t airgenome-claude claude ...` 로 wrap.
+    #   컨테이너는 Mac $TMPDIR 접근 불가 → --add-dir /var/folders skip.
+    #   env (CLAUDE_CONFIG_DIR/NODE_OPTIONS/CLAUDX_* 등) 는 docker exec -e 로 재전달.
+    host_docker_default=$(jq_host "$host" '(.hosts[$h] // {}) | if has("docker") then .docker else false end')
+    if [ "$docker_mode" = 0 ] && [ "$host_docker_default" = "true" ]; then
+        docker_mode=1
+    fi
+    # --no-docker override via env is already consumed by arg parsing above.
+
     # --add-dir /var/folders: Mac $TMPDIR paste 이미지 경로 read 허용 (mac-tmp.service sshfs 경유).
     # (2026-04-19) mac-tmp sshfs mount 끊기면 --add-dir 가 있는 채로 Claude 가 해당 경로 stat 을
     # 시도 → sshfs EIO → 인증 실패로 오판 → 401 재인증 루프. 매 호출 사전 probe 해서
     # mount 살아있을 때만 주입. mount 복구되면 다음 호출에 자동 재활성.
+    # docker 모드는 컨테이너에 /var/folders bind mount 가 없으므로 skip.
     add_dir_args=()
-    if ssh -S none -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes -T "$alias" "test -d /var/folders" 2>/dev/null; then
-        add_dir_args=(--add-dir /var/folders)
-    else
-        echo "cx: /var/folders mount unreachable → image paste disabled this session" >&2
+    if [ "$docker_mode" != 1 ]; then
+        if ssh -S none -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes -T "$alias" "test -d /var/folders" 2>/dev/null; then
+            add_dir_args=(--add-dir /var/folders)
+        else
+            echo "cx: /var/folders mount unreachable → image paste disabled this session" >&2
+        fi
     fi
-    inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${add_dir_args[@]+"${add_dir_args[@]}"} ${fwd[@]+"${fwd[@]}"})
-    if [ -n "$remote_scope_cmd" ]; then
-        remote_cmd="if command -v systemd-run >/dev/null 2>&1; then $remote_scope_cmd $(printf '%q' "$inner_cmd"); else $inner_cmd; fi"
+    if [ "$docker_mode" = 1 ]; then
+        # docker exec 용 command 조립:
+        #   - env 는 remote_env_prefix 의 KEY=VAL 을 그대로 -e KEY=VAL 로 재매핑
+        #   - stdin tty 여부에 따라 -it vs -t (-i 생략)
+        #   - container name 은 고정 (airgenome-claude). 추후 per-host 변경 가능.
+        # genome flag
+        : > /tmp/airgenome.cx.docker-used 2>/dev/null || true
+        docker_env_args=""
+        # remote_env_prefix 는 `KEY="$HOME/..." ...` 형태. $HOME 은 컨테이너 기준(/root) 으로
+        # resolve 해야 함. 서브셸에서 HOME=/root (CX_DOCKER_HOME override 가능) 로 eval.
+        _container_home="${CX_DOCKER_HOME:-/root}"
+        if [ -n "$remote_env_prefix" ]; then
+            # HOME 을 임시로 컨테이너 기준으로 교체 후 eval. set-- 은 builtin 이라
+            # env-prefix 로 주입되지 않음 → 명시 export 후 복구.
+            _cx_save_home=$HOME
+            HOME=$_container_home
+            # shellcheck disable=SC2086
+            eval "set -- $remote_env_prefix :"
+            HOME=$_cx_save_home
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    :) shift; break ;;
+                    # BROWSER=Mac 전용 path → 컨테이너에서 의미 없음, skip
+                    BROWSER=*) shift ;;
+                    *=*)
+                        docker_env_args="$docker_env_args -e $(printf '%q' "$1")"
+                        shift
+                        ;;
+                    *) shift ;;
+                esac
+            done
+        fi
+        container_name="airgenome-claude"
+        if [ -t 0 ]; then
+            docker_tty_flags="-it"
+        else
+            docker_tty_flags="-t"
+        fi
+        # cwd 는 docker exec --workdir 로 전달. 컨테이너는 MAC_HOME 을 /home/<user>/mac_home 에
+        # bind-mount. Mac /Users/ghost/... 를 컨테이너 mac_home 경로로 translate.
+        # CX_DOCKER_WORKDIR 로 override 가능. 기본값 empty → 컨테이너 Dockerfile default 사용.
+        docker_workdir=""
+        if [ -n "${CX_DOCKER_WORKDIR:-}" ]; then
+            docker_workdir="--workdir $(printf '%q' "$CX_DOCKER_WORKDIR")"
+        else
+            case "$CALLER_CWD" in
+                /Users/ghost/*)
+                    # /Users/ghost/Dev/foo → mac_home/Dev/foo (컨테이너 내부 bind path)
+                    rel_from_home=${CALLER_CWD#/Users/ghost/}
+                    # 컨테이너는 주로 root, mac_home 위치는 /root/mac_home 또는 /home/<u>/mac_home
+                    # docker exec 는 cwd 실재 검증하므로 없으면 실패. 없으면 drop.
+                    # 안전 default: --workdir 생략 (컨테이너 Dockerfile 기본 사용).
+                    # user 가 명시하려면 CX_DOCKER_WORKDIR 로.
+                    :
+                    ;;
+            esac
+        fi
+        docker_cmd="sudo -n docker exec $docker_tty_flags $docker_workdir $docker_env_args $container_name "$(printf '%q ' claude ${fwd[@]+"${fwd[@]}"})
+        # fallback 안전망: native inner_cmd 도 미리 조립
+        inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${add_dir_args[@]+"${add_dir_args[@]}"} ${fwd[@]+"${fwd[@]}"})
+        remote_cmd="$docker_cmd; _rc=\$?; if [ \$_rc -eq 125 ] || [ \$_rc -eq 126 ] || [ \$_rc -eq 127 ]; then echo 'cx: docker exec rc='\$_rc' → native fallback' >&2; $inner_cmd; else exit \$_rc; fi"
     else
-        remote_cmd="$inner_cmd"
+        inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${add_dir_args[@]+"${add_dir_args[@]}"} ${fwd[@]+"${fwd[@]}"})
+        if [ -n "$remote_scope_cmd" ]; then
+            remote_cmd="if command -v systemd-run >/dev/null 2>&1; then $remote_scope_cmd $(printf '%q' "$inner_cmd"); else $inner_cmd; fi"
+        else
+            remote_cmd="$inner_cmd"
+        fi
     fi
     # KeepAlive 튜닝 (2026-04-19 stall observe): TCPKeepAlive=yes + ServerAliveInterval=15
     # 긴 응답 stream 중 TCP 버퍼 정체로 TUI freeze → 15s 마다 keepalive 로 버퍼 flush 유도.
