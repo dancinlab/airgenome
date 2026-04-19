@@ -1,0 +1,48 @@
+# airgenome-pull — ubu/ubu2 puller. 1분 timer 로 image digest 체크.
+# digest 변경 시 airgenome-claude restart (idle 시점 선호 — claude 세션 활성이면 다음 틱 대기).
+#
+# 동작:
+#   1. manifest digest 조회 (docker manifest inspect)
+#   2. 현재 컨테이너 image digest 와 비교
+#   3. 다르면: pull → try-restart (active 세션 없을 때만 즉시, 있으면 플래그 set)
+
+[Unit]
+Description=airgenome image puller (manifest digest watcher)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/airgenome/env
+Environment=AIRGENOME_TAG=dev
+Environment=REGISTRY=ghcr.io/need-singularity/airgenome
+Environment=STATE_DIR=%h/.airgenome
+
+ExecStart=/bin/bash -c ' \
+    set -euo pipefail; \
+    mkdir -p "$STATE_DIR"; \
+    REMOTE_DIGEST=$(docker manifest inspect "${REGISTRY}:${AIRGENOME_TAG}" 2>/dev/null \
+        | jq -r ".manifests[0].digest // .config.digest // empty" || true); \
+    LOCAL_DIGEST=$(docker inspect --format "{{index .RepoDigests 0}}" "${REGISTRY}:${AIRGENOME_TAG}" 2>/dev/null \
+        | awk -F@ "{print \$2}" || true); \
+    echo "{\"ts\":\"$(date -u +%FT%TZ)\",\"remote\":\"${REMOTE_DIGEST}\",\"local\":\"${LOCAL_DIGEST}\"}" \
+        >> "$STATE_DIR/pull.jsonl"; \
+    if [ -n "$REMOTE_DIGEST" ] && [ "$REMOTE_DIGEST" != "$LOCAL_DIGEST" ]; then \
+        echo "new digest — pulling"; \
+        docker pull "${REGISTRY}:${AIRGENOME_TAG}"; \
+        # claude 세션이 활성이면 try-restart 지연 (pending 플래그)
+        if docker exec airgenome-claude pgrep -x claude >/dev/null 2>&1; then \
+            touch "$STATE_DIR/pull.pending"; \
+            echo "claude active — deferred restart (pending flag set)"; \
+        else \
+            systemctl --user try-restart airgenome-claude; \
+            rm -f "$STATE_DIR/pull.pending"; \
+            echo "restarted"; \
+        fi; \
+    else \
+        echo "up-to-date"; \
+    fi'
+
+StandardOutput=journal
+StandardError=journal

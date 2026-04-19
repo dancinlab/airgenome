@@ -1,0 +1,76 @@
+# airgenome-claude — 원격 호스트 (ubu/ubu2) systemd user service
+# 설치: cp → ~/.config/systemd/user/, systemctl --user daemon-reload, systemctl --user enable --now airgenome-claude
+# 업데이트: airgenome-pull.service 가 image digest 변경 감지 후 `systemctl --user try-restart airgenome-claude`
+# 환경변수: /etc/airgenome/env 또는 ~/.config/airgenome/env 에서 로드 (AIRGENOME_TAG 로 이미지 고정 가능)
+
+[Unit]
+Description=airgenome claude CLI container (long-running, cold-start=0)
+Documentation=https://github.com/need-singularity/airgenome/blob/main/docs/AG-Q14_docker_migration.md
+After=network-online.target docker.service mac-home.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/airgenome/env
+Environment=AIRGENOME_TAG=dev
+Environment=REGISTRY=ghcr.io/need-singularity/airgenome
+Environment=MAC_HOME=%h/mac_home
+
+# 기존 컨테이너 정리 (stale 방지)
+ExecStartPre=-/usr/bin/docker rm -f airgenome-claude
+# 이미지 최신 확인 (이미 있으면 no-op)
+ExecStartPre=-/usr/bin/docker pull ${REGISTRY}:${AIRGENOME_TAG}
+
+# 메인: long-running. cpuset=SMT 페어, --memory-swap=동일(swap 차단), --init(tini), TTY
+ExecStart=/usr/bin/docker run --rm \
+    --name airgenome-claude \
+    --init \
+    --cpu-shares=2048 \
+    --cpuset-cpus=0,1,8,9 \
+    --pids-limit=512 \
+    --memory=8g \
+    --memory-swap=8g \
+    --network=host \
+    --device=/dev/fuse \
+    --cap-add=SYS_ADMIN \
+    --security-opt=apparmor:unconfined \
+    -e TERM=xterm-256color \
+    -e LANG=C.UTF-8 \
+    -e TZ=Asia/Seoul \
+    -e "CLAUDX_HOME_MAP=/Users/ghost:${MAC_HOME}" \
+    -e "NODE_OPTIONS=--max-old-space-size=4096" \
+    -v %h/.airgenome:/root/.airgenome \
+    -v ${MAC_HOME}:/mac_home:rshared \
+    -v %h/.claude-claude1:/root/.claude-claude1 \
+    -v %h/.claude-claude2:/root/.claude-claude2 \
+    -v %h/.claude-claude3:/root/.claude-claude3 \
+    -v %h/.claude-claude4:/root/.claude-claude4 \
+    -v %h/.claude-claude5:/root/.claude-claude5 \
+    -v %h/.claude-claude6:/root/.claude-claude6 \
+    -v %h/.claude-claude7:/root/.claude-claude7 \
+    -v %h/.claude-claude8:/root/.claude-claude8 \
+    -v %h/.claude-claude9:/root/.claude-claude9 \
+    -v %h/.claude-claude10:/root/.claude-claude10 \
+    -v %h/.claude-claude11:/root/.claude-claude11 \
+    -v %h/.claude-claude12:/root/.claude-claude12 \
+    -v ${MAC_HOME}/Dev/airgenome:/workspace/airgenome \
+    ${REGISTRY}:${AIRGENOME_TAG} \
+    sleep infinity
+
+# claude 는 `docker exec -it airgenome-claude claude` 로 호출 — cx 가 wrapping
+# (sleep infinity 는 컨테이너 상주 유지용)
+
+ExecStop=/usr/bin/docker stop -t 30 airgenome-claude
+
+Restart=always
+RestartSec=10
+# graceful stop 시간 충분히
+TimeoutStopSec=60
+
+# 로그는 journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

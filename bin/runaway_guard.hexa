@@ -1,0 +1,739 @@
+// bin/runaway_guard.hexa — M14 P2 ubu 폭주 감지/대응 엔진
+//
+// 책임:
+//   1. /proc 직접 스캔 — load/iowait/mem/d-state + top CPU procs (systemctl X)
+//   2. thresholds.json 기반 4단계 verdict (ok/warn/danger/critical)
+//   3. whitelist.json 보호 — claude/sshd/node/hexa/systemd* 에 절대 손 안 댐
+//   4. 액션: renice +10/+15 / cpulimit --limit 50/30 (kill/STOP 금지)
+//   5. JSONL 로그 append → ~/.airgenome/runaway.jsonl
+//   6. dry-run (env RUNAWAY_DRY_RUN=1) + 1-shot test (env RUNAWAY_TEST=1)
+//
+// 제약:
+//   - use "../core/core" 만 (AG-core-only invariant)
+//   - try/catch 미사용 (hexa-lang stage1)
+//   - list.push(x) no-op — `list = list + [x]` 사용 (feedback_hexa-list-push-noop)
+//   - if 조건에서 전역 let 직접 비교 X — 로컬 복사 (feedback_hexa-global-const-if)
+//   - to_string(void) → "void" 가드 필수 (feedback_hexa_void_json)
+//   - pgrep -f 자기참조 X — /proc/*/comm 전수 스캔 (feedback_pgrep_self_reference)
+//   - Mac 실행 금지 (AG6/AG-MAC-01) — 엔진 자체는 Ubuntu 타겟. Mac 에선 parse-only.
+//
+// Usage:
+//   systemd:   ExecStart=/usr/local/bin/hexa run /opt/airgenome/bin/runaway_guard.hexa
+//   dev:       HEXA_LOCAL=1 RUNAWAY_TEST=1 RUNAWAY_DRY_RUN=1 hexa run bin/runaway_guard.hexa
+//   1회 측정:  RUNAWAY_TEST=1 hexa run bin/runaway_guard.hexa
+
+use "../core/core"
+
+let HOME = env("HOME")
+let LOG_PATH = HOME + "/.airgenome/runaway.jsonl"
+let SLEEP_SECONDS = 5
+let SUSTAIN_WINDOW = 30  // runaway_pid.sustain_seconds 기본값 (thresholds.json override)
+
+// ─── state file 기본 위치 (Mac dev 와 Ubuntu prod 공존) ───────────────────
+fn ag_root() -> str {
+    return airgenome_root()
+}
+
+fn thresholds_path() -> str {
+    return ag_root() + "/shared/runaway/thresholds.json"
+}
+
+fn whitelist_path() -> str {
+    return ag_root() + "/shared/runaway/whitelist.json"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  METRICS — /proc 직접 읽기
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn ts_epoch() -> int {
+    return to_int(exec("date +%s").trim())
+}
+
+// /proc/loadavg → "0.42 0.38 0.31 2/431 12345"
+// 반환: load1 정수부 (float 비교 회피 — hexa-lang stage1 float quirk)
+fn read_load_x100(idx: int) -> int {
+    // idx=0 → load1, idx=1 → load5. 결과는 *100 scaled int (0.73 → 73).
+    let raw = exec("cat /proc/loadavg 2>/dev/null").trim()
+    if raw == "" { return 0 }
+    let parts = raw.split(" ")
+    if len(parts) <= idx { return 0 }
+    let s = parts[idx].trim()
+    if s == "" { return 0 }
+    let dp = s.split(".")
+    if len(dp) == 0 { return 0 }
+    let head = dp[0]
+    let mut frac_s = "00"
+    if len(dp) >= 2 { frac_s = dp[1] }
+    // 소수 2자리까지만
+    if len(frac_s) > 2 { frac_s = frac_s_truncate2(frac_s) }
+    if len(frac_s) == 1 { frac_s = frac_s + "0" }
+    let mut head_i = 0
+    if head != "" { head_i = to_int(head) }
+    let mut frac_i = 0
+    if frac_s != "" { frac_i = to_int(frac_s) }
+    return head_i * 100 + frac_i
+}
+
+// hexa-lang 에 .substr 없음 — 2자리 수동 truncate. 빈문자 안전.
+fn frac_s_truncate2(s: str) -> str {
+    if len(s) <= 2 { return s }
+    let chars = s.split("")
+    // split("") 가 하나씩 쪼개지 않으면 fallback — jq 로 cut
+    if len(chars) >= 3 {
+        if chars[0] != "" {
+            if chars[1] != "" { return chars[0] + chars[1] }
+        }
+    }
+    // fallback — awk cut (단일 포크 1회)
+    let r = exec("printf '%s' '" + s + "' | cut -c1-2").trim()
+    if r != "" { return r }
+    return "00"
+}
+
+fn read_nproc() -> int {
+    let s = exec("nproc 2>/dev/null").trim()
+    if s == "" {
+        // /proc/cpuinfo fallback
+        s = exec("grep -c ^processor /proc/cpuinfo 2>/dev/null").trim()
+    }
+    if s == "" { return 1 }
+    let n = to_int(s)
+    if n <= 0 { return 1 }
+    return n
+}
+
+// /proc/stat 첫 줄: cpu  user nice system idle iowait irq softirq steal guest guest_nice
+// 두 샘플 delta 로 iowait % 계산. 단일-샘플일 때는 idle 기반 근사 불가 → sleep 1 후 재샘플.
+fn read_iowait_pct() -> int {
+    // 첫 샘플
+    let a = exec("head -1 /proc/stat 2>/dev/null").trim()
+    let _s = exec("sleep 1")
+    let b = exec("head -1 /proc/stat 2>/dev/null").trim()
+    if a == "" { return 0 }
+    if b == "" { return 0 }
+    let pa = split_fields(a)
+    let pb = split_fields(b)
+    // pa[0] = "cpu", 숫자는 pa[1..] . iowait 는 index 5 (user=1 nice=2 system=3 idle=4 iowait=5).
+    if len(pa) < 6 { return 0 }
+    if len(pb) < 6 { return 0 }
+    let mut total_a = 0
+    let mut total_b = 0
+    let mut i = 1
+    while i < len(pa) {
+        if i < len(pb) {
+            total_a = total_a + to_int(pa[i])
+            total_b = total_b + to_int(pb[i])
+        }
+        i = i + 1
+    }
+    let iowait_a = to_int(pa[5])
+    let iowait_b = to_int(pb[5])
+    let dt = total_b - total_a
+    let di = iowait_b - iowait_a
+    if dt <= 0 { return 0 }
+    if di < 0 { return 0 }
+    return di * 100 / dt
+}
+
+// 공백 연속 → 단일 토큰. awk/tr fork 회피.
+fn split_fields(s: str) -> list {
+    let parts = s.split(" ")
+    let out = []
+    let mut i = 0
+    while i < len(parts) {
+        let p = parts[i]
+        if p != "" { out = out + [p] }
+        i = i + 1
+    }
+    return out
+}
+
+// /proc/meminfo → MemAvailable kB → GB (int 반올림 내림)
+fn read_mem_avail_gb() -> int {
+    let s = exec("awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null").trim()
+    if s == "" { return 0 }
+    let kb = to_int(s)
+    if kb <= 0 { return 0 }
+    return kb / 1024 / 1024
+}
+
+// D-state PID 개수 — /proc/*/stat 의 state 필드(3번째) 가 'D'
+// pgrep -f 자기참조 버그 회피 — ps 로 직접.
+fn read_d_state_count() -> int {
+    // ps -eo s= 은 state 한 글자만 열거. D 카운트.
+    let s = exec("ps -eo s= 2>/dev/null | awk '$1==\"D\"{c++}END{print c+0}'").trim()
+    if s == "" { return 0 }
+    return to_int(s)
+}
+
+struct ProcStat {
+    pid: int,
+    comm: str,
+    pcpu: int,   // 정수부 (per-CPU %)
+    rss_kb: int
+}
+
+// 상위 CPU N개. ps -eo pid,pcpu,rss,comm — 자기(hexa) 포함. PID 1(init) 제외.
+fn read_top_cpu(n: int) -> list {
+    let cmd = "ps -eo pid=,pcpu=,rss=,comm= --sort=-pcpu | head -" + to_string(n)
+    let out = exec(cmd)
+    let lines = out.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line != "" {
+            let f = split_fields(line)
+            if len(f) >= 4 {
+                let pid_i = to_int(f[0])
+                let cpu_parts = f[1].split(".")
+                let mut cpu_i = 0
+                if len(cpu_parts) > 0 {
+                    if cpu_parts[0] != "" { cpu_i = to_int(cpu_parts[0]) }
+                }
+                let rss_i = to_int(f[2])
+                let comm = f[3]
+                // comm 뒤 토큰은 버림 (ps -o comm= 는 단일 필드지만 안전차원)
+                if pid_i > 1 {
+                    result = result + [ProcStat { pid: pid_i, comm: comm, pcpu: cpu_i, rss_kb: rss_i }]
+                }
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  THRESHOLDS — jq 1-shot 파싱 (fork 비용 < 엔진 연속가동의 재시작 위험)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn jqx_f(path: str, expr: str, fallback: int) -> int {
+    // float → *100 scaled int (hexa-lang float quirk 회피)
+    let cmd = "jq -r '(" + expr + ") // empty' '" + path + "' 2>/dev/null"
+    let raw = exec(cmd).trim()
+    if raw == "" { return fallback }
+    let dp = raw.split(".")
+    let mut head_i = 0
+    let mut frac_s = "00"
+    if len(dp) > 0 {
+        if dp[0] != "" { head_i = to_int(dp[0]) }
+    }
+    if len(dp) >= 2 { frac_s = dp[1] }
+    if len(frac_s) > 2 { frac_s = frac_s_truncate2(frac_s) }
+    if len(frac_s) == 1 { frac_s = frac_s + "0" }
+    let mut frac_i = 0
+    if frac_s != "" { frac_i = to_int(frac_s) }
+    return head_i * 100 + frac_i
+}
+
+fn jqx_i(path: str, expr: str, fallback: int) -> int {
+    let cmd = "jq -r '(" + expr + ") // empty' '" + path + "' 2>/dev/null"
+    let raw = exec(cmd).trim()
+    if raw == "" { return fallback }
+    return to_int(raw)
+}
+
+struct Thresholds {
+    // load 는 per-nproc *100. load1 값도 동일 스케일로 정규화해서 비교.
+    load_warn_x100: int,
+    load_danger_x100: int,
+    load_crit_x100: int,
+    // iowait / mem / d-state 는 정수.
+    iowait_warn: int,
+    iowait_danger: int,
+    iowait_crit: int,
+    mem_warn_gb: int,
+    mem_danger_gb: int,
+    mem_crit_gb: int,
+    dstate_warn: int,
+    dstate_danger: int,
+    dstate_crit: int,
+    pid_cpu_pct: int,
+    pid_sustain_s: int
+}
+
+fn load_thresholds() -> Thresholds {
+    let p = thresholds_path()
+    // 파일 없으면 코드 기본값 (systemd 초기 부팅 safety)
+    let exists = exec("test -f '" + p + "' && echo y || echo n").trim()
+    if exists != "y" {
+        return Thresholds {
+            load_warn_x100: 70, load_danger_x100: 100, load_crit_x100: 150,
+            iowait_warn: 10, iowait_danger: 20, iowait_crit: 35,
+            mem_warn_gb: 4, mem_danger_gb: 2, mem_crit_gb: 1,
+            dstate_warn: 1, dstate_danger: 2, dstate_crit: 3,
+            pid_cpu_pct: 100, pid_sustain_s: 30
+        }
+    }
+    return Thresholds {
+        load_warn_x100:   jqx_f(p, ".load_per_nproc.warn",     70),
+        load_danger_x100: jqx_f(p, ".load_per_nproc.danger",   100),
+        load_crit_x100:   jqx_f(p, ".load_per_nproc.critical", 150),
+        iowait_warn:      jqx_i(p, ".iowait_pct.warn",     10),
+        iowait_danger:    jqx_i(p, ".iowait_pct.danger",   20),
+        iowait_crit:      jqx_i(p, ".iowait_pct.critical", 35),
+        mem_warn_gb:      jqx_i(p, ".mem_avail_gb.warn",     4),
+        mem_danger_gb:    jqx_i(p, ".mem_avail_gb.danger",   2),
+        mem_crit_gb:      jqx_i(p, ".mem_avail_gb.critical", 1),
+        dstate_warn:      jqx_i(p, ".d_state_count.warn",     1),
+        dstate_danger:    jqx_i(p, ".d_state_count.danger",   2),
+        dstate_crit:      jqx_i(p, ".d_state_count.critical", 3),
+        pid_cpu_pct:      jqx_i(p, ".runaway_pid.single_cpu_pct", 100),
+        pid_sustain_s:    jqx_i(p, ".runaway_pid.sustain_seconds", 30)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  WHITELIST — claude 등 보호 프로세스
+// ═══════════════════════════════════════════════════════════════════════
+
+struct Whitelist {
+    exact: list,
+    prefix: list
+}
+
+fn load_whitelist() -> Whitelist {
+    let p = whitelist_path()
+    let exists = exec("test -f '" + p + "' && echo y || echo n").trim()
+    if exists != "y" {
+        return Whitelist {
+            exact: ["claude", "sshd", "node", "hexa", "dbus", "ssh-agent", "tini", "systemd", "init"],
+            prefix: ["systemd"]
+        }
+    }
+    let ex_raw = exec("jq -r '.exact[]? // empty' '" + p + "' 2>/dev/null").trim()
+    let pf_raw = exec("jq -r '.prefix[]? // empty' '" + p + "' 2>/dev/null").trim()
+    let ex_list = []
+    let pf_list = []
+    if ex_raw != "" {
+        let parts = ex_raw.split("\n")
+        let mut i = 0
+        while i < len(parts) {
+            let s = parts[i].trim()
+            if s != "" { ex_list = ex_list + [s] }
+            i = i + 1
+        }
+    }
+    if pf_raw != "" {
+        let parts = pf_raw.split("\n")
+        let mut i = 0
+        while i < len(parts) {
+            let s = parts[i].trim()
+            if s != "" { pf_list = pf_list + [s] }
+            i = i + 1
+        }
+    }
+    return Whitelist { exact: ex_list, prefix: pf_list }
+}
+
+fn is_protected(comm: str, wl: Whitelist) -> bool {
+    if comm == "" { return true }  // 알 수 없는 프로세스는 보수적 보호
+    let mut i = 0
+    while i < len(wl.exact) {
+        if wl.exact[i] == comm { return true }
+        i = i + 1
+    }
+    let mut j = 0
+    while j < len(wl.prefix) {
+        let pfx = wl.prefix[j]
+        if comm.starts_with(pfx) { return true }
+        j = j + 1
+    }
+    return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  VERDICT — 4단계 ok/warn/danger/critical
+// ═══════════════════════════════════════════════════════════════════════
+
+let VERDICT_OK = 0
+let VERDICT_WARN = 1
+let VERDICT_DANGER = 2
+let VERDICT_CRITICAL = 3
+
+fn verdict_name(v: int) -> str {
+    if v == 0 { return "ok" }
+    if v == 1 { return "warn" }
+    if v == 2 { return "danger" }
+    if v == 3 { return "critical" }
+    return "unknown"
+}
+
+fn max_verdict(a: int, b: int) -> int {
+    if a > b { return a }
+    return b
+}
+
+struct Metrics {
+    load1_x100: int,
+    load5_x100: int,
+    nproc: int,
+    iowait_pct: int,
+    mem_avail_gb: int,
+    d_state: int,
+    top: list   // list of ProcStat
+}
+
+fn compute_verdict(m: Metrics, t: Thresholds) -> int {
+    let mut v = VERDICT_OK
+    // load per nproc: (load1_x100 / nproc) 을 threshold(*100, per-nproc) 와 비교.
+    let nproc = m.nproc
+    let mut lpn = 0
+    if nproc > 0 { lpn = m.load1_x100 / nproc }
+    if lpn >= t.load_crit_x100   { v = max_verdict(v, VERDICT_CRITICAL) }
+    else { if lpn >= t.load_danger_x100 { v = max_verdict(v, VERDICT_DANGER) }
+    else { if lpn >= t.load_warn_x100   { v = max_verdict(v, VERDICT_WARN)   } } }
+
+    if m.iowait_pct >= t.iowait_crit   { v = max_verdict(v, VERDICT_CRITICAL) }
+    else { if m.iowait_pct >= t.iowait_danger { v = max_verdict(v, VERDICT_DANGER) }
+    else { if m.iowait_pct >= t.iowait_warn   { v = max_verdict(v, VERDICT_WARN)   } } }
+
+    // memory 는 inverse (낮을수록 심각)
+    if m.mem_avail_gb <= t.mem_crit_gb   { v = max_verdict(v, VERDICT_CRITICAL) }
+    else { if m.mem_avail_gb <= t.mem_danger_gb { v = max_verdict(v, VERDICT_DANGER) }
+    else { if m.mem_avail_gb <= t.mem_warn_gb   { v = max_verdict(v, VERDICT_WARN)   } } }
+
+    if m.d_state >= t.dstate_crit   { v = max_verdict(v, VERDICT_CRITICAL) }
+    else { if m.d_state >= t.dstate_danger { v = max_verdict(v, VERDICT_DANGER) }
+    else { if m.d_state >= t.dstate_warn   { v = max_verdict(v, VERDICT_WARN)   } } }
+
+    return v
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SUSTAIN TRACKER — PID 별 high-CPU 지속 시간
+//  구현: in-memory list 1-tick 기반 (stateful 메모리는 frozen list).
+//  실제 SUSTAIN_WINDOW 판정은 ~/.airgenome/runaway_pid_seen.tsv 에 last-seen epoch 기록.
+// ═══════════════════════════════════════════════════════════════════════
+
+fn seen_path() -> str {
+    return HOME + "/.airgenome/runaway_pid_seen.tsv"
+}
+
+fn ensure_home() -> void {
+    let _ = exec("mkdir -p '" + HOME + "/.airgenome'")
+}
+
+// record pid's first-seen epoch if not present. Returns seconds sustained.
+fn pid_sustain_seconds(pid: int, now: int) -> int {
+    let path = seen_path()
+    let pid_s = to_string(pid)
+    // look up existing line "<pid>\t<epoch>"
+    let found = exec("awk -v p=" + pid_s + " '$1==p{print $2}' '" + path + "' 2>/dev/null").trim()
+    if found == "" {
+        // first sighting — record
+        let line = pid_s + "\t" + to_string(now)
+        let _ = exec("printf '%s\\n' '" + line + "' >> '" + path + "'")
+        return 0
+    }
+    let first = to_int(found)
+    if first <= 0 { return 0 }
+    return now - first
+}
+
+fn clear_pid_seen(pid: int) -> void {
+    let path = seen_path()
+    let pid_s = to_string(pid)
+    let _ = exec("awk -v p=" + pid_s + " '$1!=p' '" + path + "' > '" + path + ".tmp' 2>/dev/null && mv '" + path + ".tmp' '" + path + "'")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ACTIONS — renice / cpulimit (+ dry-run)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn is_dry_run() -> bool {
+    return env("RUNAWAY_DRY_RUN") == "1"
+}
+
+struct Action {
+    kind: str,   // "renice+10" / "renice+15" / "cpulimit50" / "cpulimit30" / "skip_protected"
+    pid: int,
+    comm: str,
+    dry_run: bool
+}
+
+fn do_renice(pid: int, delta: int) -> void {
+    let pid_s = to_string(pid)
+    let d_s = to_string(delta)
+    let _ = exec("renice " + d_s + " -p " + pid_s + " 2>/dev/null")
+}
+
+fn do_cpulimit(pid: int, limit_pct: int) -> void {
+    // cpulimit 백그라운드 fork. 이미 붙어있으면 중복 실행 되지만 limit 값만 갱신 됨.
+    let pid_s = to_string(pid)
+    let l_s = to_string(limit_pct)
+    // nohup + & 로 자식 분리. 출력은 /dev/null.
+    let _ = exec("nohup cpulimit --limit " + l_s + " --pid " + pid_s + " >/dev/null 2>&1 &")
+}
+
+fn format_action_json(a: Action) -> str {
+    let dr = "false"
+    if a.dry_run { dr = "true" }
+    return "{\"kind\":\"" + a.kind + "\",\"pid\":" + to_string(a.pid)
+         + ",\"comm\":\"" + json_safe(a.comm) + "\",\"dry_run\":" + dr + "}"
+}
+
+fn json_safe(s: str) -> str {
+    let no_bs = s.replace("\\", "")
+    return no_bs.replace("\"", "")
+}
+
+// warn 단계 액션: 단일 runaway PID (CPU≥pct, sustain≥sec) 에 renice +10
+fn actions_warn(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool) -> list {
+    let result = []
+    let mut i = 0
+    while i < len(m.top) {
+        let p = m.top[i]
+        if p.pcpu >= t.pid_cpu_pct {
+            let sust = pid_sustain_seconds(p.pid, now)
+            if sust >= t.pid_sustain_s {
+                if is_protected(p.comm, wl) {
+                    result = result + [Action { kind: "skip_protected", pid: p.pid, comm: p.comm, dry_run: dry }]
+                } else {
+                    if !dry { do_renice(p.pid, 10) }
+                    result = result + [Action { kind: "renice+10", pid: p.pid, comm: p.comm, dry_run: dry }]
+                }
+            }
+        } else {
+            // CPU 떨어지면 seen 기록 제거
+            clear_pid_seen(p.pid)
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn actions_danger(m: Metrics, t: Thresholds, wl: Whitelist, now: int, dry: bool) -> list {
+    let result = []
+    let mut i = 0
+    while i < len(m.top) {
+        let p = m.top[i]
+        if p.pcpu >= t.pid_cpu_pct {
+            let sust = pid_sustain_seconds(p.pid, now)
+            if sust >= t.pid_sustain_s {
+                if is_protected(p.comm, wl) {
+                    result = result + [Action { kind: "skip_protected", pid: p.pid, comm: p.comm, dry_run: dry }]
+                } else {
+                    if !dry {
+                        do_renice(p.pid, 10)
+                        do_cpulimit(p.pid, 50)
+                    }
+                    result = result + [Action { kind: "renice+10", pid: p.pid, comm: p.comm, dry_run: dry }]
+                    result = result + [Action { kind: "cpulimit50", pid: p.pid, comm: p.comm, dry_run: dry }]
+                }
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn actions_critical(m: Metrics, wl: Whitelist, dry: bool) -> list {
+    let result = []
+    // 상위 3개 — claude 등 제외. sustain 무시 (이미 임계초과)
+    let mut i = 0
+    let mut hit = 0
+    while i < len(m.top) {
+        if hit >= 3 { i = len(m.top) }
+        else {
+            let p = m.top[i]
+            if is_protected(p.comm, wl) {
+                result = result + [Action { kind: "skip_protected", pid: p.pid, comm: p.comm, dry_run: dry }]
+            } else {
+                if !dry {
+                    do_renice(p.pid, 15)
+                    do_cpulimit(p.pid, 30)
+                }
+                result = result + [Action { kind: "renice+15", pid: p.pid, comm: p.comm, dry_run: dry }]
+                result = result + [Action { kind: "cpulimit30", pid: p.pid, comm: p.comm, dry_run: dry }]
+                hit = hit + 1
+            }
+            i = i + 1
+        }
+    }
+    return result
+}
+
+fn collect_actions(v: int, m: Metrics, t: Thresholds, wl: Whitelist, now: int) -> list {
+    let dry = is_dry_run()
+    if v == VERDICT_OK { return [] }
+    if v == VERDICT_WARN { return actions_warn(m, t, wl, now, dry) }
+    if v == VERDICT_DANGER { return actions_danger(m, t, wl, now, dry) }
+    if v == VERDICT_CRITICAL { return actions_critical(m, wl, dry) }
+    return []
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LOG — JSONL append
+// ═══════════════════════════════════════════════════════════════════════
+
+fn format_top_json(top: list) -> str {
+    let mut out = "["
+    let mut i = 0
+    while i < len(top) {
+        if i > 0 { out = out + "," }
+        let p = top[i]
+        out = out + "{\"pid\":" + to_string(p.pid)
+            + ",\"comm\":\"" + json_safe(p.comm) + "\""
+            + ",\"pcpu\":" + to_string(p.pcpu)
+            + ",\"rss_kb\":" + to_string(p.rss_kb) + "}"
+        i = i + 1
+    }
+    return out + "]"
+}
+
+fn format_actions_json(actions: list) -> str {
+    let mut out = "["
+    let mut i = 0
+    while i < len(actions) {
+        if i > 0 { out = out + "," }
+        out = out + format_action_json(actions[i])
+        i = i + 1
+    }
+    return out + "]"
+}
+
+fn format_event(ts: str, m: Metrics, v: int, actions: list) -> str {
+    let lpn_x100 = 0
+    if m.nproc > 0 { lpn_x100 = m.load1_x100 / m.nproc }
+    return "{\"ts\":\"" + ts + "\""
+         + ",\"source\":\"runaway_guard\""
+         + ",\"verdict\":\"" + verdict_name(v) + "\""
+         + ",\"metrics\":{"
+         +   "\"load1_x100\":" + to_string(m.load1_x100)
+         + ",\"load5_x100\":" + to_string(m.load5_x100)
+         + ",\"nproc\":" + to_string(m.nproc)
+         + ",\"load_per_nproc_x100\":" + to_string(lpn_x100)
+         + ",\"iowait_pct\":" + to_string(m.iowait_pct)
+         + ",\"mem_avail_gb\":" + to_string(m.mem_avail_gb)
+         + ",\"d_state\":" + to_string(m.d_state)
+         + ",\"top\":" + format_top_json(m.top)
+         + "}"
+         + ",\"actions\":" + format_actions_json(actions)
+         + ",\"dry_run\":" + bool_str(is_dry_run())
+         + "}"
+}
+
+fn bool_str(b: bool) -> str {
+    if b { return "true" }
+    return "false"
+}
+
+fn append_log(line: str) -> void {
+    ensure_home()
+    // exec quoting 안전 — printf + heredoc 회피 (단일 라인 JSON)
+    let tmp = LOG_PATH + ".tmp." + to_string(ts_epoch())
+    let _ = write_file(tmp, line + "\n")
+    let _ = exec("cat '" + tmp + "' >> '" + LOG_PATH + "' && rm -f '" + tmp + "'")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TICK
+// ═══════════════════════════════════════════════════════════════════════
+
+fn collect_metrics() -> Metrics {
+    // sequential 로 — /proc 읽기 자체는 μs. iowait 측정 안 1s sleep 만 유의미.
+    let load1 = read_load_x100(0)
+    let load5 = read_load_x100(1)
+    let nproc = read_nproc()
+    let iowait = read_iowait_pct()
+    let mem = read_mem_avail_gb()
+    let dst = read_d_state_count()
+    let top = read_top_cpu(10)
+    return Metrics {
+        load1_x100: load1,
+        load5_x100: load5,
+        nproc: nproc,
+        iowait_pct: iowait,
+        mem_avail_gb: mem,
+        d_state: dst,
+        top: top
+    }
+}
+
+fn tick(t: Thresholds, wl: Whitelist) -> void {
+    let ts = ts_iso()
+    let now = ts_epoch()
+    let m = collect_metrics()
+    let v = compute_verdict(m, t)
+    let actions = collect_actions(v, m, t, wl, now)
+    let line = format_event(ts, m, v, actions)
+    append_log(line)
+    // stdout 에도 한 줄 (systemd journal 용이성)
+    println(line)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SELF / TEST / MAIN
+// ═══════════════════════════════════════════════════════════════════════
+
+fn self_test() -> void {
+    // 1. whitelist protection
+    let wl = load_whitelist()
+    if !is_protected("claude", wl) { panic("self_test FAIL [claude not protected]") }
+    if !is_protected("hexa", wl) { panic("self_test FAIL [hexa not protected]") }
+    if !is_protected("systemd-logind", wl) { panic("self_test FAIL [systemd prefix not caught]") }
+    if is_protected("python3", wl) { panic("self_test FAIL [python3 should NOT be protected]") }
+
+    // 2. thresholds load
+    let t = load_thresholds()
+    if t.load_crit_x100 <= t.load_danger_x100 { panic("self_test FAIL [load order]") }
+    if t.iowait_crit <= t.iowait_danger { panic("self_test FAIL [iowait order]") }
+    if t.mem_crit_gb >= t.mem_warn_gb { panic("self_test FAIL [mem order inverse]") }
+
+    // 3. verdict compute — synthetic metrics
+    let ok_m = Metrics { load1_x100: 50, load5_x100: 50, nproc: 8,
+                         iowait_pct: 2, mem_avail_gb: 16, d_state: 0, top: [] }
+    let ok_v = compute_verdict(ok_m, t)
+    if ok_v != VERDICT_OK { panic("self_test FAIL [ok verdict got " + to_string(ok_v) + "]") }
+
+    let crit_m = Metrics { load1_x100: 1600, load5_x100: 1200, nproc: 8,
+                           iowait_pct: 40, mem_avail_gb: 0, d_state: 5, top: [] }
+    let crit_v = compute_verdict(crit_m, t)
+    if crit_v != VERDICT_CRITICAL { panic("self_test FAIL [critical verdict got " + to_string(crit_v) + "]") }
+
+    // 4. verdict_name
+    if verdict_name(0) != "ok" { panic("self_test FAIL [verdict_name ok]") }
+    if verdict_name(3) != "critical" { panic("self_test FAIL [verdict_name critical]") }
+
+    // 5. JSON safety
+    if json_safe("a\"b\\c") != "abc" { panic("self_test FAIL [json_safe]") }
+
+    println("  ✅ runaway_guard self_test PASS")
+}
+
+fn run_once() -> void {
+    let t = load_thresholds()
+    let wl = load_whitelist()
+    tick(t, wl)
+}
+
+fn run_loop() -> void {
+    let t = load_thresholds()
+    let wl = load_whitelist()
+    while true {
+        tick(t, wl)
+        let _ = exec("sleep " + to_string(SLEEP_SECONDS))
+    }
+}
+
+fn main() -> void {
+    let a = args()
+    let mut sub = ""
+    if len(a) >= 3 { sub = a[2] }
+
+    if sub == "self-test" { self_test(); return }
+
+    // env flags
+    if env("RUNAWAY_TEST") == "1" { run_once(); return }
+
+    run_loop()
+}
+
+main()

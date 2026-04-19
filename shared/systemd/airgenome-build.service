@@ -1,0 +1,46 @@
+# airgenome-build — hetzner ONLY. git HEAD 체크 후 buildx bake --push.
+# 설치: ssh htz; cp → ~/.config/systemd/user/, enable timer.
+# 이미지 SSOT: htz 가 5분마다 git pull 후 HEAD 변경 시 build + push.
+
+[Unit]
+Description=airgenome image builder (htz SSOT — buildx bake + push)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+ConditionHost=hetzner|htz
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/airgenome/env
+Environment=REGISTRY=ghcr.io/need-singularity/airgenome
+Environment=REPO=%h/Dev/airgenome
+Environment=STATE_DIR=%h/.airgenome
+Environment=GH_TOKEN_FILE=%h/.config/airgenome/gh_token
+
+ExecStart=/bin/bash -c ' \
+    set -euo pipefail; \
+    mkdir -p "$STATE_DIR"; \
+    cd "$REPO"; \
+    git fetch --quiet origin; \
+    HEAD_OLD=$(cat "$STATE_DIR/built_sha" 2>/dev/null || echo ""); \
+    HEAD_NEW=$(git rev-parse --short origin/main); \
+    echo "{\"ts\":\"$(date -u +%FT%TZ)\",\"old\":\"$HEAD_OLD\",\"new\":\"$HEAD_NEW\"}" \
+        >> "$STATE_DIR/build.jsonl"; \
+    if [ "$HEAD_OLD" = "$HEAD_NEW" ]; then \
+        echo "up-to-date ($HEAD_NEW)"; \
+        exit 0; \
+    fi; \
+    git pull --ff-only origin main; \
+    # GHCR 로그인 (token 파일 전제)
+    if [ -f "$GH_TOKEN_FILE" ]; then \
+        cat "$GH_TOKEN_FILE" | docker login ghcr.io -u need-singularity --password-stdin; \
+    fi; \
+    docker buildx bake -f docker/buildx.bake.hcl --push \
+        --set "*.args.GITSHA=$HEAD_NEW"; \
+    echo "$HEAD_NEW" > "$STATE_DIR/built_sha"; \
+    echo "built + pushed: $HEAD_NEW"'
+
+StandardOutput=journal
+StandardError=journal
+
+TimeoutStartSec=1800

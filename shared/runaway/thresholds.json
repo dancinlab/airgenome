@@ -1,0 +1,30 @@
+{
+  "_comment": "M14 P2 runaway_guard SSOT — 4-stage verdict thresholds. ok < warn <= danger <= critical.",
+  "_version": "1",
+  "load_per_nproc": {
+    "warn":     0.7,
+    "danger":   1.0,
+    "critical": 1.5
+  },
+  "iowait_pct": {
+    "warn":     10,
+    "danger":   20,
+    "critical": 35
+  },
+  "mem_avail_gb": {
+    "_note": "inverse — LOWER is worse",
+    "warn":     4,
+    "danger":   2,
+    "critical": 1
+  },
+  "d_state_count": {
+    "warn":     1,
+    "danger":   2,
+    "critical": 3
+  },
+  "runaway_pid": {
+    "_note": "per-PID CPU% threshold and sustain seconds for action trigger",
+    "single_cpu_pct":       100,
+    "sustain_seconds":      30
+  }
+}

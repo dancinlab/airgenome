@@ -1,0 +1,37 @@
+{
+  "_comment": "M14 P2 runaway_guard — protected process names. match = /proc/<pid>/comm exact OR startswith for systemd*. No renice, no cpulimit, no kill. EVER.",
+  "_rule_ref": "feedback_no_kill_claude_cli — claude CLI kill/STOP 절대 금지",
+  "exact": [
+    "claude",
+    "sshd",
+    "ssh",
+    "node",
+    "hexa",
+    "hexa_stage0",
+    "hexa_v2",
+    "dbus",
+    "dbus-daemon",
+    "ssh-agent",
+    "tini",
+    "init",
+    "systemd",
+    "systemd-udevd",
+    "systemd-journal",
+    "systemd-logind",
+    "systemd-resolve",
+    "systemd-network",
+    "tailscaled",
+    "kswapd0",
+    "kthreadd",
+    "ksoftirqd",
+    "migration",
+    "rcu_sched",
+    "rcu_preempt"
+  ],
+  "prefix": [
+    "systemd",
+    "kworker",
+    "ksoftirqd",
+    "rcu_"
+  ]
+}

@@ -1,0 +1,38 @@
+[Unit]
+Description=airgenome runaway guard (M14 P2) — adaptive renice/cpulimit for CPU/iowait/D-state blowups
+Documentation=file:/opt/airgenome/bin/runaway_guard.hexa
+After=network-online.target
+# Cooperate with slice isolation — this service itself stays out of claude/stress/bkgnd
+Slice=airgenome-bkgnd.slice
+
+[Service]
+Type=simple
+# cx pipeline 에서 sshfs 로 /Users/ghost → ~/mac_home 마운트된 환경이 기본.
+# Ubuntu 배포 시 rsync 로 /opt/airgenome 고정 경로에 복제.
+WorkingDirectory=/opt/airgenome
+ExecStart=/usr/local/bin/hexa run /opt/airgenome/bin/runaway_guard.hexa
+Environment=HEXA_LOCAL=1
+Environment=AIRGENOME_ROOT=/opt/airgenome
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# 24h soak 는 DRY_RUN=1 로 먼저. 검증 후 주석 처리하고 재배포.
+Environment=RUNAWAY_DRY_RUN=1
+
+Restart=always
+RestartSec=10
+
+# airgenome 자원 울타리 (Ubuntu AG6 policy)
+Nice=5
+CPUQuota=20%
+MemoryMax=256M
+TasksMax=64
+
+# 보안 최소권 — renice/cpulimit 용 CAP_SYS_NICE 만 허용
+NoNewPrivileges=false
+AmbientCapabilities=CAP_SYS_NICE
+CapabilityBoundingSet=CAP_SYS_NICE
+
+StandardOutput=append:/var/log/airgenome-runaway.log
+StandardError=append:/var/log/airgenome-runaway.log
+
+[Install]
+WantedBy=default.target

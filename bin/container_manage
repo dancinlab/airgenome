@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# bin/container_manage — airgenome docker wrapper.
+# `cx` 가 ssh 한 뒤 이 스크립트로 claude 를 docker exec.
+#
+# subcommands:
+#   status          현재 컨테이너 상태
+#   start           systemd user service enable + start
+#   stop            stop (graceful)
+#   restart         restart
+#   logs [-f]       journalctl -u airgenome-claude -f
+#   exec -- claude [args]   컨테이너 내부에서 claude 실행
+#   shell           컨테이너 쉘 진입
+#   pull            강제 pull + restart
+#   digest          local vs remote image digest 비교
+#   install         systemd unit 설치 (원격 호스트 최초 1회)
+#   uninstall       systemd unit 제거
+
+set -uo pipefail
+
+REGISTRY="${REGISTRY:-ghcr.io/need-singularity/airgenome}"
+TAG="${AIRGENOME_TAG:-dev}"
+CONTAINER=airgenome-claude
+STATE_DIR="${CLAUDX_STATE:-$HOME/.airgenome}"
+
+die() { echo "container_manage: $*" >&2; exit 2; }
+
+cmd="${1:-status}"
+shift || true
+
+case "$cmd" in
+    status)
+        if docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}\t{{.Status}}\t{{.Image}}' | grep -q .; then
+            docker ps --filter "name=^${CONTAINER}$" --format 'running: {{.Status}} {{.Image}}'
+            docker exec "$CONTAINER" uptime 2>/dev/null || true
+        else
+            echo "not running"
+            systemctl --user status airgenome-claude --no-pager 2>/dev/null | head -5
+        fi
+        ;;
+    start)
+        systemctl --user enable --now airgenome-claude airgenome-pull.timer
+        systemctl --user status airgenome-claude --no-pager | head -5
+        ;;
+    stop)
+        systemctl --user stop airgenome-claude
+        ;;
+    restart)
+        systemctl --user restart airgenome-claude
+        ;;
+    logs)
+        journalctl --user -u airgenome-claude "$@"
+        ;;
+    exec)
+        # usage: container_manage exec -- claude [args]
+        [ "${1:-}" = "--" ] && shift
+        docker exec -it "$CONTAINER" "$@"
+        ;;
+    shell)
+        docker exec -it "$CONTAINER" bash
+        ;;
+    pull)
+        docker pull "${REGISTRY}:${TAG}"
+        systemctl --user restart airgenome-claude
+        ;;
+    digest)
+        local_d=$(docker inspect --format '{{index .RepoDigests 0}}' "${REGISTRY}:${TAG}" 2>/dev/null | awk -F@ '{print $2}')
+        remote_d=$(docker manifest inspect "${REGISTRY}:${TAG}" 2>/dev/null | jq -r '.manifests[0].digest // .config.digest // empty')
+        echo "local : ${local_d:-<none>}"
+        echo "remote: ${remote_d:-<unreachable>}"
+        if [ -n "$local_d" ] && [ "$local_d" = "$remote_d" ]; then
+            echo "= up-to-date"
+        else
+            echo "≠ update available"
+            exit 1
+        fi
+        ;;
+    install)
+        UNIT_DIR="$HOME/.config/systemd/user"
+        mkdir -p "$UNIT_DIR" "$HOME/.config/airgenome"
+        SRC="$(dirname "$0")/../shared/systemd"
+        for f in airgenome-claude.service airgenome-pull.service airgenome-pull.timer; do
+            cp -v "$SRC/$f" "$UNIT_DIR/$f"
+        done
+        systemctl --user daemon-reload
+        echo "installed. next: systemctl --user enable --now airgenome-claude airgenome-pull.timer"
+        ;;
+    uninstall)
+        systemctl --user disable --now airgenome-claude airgenome-pull.timer 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user/airgenome-claude.service"
+        rm -f "$HOME/.config/systemd/user/airgenome-pull.service"
+        rm -f "$HOME/.config/systemd/user/airgenome-pull.timer"
+        systemctl --user daemon-reload
+        echo "uninstalled"
+        ;;
+    -h|--help|help)
+        sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *) die "unknown subcommand: $cmd" ;;
+esac

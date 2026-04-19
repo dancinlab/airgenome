@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# bin/rtt_probe — keystroke RTT 측정기 (ssh echo 왕복 시간)
+# 입력렉 방지 L4 — menubar V6 의 RTT bar + cx auto-switch 트리거에 쓰임.
+#
+# 사용:
+#   rtt_probe ubu              # 단발 (ms)
+#   rtt_probe ubu --samples 10 # 10회 샘플링 후 median/p95/p99
+#   rtt_probe --current        # 현재 cx 선택 호스트
+#   rtt_probe --watch          # 5s cadence, JSONL 에 append
+#
+# 출력:
+#   단발: "ubu 87"
+#   샘플링: "ubu median=82 p95=120 p99=180 n=10"
+#   watch: ~/.airgenome/rtt.jsonl 에 {ts, host, rtt_ms}
+#
+# 임계 (정책):
+#   < 150 ms  = 체감 무감 (green)
+#   150~250   = 주의 (yellow)
+#   250~500   = 불쾌 (orange)
+#   > 500     = cx --force-host 자동 스위치 후보 (red)
+
+set -uo pipefail
+
+HOST=""
+SAMPLES=1
+WATCH=0
+STATE_DIR="${CLAUDX_STATE:-$HOME/.airgenome}"
+LOG="$STATE_DIR/rtt.jsonl"
+
+usage() {
+    grep '^# ' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --samples) SAMPLES="$2"; shift 2 ;;
+        --watch)   WATCH=1; shift ;;
+        --current)
+            HOST=$("$(dirname "$0")/cx" --show 2>/dev/null | awk -F'[ →()]+' '/cx →/{print $3; exit}')
+            shift
+            ;;
+        -h|--help) usage ;;
+        *) HOST="$1"; shift ;;
+    esac
+done
+
+[ -n "$HOST" ] || { echo "usage: rtt_probe <host> [--samples N] [--watch]" >&2; exit 2; }
+
+mkdir -p "$STATE_DIR"
+
+# gnu_date helper (Mac 은 date +%s%N 미지원 → perl)
+now_ms() {
+    if date +%s%N 2>/dev/null | grep -q '^[0-9]' && ! date +%s%N | grep -q N; then
+        echo $(($(date +%s%N) / 1000000))
+    else
+        perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000'
+    fi
+}
+
+probe_once() {
+    local host="$1"
+    local t0 t1
+    t0=$(now_ms)
+    # 최소 왕복 — ControlMaster 재사용 가정. echo 만.
+    if ssh -o ConnectTimeout=3 -o BatchMode=yes "$host" 'echo rtt' >/dev/null 2>&1; then
+        t1=$(now_ms)
+        echo $((t1 - t0))
+    else
+        echo -1
+    fi
+}
+
+log_jsonl() {
+    local host="$1" rtt="$2"
+    printf '{"ts":"%s","host":"%s","rtt_ms":%s}\n' \
+        "$(date -u +%FT%TZ)" "$host" "$rtt" >> "$LOG"
+}
+
+if [ "$WATCH" = 1 ]; then
+    trap 'exit 0' INT TERM
+    while true; do
+        r=$(probe_once "$HOST")
+        log_jsonl "$HOST" "$r"
+        sleep 5
+    done
+fi
+
+if [ "$SAMPLES" -le 1 ]; then
+    r=$(probe_once "$HOST")
+    log_jsonl "$HOST" "$r"
+    echo "$HOST $r"
+    exit 0
+fi
+
+# 다중 샘플링 — median/p95/p99
+vals=()
+i=0
+while [ "$i" -lt "$SAMPLES" ]; do
+    r=$(probe_once "$HOST")
+    [ "$r" -ge 0 ] 2>/dev/null && vals+=("$r")
+    log_jsonl "$HOST" "$r"
+    i=$((i + 1))
+    sleep 0.2
+done
+
+n=${#vals[@]}
+[ "$n" -gt 0 ] || { echo "$HOST unreachable n=0" >&2; exit 3; }
+
+sorted=$(printf '%s\n' "${vals[@]}" | sort -n)
+pick_pct() {
+    local pct=$1
+    local idx
+    idx=$(awk -v n="$n" -v p="$pct" 'BEGIN{ i=int(n*p/100); if(i<0)i=0; if(i>=n)i=n-1; print i+1 }')
+    printf '%s\n' "$sorted" | sed -n "${idx}p"
+}
+
+med=$(pick_pct 50)
+p95=$(pick_pct 95)
+p99=$(pick_pct 99)
+
+echo "$HOST median=$med p95=$p95 p99=$p99 n=$n"

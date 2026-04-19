@@ -1,0 +1,87 @@
+# airgenome — local dev/test compose. 프로덕션은 systemd unit 으로 배포 (shared/systemd/).
+# 사용: docker compose -f docker/compose.yml up -d airgenome-claude
+#      docker compose -f docker/compose.yml exec airgenome-claude claude
+
+name: airgenome
+
+services:
+  airgenome-claude:
+    image: ghcr.io/need-singularity/airgenome:dev
+    container_name: airgenome-claude
+    restart: unless-stopped
+    # 입력렉 방지 L2 — cpuset + shares + memory-swap=동일 (swap 차단)
+    cpu_shares: 2048
+    cpuset: "0,1,8,9"   # SMT 페어, 16-thread 가정
+    pids_limit: 512
+    mem_limit: 8g
+    memswap_limit: 8g
+    # TUI: stdin_open + tty + init (tini)
+    init: true
+    stdin_open: true
+    tty: true
+    # bind mounts — credentials / runtime state / code / tmp / fuse
+    volumes:
+      - type: bind
+        source: ${HOME}/.airgenome
+        target: /root/.airgenome
+      - type: bind
+        source: ${HOME}
+        target: /mac_home
+        bind:
+          propagation: rshared
+      # 12 claude credentials (glob 은 compose 미지원 — systemd unit 에선 --mount-list 로 처리)
+      - type: bind
+        source: ${HOME}/.claude-claude1
+        target: /root/.claude-claude1
+      - type: bind
+        source: ${HOME}/.claude-claude2
+        target: /root/.claude-claude2
+      - type: bind
+        source: ${HOME}/.claude-claude3
+        target: /root/.claude-claude3
+      - type: bind
+        source: ${HOME}/.claude-claude4
+        target: /root/.claude-claude4
+      - type: bind
+        source: ${HOME}/.claude-claude5
+        target: /root/.claude-claude5
+      - type: bind
+        source: ${HOME}/.claude-claude6
+        target: /root/.claude-claude6
+      - type: bind
+        source: ${HOME}/.claude-claude7
+        target: /root/.claude-claude7
+      - type: bind
+        source: ${HOME}/.claude-claude8
+        target: /root/.claude-claude8
+      - type: bind
+        source: ${HOME}/.claude-claude9
+        target: /root/.claude-claude9
+      - type: bind
+        source: ${HOME}/.claude-claude10
+        target: /root/.claude-claude10
+      - type: bind
+        source: ${HOME}/.claude-claude11
+        target: /root/.claude-claude11
+      - type: bind
+        source: ${HOME}/.claude-claude12
+        target: /root/.claude-claude12
+      # code SSOT (Mac sshfs target → container bind)
+      - type: bind
+        source: ${AIRGENOME_ROOT:-${HOME}/Dev/airgenome}
+        target: /workspace/airgenome
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN   # sshfs 요구
+    security_opt:
+      - apparmor:unconfined   # sshfs 내부 mount 허용
+    environment:
+      TERM: xterm-256color
+      LANG: C.UTF-8
+      CLAUDX_HOME_MAP: "/Users/ghost:/mac_home"
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      TZ: Asia/Seoul
+    # keystroke RTT 악화 방지 — host network 로 ssh 홉 1개 줄임
+    network_mode: host
+    command: ["claude"]
