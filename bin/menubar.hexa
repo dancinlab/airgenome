@@ -367,6 +367,11 @@ fn build_menu() -> *Void {
     // Rings block
     menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu=" + ring_count("genomes.ubu.ring") + "  ubu2=" + ring_count("genomes.ubu2.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
 
+    // Slice block (airgenome-claude/stress.slice — TUI 보호 visibility, 2026-04-19)
+    // remote_load.jsonl 최근 ubu 라인에서 slice_claude_mem / slice_stress_mem 추출 → GB 변환
+    let slice_info = exec("tail -60 ~/.airgenome/remote_load.jsonl 2>/dev/null | grep '\"host\":\"ubu\"' | tail -1 | awk -F'[,:{}]' '{for(i=1;i<=NF;i++){if($i~/slice_claude_mem/){c=$(i+1)/1073741824}; if($i~/slice_stress_mem/){s=$(i+1)/1073741824}} printf \"claude=%.1fG/4G  stress=%.1fG/16G\", c, s}'").trim()
+    if slice_info != "" { menu_add_info(menu, "slice ubu: " + slice_info) }
+
     // Recent throttle history
     let hist = exec("tail -3 '" + THROTTLE_HIST + "' 2>/dev/null | awk -F'[,:{}\"]' '{for(i=1;i<=NF;i++)if($i==\"cpu\"){c=$(i+2)}; for(i=1;i<=NF;i++)if($i==\"ram\"){r=$(i+2)}; print \"    cpu=\" c \" ram=\" r}' | tr '\\n' '|'").trim()
     if hist != "" { menu_add_info(menu, "history: " + hist) }

@@ -38,12 +38,16 @@ REMOTE_CMD='
     openssl_c=$(pgrep -xc openssl 2>/dev/null)
     claude_c=$(pgrep -cf "claude" 2>/dev/null)
     blowup=$(pgrep -cf "blowup.hexa" 2>/dev/null)
+    agS=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/airgenome.slice
+    slice_claude_mem=$(cat $agS/airgenome-claude.slice/memory.current 2>/dev/null)
+    slice_stress_mem=$(cat $agS/airgenome-stress.slice/memory.current 2>/dev/null)
     : ${load1:=0} ${load5:=0} ${load15:=0}
     : ${memfree:=0} ${memtotal:=1}
     : ${nproc_c:=0} ${hexa_run:=0} ${hexa_stage0:=0}
     : ${openssl_c:=0} ${claude_c:=0} ${blowup:=0}
-    printf "{\"load1\":%s,\"load5\":%s,\"load15\":%s,\"memfree_kb\":%s,\"memtotal_kb\":%s,\"nproc\":%s,\"hexa_run\":%s,\"hexa_stage0\":%s,\"openssl\":%s,\"blowup\":%s,\"claude\":%s}\n" \
-        "$load1" "$load5" "$load15" "$memfree" "$memtotal" "$nproc_c" "$hexa_run" "$hexa_stage0" "$openssl_c" "$blowup" "$claude_c"
+    : ${slice_claude_mem:=0} ${slice_stress_mem:=0}
+    printf "{\"load1\":%s,\"load5\":%s,\"load15\":%s,\"memfree_kb\":%s,\"memtotal_kb\":%s,\"nproc\":%s,\"hexa_run\":%s,\"hexa_stage0\":%s,\"openssl\":%s,\"blowup\":%s,\"claude\":%s,\"slice_claude_mem\":%s,\"slice_stress_mem\":%s}\n" \
+        "$load1" "$load5" "$load15" "$memfree" "$memtotal" "$nproc_c" "$hexa_run" "$hexa_stage0" "$openssl_c" "$blowup" "$claude_c" "$slice_claude_mem" "$slice_stress_mem"
 '
 
 probe_host() {
