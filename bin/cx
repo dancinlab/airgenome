@@ -38,6 +38,9 @@
 #   cx --resume-last --show    # resume dry-run (복원만 확인)
 #   cx --sessions [N]          # 최근 N (default 10) 세션 JSON lines
 #   cx --session-show [id]     # 세션 상세 (id 생략 시 last)
+#   cx --ignore-settings       # hooks/skills/CLAUDE.md/memory 전부 무시 — 깨끗한 세션
+#                              #   (keychain/token rotation 은 유지. docker exec 모드 미지원)
+#   CX_IGNORE_SETTINGS=1 cx ... # 셸 전체 ignore
 #
 # Why 별도 이름: Mac 의 `claude` 가 shell 함수 wrapper (터미널 제목 설정) 라 shadow 하면 충돌.
 
@@ -59,7 +62,7 @@ INFRA_STATE="$HOME/Dev/nexus/shared/infra_state.json"
 # cx 전용 host/cwd 메타는 여기서 직접 관리 (R1 HEXA-FIRST 예외: cx 가 bash 래퍼).
 CX_SESS_DIR="${CLAUDX_STATE:-$HOME/.airgenome}/cx_sessions"
 
-_cx_sess_env_whitelist="CLAUDE_CONFIG_DIR CX_DOCKER CX_NO_DOCKER_SSH CX_DOCKER_SSH CX_PICK_MODE CX_DOCKER_WORKDIR CX_DOCKER_HOME CLAUDX_STATE CLAUDX_POOL CLAUDX_USAGE CLAUDX_HOME_MAP CLAUDX_MAX_ROT CLAUDX_EXH_SEC"
+_cx_sess_env_whitelist="CLAUDE_CONFIG_DIR CX_DOCKER CX_NO_DOCKER_SSH CX_DOCKER_SSH CX_PICK_MODE CX_DOCKER_WORKDIR CX_DOCKER_HOME CX_IGNORE_SETTINGS CLAUDX_STATE CLAUDX_POOL CLAUDX_USAGE CLAUDX_HOME_MAP CLAUDX_MAX_ROT CLAUDX_EXH_SEC"
 
 # snapshot 저장: 인자 없이 호출, 현재 shell 의 변수에서 채움.
 # `host` `alias` `dssh_alias` `CALLER_CWD` `fwd[]` 가 scope 에 있어야 함.
@@ -457,16 +460,19 @@ fi
 fwd=()
 resume_id=""       # cx --resume <id>  또는 --resume-last
 resume_requested=0
+# --ignore-settings: hooks/skills/CLAUDE.md 무시. CX_IGNORE_SETTINGS=1 로도 on.
+case "${CX_IGNORE_SETTINGS:-0}" in 1|true|yes|YES|TRUE) ignore_settings=1 ;; *) ignore_settings=0 ;; esac
 while [ $# -gt 0 ]; do
     case "$1" in
-        --force-host)    force_host=$2; shift 2 ;;
-        --show)          show_only=true; shift ;;
-        --docker)        docker_mode=1; shift ;;
-        --no-docker)     docker_mode=0; shift ;;
-        --docker-ssh)    docker_ssh_mode=1; shift ;;
-        --no-docker-ssh) docker_ssh_mode=0; shift ;;
-        --resume)        resume_id=$2; resume_requested=1; shift 2 ;;
-        --resume-last)   resume_requested=1; shift ;;
+        --force-host)      force_host=$2; shift 2 ;;
+        --show)            show_only=true; shift ;;
+        --docker)          docker_mode=1; shift ;;
+        --no-docker)       docker_mode=0; shift ;;
+        --docker-ssh)      docker_ssh_mode=1; shift ;;
+        --no-docker-ssh)   docker_ssh_mode=0; shift ;;
+        --ignore-settings) ignore_settings=1; shift ;;
+        --resume)          resume_id=$2; resume_requested=1; shift 2 ;;
+        --resume-last)     resume_requested=1; shift ;;
         --sessions)
             # 최근 세션 목록 (JSON lines). 2번째 arg 가 숫자면 limit.
             _limit=10
@@ -1139,6 +1145,35 @@ sys.exit(0 if proj.get("lastSessionId") else 1)'"'"' 2>/dev/null'
         unset _cfg_base _caller_q _sess_probe _sess_probe_alias
     fi
     unset _has_c _arg
+fi
+
+# ─── --ignore-settings: hooks/skills/CLAUDE.md/memory 전부 bypass ─────────────
+# 전략: 빈 settings.json 만 있는 임시 CLAUDE_CONFIG_DIR 로 교체 + cwd 중립화.
+#   - hooks/skills = settings.json 소스 → {} 으로 무력화
+#   - ~/.claude/CLAUDE.md, ~/.claude/projects/<p>/memory = CLAUDE_CONFIG_DIR 소속 → 경로 교체로 차단
+#   - project CLAUDE.md = cwd 소속 → 중립 dir 로 cd 해서 차단
+# 유지: keychain (Mac 은 system keychain, Linux 는 .credentials.json symlink) + claudx rotation
+#   (CLAUDX_POOL/USAGE 는 CLAUDE_CONFIG_DIR 와 독립).
+# 미지원: docker_mode=1 (native docker exec) — 컨테이너 내부에 tmp dir 주입 경로 별도 필요.
+if [ "$ignore_settings" = "1" ]; then
+    if [ "$host" = "mac" ]; then
+        _cx_ig_dir=$(mktemp -d -t cx-ignore.XXXXXX)
+        printf '{}\n' > "$_cx_ig_dir/settings.json"
+        export CLAUDE_CONFIG_DIR="$_cx_ig_dir"
+        CALLER_CWD="$_cx_ig_dir"
+        trap 'rm -rf "$_cx_ig_dir" 2>/dev/null' EXIT
+        echo "cx: --ignore-settings → CLAUDE_CONFIG_DIR=$_cx_ig_dir (local, Mac keychain 유지)" >&2
+    elif [ "$docker_mode" = "1" ] && [ -z "$dssh_alias" ]; then
+        echo "cx: --ignore-settings 는 --docker (native docker exec) 모드 미지원 — skip" >&2
+        ignore_settings=0
+    else
+        # Remote (ssh 또는 docker-ssh): remote-side 에서 tmp dir 생성 + .credentials 심링크.
+        # cwd 는 tmp dir 로 교체, env 는 CLAUDE_CONFIG_DIR 덮어쓰기.
+        remote_env_prefix=$(printf '%s' "$remote_env_prefix" | sed -E 's|CLAUDE_CONFIG_DIR="[^"]*" ||g')
+        remote_env_prefix='CLAUDE_CONFIG_DIR="$_d" '"$remote_env_prefix"
+        remote_cwd_prefix='_d=$(mktemp -d -t cx-ignore.XXXXXX 2>/dev/null || mktemp -d); printf "{}\n" > "$_d/settings.json"; [ -f "$HOME/.claude/.credentials.json" ] && ln -sf "$HOME/.claude/.credentials.json" "$_d/.credentials.json"; trap '"'"'rm -rf "$_d" 2>/dev/null'"'"' EXIT; cd "$_d"; '
+        echo "cx: --ignore-settings → remote tmp CLAUDE_CONFIG_DIR (credentials symlink 유지)" >&2
+    fi
 fi
 
 # 실행 + duration
