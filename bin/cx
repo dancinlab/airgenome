@@ -245,7 +245,9 @@ if [ "$host" != "mac" ]; then
         # - Memory* 3 단계 (Max hard / High soft throttle / SwapMax) → OOM 유발 없이 graceful degrade.
         # - TasksMax 256 (기본 64 → drill/build 의 fork 폭주 막지 않도록 여유).
         # - scope 는 TUI tty 통과가 필요해 유지 (service 모드는 stdin detach).
-        _scope=(systemd-run --user --scope --quiet)
+        # airgenome-claude.slice 배치 — MemoryMin=4G reservation + CPUWeight=1000
+        # slice 부재 호스트에서는 systemd-run 이 fallback (slice 없음 = app.slice)
+        _scope=(systemd-run --user --scope --slice=airgenome-claude.slice --quiet)
         [ -n "$cpu_quota" ] && _scope+=("--property=CPUQuota=$cpu_quota")
         [ -n "$mem_max" ] && _scope+=("--property=MemoryMax=$mem_max")
         [ -n "$mem_high" ] && _scope+=("--property=MemoryHigh=$mem_high")

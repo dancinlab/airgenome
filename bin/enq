@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# enq — AI-native queue frontend. executor.sh 를 감싸 대기/진행 상태를 구조화 출력.
+#
+# usage:
+#   enq <kind> -- <cmd...>              blocking, AI-native status
+#   enq --advisory <kind> -- <cmd...>   즉시 반환 (대기필요 시 id 리턴, --resume 으로 수집)
+#   enq --status=<id>                   job 상태 조회
+#   enq --resume=<id>                   대기중 job 결과 수집 (대기 또는 완료)
+#   enq --cancel=<id>                   취소
+#
+# 응답 포맷 (stdout, stderr 혼합):
+#   ⏳ 대기필요 ...            — 슬롯 포화 시
+#   ▶ 실행시작 host=X ...     — acquire 성공
+#   ⏳ 실행중 elapsed=5s ...   — 진행 중 tick
+#   ✓ 완료 exit=0 duration=... — 완료
+#   ✗ 실패 exit=137 reason=... — 실패
+#   + QUEUE_*= 토큰 라인 (파싱용)
+#
+# kind: compute | heavy | gpu (hosts.json slots 필드 참조)
+
+set -eu
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+EXECUTOR="$ROOT/bin/executor.sh"
+REG="${HOSTS_REGISTRY:-$ROOT/shared/config/hosts.json}"
+DISP="${DISPATCH_STATE:-$HOME/Dev/nexus/shared/dispatch_state.json}"
+SLOTS_DIR="${SLOTS_DIR:-$HOME/.airgenome/host_slots}"
+QUEUE_DIR="${QUEUE_DIR:-$HOME/.airgenome/queue}"
+EXEC_LOG="${EXECUTOR_LOG:-$HOME/.airgenome/executor.jsonl}"
+TICK_SEC="${ENQ_TICK_SEC:-5}"
+
+mkdir -p "$QUEUE_DIR/running" "$QUEUE_DIR/done"
+
+die() { echo "enq: $*" >&2; exit 2; }
+usage() { sed -n '1,20p' "$0" | sed -n '/^# /p' >&2; exit 2; }
+
+# ── predict wait — 현재 각 호스트 slot 사용률 + dispatch_state 로 예상 대기초 ──
+# avg_task_duration: done.jsonl 최근 20건 EWMA. 없으면 30s 기본.
+predict_wait() {
+    local kind=$1
+    local host; host=$(jq -r --arg k "$kind" '.selection[$k] // "none"' "$DISP" 2>/dev/null || echo none)
+    [ "$host" = "none" ] && { echo "0||no_host"; return; }
+    local cap active
+    cap=$(jq -r --arg h "$host" --arg k "$kind" '.hosts[$h].slots[$k] // -1' "$REG")
+    local counter="$SLOTS_DIR/$host.$kind.active"
+    active=0
+    [ -f "$counter" ] && active=$(cat "$counter" 2>/dev/null || echo 0)
+    active=${active:-0}
+    [[ "$active" =~ ^[0-9]+$ ]] || active=0
+
+    if [ "$cap" = "-1" ] || [ -z "$cap" ]; then
+        echo "0|$host|unlimited"; return
+    fi
+    if [ "$cap" = "0" ]; then
+        echo "-1|$host|forbidden"; return
+    fi
+    if [ "$active" -lt "$cap" ]; then
+        echo "0|$host|slot_free($active/$cap)"; return
+    fi
+
+    # 포화 — avg duration 추정
+    local avg=30
+    if [ -r "$EXEC_LOG" ]; then
+        local recent
+        recent=$(tail -20 "$EXEC_LOG" 2>/dev/null | jq -r --arg k "$kind" 'select(.kind==$k) | .ms' 2>/dev/null | awk 'NF' | tail -20)
+        if [ -n "$recent" ]; then
+            avg=$(printf '%s\n' "$recent" | awk '{s+=$1; n++} END{if(n>0) printf "%d", s/n/1000; else print 30}')
+        fi
+    fi
+    # 대기 예상 = ceil(active / cap) * avg — 간단 추정
+    local est=$(( avg ))
+    echo "${est}|$host|saturated($active/$cap,avg=${avg}s)"
+}
+
+# ── 대안 호스트 — 같은 kind 에서 현재 여유 있는 host 나열 ──
+alt_hosts() {
+    local kind=$1 primary=$2
+    jq -r --arg k "$kind" --arg p "$primary" '
+        .hosts | to_entries[]
+        | select(.value.enabled and .key != $p and (.value.slots[$k] // -1) > 0)
+        | "\(.key)"
+    ' "$REG" 2>/dev/null | while read -r h; do
+        [ -z "$h" ] && continue
+        local cap active counter
+        cap=$(jq -r --arg h "$h" --arg k "$kind" '.hosts[$h].slots[$k] // -1' "$REG")
+        counter="$SLOTS_DIR/$h.$kind.active"
+        active=0
+        [ -f "$counter" ] && active=$(cat "$counter" 2>/dev/null || echo 0)
+        active=${active:-0}
+        [[ "$active" =~ ^[0-9]+$ ]] || active=0
+        if [ "$active" -lt "$cap" ]; then
+            printf '%s(free=%d/%d) ' "$h" $((cap - active)) "$cap"
+        fi
+    done
+}
+
+# ── AI-native 상태 emit ──
+emit_wait() {
+    local kind=$1 host=$2 est=$3 reason=$4 id=$5
+    local alt; alt=$(alt_hosts "$kind" "$host")
+    cat <<EOF
+⏳ 대기필요
+  대기시간: 약 ${est}초  (추정)
+  원인:     ${host} ${kind} ${reason}
+  대안:     ${alt:-전 호스트 포화}
+  id:       ${id}
+  힌트:     (A) 대기 유지 — 이 명령이 slot 획득 시까지 자동 재시도
+           (B) 즉시 실행 — enq --force-host=<X> <kind> -- <cmd>
+           (C) advisory — enq --advisory 로 재호출 시 즉시 id 반환 후 --resume 수집
+QUEUE_STATUS=wait_required
+QUEUE_KIND=${kind}
+QUEUE_HOST=${host}
+QUEUE_WAIT_SEC=${est}
+QUEUE_ID=${id}
+QUEUE_ALT=$(echo "$alt" | tr -d '\n')
+EOF
+}
+
+emit_running() {
+    local host=$1 slot=$2 id=$3
+    echo "▶ 실행시작 host=${host} slot=${slot} id=${id}"
+    echo "QUEUE_STATUS=running"
+    echo "QUEUE_HOST=${host}"
+    echo "QUEUE_ID=${id}"
+}
+
+emit_done() {
+    local host=$1 dur=$2 exit_code=$3 id=$4
+    local mark; mark="✓"; [ "$exit_code" != "0" ] && mark="✗"
+    echo "${mark} 완료 host=${host} duration=${dur}s exit=${exit_code} id=${id}"
+    echo "QUEUE_STATUS=done"
+    echo "QUEUE_EXIT=${exit_code}"
+    echo "QUEUE_ID=${id}"
+}
+
+# ── args ──
+advisory=false
+force_host=""
+resume_id=""
+status_id=""
+cancel_id=""
+kind=""
+args=()
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --advisory) advisory=true; shift ;;
+        --force-host=*) force_host="${1#*=}"; shift ;;
+        --status=*) status_id="${1#*=}"; shift ;;
+        --resume=*) resume_id="${1#*=}"; shift ;;
+        --cancel=*) cancel_id="${1#*=}"; shift ;;
+        --) shift; args=("$@"); break ;;
+        -h|--help) usage ;;
+        *)
+            if [ -z "$kind" ]; then kind="$1"; shift
+            else args=("$@"); break; fi ;;
+    esac
+done
+
+# status/resume/cancel handling
+if [ -n "$status_id" ]; then
+    if [ -f "$QUEUE_DIR/done/$status_id.json" ]; then cat "$QUEUE_DIR/done/$status_id.json"; exit 0
+    elif [ -f "$QUEUE_DIR/running/$status_id.json" ]; then cat "$QUEUE_DIR/running/$status_id.json"; exit 0
+    else die "id 없음: $status_id"; fi
+fi
+if [ -n "$cancel_id" ]; then
+    # TODO: 실제 SIGTERM wiring (v1 은 파일 상태만)
+    rm -f "$QUEUE_DIR/running/$cancel_id.json" "$QUEUE_DIR/running/$cancel_id.pid" 2>/dev/null
+    echo "QUEUE_STATUS=cancelled id=$cancel_id"
+    exit 0
+fi
+if [ -n "$resume_id" ]; then
+    # done 확인 후 결과 stream
+    local_done="$QUEUE_DIR/done/$resume_id.json"
+    if [ -f "$local_done" ]; then
+        cat "$local_done"; exit 0
+    fi
+    # 실행 중이면 대기
+    local_run="$QUEUE_DIR/running/$resume_id.json"
+    if [ ! -f "$local_run" ]; then die "resume: id 없음 $resume_id"; fi
+    while [ ! -f "$local_done" ]; do sleep 1; done
+    cat "$local_done"
+    exit 0
+fi
+
+[ -n "$kind" ] || usage
+[ "${#args[@]}" -gt 0 ] || die "-- 뒤에 cmd 필요"
+case "$kind" in compute|heavy|gpu) : ;; *) die "kind 는 compute|heavy|gpu (현재: $kind)" ;; esac
+
+# id 할당
+id="q-$(date +%s)-$$"
+
+# predict
+pred=$(predict_wait "$kind")
+est="${pred%%|*}"; rest="${pred#*|}"
+phost="${rest%%|*}"; preason="${rest#*|}"
+
+if [ "$phost" = "none" ]; then
+    die "dispatch.selection.$kind = none — enabled 호스트 없음"
+fi
+if [ "$est" = "-1" ]; then
+    die "$phost.$kind slot 금지 (hosts.json)"
+fi
+
+# force-host 있으면 dispatch_state 무시하고 직접 SSH (slot acquire 생략)
+if [ -n "$force_host" ]; then
+    alias_f=$(jq -r --arg h "$force_host" '.hosts[$h].ssh_alias // empty' "$REG")
+    [ -n "$alias_f" ] || die "force-host: $force_host 의 ssh_alias 없음"
+    emit_running "$force_host" "force" "$id"
+    t0=$(date +%s)
+    set +e
+    ssh -o ConnectTimeout=5 "$alias_f" "${args[@]}"
+    rc=$?
+    set -e
+    t1=$(date +%s)
+    emit_done "$force_host" "$((t1 - t0))" "$rc" "$id"
+    exit "$rc"
+fi
+
+# 대기 예상 있으면 advisory/non-advisory 모두 사전 emit
+if [ "$est" != "0" ]; then
+    emit_wait "$kind" "$phost" "$est" "$preason" "$id"
+    if [ "$advisory" = "true" ]; then
+        # fire-and-forget 이지만 실제 spawn 은 안 함 (v1) — caller 가 기다리지 않고 다른 작업
+        # v1.1 에서 nohup & 로 실제 spawn + running.json 갱신 예정
+        exit 75  # EX_TEMPFAIL — caller 가 --resume 또는 재시도 신호로 해석
+    fi
+fi
+
+# blocking — executor.sh 로 실 실행 위임
+# running.json 마킹
+running_json="$QUEUE_DIR/running/$id.json"
+printf '{"id":"%s","kind":"%s","host":"%s","cmd":%s,"started":"%s"}\n' \
+    "$id" "$kind" "$phost" "$(printf '%s ' "${args[@]}" | jq -Rs .)" "$(date -u +%FT%TZ)" \
+    > "$running_json"
+
+emit_running "$phost" "${kind}-acquiring" "$id"
+t0=$(date +%s)
+set +e
+"$EXECUTOR" "$kind" "${args[@]}"
+rc=$?
+set -e
+t1=$(date +%s)
+
+# done.json 기록 + running 제거
+done_json="$QUEUE_DIR/done/$id.json"
+printf '{"id":"%s","kind":"%s","host":"%s","exit":%d,"duration":%d,"ended":"%s"}\n' \
+    "$id" "$kind" "$phost" "$rc" "$((t1 - t0))" "$(date -u +%FT%TZ)" \
+    > "$done_json"
+rm -f "$running_json"
+
+emit_done "$phost" "$((t1 - t0))" "$rc" "$id"
+exit "$rc"
