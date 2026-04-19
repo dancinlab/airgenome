@@ -1148,7 +1148,9 @@ if [ "$host" = "mac" ]; then
     # 빠뜨리면 `~/Dev/hexa-lang % cl` 같이 다른 cwd 에서 띄워도 claude 가 airgenome 에서 열림.
     # 2026-04-20: non-interactive ssh 세션 (ubu aiden → ssh mac cx) 에서 ~/.local/bin
     #   미포함 → 'claude: command not found'. PATH 명시 보강.
-    export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+    # airgenome/bin 을 **선두**에 둬야 bin/claude shim 이 `command claude` 호출 시 매칭
+    #   → --append-system-prompt 로 .session_defaults 자동 주입 (project context 활성).
+    export PATH="$HOME/Dev/airgenome/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
     ( cd "$CALLER_CWD" && command claude ${fwd[@]+"${fwd[@]}"} )
     rc=$?
 else
