@@ -362,7 +362,9 @@ if [ -n "$force_host" ]; then
 else
     # enabled remote 를 JSON 순서대로 추출
     remote_cands=()
-    while IFS= read -r h; do [ -n "$h" ] && remote_cands+=("$h"); done < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self")) | .[].key' "$REG" 2>/dev/null)
+    # claudx_enabled=false 인 호스트는 auto-pick 에서 제외 (dispatch/worker 는 계속 사용).
+    # --force-host 는 위 분기에서 우회되므로 사용자 명시 의도는 유지됨.
+    while IFS= read -r h; do [ -n "$h" ] && remote_cands+=("$h"); done < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self" and (.value.claudx_enabled != false))) | .[].key' "$REG" 2>/dev/null)
     candidates=(${remote_cands[@]+"${remote_cands[@]}"})
     if [ "${CLAUDX_ALLOW_MAC_FALLBACK:-1}" = "1" ]; then
         candidates+=("mac")
