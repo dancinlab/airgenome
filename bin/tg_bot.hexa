@@ -432,23 +432,27 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
     let mac_tmp = tmp.replace("/home/aiden/mac_home", "/Users/ghost").replace("/home/summer/mac_home", "/Users/ghost")
     let is_linux_bot = uname_s() != "Darwin"
     let mut cmd = ""
+    // airgenome session_defaults 주입 경로 — shim (airgenome/bin/claude) 이 claude 앞에
+    // PATH-priority 있어야 --append-system-prompt 자동 주입됨. PATH + CWD 강제.
+    //   PATH : airgenome/bin 먼저 → claude 호출 시 shim 매칭 → session_defaults.
+    //   CWD  : airgenome repo 로 cd → 상대 경로 (.session_defaults 등) 해석 정상.
+    let ag_path_prefix = "PATH=/Users/ghost/Dev/airgenome/bin:/opt/homebrew/bin:/Users/ghost/.local/bin:/usr/local/bin:/usr/bin:/bin"
+    let ag_cwd = "cd /Users/ghost/Dev/airgenome"
     if is_linux_bot && dispatch_mode == "cx" {
         // Linux bot (ubu/ubu2) → ssh mac "claudx -p ..." 로 Mac pool rotation 직접 사용.
-        // 이점: Mac 의 logged-in claudx pool (12 account) 을 bot 이 원격 활용 → login/credential
-        //       문제 완전 우회. 컨테이너 credential stale + Mac default claude /login 부재 모두 우회.
-        // bash -lc → interactive shell PATH (~/.local/bin) 로드. ServerAlive 로 hang 방지.
+        // PATH 에 airgenome/bin 추가 → claude shim 경유 → session_defaults 주입.
         cmd = "ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 mac "
-            + "'bash -lc \"export PATH=/opt/homebrew/bin:\\$HOME/.local/bin:\\$PATH; timeout " + timeout_s + " /Users/ghost/Dev/airgenome/bin/claudx -p "
+            + "'bash -lc \"" + ag_cwd + " && export " + ag_path_prefix + ":\\$PATH; timeout " + timeout_s + " /Users/ghost/Dev/airgenome/bin/claudx -p "
             + "\\\"$(cat '" + mac_tmp + "')\\\" --max-turns 1 2>&1\"' 2>&1; echo _RC_=$?"
     } else if dispatch_mode == "cx" {
         // Mac bot → local claudx (pool rotation + cx auto-pick, no host force).
-        // Why no --force-host: 특정 host 강제 시 해당 host down 시 전체 실패. auto-pick
-        // 이 score-based 로 alive host 선택 + mac fallback 으로 안전.
+        // session_defaults 자동 주입 위해 airgenome/bin 을 PATH 선두 + CWD=airgenome.
         let mut claudx_bin = HOME + "/Dev/airgenome/bin/claudx"
         let agroot = env("AIRGENOME")
         if agroot != "" { claudx_bin = agroot + "/bin/claudx" }
-        cmd = "'" + timeout_bin + "' " + timeout_s + " '" + claudx_bin + "' -p "
-            + "\"$(cat '" + tmp + "')\" --max-turns 1 2>&1; echo _RC_=$?"
+        cmd = "(" + ag_cwd + " && export " + ag_path_prefix + ":$PATH && '"
+            + timeout_bin + "' " + timeout_s + " '" + claudx_bin + "' -p "
+            + "\"$(cat '" + tmp + "')\" --max-turns 1 2>&1); echo _RC_=$?"
     } else {
         // dispatch=cl (Mac 전용 경로 — Linux bot 은 cx 권장).
         cmd = "NO_CLAUDX=1 timeout " + timeout_s + " '" + claude + "'"
