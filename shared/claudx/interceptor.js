@@ -29,6 +29,8 @@
 //   CLAUDX_NO_REDACT      1 → log redact 비활성
 //   CLAUDX_MAX_ROT        4
 //   CLAUDX_SCRUB          0 → UI 헤더 스크럽 끄기
+//   CLAUDX_STALL_MAX_SEC  300 (pool 전체 exhausted 시 synthetic wait 최대 대기 — TUI crash 회피)
+//   CLAUDX_STALL_POLL_SEC 10  (stall 중 pickBest 재시도 주기)
 
 'use strict';
 
@@ -73,6 +75,8 @@ function timed(phase, fn) {
 
 const MAX_ROT = parseInt(process.env.CLAUDX_MAX_ROT || '4', 10);
 const EXH_SEC = parseInt(process.env.CLAUDX_EXH_SEC || '3600', 10);
+const STALL_MAX_SEC = parseInt(process.env.CLAUDX_STALL_MAX_SEC || '300', 10);
+const STALL_POLL_SEC = Math.max(1, parseInt(process.env.CLAUDX_STALL_POLL_SEC || '10', 10));
 const DEBUG = process.env.CLAUDX_DEBUG === '1';
 const SCRUB = process.env.CLAUDX_SCRUB !== '0';
 const BUDGET_DAILY = parseFloat(process.env.CLAUDX_BUDGET_DAILY || '5');
@@ -632,6 +636,50 @@ async function rebuildInput(origInput, newHeaders) {
   return origInput;
 }
 
+// --- Stall absorption (2026-04-19 · M13g): pool 전체 exhausted 시 429 반환 금지 ---
+// 기본 rotation 은 pickBest null 을 만나면 원본 429 를 그대로 돌려주는데, claude CLI 는
+// 429 body 를 stream 으로 받다가 disconnect → TUI 튕김. 모든 계정이 동시에 cap 에 닿는
+// 구간에서 UX 가 끊긴다. 해결: pickBest 이 null 인 동안 poll 하며 exhausted.json 의
+// until 기준으로 다음 wake 까지만 sleep. 최대 STALL_MAX_SEC 까지 흡수. 흡수 성공하면
+// rotation 루프가 그대로 이어져 사용자는 단지 응답이 조금 늦는 것처럼 보임.
+
+function _earliestReadyEpoch(triedNames) {
+  try {
+    const obj = JSON.parse(fs.readFileSync(pool.paths.EXHAUSTED, 'utf8') || '{}');
+    const now = Math.floor(Date.now() / 1000);
+    const tried = new Set(triedNames || []);
+    let soonest = Infinity;
+    for (const k of Object.keys(obj)) {
+      if (tried.has(k)) continue;
+      const u = obj[k] && obj[k].until;
+      if (u && u > now && u < soonest) soonest = u;
+    }
+    return soonest === Infinity ? null : soonest;
+  } catch (_) { return null; }
+}
+
+async function waitForCandidate(triedNames) {
+  const startEpoch = Math.floor(Date.now() / 1000);
+  const deadline = startEpoch + STALL_MAX_SEC;
+  let iter = 0;
+  while (Math.floor(Date.now() / 1000) < deadline) {
+    const now = Math.floor(Date.now() / 1000);
+    const soonest = _earliestReadyEpoch(triedNames);
+    let sleepSec = Math.min(STALL_POLL_SEC, deadline - now);
+    if (soonest) sleepSec = Math.min(sleepSec, Math.max(1, soonest - now));
+    if (sleepSec < 1) sleepSec = 1;
+    await new Promise(r => setTimeout(r, sleepSec * 1000));
+    iter++;
+    const next = pool.pickBest(triedNames);
+    if (next) {
+      logEvent({ event: 'stall_resolved', waited_s: Math.floor(Date.now() / 1000) - startEpoch, iter, to: next.name });
+      return next;
+    }
+  }
+  logEvent({ event: 'stall_timeout', waited_s: STALL_MAX_SEC, iter });
+  return null;
+}
+
 // --- Install ---
 
 const origFetch = globalThis.fetch.bind(globalThis);
@@ -763,10 +811,17 @@ globalThis.fetch = async function claudx_fetch(input, init) {
     }
     const curName = triedNames[triedNames.length - 1];
     pool.markExhausted(curName, EXH_SEC);
-    const next = pool.pickBest(triedNames);
+    let next = pool.pickBest(triedNames);
     if (!next) {
-      logEvent({ event: 'no_candidate', attempt, tried: triedNames, reason: verdict.reason });
-      return resp;
+      // pool 전체 exhausted — 원본 429 반환은 TUI crash. STALL_MAX_SEC 까지 흡수 시도.
+      logEvent({ event: 'stall_begin', attempt, tried: triedNames, reason: verdict.reason, max_s: STALL_MAX_SEC });
+      try { resp.body && resp.body.cancel && resp.body.cancel(); } catch (_) {}
+      next = await waitForCandidate(triedNames);
+      if (!next) {
+        logEvent({ event: 'no_candidate', attempt, tried: triedNames, reason: verdict.reason });
+        // stall 도 실패 — 원본 응답이 이미 cancel 된 상태라 synthetic 503 으로 대체.
+        return new Response(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'claudx: all accounts exhausted, stall timeout (' + STALL_MAX_SEC + 's)' } }), { status: 503, headers: { 'content-type': 'application/json' } });
+      }
     }
     logEvent({ event: 'rotating', from: curName, to: next.name, attempt, reason: verdict.reason, url: u.slice(0, 100), status: resp.status });
     const initHeaders = curInit.headers;
