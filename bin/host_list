@@ -10,11 +10,11 @@
 #   host_list --short      short_code 만
 #   host_list --json       enabled 호스트 전체 JSON (jq 파이프용)
 #   host_list --env        bash source-able env vars 생성
-#                          예: HOSTS_ALL="ubu ubu2 htz mac"
-#                              HOSTS_REMOTE="ubu ubu2 htz"
-#                              HOST_ALIAS_ubu="ubu"   HOST_DISPLAY_ubu="U¹"
-#                              HOST_HOME_ubu="/home/aiden"  HOST_SHORT_ubu="ubu1"
-#   host_list resolve <X>  ubu1/U¹/ubu 아무거나 받아 canonical 키(ubu) 출력
+#                          예: HOSTS_ALL="ubu1 ubu2 htz mac"
+#                              HOSTS_REMOTE="ubu1 ubu2 htz"
+#                              HOST_ALIAS_ubu1="ubu"   HOST_DISPLAY_ubu1="U¹"
+#                              HOST_HOME_ubu1="/home/aiden"  HOST_SHORT_ubu1="ubu1"
+#   host_list resolve <X>  ubu1/U¹/ubu 아무거나 받아 canonical 키(ubu1) 출력
 
 set -euo pipefail
 

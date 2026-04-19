@@ -223,18 +223,18 @@ fn section_anomaly_top10() -> str {
 
 fn section_ring_stats() -> str {
     let mac_n = exec("grep -c '\"host\":\"mac\"' " + DQ + UNIFIED_RING + DQ + " 2>/dev/null || echo 0").trim()
-    let ubu_n = exec("grep -c '\"host\":\"ubu\"' " + DQ + UNIFIED_RING + DQ + " 2>/dev/null || echo 0").trim()
+    let ubu_n = exec("grep -c '\"host\":\"ubu1\"' " + DQ + UNIFIED_RING + DQ + " 2>/dev/null || echo 0").trim()
     let htz_n = exec("grep -c '\"host\":\"htz\"' " + DQ + UNIFIED_RING + DQ + " 2>/dev/null || echo 0").trim()
     let total = exec("wc -l < " + DQ + UNIFIED_RING + DQ + " 2>/dev/null || echo 0").trim()
 
-    let ubu_ring = exec("wc -l < " + DQ + ring_path("genomes.ubu.ring") + DQ + " 2>/dev/null || echo 0").trim()
+    let ubu_ring = exec("wc -l < " + DQ + ring_path("genomes.ubu1.ring") + DQ + " 2>/dev/null || echo 0").trim()
     let ubu2_ring = exec("wc -l < " + DQ + ring_path("genomes.ubu2.ring") + DQ + " 2>/dev/null || echo 0").trim()
     let htz_ring = exec("wc -l < " + DQ + ring_path("genomes.htz.ring") + DQ + " 2>/dev/null || echo 0").trim()
 
     return "<table class" + q("tbl") + ">"
          + "<tr><th>Source</th><th>unified</th><th>ring file</th></tr>"
          + "<tr><td>mac</td><td>" + esc(mac_n) + "</td><td>local</td></tr>"
-         + "<tr><td>ubu</td><td>" + esc(ubu_n) + "</td><td>" + esc(ubu_ring) + " lines</td></tr>"
+         + "<tr><td>ubu1</td><td>" + esc(ubu_n) + "</td><td>" + esc(ubu_ring) + " lines</td></tr>"
          + "<tr><td>ubu2</td><td>--</td><td>" + esc(ubu2_ring) + " lines</td></tr>"
          + "<tr><td>htz</td><td>" + esc(htz_n) + "</td><td>" + esc(htz_ring) + " lines</td></tr>"
          + "<tr><td><b>total</b></td><td><b>" + esc(total) + "</b></td><td></td></tr>"

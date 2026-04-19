@@ -1,7 +1,7 @@
 // modules/status.hexa — 3-host unified health snapshot (M11e 후속)
 //
 // 책임:
-//   1. Mac(local) + ubu/ubu2/htz(ssh fresh-probe) 동시 수집
+//   1. Mac(local) + ubu1/ubu2/htz(ssh fresh-probe) 동시 수집
 //   2. 호스트별: uptime, load, mem used/total, docker count, airgenome-claude 상태
 //      + port 2222 listener, image tag, systemd 서비스(active/enabled) 3종
 //   3. runaway 최근 30m verdict 분포 (ok/warn/danger/critical)
@@ -597,7 +597,7 @@ fn run_status(as_json: bool) -> void {
     let rec_mac = populate_from_blob(attach_dispatch(new_host_rec("mac", "mac", "")), mac_blob)
     recs = recs + [rec_mac]
 
-    let rec_ubu = populate_from_blob(attach_dispatch(new_host_rec("ubu", "ubu1", "ubu")), probe_read("ubu"))
+    let rec_ubu = populate_from_blob(attach_dispatch(new_host_rec("ubu1", "ubu1", "ubu")), probe_read("ubu"))
     recs = recs + [rec_ubu]
 
     let rec_ubu2 = populate_from_blob(attach_dispatch(new_host_rec("ubu2", "ubu2", "ubu2")), probe_read("ubu2"))

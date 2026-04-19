@@ -207,8 +207,8 @@ self_test() {
     done < <(jq -r '.hosts | to_entries[] | select(.value.enabled) | .key' "$REG")
     [ "$schema_fail" = "0" ] && echo "  OK slots schema: 모든 host 에 slots 필드 존재"
     # slot cap 조회 라운드트립
-    local ubu_heavy; ubu_heavy=$(slot_cap "ubu" "heavy")
-    [ "$ubu_heavy" = "1" ] || { echo "  FAIL slot_cap ubu.heavy=$ubu_heavy (expect 1)"; fail=1; }
+    local ubu_heavy; ubu_heavy=$(slot_cap "ubu1" "heavy")
+    [ "$ubu_heavy" = "1" ] || { echo "  FAIL slot_cap ubu1.heavy=$ubu_heavy (expect 1)"; fail=1; }
     local mac_heavy; mac_heavy=$(slot_cap "mac" "heavy")
     [ "$mac_heavy" = "0" ] || { echo "  FAIL slot_cap mac.heavy=$mac_heavy (expect 0)"; fail=1; }
     local ghost_cap; ghost_cap=$(slot_cap "nonexistent" "heavy")

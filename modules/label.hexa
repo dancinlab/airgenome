@@ -223,22 +223,22 @@ fn self_test() -> void {
     if esc != "abc" { panic("self_test FAIL [json_escape]") }
 
     // 6. unified record + host_filter (M11d)
-    let g_unified_ubu = "{\"ts\":\"x\",\"pid\":\"ubu.42\",\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[95,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let g_unified_ubu = "{\"ts\":\"x\",\"pid\":\"ubu1.42\",\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[95,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu1\"}"
     let g_unified_mac = "{\"ts\":\"x\",\"pid\":\"mac.42\",\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[95,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
 
     // 6a. host_filter 미사용 rule 은 호스트와 무관
-    if !rule_match(g_unified_ubu, r1) { panic("self_test FAIL [unified ubu CPU_SPIKE]") }
+    if !rule_match(g_unified_ubu, r1) { panic("self_test FAIL [unified ubu1 CPU_SPIKE]") }
     if !rule_match(g_unified_mac, r1) { panic("self_test FAIL [unified mac CPU_SPIKE]") }
 
-    // 6b. host=ubu 한정 rule
-    let r_ubu = parse_rule("{\"label\":\"REMOTE_CPU_SPIKE\",\"axis\":0,\"op\":\"gt\",\"threshold\":80,\"host\":\"ubu\"}")
-    if r_ubu.host_filter != "ubu" { panic("self_test FAIL [host_filter parse]") }
-    if !rule_match(g_unified_ubu, r_ubu) { panic("self_test FAIL [host=ubu match]") }
-    if rule_match(g_unified_mac, r_ubu) { panic("self_test FAIL [host=ubu must not match mac]") }
+    // 6b. host=ubu1 한정 rule
+    let r_ubu = parse_rule("{\"label\":\"REMOTE_CPU_SPIKE\",\"axis\":0,\"op\":\"gt\",\"threshold\":80,\"host\":\"ubu1\"}")
+    if r_ubu.host_filter != "ubu1" { panic("self_test FAIL [host_filter parse]") }
+    if !rule_match(g_unified_ubu, r_ubu) { panic("self_test FAIL [host=ubu1 match]") }
+    if rule_match(g_unified_mac, r_ubu) { panic("self_test FAIL [host=ubu1 must not match mac]") }
 
     // 6c. unified extract_meta 에 host 포함, 기본은 미포함
     let meta_u = extract_meta(g_unified_ubu)
-    if len(meta_u.split("\"host\":\"ubu\"")) < 2 { panic("self_test FAIL [unified meta host missing]") }
+    if len(meta_u.split("\"host\":\"ubu1\"")) < 2 { panic("self_test FAIL [unified meta host missing]") }
     let meta_base = extract_meta(g_spike)
     if len(meta_base.split("\"host\"")) > 1 { panic("self_test FAIL [base meta has host wrongly]") }
 

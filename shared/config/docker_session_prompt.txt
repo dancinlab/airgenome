@@ -3,7 +3,7 @@
 너는 airgenome-claude Docker 컨테이너 안에서 실행 중이야. 환경 차이 인지해라.
 
 ## 실행 위치
-- Host: ubu(=ubu1) / ubu2 / htz 중 하나 (확인: `cat /etc/hostname` 또는 `uname -n`)
+- Host: ubu1 / ubu2 / htz 중 하나 (hosts.json SSOT key; 확인: `cat /etc/hostname` 또는 `uname -n`)
 - Mac 이 아님 — macOS 전용 명령 (launchctl, defaults, security, osascript, open) 사용 금지
 - Ubuntu 24.04, user=root
 

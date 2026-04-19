@@ -4,7 +4,7 @@
     "doc": "airgenome host registry — SSOT. bin/host.sh 로 add/remove. 직접 편집 시 bin/host.sh sync 필수.",
     "fields": {
       "enabled": "false 면 모든 소비자(probe/dispatch/remote_load/menubar)에서 제외",
-      "ssh_alias": "~/.ssh/config 의 Host 엔트리 (self kind 는 null)",
+      "ssh_alias": "~/.ssh/config 의 Host 엔트리 (self kind 는 null). host key 와 다를 수 있음 — 예: ubu1 key 의 ssh_alias 는 'ubu' (Mac ssh config legacy 존중).",
       "kind": "lan | remote | self",
       "has_gpu": "nvidia-smi 가용 여부 — probe schema 분기",
       "threads": "nproc. dispatch score_heavy 의 thread bonus 기준",
@@ -20,11 +20,14 @@
       "docker_ssh_port": "지정 시 cx 의 docker 경로가 host sshd 대신 이 port 의 컨테이너 내부 sshd 로 직결 (M14 P5, host sshd saturate 우회). hosts.json 'ssh_alias' 는 유지하되 이 port 가 있으면 ProxyCommand/Port override 로 바이패스.",
       "docker_ssh_alias": "선택 — ~/.ssh/config 의 docker-ssh 전용 Host 이름 (예: htz-d). 누락 시 {ssh_alias}-d 가 기본.",
       "display_name": "menubar/UI 표시 라벨 — 유니코드 포함 가능 (M, U¹, U², H¹)",
-      "short_code": "사용자 호칭 — ubu1/ubu2/htz1/mac. 문서/대화 식별자"
+      "short_code": "사용자 호칭 — ubu1/ubu2/htz1/mac. 문서/대화 식별자 (host key 와 동일하게 유지).",
+      "ip": "LAN/public IP 주소 — ssh_alias 우회용 (container 에서 resolve 불가 시 직결). airgenome-sync/deploy 가 이 값 사용.",
+      "ssh_key": "SSH 개인키 경로 (절대경로). 누락 시 airgenome-sync 가 $HOME/.ssh/id_ed25519 기본 사용.",
+      "ssh_user": "SSH 접속 user (root/aiden/summer 등). 원격 unit 재시작 + rsync 용 — root 권장."
     }
   },
   "hosts": {
-    "ubu": {
+    "ubu1": {
       "enabled": true,
       "ssh_alias": "ubu",
       "kind": "lan",
@@ -53,7 +56,10 @@
       "docker_ssh_port": 2222,
       "docker_ssh_alias": "ubu-d",
       "display_name": "U¹",
-      "short_code": "ubu1"
+      "short_code": "ubu1",
+      "ip": "192.168.50.119",
+      "ssh_user": "root",
+      "ssh_key": "$HOME/.ssh/id_ed25519"
     },
     "ubu2": {
       "enabled": true,
@@ -83,7 +89,10 @@
       "docker_ssh_port": 2222,
       "docker_ssh_alias": "ubu2-d",
       "display_name": "U²",
-      "short_code": "ubu2"
+      "short_code": "ubu2",
+      "ip": "192.168.50.60",
+      "ssh_user": "root",
+      "ssh_key": "$HOME/.ssh/id_ed25519"
     },
     "htz": {
       "enabled": true,
@@ -112,7 +121,10 @@
       "docker_ssh_port": 2222,
       "docker_ssh_alias": "htz-d",
       "display_name": "H¹",
-      "short_code": "htz1"
+      "short_code": "htz1",
+      "ip": "157.180.8.154",
+      "ssh_user": "root",
+      "ssh_key": "$HOME/.ssh/id_hetzner_ax102"
     },
     "mac": {
       "enabled": true,

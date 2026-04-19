@@ -1,7 +1,7 @@
 // modules/claude_route.hexa — AI-native Claude CLI host selector
 //
 // 책임:
-//   1. $NEXUS/shared/infra_state.json 에서 ubu/ubu2/mac 상태 읽기
+//   1. $NEXUS/shared/infra_state.json 에서 ubu1/ubu2/mac 상태 읽기
 //   2. forge/claude_genome.jsonl 에서 최근 실패 count → score 페널티
 //   3. select subcommand — best host name 을 stdout 에 단 한 줄
 //   4. record subcommand — 세션 결과 append to claude_genome.jsonl
@@ -18,7 +18,7 @@
 //   score = clamp(base - penalty, 0, 100)
 //
 // 선택 규칙 (priority-first, 2026-04-17 사용자 결정):
-//   1. ubu 가 살아있으면(score>0) → ubu
+//   1. ubu1 이 살아있으면(score>0) → ubu1
 //   2. 아니면 ubu2 살아있으면 → ubu2
 //   3. 아니면 → mac (최후 fallback)
 //   호스트 간 score 비교 없음. 부하 기반 밸런싱이 아니라 확정 순위.
@@ -66,11 +66,11 @@ struct Candidate {
 }
 
 fn score_ubu() -> Candidate {
-    let st = jqx(".hosts.ubu.status", INFRA_STATE)
-    if st != "active" { return Candidate { name: "ubu", status: st, score: 0 } }
-    let load_i = to_int_safe(jqx(".hosts.ubu.load", INFRA_STATE))
-    let ram_total = to_int_safe(jqx(".hosts.ubu.ram_total_mb", INFRA_STATE))
-    let ram_used = to_int_safe(jqx(".hosts.ubu.ram_used_mb", INFRA_STATE))
+    let st = jqx(".hosts.ubu1.status", INFRA_STATE)
+    if st != "active" { return Candidate { name: "ubu1", status: st, score: 0 } }
+    let load_i = to_int_safe(jqx(".hosts.ubu1.load", INFRA_STATE))
+    let ram_total = to_int_safe(jqx(".hosts.ubu1.ram_total_mb", INFRA_STATE))
+    let ram_used = to_int_safe(jqx(".hosts.ubu1.ram_used_mb", INFRA_STATE))
     let ram_free = 0
     if ram_total > 0 { ram_free = (ram_total - ram_used) * 100 / ram_total }
     // load 근사: load < 2 → 90% free / 2~4 → 50 / >=4 → 20
@@ -78,9 +78,9 @@ fn score_ubu() -> Candidate {
     if load_i >= 2 { cpu_free = 50 }
     if load_i >= 4 { cpu_free = 20 }
     let base = (cpu_free + ram_free) / 2
-    let fails = recent_failures("ubu", 3)
+    let fails = recent_failures("ubu1", 3)
     let penalty = fails * 15
-    return Candidate { name: "ubu", status: "active", score: clamp(base - penalty, 0, 100) }
+    return Candidate { name: "ubu1", status: "active", score: clamp(base - penalty, 0, 100) }
 }
 
 fn score_ubu2() -> Candidate {
@@ -118,10 +118,10 @@ fn score_mac() -> Candidate {
     return Candidate { name: "mac", status: "active", score: clamp(base - penalty, 0, 100) }
 }
 
-// priority-first: ubu → ubu2 → mac. 순위대로 살아있는(score>0) 첫 호스트.
+// priority-first: ubu1 → ubu2 → mac. 순위대로 살아있는(score>0) 첫 호스트.
 // score 는 "건강" 판정(>0 이면 사용 가능)에만 쓰고, 호스트 간 비교는 하지 않는다.
 fn pick(u: Candidate, u2: Candidate, m: Candidate) -> str {
-    if u.score > 0 { return "ubu" }
+    if u.score > 0 { return "ubu1" }
     if u2.score > 0 { return "ubu2" }
     return "mac"
 }
@@ -158,21 +158,21 @@ fn self_test() -> void {
     if to_int_safe("42") != 42 { panic("self_test FAIL [to_int_safe int]") }
 
     // 3. pick 우선순위
-    let u_hi = Candidate { name: "ubu", status: "active", score: 80 }
-    let u_lo = Candidate { name: "ubu", status: "active", score: 30 }
-    let u_off = Candidate { name: "ubu", status: "offline", score: 0 }
+    let u_hi = Candidate { name: "ubu1", status: "active", score: 80 }
+    let u_lo = Candidate { name: "ubu1", status: "active", score: 30 }
+    let u_off = Candidate { name: "ubu1", status: "offline", score: 0 }
     let u2_hi = Candidate { name: "ubu2", status: "active", score: 70 }
     let u2_eq = Candidate { name: "ubu2", status: "active", score: 80 }
     let u2_off = Candidate { name: "ubu2", status: "offline", score: 0 }
     let m_any = Candidate { name: "mac", status: "active", score: 90 }
     let m_off = Candidate { name: "mac", status: "offline", score: 0 }
 
-    // priority-first: ubu 살아있으면 무조건 ubu (score 크기는 무시)
-    if pick(u_hi, u2_hi, m_any) != "ubu" { panic("self_test FAIL [priority ubu hi]") }
-    if pick(u_lo, u2_hi, m_any) != "ubu" { panic("self_test FAIL [priority ubu low but alive]") }
-    if pick(u_hi, u2_eq, m_any) != "ubu" { panic("self_test FAIL [priority ubu over ubu2]") }
-    // ubu 죽었을 때만 ubu2
-    if pick(u_off, u2_hi, m_any) != "ubu2" { panic("self_test FAIL [priority ubu off → ubu2]") }
+    // priority-first: ubu1 살아있으면 무조건 ubu1 (score 크기는 무시)
+    if pick(u_hi, u2_hi, m_any) != "ubu1" { panic("self_test FAIL [priority ubu1 hi]") }
+    if pick(u_lo, u2_hi, m_any) != "ubu1" { panic("self_test FAIL [priority ubu1 low but alive]") }
+    if pick(u_hi, u2_eq, m_any) != "ubu1" { panic("self_test FAIL [priority ubu1 over ubu2]") }
+    // ubu1 죽었을 때만 ubu2
+    if pick(u_off, u2_hi, m_any) != "ubu2" { panic("self_test FAIL [priority ubu1 off → ubu2]") }
     // 둘 다 죽어야 mac
     if pick(u_off, u2_off, m_any) != "mac" { panic("self_test FAIL [priority both off → mac]") }
     if pick(u_off, u2_off, m_off) != "mac" { panic("self_test FAIL [priority all off → mac fallback]") }

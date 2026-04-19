@@ -375,7 +375,7 @@ fn self_test() -> void {
     // 6. distinct_keys + series_for_key (unified-style "host.pid")
     let g1 = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[10,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
     let g2 = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[20,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
-    let g3 = "{\"ts\":\"x\",\"pid\":\"ubu.1\",\"comm\":\"b\",\"vitals\":[80,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let g3 = "{\"ts\":\"x\",\"pid\":\"ubu1.1\",\"comm\":\"b\",\"vitals\":[80,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu1\"}"
     let synth = [g1, g2, g3]
     let ks = distinct_keys(synth, 10)
     if len(ks) != 2 { panic("self_test FAIL [distinct count=" + to_string(len(ks)) + "]") }
@@ -389,11 +389,11 @@ fn self_test() -> void {
     if rn == "" { panic("self_test FAIL [ring_name empty]") }
 
     // 8. pairs-based helpers (in-memory hot-path 검증)
-    let pairs = ["mac.1\t10", "mac.1\t20", "ubu.1\t80", "mac.1\t30"]
+    let pairs = ["mac.1\t10", "mac.1\t20", "ubu1.1\t80", "mac.1\t30"]
     let pks = distinct_keys_from_pairs(pairs, 10)
     if len(pks) != 2 { panic("self_test FAIL [pairs distinct count]") }
     if pks[0] != "mac.1" { panic("self_test FAIL [pairs distinct[0]]") }
-    if pks[1] != "ubu.1" { panic("self_test FAIL [pairs distinct[1]]") }
+    if pks[1] != "ubu1.1" { panic("self_test FAIL [pairs distinct[1]]") }
     let ps = series_from_pairs(pairs, "mac.1")
     if len(ps) != 3 { panic("self_test FAIL [pairs series count]") }
     if ps[0] != 10 { panic("self_test FAIL [pairs series[0]]") }

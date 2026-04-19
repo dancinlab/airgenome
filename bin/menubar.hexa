@@ -129,7 +129,7 @@ fn file_age_sec(path: str) -> int {
 
 // ───── 호스트 SSOT — hosts.json 로드 (하드코딩 박멸) ─────────────
 // 각 리스트는 parallel arrays — 동일 index = 동일 호스트
-let mut host_keys = []       // ["ubu", "ubu2", "htz", "mac"]
+let mut host_keys = []       // ["ubu1", "ubu2", "htz", "mac"]
 let mut host_displays = []   // ["U¹", "U²", "H¹", "M"]
 let mut host_threads = []    // [12, 12, 32, 0]
 let mut host_kinds = []      // ["lan", "lan", "remote", "self"]
@@ -158,7 +158,7 @@ fn load_hosts() -> void {
     }
     // Fallback: hosts.json 읽기 실패 시 하드코딩으로 작동 유지
     if len(keys) == 0 {
-        keys = ["ubu", "ubu2", "htz", "mac"]
+        keys = ["ubu1", "ubu2", "htz", "mac"]
         disps = ["U¹", "U²", "H¹", "M"]
         threads = [12, 12, 32, 0]
         kinds = ["lan", "lan", "remote", "self"]
@@ -358,7 +358,7 @@ fn attr_str(s: str, color: *Void) -> *Void {
     return msg2(alloc, sel("initWithString:attributes:"), nsstr(s), dict)
 }
 
-// title: [level icon] [mac bar] [ubu bar][ubu2 bar][htz bar]
+// title: [level icon] [mac bar] [ubu1 bar][ubu2 bar][htz bar]
 // stale 이어도 title 에 ⚠ 안 붙임 — 혼동 유발. 정보는 dropdown 에만.
 // dispatch target 도 title 에 안 붙임 — dropdown 에서 확인.
 fn compose_title_attr() -> *Void {
@@ -565,9 +565,9 @@ fn build_menu() -> *Void {
     menu_add_info(menu, ring_line)
 
     // Slice block (airgenome-claude/stress.slice — TUI 보호 visibility, 2026-04-19)
-    // remote_load.jsonl 최근 ubu 라인에서 slice_claude_mem / slice_stress_mem 추출 → GB 변환
-    let slice_info = exec("tail -60 ~/.airgenome/remote_load.jsonl 2>/dev/null | grep '\"host\":\"ubu\"' | tail -1 | awk -F'[,:{}]' '{for(i=1;i<=NF;i++){if($i~/slice_claude_mem/){c=$(i+1)/1073741824}; if($i~/slice_stress_mem/){s=$(i+1)/1073741824}} printf \"claude=%.1fG/4G  stress=%.1fG/16G\", c, s}'").trim()
-    if slice_info != "" { menu_add_info(menu, "slice ubu: " + slice_info) }
+    // remote_load.jsonl 최근 ubu1 라인에서 slice_claude_mem / slice_stress_mem 추출 → GB 변환
+    let slice_info = exec("tail -60 ~/.airgenome/remote_load.jsonl 2>/dev/null | grep '\"host\":\"ubu1\"' | tail -1 | awk -F'[,:{}]' '{for(i=1;i<=NF;i++){if($i~/slice_claude_mem/){c=$(i+1)/1073741824}; if($i~/slice_stress_mem/){s=$(i+1)/1073741824}} printf \"claude=%.1fG/4G  stress=%.1fG/16G\", c, s}'").trim()
+    if slice_info != "" { menu_add_info(menu, "slice ubu1: " + slice_info) }
 
     // Recent throttle history
     let hist = exec("tail -3 '" + THROTTLE_HIST + "' 2>/dev/null | awk -F'[,:{}\"]' '{for(i=1;i<=NF;i++)if($i==\"cpu\"){c=$(i+2)}; for(i=1;i<=NF;i++)if($i==\"ram\"){r=$(i+2)}; print \"    cpu=\" c \" ram=\" r}' | tr '\\n' '|'").trim()

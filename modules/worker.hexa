@@ -2,7 +2,7 @@
 //
 // 책임:
 //   1. Poll pending/ for tasks — atomic claim via mv (rename)
-//   2. Claimed task → execute `claude -p` on target host (ubu/ubu2/htz/mac)
+//   2. Claimed task → execute `claude -p` on target host (ubu1/ubu2/htz/mac)
 //      - 원격: ssh <alias> docker exec [-e CLAUDE_CONFIG_DIR=...] airgenome-claude claude -p ...
 //      - mac : 로컬 claude -p (fallback only — AG6 준수, prefer remote)
 //   3. Result → results/<id>.out + done/<id>.json (또는 failed)

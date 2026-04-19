@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # L0 CORE — 수정 금지 (nexus/shared/L0.json 등록). 변경 시 PR + L0 갱신.
-# bin/cx — AI-native Claude CLI router (ubu/ubu2 우선, mac fallback)
+# bin/cx — AI-native Claude CLI router (ubu1/ubu2 우선, mac fallback)
 #
 # v3 (2026-04-18, C안): tmux 완전 제거. ssh -t 직결.
 #   - 세션 관리 레이어 폐기 → 세션 이름 충돌 / fork 이슈 원천 소멸
@@ -234,7 +234,7 @@ host_hot() {
 CX_SLOT_DIR="${CLAUDX_STATE:-$HOME/.airgenome}/cx_slots"
 
 # max_claude_concurrent 기본값 — hosts.json 미기입 시 kind 로 추정.
-# 사용자 요구: 초기값을 넉넉히 (자원 놀림 방지). ubu/ubu2=2, htz=4, mac=8.
+# 사용자 요구: 초기값을 넉넉히 (자원 놀림 방지). ubu1/ubu2=2, htz=4, mac=8.
 slot_host_capacity() {
     local host=$1 n
     n=$(jq_host "$host" '.hosts[$h].max_claude_concurrent // empty' 2>/dev/null)
@@ -244,9 +244,9 @@ slot_host_capacity() {
     local kind
     kind=$(jq_host "$host" '.hosts[$h].kind // empty' 2>/dev/null)
     case "$host" in
-        mac)         echo 8; return ;;
-        ubu|ubu2)    echo 2; return ;;
-        htz|hetzner) echo 4; return ;;
+        mac)             echo 8; return ;;
+        ubu1|ubu2)       echo 2; return ;;
+        htz|hetzner)     echo 4; return ;;
     esac
     case "$kind" in
         self)   echo 8 ;;
@@ -505,6 +505,17 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# --force-host 입력 normalize — host_list resolve 로 ubu/U¹ 등 alias 를 canonical key 로.
+# 실패 시 원값 유지 (사용자 직접 지정 가능성 존중). hosts.json SSOT 참조.
+if [ -n "$force_host" ]; then
+    _resolved=$("$ROOT/bin/host_list" resolve "$force_host" 2>/dev/null || true)
+    if [ -n "$_resolved" ] && [ "$_resolved" != "$force_host" ]; then
+        echo "cx: --force-host '$force_host' resolved → '$_resolved' (hosts.json)" >&2
+        force_host="$_resolved"
+    fi
+    unset _resolved
+fi
+
 # ─── resume: snapshot 로드 (force_host/fwd/CALLER_CWD/env 복원) ───────────────
 # --resume-last: LAST pointer 사용. --resume <id>: 명시.
 # 복원 후 stored host 는 force_host 로 설정됨 → 이하 probe 단계가 해당 호스트 우선 시도.
@@ -532,7 +543,7 @@ if [ "$resume_requested" = 1 ]; then
 fi
 
 # host 후보 기본 순서:
-#   1. JSON 순서 우선 (현재 사용자 지시: ubu 우선)
+#   1. JSON 순서 우선 (현재 사용자 지시: ubu1 우선)
 #   2. probe 성공 첫 호스트 선택
 # 기본 정책: 원격 후보가 전부 없으면 mac fallback 허용.
 # 명시적으로 막고 싶으면 CLAUDX_ALLOW_MAC_FALLBACK=0.
@@ -569,7 +580,7 @@ fi
 
 # NODE_OPTIONS 에서 preload 경로 추출 (2026-04-19 htz preload 실패 대응):
 #   --require /path/to/interceptor.js → 원격에도 이 파일이 있어야 claudx 가 뜬다.
-#   sshfs 있는 host (ubu/ubu2) 는 /Users/ghost 심볼릭으로 해결. htz 는 mount 없어 실패.
+#   sshfs 있는 host (ubu1/ubu2) 는 /Users/ghost 심볼릭으로 해결. htz 는 mount 없어 실패.
 #   probe 단계에서 파일 존재까지 확인 → 없으면 다음 후보로.
 cx_preload_path=""
 if [ -n "${NODE_OPTIONS:-}" ]; then
@@ -578,7 +589,7 @@ fi
 
 # parallel probe — 모든 remote 후보에 동시 발사, priority 순서로 첫 성공 선택.
 # -o ControlPath=none 으로 stale mux bypass. `timeout` 래핑으로 banner-hang 도 강제 컷.
-# Why 병렬: ubu sshd 가 과부하로 banner timeout 이면 sequential 은 ConnectTimeout(3s) 단위로 쌓이고
+# Why 병렬: ubu1 sshd 가 과부하로 banner timeout 이면 sequential 은 ConnectTimeout(3s) 단위로 쌓이고
 #        BannerTimeout 기본 120s 까지 대기 가능. 병렬+timeout 래핑 시 worst-case = max ConnectTimeout.
 host=""
 alias=""
@@ -653,7 +664,7 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
         _cand_docker_port=$(jq_host "$cand" '.hosts[$h].docker_ssh_port // empty')
         # docker-ssh alias 후보:
         #   1) hosts.json 의 docker_ssh_alias (명시적 override)
-        #   2) {ssh_alias}-d (기본 규칙, 예: ubu→ubu-d)
+        #   2) {ssh_alias}-d (기본 규칙, 예: ssh_alias=ubu → ubu-d)
         # 둘 다 없으면 <ssh_alias>-d 로 시도 → ssh -G 로 resolve 실패하면 skip.
         _cand_dssh_alias=$(jq_host "$cand" '.hosts[$h].docker_ssh_alias // empty')
         [ -n "$_cand_dssh_alias" ] || _cand_dssh_alias="${cand_alias}-d"

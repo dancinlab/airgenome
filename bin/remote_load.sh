@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/remote_load.sh — Phase R2: remote host load poller
 #
-# 목적: ubu + hetzner 의 load/mem/proc counts 를 주기적으로 수집해
+# 목적: ubu1 + ubu2 + hetzner 의 load/mem/proc counts 를 주기적으로 수집해
 #       ~/.airgenome/remote_load.jsonl 에 1-host-당-1-line JSONL 로 기록.
 # 용도: 이후 dispatcher/circuit-breaker 의 판단 근거, 간섭 분석.
 #
@@ -16,14 +16,31 @@ mkdir -p "$(dirname "$LOG")"
 
 # Host 목록 — SSOT: shared/config/hosts.json (kind != self, enabled == true).
 # jq 실패/레지스트리 누락 시 과거 하드코드 fallback 유지 (R17 자가 복구).
+# HOSTS 는 host key (ubu1 등) 로 채우고, ssh 연결 시엔 ssh_alias 로 변환한다.
 REG="${HOSTS_REGISTRY:-$(cd "$(dirname "$0")/.." && pwd)/shared/config/hosts.json}"
 if [ -r "$REG" ] && command -v jq >/dev/null 2>&1; then
     # shellcheck disable=SC2207
-    HOSTS=($(jq -r '.hosts | to_entries[] | select(.value.enabled == true and .value.kind != "self") | .value.ssh_alias' "$REG" 2>/dev/null))
+    HOSTS=($(jq -r '.hosts | to_entries[] | select(.value.enabled == true and .value.kind != "self") | .key' "$REG" 2>/dev/null))
 fi
 if [ "${#HOSTS[@]}" -eq 0 ]; then
-    HOSTS=("ubu" "ubu2" "hetzner")
+    HOSTS=("ubu1" "ubu2" "htz")
 fi
+
+# host_key → ssh_alias 변환 (hosts.json SSOT, fallback: host_key 그대로).
+host_key_to_ssh_alias() {
+    local key=$1
+    local alias=""
+    if [ -r "$REG" ] && command -v jq >/dev/null 2>&1; then
+        alias=$(jq -r --arg k "$key" '.hosts[$k].ssh_alias // empty' "$REG" 2>/dev/null)
+    fi
+    [ -n "$alias" ] && [ "$alias" != "null" ] && { printf '%s' "$alias"; return; }
+    # Legacy fallback — 하드코딩 경로 (jq 실패 시).
+    case "$key" in
+        htz)       printf 'hetzner' ;;
+        ubu1)      printf 'ubu' ;;
+        *)         printf '%s' "$key" ;;
+    esac
+}
 
 # 원격에서 실행되는 한 줄 JSON 생성기. single-quoted 로 로컬 확장 방지.
 # NOTE: `pgrep -c` 는 no-match 시 stdout 에 "0" 출력 + exit 1.
@@ -51,15 +68,17 @@ REMOTE_CMD='
 '
 
 probe_host() {
-    local host=$1
+    local host_key=$1
+    local ssh_alias
+    ssh_alias=$(host_key_to_ssh_alias "$host_key")
     local ts
     ts=$(date -u +%FT%TZ)
     local json
-    if json=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" "$REMOTE_CMD" 2>/dev/null); then
-        # merge: prefix ts/host/ok, append remote json fields (strip opening brace)
-        printf '{"ts":"%s","host":"%s","ok":true,%s\n' "$ts" "$host" "${json#\{}" >> "$LOG"
+    if json=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$ssh_alias" "$REMOTE_CMD" 2>/dev/null); then
+        # merge: prefix ts/host (canonical key), ok, append remote json fields (strip opening brace)
+        printf '{"ts":"%s","host":"%s","ok":true,%s\n' "$ts" "$host_key" "${json#\{}" >> "$LOG"
     else
-        printf '{"ts":"%s","host":"%s","ok":false,"err":"ssh_fail_or_timeout"}\n' "$ts" "$host" >> "$LOG"
+        printf '{"ts":"%s","host":"%s","ok":false,"err":"ssh_fail_or_timeout"}\n' "$ts" "$host_key" >> "$LOG"
         return 1
     fi
 }

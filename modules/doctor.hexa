@@ -4,19 +4,19 @@
 //   1. Mac local:
 //      - launchd com.airgenome.* 서비스 로드 수
 //      - ~/.airgenome/tg_bot.log heartbeat 10분 이내
-//      - ~/.ssh/config 의 ubu/ubu2/hetzner 블록 존재
-//   2. 원격 3호스트 (ubu/ubu2/htz — 병렬 ssh fresh probe, timeout 5s):
+//      - ~/.ssh/config 의 ubu/ubu2/hetzner 블록 존재 (ssh_alias — Mac config legacy)
+//   2. 원격 3호스트 (ubu1/ubu2/htz — 병렬 ssh fresh probe, timeout 5s):
 //      - systemd user services: airgenome-claude, airgenome-runaway, airgenome-build
 //      - docker container: airgenome-claude healthy + port 2222 listener
 //      - drill.slice 유닛 존재 + inactive(idle) | active
-//      - mac_home mount (ubu/ubu2 만) + allow_other 옵션 포함 여부
+//      - mac_home mount (ubu1/ubu2 만) + allow_other 옵션 포함 여부
 //      - ~/.airgenome/runaway.jsonl 최근 10분 이내 append
 //   3. GHCR:
 //      - gh_token scope 에 write:packages 포함
 //      - 최근 image push 시각 (ghcr.io/dancinlife/airgenome-claude)
 //   4. 설정 일관성:
 //      - Mac repo bin/airgenome-claude-run 과 원격 /usr/local/bin/airgenome-claude-run md5 동일
-//      - shared/config/hosts.json 의 ubu/ubu2/htz 에 docker_ssh_port 필드 존재
+//      - shared/config/hosts.json 의 ubu1/ubu2/htz 에 docker_ssh_port 필드 존재
 //   5. Score + dispatch state:
 //      - ~/.airgenome/host_blacklist.json 존재 시 내용
 //      - $NEXUS/shared/dispatch_state.json 의 score + AG6 gate
@@ -487,14 +487,14 @@ fn check_hosts_json() -> Check {
             "파일 없음",
             "shared/config/hosts.json 복구 필요")
     }
-    // ubu/ubu2/htz 3개 각각에 docker_ssh_port 필드가 있는지 확인
-    let missing = sh("jq -r '[\"ubu\",\"ubu2\",\"htz\"] | map(select(. as $h | ($host_port[$h] | not))) | join(\",\")' --argjson host_port \"$(jq '.hosts | to_entries | map({(.key): (.value.docker_ssh_port // null)}) | add' '" + HOSTS_JSON + "')\" '" + HOSTS_JSON + "' 2>/dev/null")
+    // ubu1/ubu2/htz 3개 각각에 docker_ssh_port 필드가 있는지 확인
+    let missing = sh("jq -r '[\"ubu1\",\"ubu2\",\"htz\"] | map(select(. as $h | ($host_port[$h] | not))) | join(\",\")' --argjson host_port \"$(jq '.hosts | to_entries | map({(.key): (.value.docker_ssh_port // null)}) | add' '" + HOSTS_JSON + "')\" '" + HOSTS_JSON + "' 2>/dev/null")
     // 위 jq 가 복잡 → 단순화: 각각 개별 검사
-    let chk_ubu = sh("jq -r '.hosts.ubu.docker_ssh_port // empty' '" + HOSTS_JSON + "' 2>/dev/null")
+    let chk_ubu = sh("jq -r '.hosts.ubu1.docker_ssh_port // empty' '" + HOSTS_JSON + "' 2>/dev/null")
     let chk_ubu2 = sh("jq -r '.hosts.ubu2.docker_ssh_port // empty' '" + HOSTS_JSON + "' 2>/dev/null")
     let chk_htz = sh("jq -r '.hosts.htz.docker_ssh_port // empty' '" + HOSTS_JSON + "' 2>/dev/null")
     let mut miss = ""
-    if chk_ubu == "" { miss = miss + "ubu " }
+    if chk_ubu == "" { miss = miss + "ubu1 " }
     if chk_ubu2 == "" { miss = miss + "ubu2 " }
     if chk_htz == "" { miss = miss + "htz " }
     if miss != "" {
@@ -503,7 +503,7 @@ fn check_hosts_json() -> Check {
             "shared/config/hosts.json 의 해당 host 에 \"docker_ssh_port\": 2222 추가")
     }
     return mk_check("config.hosts_json", "config", "hosts.json docker_ssh_port", SEV_OK,
-        "ubu=" + chk_ubu + " ubu2=" + chk_ubu2 + " htz=" + chk_htz, "")
+        "ubu1=" + chk_ubu + " ubu2=" + chk_ubu2 + " htz=" + chk_htz, "")
 }
 
 fn check_blacklist() -> Check {
@@ -557,7 +557,7 @@ fn render_table(checks: list, ts: str, elapsed_ms: int) -> void {
     println("⬡ airgenome doctor  " + ts + "  (" + to_string(elapsed_ms) + "ms)")
     println("═══════════════════════════════════════════════════════════════════════════════")
     let cats = ["mac", "remote", "ghcr", "config", "score"]
-    let cat_titles = ["Mac local", "Remote hosts (ubu/ubu2/htz)", "GHCR", "Config consistency", "Score / dispatch"]
+    let cat_titles = ["Mac local", "Remote hosts (ubu1/ubu2/htz)", "GHCR", "Config consistency", "Score / dispatch"]
     let mut ci = 0
     let mut total_fail = 0
     let mut total_warn = 0

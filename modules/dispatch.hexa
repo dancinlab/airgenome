@@ -3,7 +3,7 @@
 // 책임:
 //   1. nexus/shared/infra_state.json 을 jq 로 파싱 (Mac compute zero — I/O 만)
 //   2. AG7 score = host health (cpu_free*w_cpu + ram_free*w_ram - load_penalty)
-//   3. AG6 gate: ubu OR htz active 이면 mac 은 compute/gpu/heavy 후보 제외
+//   3. AG6 gate: ubu1 OR htz active 이면 mac 은 compute/gpu/heavy 후보 제외
 //   4. task_type 별 best_host 계산 → dispatch_state.json 원자적 기록
 //
 // 제약:
@@ -54,7 +54,7 @@ fn score_compute(cpu_free: int, ram_free: int, load_int: int) -> int {
     return raw
 }
 
-// (2026-04-19) 12-thread 기준 정규화. htz(32)·ubu2(12)·ubu(12) 간 load penalty 공정성 확보.
+// (2026-04-19) 12-thread 기준 정규화. htz(32)·ubu2(12)·ubu1(12) 간 load penalty 공정성 확보.
 // 예: htz load=11, threads=32 → norm=4 (~비슷한 부하의 ubu2 load=4 와 동등 취급).
 // 기존 raw load 전달은 htz compute 를 항상 0 으로 만들던 버그 원인.
 fn norm_load_12t(load_int: int, threads: int) -> int {
@@ -112,36 +112,36 @@ struct HostView {
 }
 
 fn view_ubu(path: str) -> HostView {
-    let st = jqx(".hosts.ubu.status", path)
+    let st = jqx(".hosts.ubu1.status", path)
     if st != "active" {
-        return HostView { name: "ubu", status: st, compute: 0, gpu: 0, heavy: 0 }
+        return HostView { name: "ubu1", status: st, compute: 0, gpu: 0, heavy: 0 }
     }
-    let load_s = jqx(".hosts.ubu.load", path)
+    let load_s = jqx(".hosts.ubu1.load", path)
     let load_i = to_int_safe(load_s)
-    let ram_total = to_int_safe(jqx(".hosts.ubu.ram_total_mb", path))
-    let ram_used = to_int_safe(jqx(".hosts.ubu.ram_used_mb", path))
+    let ram_total = to_int_safe(jqx(".hosts.ubu1.ram_total_mb", path))
+    let ram_used = to_int_safe(jqx(".hosts.ubu1.ram_used_mb", path))
     let ram_free = 0
     if ram_total > 0 {
         ram_free = (ram_total - ram_used) * 100 / ram_total
     }
-    // ubu cpu_free 불명 — load 기반 근사 (load 1 미만 ≈ 90% free)
+    // ubu1 cpu_free 불명 — load 기반 근사 (load 1 미만 ≈ 90% free)
     let cpu_free = 90
     if load_i >= 2 { cpu_free = 50 }
     if load_i >= 4 { cpu_free = 20 }
-    let gpu_util = to_int_safe(jqx(".hosts.ubu.gpu_util", path))
-    let vram_t = to_int_safe(jqx(".hosts.ubu.gpu_vram_total_mb", path))
-    let vram_u = to_int_safe(jqx(".hosts.ubu.gpu_vram_used_mb", path))
+    let gpu_util = to_int_safe(jqx(".hosts.ubu1.gpu_util", path))
+    let vram_t = to_int_safe(jqx(".hosts.ubu1.gpu_vram_total_mb", path))
+    let vram_u = to_int_safe(jqx(".hosts.ubu1.gpu_vram_used_mb", path))
     let vram_free = 0
     if vram_t > 0 {
         vram_free = (vram_t - vram_u) * 100 / vram_t
     }
-    let a_c = active_slots("ubu", "compute")
-    let a_g = active_slots("ubu", "gpu")
-    let a_h = active_slots("ubu", "heavy")
-    // ubu threads=12 (infra_state 미노출) → norm = raw. 다른 호스트와 동일 경로 유지.
+    let a_c = active_slots("ubu1", "compute")
+    let a_g = active_slots("ubu1", "gpu")
+    let a_h = active_slots("ubu1", "heavy")
+    // ubu1 threads=12 (infra_state 미노출) → norm = raw. 다른 호스트와 동일 경로 유지.
     let nlu = norm_load_12t(load_i, 12)
     return HostView {
-        name: "ubu", status: "active",
+        name: "ubu1", status: "active",
         compute: apply_active_penalty(score_compute(cpu_free, ram_free, nlu), a_c),
         gpu: apply_active_penalty(score_gpu("active", gpu_util, vram_free), a_g),
         heavy: apply_active_penalty(score_heavy(cpu_free, ram_free, 8), a_h)
@@ -245,10 +245,10 @@ fn best_of(cat: str, u: HostView, u2: HostView, h: HostView, m: HostView, gate: 
     if cat == "heavy"   { u_s = u.heavy;   u2_s = u2.heavy;   h_s = h.heavy;   m_s = m.heavy }
     if gate { m_s = 0 }  // AG6 — mac 차단
 
-    // tie-breaker: ubu > ubu2 > htz > mac (LAN+GPU 우선, 그 다음 LAN compute, 그 다음 원격)
+    // tie-breaker: ubu1 > ubu2 > htz > mac (LAN+GPU 우선, 그 다음 LAN compute, 그 다음 원격)
     let best_name = "none"
     let best_score = 0
-    if u_s > best_score { best_name = "ubu"; best_score = u_s }
+    if u_s > best_score { best_name = "ubu1"; best_score = u_s }
     if u2_s > best_score { best_name = "ubu2"; best_score = u2_s }
     if h_s > best_score { best_name = "htz"; best_score = h_s }
     if m_s > best_score { best_name = "mac"; best_score = m_s }
@@ -271,7 +271,7 @@ fn build_dispatch(ts: str, u: HostView, u2: HostView, h: HostView, m: HostView, 
     let gate_str = "open"
     if gate { gate_str = "active" }
 
-    let scores_u  = "{\"ubu\":{\"compute\":"  + to_string(u.compute)  + ",\"gpu\":" + to_string(u.gpu)  + ",\"heavy\":" + to_string(u.heavy)  + "},"
+    let scores_u  = "{\"ubu1\":{\"compute\":" + to_string(u.compute)  + ",\"gpu\":" + to_string(u.gpu)  + ",\"heavy\":" + to_string(u.heavy)  + "},"
     let scores_u2 = "\"ubu2\":{\"compute\":"  + to_string(u2.compute) + ",\"gpu\":" + to_string(u2.gpu) + ",\"heavy\":" + to_string(u2.heavy) + "},"
     let scores_h  = "\"htz\":{\"compute\":"   + to_string(h.compute)  + ",\"gpu\":" + to_string(h.gpu)  + ",\"heavy\":" + to_string(h.heavy)  + "},"
     let scores_m  = "\"mac\":{\"compute\":"   + to_string(m.compute)  + ",\"gpu\":" + to_string(m.gpu)  + ",\"heavy\":" + to_string(m.heavy)  + "}}"
@@ -311,24 +311,24 @@ fn self_test() -> void {
     let h2 = score_heavy(100, 100, 4)
     if h2 != 100 { panic("self_test FAIL [score_heavy 4t]") }  // 100+0 = 100
 
-    // 4. best_of AG6 gate — mac 차단 시 best 는 ubu/htz 중 하나
+    // 4. best_of AG6 gate — mac 차단 시 best 는 ubu1/htz 중 하나
     let mac_only = HostView { name: "mac", status: "active", compute: 90, gpu: 0, heavy: 90 }
-    let ubu_ok   = HostView { name: "ubu", status: "active", compute: 50, gpu: 80, heavy: 40 }
+    let ubu_ok   = HostView { name: "ubu1", status: "active", compute: 50, gpu: 80, heavy: 40 }
     let ubu2_off = HostView { name: "ubu2", status: "offline", compute: 0, gpu: 0, heavy: 0 }
     let htz_off  = HostView { name: "htz", status: "offline", compute: 0, gpu: 0, heavy: 0 }
     let pick_gated = best_of("compute", ubu_ok, ubu2_off, htz_off, mac_only, true)
-    if pick_gated != "ubu" { panic("self_test FAIL [AG6 gate did not block mac]") }
+    if pick_gated != "ubu1" { panic("self_test FAIL [AG6 gate did not block mac]") }
     let pick_open = best_of("compute", ubu_ok, ubu2_off, htz_off, mac_only, false)
     if pick_open != "mac" { panic("self_test FAIL [open gate mac=90 not picked]") }
     // ubu2 가 유일하게 active — compute 선택돼야
     let ubu2_ok = HostView { name: "ubu2", status: "active", compute: 70, gpu: 0, heavy: 60 }
-    let ubu_off = HostView { name: "ubu", status: "offline", compute: 0, gpu: 0, heavy: 0 }
+    let ubu_off = HostView { name: "ubu1", status: "offline", compute: 0, gpu: 0, heavy: 0 }
     let pick_ubu2 = best_of("compute", ubu_off, ubu2_ok, htz_off, mac_only, true)
     if pick_ubu2 != "ubu2" { panic("self_test FAIL [ubu2 should win when only active remote]") }
 
     // 5. AG6 gate 판정
     let gate_on = ag6_gate_active(ubu_ok, ubu2_off, htz_off)
-    if !gate_on { panic("self_test FAIL [gate should be on when ubu active]") }
+    if !gate_on { panic("self_test FAIL [gate should be on when ubu1 active]") }
     let all_off = HostView { name: "x", status: "offline", compute: 0, gpu: 0, heavy: 0 }
     let gate_off = ag6_gate_active(all_off, all_off, all_off)
     if gate_off { panic("self_test FAIL [gate should be off when all remote offline]") }
@@ -352,7 +352,7 @@ fn self_test() -> void {
 
     // 9. (2026-04-19) norm_load_12t — thread 수 별 load 정규화
     if norm_load_12t(10, 32) != 3 { panic("self_test FAIL [norm_load htz 32t load=10 → 3]") }
-    if norm_load_12t(10, 12) != 10 { panic("self_test FAIL [norm_load ubu 12t identity]") }
+    if norm_load_12t(10, 12) != 10 { panic("self_test FAIL [norm_load ubu1 12t identity]") }
     if norm_load_12t(0, 32) != 0 { panic("self_test FAIL [norm_load zero]") }
     if norm_load_12t(5, 0) != 5 { panic("self_test FAIL [norm_load zero threads → passthrough]") }
     if norm_load_12t(0 - 3, 12) != 0 { panic("self_test FAIL [norm_load negative clamp]") }
