@@ -738,6 +738,206 @@ fn append_log(line: str) -> void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  TELEGRAM PUSH — verdict=critical 전용 alert
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 설계 (본 파일 상단 M14 → M15 extension):
+//   1. verdict=critical 시에만 발사. warn/danger/ok 는 skip (spam 회피).
+//   2. rate limit — ~/.airgenome/tg_last_critical.json 에 마지막 push epoch 기록.
+//      같은 host 는 TG_RATE_WINDOW (기본 300s) 내 중복이면 skip.
+//   3. token 조회 우선순위:
+//        env TG_BOT_TOKEN_FILE          (명시 override)
+//        $HOME/Dev/secret/tg_bot_token  (Mac 직경로 / ubu·ubu2 sshfs 동일 경로)
+//        /Users/ghost/Dev/secret/tg_bot_token  (Users 심볼릭 fallback)
+//      없으면 WARN 로그만 남기고 skip.
+//   4. chat_id 조회 우선순위:
+//        env TG_CHAT_ID
+//        $HOME/.airgenome/tg.json .whitelist[0]
+//        /Users/ghost/.airgenome/tg.json .whitelist[0]
+//      없으면 WARN 로그만 남기고 skip.
+//   5. curl timeout 3s (blocking 방지). 실패는 stderr 로 journalctl 에만 남김.
+//   6. RUNAWAY_DRY_RUN=1 환경에선 실제 POST 안 보내고 dry 라인만 log.
+//   7. TG_FORCE_CRITICAL=1 환경 flag — 테스트용, verdict 무시하고 notify_telegram 호출.
+
+fn tg_rate_window_s() -> int {
+    let s = env("TG_RATE_WINDOW").trim()
+    if s == "" { return 300 }
+    let n = to_int(s)
+    if n <= 0 { return 300 }
+    return n
+}
+
+fn tg_last_critical_path() -> str {
+    return HOME + "/.airgenome/tg_last_critical.json"
+}
+
+// token 경로 resolve — 발견 시 파일 path 반환, 없으면 "" .
+fn tg_token_path() -> str {
+    let override_p = env("TG_BOT_TOKEN_FILE").trim()
+    if override_p != "" {
+        let e = exec("test -f '" + override_p + "' && echo y || echo n").trim()
+        if e == "y" { return override_p }
+    }
+    let home_p = HOME + "/Dev/secret/tg_bot_token"
+    let e1 = exec("test -f '" + home_p + "' && echo y || echo n").trim()
+    if e1 == "y" { return home_p }
+    let mac_p = "/Users/ghost/Dev/secret/tg_bot_token"
+    let e2 = exec("test -f '" + mac_p + "' && echo y || echo n").trim()
+    if e2 == "y" { return mac_p }
+    return ""
+}
+
+fn tg_read_token() -> str {
+    let p = tg_token_path()
+    if p == "" { return "" }
+    let raw = exec("cat '" + p + "' 2>/dev/null").trim()
+    if to_string(raw) == "void" { return "" }
+    return raw
+}
+
+fn tg_chat_id() -> str {
+    let env_id = env("TG_CHAT_ID").trim()
+    if env_id != "" { return env_id }
+    let cfg_home = HOME + "/.airgenome/tg.json"
+    let e1 = exec("test -f '" + cfg_home + "' && echo y || echo n").trim()
+    if e1 == "y" {
+        let cid = exec("jq -r '.whitelist[0]? // empty' '" + cfg_home + "' 2>/dev/null").trim()
+        if cid != "" { return cid }
+    }
+    let cfg_mac = "/Users/ghost/.airgenome/tg.json"
+    let e2 = exec("test -f '" + cfg_mac + "' && echo y || echo n").trim()
+    if e2 == "y" {
+        let cid = exec("jq -r '.whitelist[0]? // empty' '" + cfg_mac + "' 2>/dev/null").trim()
+        if cid != "" { return cid }
+    }
+    return ""
+}
+
+// rate-limit 판정: 마지막 push epoch 과 now 의 차이가 window 미만이면 true.
+// 파일은 JSON {"<host>": <epoch>, ...} 형태. jq 로 읽기.
+fn tg_rate_limited(host: str, now: int, window: int) -> bool {
+    let p = tg_last_critical_path()
+    let e = exec("test -f '" + p + "' && echo y || echo n").trim()
+    if e != "y" { return false }
+    let last_s = exec("jq -r '.[\"" + host + "\"]? // empty' '" + p + "' 2>/dev/null").trim()
+    if last_s == "" { return false }
+    let last = to_int(last_s)
+    if last <= 0 { return false }
+    let delta = now - last
+    if delta < window { return true }
+    return false
+}
+
+fn tg_record_push(host: str, now: int) -> void {
+    ensure_home()
+    let p = tg_last_critical_path()
+    // jq idempotent update — file 없으면 {} 로 시작.
+    let e = exec("test -f '" + p + "' && echo y || echo n").trim()
+    if e != "y" {
+        let _ = exec("printf '{}' > '" + p + "'")
+    }
+    let tmp = p + ".tmp." + to_string(now)
+    let cmd = "jq --arg h '" + host + "' --argjson t " + to_string(now)
+            + " '.[$h]=$t' '" + p + "' > '" + tmp + "' 2>/dev/null && mv '" + tmp + "' '" + p + "'"
+    let _ = exec(cmd)
+}
+
+// telegram 메시지 본문 작성 — 간결. 플레인 텍스트 (MarkdownV2 escape 회피).
+fn tg_format_message(host: str, ts: str, v: int, m: Metrics) -> str {
+    let lpn_x100 = 0
+    if m.nproc > 0 { lpn_x100 = m.load1_x100 / m.nproc }
+    // top 3 PID comm 요약
+    let mut top_s = ""
+    let mut i = 0
+    let mut shown = 0
+    while i < len(m.top) {
+        if shown >= 3 { i = len(m.top) }
+        else {
+            let p = m.top[i]
+            if p.pid > 1 {
+                if shown > 0 { top_s = top_s + ", " }
+                top_s = top_s + p.comm + "(" + to_string(p.pid) + "," + to_string(p.pcpu) + "%)"
+                shown = shown + 1
+            }
+            i = i + 1
+        }
+    }
+    if top_s == "" { top_s = "(none)" }
+    // load per-nproc 포맷: x100 → "1.23"
+    let lpn_int = lpn_x100 / 100
+    let lpn_frac = lpn_x100 - lpn_int * 100
+    let mut frac_s = to_string(lpn_frac)
+    if lpn_frac < 10 { frac_s = "0" + frac_s }
+    let mut msg = "🚨 RUNAWAY CRITICAL [" + host + "]\n"
+    msg = msg + "ts: " + ts + "\n"
+    msg = msg + "verdict: " + verdict_name(v) + "\n"
+    msg = msg + "load/nproc: " + to_string(lpn_int) + "." + frac_s
+    msg = msg + " (load1=" + to_string(m.load1_x100 / 100) + ", nproc=" + to_string(m.nproc) + ")\n"
+    msg = msg + "iowait: " + to_string(m.iowait_pct) + "%, d_state: " + to_string(m.d_state)
+    msg = msg + ", mem: " + to_string(m.mem_avail_gb) + "GB\n"
+    msg = msg + "top3: " + top_s
+    return msg
+}
+
+fn tg_host_label() -> str {
+    let h = exec("hostname -s 2>/dev/null || hostname 2>/dev/null").trim()
+    if to_string(h) == "void" { return "unknown" }
+    if h == "" { return "unknown" }
+    return h
+}
+
+// 실제 telegram POST — curl. timeout 3s. 실패 = silent (stderr 만 journal 로).
+fn tg_send(token: str, chat_id: str, text: str) -> bool {
+    // text 를 tempfile 로 써서 --data-urlencode text@file 전달.
+    let tmp = HOME + "/.airgenome/.tg_crit." + to_string(ts_epoch()) + ".$$"
+    let _ = exec("mkdir -p '" + HOME + "/.airgenome'")
+    let _ = write_file(tmp, text)
+    let url = "https://api.telegram.org/bot" + token + "/sendMessage"
+    let cmd = "curl -sS --max-time 3 -X POST '" + url + "'"
+            + " --data-urlencode 'chat_id=" + chat_id + "'"
+            + " --data-urlencode 'text@" + tmp + "'"
+            + " 2>&1; rm -f '" + tmp + "'"
+    let out = exec(cmd)
+    if to_string(out) == "void" { return false }
+    if out.contains("\"ok\":true") { return true }
+    // failure — journal 로 흔적 남김 (stderr; systemd 가 journalctl 로 수집)
+    println("{\"source\":\"runaway_guard\",\"tg_push\":\"fail\",\"resp\":\"" + json_safe(out) + "\"}")
+    return false
+}
+
+// 메인 진입점 — verdict=critical 시 tick() 에서 호출.
+fn notify_telegram(host: str, ts: str, v: int, m: Metrics, now: int) -> void {
+    let window = tg_rate_window_s()
+    if tg_rate_limited(host, now, window) {
+        println("{\"source\":\"runaway_guard\",\"tg_push\":\"rate_limited\",\"host\":\"" + host + "\"}")
+        return
+    }
+    let token = tg_read_token()
+    if token == "" {
+        println("{\"source\":\"runaway_guard\",\"tg_push\":\"no_token\",\"host\":\"" + host + "\"}")
+        return
+    }
+    let chat_id = tg_chat_id()
+    if chat_id == "" {
+        println("{\"source\":\"runaway_guard\",\"tg_push\":\"no_chat_id\",\"host\":\"" + host + "\"}")
+        return
+    }
+    let msg = tg_format_message(host, ts, v, m)
+    if is_dry_run() {
+        println("{\"source\":\"runaway_guard\",\"tg_push\":\"dry\",\"host\":\"" + host + "\",\"len\":" + to_string(len(msg)) + "}")
+        // dry 에서도 rate-limit 기록해서 반복 dry-push 방지
+        tg_record_push(host, now)
+        return
+    }
+    let ok = tg_send(token, chat_id, msg)
+    if ok {
+        tg_record_push(host, now)
+        println("{\"source\":\"runaway_guard\",\"tg_push\":\"ok\",\"host\":\"" + host + "\"}")
+    }
+    // ok=false 인 경우 tg_send 가 이미 fail 로그 찍음 — rate-record 는 skip (재시도 가능).
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  TICK
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -773,6 +973,12 @@ fn tick(t: Thresholds, wl: Whitelist) -> void {
     append_log(line)
     // stdout 에도 한 줄 (systemd journal 용이성)
     println(line)
+    // Telegram push 비활성화 (2026-04-20) — tg_bot 은 iOS→claude dispatch 전용.
+    // runaway 는 로그/journal 로만 관측, 선알림 spam 방지. 테스트 시 TG_FORCE_CRITICAL=1.
+    if env("TG_FORCE_CRITICAL") == "1" {
+        let host = tg_host_label()
+        notify_telegram(host, ts, VERDICT_CRITICAL, m, now)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -864,7 +1070,35 @@ fn self_test() -> void {
         // 빈 리스트도 OK — D-state PID 이 없으면 정상.
     }
 
-    println("  ✅ runaway_guard self_test PASS (whitelist narrowed + D-state pick + ionice)")
+    // 8. telegram rate-limit logic — 새 push 후 즉시 재호출은 rate-limited.
+    let host_t = "self_test_host_" + to_string(ts_epoch())
+    let now_t = ts_epoch()
+    // 첫 호출: 기록 없음 → false
+    if tg_rate_limited(host_t, now_t, 300) { panic("self_test FAIL [rate_limited false positive]") }
+    tg_record_push(host_t, now_t)
+    // 기록 후 즉시 재호출: true
+    if !tg_rate_limited(host_t, now_t, 300) { panic("self_test FAIL [rate_limited should suppress]") }
+    // window 밖 (now + 301): false
+    if tg_rate_limited(host_t, now_t + 301, 300) { panic("self_test FAIL [rate_limited window expiry]") }
+
+    // 9. message format — host/verdict 포함 확인.
+    let fake_m = Metrics { load1_x100: 250, load5_x100: 200, nproc: 8,
+                           iowait_pct: 42, mem_avail_gb: 0, d_state: 5,
+                           top: [ProcStat { pid: 9999, comm: "stress-ng", pcpu: 98, rss_kb: 10240 }],
+                           d_pids: [] }
+    let m_msg = tg_format_message("test-host", "2026-04-19T12:00:00Z", VERDICT_CRITICAL, fake_m)
+    if !m_msg.contains("RUNAWAY CRITICAL") { panic("self_test FAIL [tg msg missing RUNAWAY CRITICAL]") }
+    if !m_msg.contains("test-host") { panic("self_test FAIL [tg msg missing host]") }
+    if !m_msg.contains("stress-ng") { panic("self_test FAIL [tg msg missing top]") }
+
+    // 10. token path resolve — 파일 없으면 "" (Linux prod 환경에서 Mac secret 없을 수 있음 — 허용).
+    let _tp = tg_token_path()   // 결과 무관, 호출 자체가 성공이면 OK.
+
+    // 11. 마지막 self-test host 기록 정리 (누적 방지)
+    let p_cleanup = tg_last_critical_path()
+    let _ = exec("jq --arg h '" + host_t + "' 'del(.[$h])' '" + p_cleanup + "' > '" + p_cleanup + ".tmp' 2>/dev/null && mv '" + p_cleanup + ".tmp' '" + p_cleanup + "'")
+
+    println("  ✅ runaway_guard self_test PASS (whitelist narrowed + D-state pick + ionice + tg_push)")
 }
 
 fn run_once() -> void {

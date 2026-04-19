@@ -4,6 +4,10 @@
 
   "files": [
     { "path": "cl",                          "reason": "multi-account launcher — 전체 워크플로우 진입점" },
+    { "path": "bin/cx",                      "reason": "AI-native Claude router — cl 이 위임하는 host/slot/docker-ssh 라우팅 진입점. mac local/ssh/docker-ssh 3경로 단일 결정 지점" },
+    { "path": "bin/claudx",                  "reason": "rotation 런처 — pool.pickBest + interceptor 주입 + cx 위임. 429/limit mid-session 회피 핵심" },
+    { "path": "shared/claudx/pool.js",       "reason": "계정 풀 SSOT — loadPool/pickBest/markExhausted, keychain fallback. cross-host creds 결정" },
+    { "path": "shared/claudx/interceptor.js", "reason": "fetch hook — 429/401 rotation, 캐시, 프리엠프트, 버짓 게이트. claudx 런타임 유일 진실" },
     { "path": "run.hexa",                    "reason": "airgenome 메인 런처 (sampler+menubar)" },
     { "path": "nexus/shared/bin/hexa",       "reason": "hexa 바이너리 심링크 — 단일 resolve 포인트" },
     { "path": "nexus/shared/L0.json",        "reason": "L0 보호 체계 자기 참조 (자기 보호)" },

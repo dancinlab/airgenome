@@ -1,3 +1,4 @@
+// L0 CORE — 수정 금지 (nexus/shared/L0.json 등록). 변경 시 PR + L0 갱신.
 // shared/claudx/pool.js — account pool logic shared between interceptor.js (in-process
 // rotation) and bin/claudx (pre-launch best-pick). Stateless module; reads SSOT files
 // on every call (cheap; 12-row JSON).

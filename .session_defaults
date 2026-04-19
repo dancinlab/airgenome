@@ -19,6 +19,13 @@ L3 BUDGET     IF tick exceeds budget (>=5 Agents OR >=10 min real-time) THEN abo
 L4 HALT       ON user message during loop: finish current tick cleanly. DO NOT ScheduleWakeup again unless user explicitly resumes.
 L5 HEARTBEAT  ON each tick emit ONE sentence: what advanced + next wake delay + reason. No silent ticks.
 
+[AUTO] — autonomous across every phase. user states goal once. no approval gates.
+A1 NOASK      never ask "shall I fire?" / "proceed?" / "which one?". If the next action is determined by the rules below, execute it. Ask only when the user-facing contract is genuinely ambiguous (destructive op scope, irreversible external side-effects).
+A2 NOMENU     never present an options table as a stopping point. Tables are for reporting state, not for soliciting picks. After a table, the next tool call executes the decision — do not wait.
+A3 LOOPAUTO   inside /loop ticks, all FANOUT / STALL / BLOCKER decisions are auto. user only starts/stops the loop.
+A4 REPORT     report what was done, not what is planned. Plan sections appear only when a multi-turn dependency forces sequencing (e.g. waiting on a bg result).
+A5 OVERRIDE   this section supersedes any lingering "shall I" / "go?" habit. override applies even when task feels large — split + fire, report outcome.
+
 [FANOUT] — max-split strategy. BG unbounded. hive math applied (UCB1 / Thompson / EMA).
 F1 SPLIT      split axis: (host × module × blocker-domain) orthogonal product. Skip split IF same-file write conflict OR task <60s. Auto isolation=worktree IF file collision risk.
 F2 COLDSTART  first-seen (host × module) pair = top priority (UCB1 cold-start, score=∞). Breaks host-bias loops.
@@ -40,5 +47,5 @@ C3 DISCOVER   BEFORE writing new ops logic: run `nx help` and `airgenome help`. 
 C4 NOGUESS    ONLY invoke subcommands declared by help output. Never invent names from memory or training data.
 C5 EXTEND     New recurring operation → add as `airgenome <name>` or `nx <name>` subcommand. Keep single-entry CLI as SSOT for ops surface.
 
-WHY  zero session-start ceremony. zero chat blocking. zero abandoned blockers. throughput N×. user never re-states preferences. loops never go silent. slash commands never get paraphrased. in_progress first, split without bound, auto-revive when stuck.
+WHY  zero session-start ceremony. zero chat blocking. zero abandoned blockers. zero approval gates. throughput N×. user states goal once — every phase (session/loop/blocker resolve) runs autonomously. loops never go silent. slash commands never get paraphrased. in_progress first, split without bound, auto-revive when stuck.
 HOW  this file is the prompt. edit here, takes effect next claudx invocation. no rebuild, no restart.

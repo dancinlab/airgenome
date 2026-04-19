@@ -51,6 +51,7 @@
       "home": "/home/aiden",
       "max_claude_concurrent": 2,
       "docker_ssh_port": 2222,
+      "docker_ssh_alias": "ubu-d",
       "display_name": "U¹",
       "short_code": "ubu1"
     },
@@ -80,6 +81,7 @@
       "claudx_preload": false,
       "max_claude_concurrent": 2,
       "docker_ssh_port": 2222,
+      "docker_ssh_alias": "ubu2-d",
       "display_name": "U²",
       "short_code": "ubu2"
     },

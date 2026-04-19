@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# L0 CORE — 수정 금지 (nexus/shared/L0.json 등록). 변경 시 PR + L0 갱신.
 # bin/cx — AI-native Claude CLI router (ubu/ubu2 우선, mac fallback)
 #
 # v3 (2026-04-18, C안): tmux 완전 제거. ssh -t 직결.
