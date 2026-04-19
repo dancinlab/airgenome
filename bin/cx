@@ -237,15 +237,24 @@ remote_scope_cmd=""
 if [ "$host" != "mac" ]; then
     cpu_quota=$(jq_host "$host" '.hosts[$h].claude_limits.cpu_quota // empty')
     mem_max=$(jq_host "$host" '.hosts[$h].claude_limits.memory_max // empty')
+    mem_high=$(jq_host "$host" '.hosts[$h].claude_limits.memory_high // empty')
+    mem_swap=$(jq_host "$host" '.hosts[$h].claude_limits.memory_swap_max // empty')
+    tasks_max=$(jq_host "$host" '.hosts[$h].claude_limits.tasks_max // 256')
     if [ -n "$cpu_quota$mem_max" ]; then
+        # docker-style isolation via scope properties (2026-04-19):
+        # - Memory* 3 단계 (Max hard / High soft throttle / SwapMax) → OOM 유발 없이 graceful degrade.
+        # - TasksMax 256 (기본 64 → drill/build 의 fork 폭주 막지 않도록 여유).
+        # - scope 는 TUI tty 통과가 필요해 유지 (service 모드는 stdin detach).
         _scope=(systemd-run --user --scope --quiet)
         [ -n "$cpu_quota" ] && _scope+=("--property=CPUQuota=$cpu_quota")
         [ -n "$mem_max" ] && _scope+=("--property=MemoryMax=$mem_max")
-        _scope+=("--property=TasksMax=64" bash -lc)
+        [ -n "$mem_high" ] && _scope+=("--property=MemoryHigh=$mem_high")
+        [ -n "$mem_swap" ] && _scope+=("--property=MemorySwapMax=$mem_swap")
+        _scope+=("--property=TasksMax=$tasks_max" bash -lc)
         remote_scope_cmd=$(printf '%q ' "${_scope[@]}")
         unset _scope
     fi
-    unset cpu_quota mem_max
+    unset cpu_quota mem_max mem_high mem_swap tasks_max
 fi
 
 # cwd 매핑: 원격 /Users/ghost → $HOME/mac_home symlink 로 Mac 절대경로 그대로 resolve.

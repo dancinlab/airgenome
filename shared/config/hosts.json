@@ -36,7 +36,10 @@
       "claude_limits": {
         "load_pct": 90,
         "cpu_quota": "85%",
-        "memory_max": "6G"
+        "memory_max": "16G",
+        "memory_high": "12G",
+        "memory_swap_max": "8G",
+        "tasks_max": 256
       },
       "home": "/home/aiden"
     },
@@ -58,7 +61,10 @@
       "claude_limits": {
         "load_pct": 80,
         "cpu_quota": "70%",
-        "memory_max": "4G"
+        "memory_max": "12G",
+        "memory_high": "9G",
+        "memory_swap_max": "6G",
+        "tasks_max": 256
       },
       "claudx_preload": false
     },
