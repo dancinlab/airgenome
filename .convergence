@@ -28,4 +28,51 @@
 @file: bin/cx:940-945
 @regression-test: `cd ~/Dev/hexa-lang && cl` → TUI banner 의 cwd 가 `~/Dev/hexa-lang` 인지 확인.
 
+[session-defaults-gap-drill-chain]
+@state: converged
+@date: 2026-04-20
+@scope: .session_defaults :: [FANOUT] F6, [LOOP] L3/L5/L6/L7
+@decision: gap/blocker/exhaustion detect triggers unified DRILL_GAP fan-out across FANOUT and LOOP planes
+@changes:
+  - F6 DRILL_GAP: on {blocker | scaffold-gap | catalog-exhaustion | milestone exit-criteria met}, fire N>=3 nexus drill seeds + BG scaffold for predicted next-layer unblocker in ONE message; divergent angles (minimal-surface / alt-path / next-layer-predict / adjacent-speculation); never serialize, never ask
+  - L3 BUDGET: F6 DRILL_GAP burst exempt from 5-agent cap (gap/exhaustion breakthrough counted as single unit)
+  - L5 HEARTBEAT: new required fields G=drill-gaps-active, P=pivots-triggered
+  - L6 CHAIN: on blocker-breakthrough or milestone-completion within tick, fire F6 DRILL_GAP for next layer in SAME tick (no ScheduleWakeup delay) — chain breakthroughs compress roadmap ETA
+  - L7 EXHAUST_PIVOT: on tick start with empty TaskList + empty active milestones + empty blocker queue, DO NOT end loop — fire F6 DRILL_GAP with pivot angles (next-layer-predict / adjacent-speculation / roadmap-unblock); exhaustion is transition signal, only explicit user halt (L4) terminates
+@why: 2026-04-20 session observed CLM hxblas + stage0 chain-breakthroughs via ad-hoc drill fan-out (#27 r5-a6 BLAS 88-site swap → 3.5x speedup; #32 stage0 5min rebuild → TRAINER spawn). User confirmed pattern ("gap 있을 때 돌파하는데 좋더라구") and requested codification for both ad-hoc use and /loop continuity ("고갈시까지 ... 다음단계로 나갈수도 있어야"). Prior prompt lacked: (a) drill-fanout as first-class primitive, (b) exhaustion-as-pivot semantics in loop, (c) breakthrough chaining within a single tick.
+@effect:
+  - any gap/blocker/exhaustion event → immediate N-way divergent drill + preemptive next-layer scaffold, parallel, no approval gate
+  - /loop never self-terminates on empty queue — it pivots via drill to discover next-layer work
+  - breakthroughs compound within a tick instead of waiting one wakeup interval per layer
+  - heartbeat exposes drill-gap and pivot counters, forcing visibility of the pattern in telemetry
+@file: .session_defaults:18-22,37
+@rollback: revert this commit; F6 removal also nullifies L3-exception and L6/L7 semantics (they reference F6)
+
+[claudx-loop-infinite-wait-fix]
+@state: converged
+@date: 2026-04-20
+@scope: bin/claudx-loop :: restart-on-exit circuit breaker
+@bug: 새 `cl` 세션이 thinking/process 표시 없이 silent 무한대기 (user: "새세션에서 thinking 등 과정없이 무한대기 버그 조사 · 무결점 0 까지 개선").
+@cause-chain:
+  - A. rc!=0 + dur<3s 연속 실패 (e.g. `claude -c` → "No deferred tool marker" · "Not logged in" · "Error: Input must be provided with --print") 를 claudx-loop 가 일시 crash 로 판단해 영구 재시작.
+  - B. rc=0 + dur<10s (--help · --version · 빠른 /quit) 도 clean-break 미적용, burst-cap 300s cooldown 후 재시작.
+  - C. TUI 는 stderr 를 안 봄 (rc.log 로만) → 시각적 완전 silent = "thinking 없이 무한대기" 로 인지.
+  - D. 35 고아 claudx-loop (ppid=1) 누적 — 터미널 종료 시 HUP 을 트랩만 하고 sleep 300s 완료까지 대기하는 설계로 self-terminate 지연 + cx_sessions 2893개 폭주.
+@fix:
+  - (B) rc=0 은 항상 clean_exit_break. dur>=10 조건 제거.
+  - (A) rc!=0 && rc!=3 && dur<CLAUDX_LOOP_FASTFAIL_DUR(def 3) 이 CLAUDX_LOOP_FASTFAIL_MAX(def 5) 회 연속이면 fastfail_break + stderr 에 rc.log 경로 안내.
+  - (D) 고아 ppid=1 loop 35개 + 자식 sleep 전부 SIGKILL (live claude 자손 없는 것만). 향후는 A+B 로 self-reap.
+@evidence-smoke:
+  - `CLAUDX_NO_WATCH=1 claudx-loop --help` → rc=0 clean_exit_break 즉시 종료 (before: 무한).
+  - `CLAUDX_NO_WATCH=1 CLAUDX_LOOP_FASTFAIL_MAX=3 claudx-loop --bogus` → 3회 fast-fail 후 "복구불가 상태로 판단, 종료" stderr + rc=0 (before: 무한).
+  - orphan claudx-loop(ppid=1) post-reap = 0 (before: 35).
+@file: bin/claudx-loop:34-40 / :74 / :123-133 / :137-152
+@env-toggles:
+  - CLAUDX_LOOP_FASTFAIL_MAX — 연속 fast-fail cap (default 5)
+  - CLAUDX_LOOP_FASTFAIL_DUR — fast-fail 간주 최대 dur 초 (default 3)
+@zero-defect:
+  - silent-hang 경로 = 0 (rc=0 any-dur → break; rc!=0 dur<3 x5 → break; rc=130 → break; rc=3 → exhausted-sleep 분기)
+  - 고아 loop 누적 = 0 (기존 reap + 향후 self-reap)
+@rollback: bin/claudx-loop 의 2026-04-20 패치 역적용 + 이전 `rc=0 && dur>=10` 조건 복원
+
 @__raw__

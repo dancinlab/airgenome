@@ -15,9 +15,11 @@ S7 DUP GUARD  BEFORE spawn Agent: match description against current in_progress.
 [LOOP]
 L1 AUTONOMOUS ON /loop tick: FIRST query TaskList → pick incomplete → advance work → call ScheduleWakeup. Never skip tick without reason.
 L2 DYNAMIC    IF /loop without interval THEN self-pace via ScheduleWakeup. Omitting the call = loop ended; only omit on explicit stop intent.
-L3 BUDGET     IF tick exceeds budget (>=5 Agents OR >=10 min real-time) THEN abort current tick + notify user with reason. Do not silently burn.
+L3 BUDGET     IF tick exceeds budget (>=5 Agents OR >=10 min real-time) THEN abort current tick + notify user with reason. Do not silently burn. EXCEPT F6 DRILL_GAP burst — gap/exhaustion 돌파는 단일 unit, agent 카운트에서 제외.
 L4 HALT       ON user message during loop: finish current tick cleanly. DO NOT ScheduleWakeup again unless user explicitly resumes.
-L5 HEARTBEAT  ON each tick emit ONE sentence: what advanced + next wake delay + reason. No silent ticks.
+L5 HEARTBEAT  ON each tick emit ONE sentence: what advanced + next wake delay + reason. No silent ticks. heartbeat MUST include: N in_progress / K stuck / R revived / G drill-gaps-active / P pivots-triggered.
+L6 CHAIN      ON blocker 돌파 | milestone 완주 within tick THEN 즉시 F6 DRILL_GAP (next-layer) in SAME tick. ScheduleWakeup 지연 금지. 연쇄 돌파 = 로드맵 기간 압축 메커니즘.
+L7 EXHAUST_PIVOT  ON tick start: IF TaskList empty AND active milestones empty AND blocker queue empty THEN DO NOT end loop — fire F6 DRILL_GAP pivot angles (next-layer-predict / adjacent-speculation / roadmap-unblock). 고갈은 loop 종료 조건 아님. user 명시 중단(L4) 만이 종료.
 
 [AUTO] — autonomous across every phase. user states goal once. no approval gates.
 A1 NOASK      never ask "shall I fire?" / "proceed?" / "which one?". If the next action is determined by the rules below, execute it. Ask only when the user-facing contract is genuinely ambiguous (destructive op scope, irreversible external side-effects).
@@ -32,6 +34,7 @@ F2 COLDSTART  first-seen (host × module) pair = top priority (UCB1 cold-start, 
 F3 EPSILON    with p=0.1 pick random host (ε-greedy). Prevents ubu-monoculture.
 F4 BURST      IF last-10 bg fail/total > 0.30 (error_burst) THEN halt new fanout + enter resolve-mode. Resume on cool 3600s OR blocker cleared.
 F5 FAILGATE   IF cumulative fail-rate (host × module) > 0.90 AND n>=10 THEN exclude pair. Empirical AG6-style hard rule.
+F6 DRILL_GAP  ON {blocker | scaffold-gap | catalog-exhaustion | milestone exit-criteria met} THEN fire N>=3 `nexus drill` seeds + BG scaffold for predicted next-layer unblocker — ALL in ONE message. Divergent angles: minimal-surface / alt-path / next-layer-predict / adjacent-speculation. Never serialize drill seeds, never wait for user (A1 NOASK). 고갈·돌파 = 다음단계 전환 신호이지 종료 신호 X. WHY: gap 돌파 + blocker 해소 + 고갈시 pivot = 로드맵 ETA 압축의 주 레버.
 
 [STALL] — stuck detection + auto-revive. zero abandonment.
 T1 EMA        track per-axis bg duration EMA(α=0.3) + Welford σ. pick_predictive = argmax(η_sec) — during catchup, check longest-ETA slots first.
