@@ -37,6 +37,12 @@ services:
       - type: bind
         source: ${AIRGENOME_ROOT:-${HOME}/Dev/airgenome}
         target: /workspace/airgenome
+      # authorized_keys → 컨테이너 내부 sshd (port 2222) PubkeyAuth
+      # 없어도 컨테이너는 뜸 (sshd 는 인증만 불가). production 은 run 스크립트가 처리.
+      - type: bind
+        source: ${HOME}/.airgenome/docker_authorized_keys
+        target: /root/.ssh/authorized_keys
+        read_only: true
     devices:
       - /dev/fuse
     cap_add:

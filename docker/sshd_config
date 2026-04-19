@@ -1,0 +1,35 @@
+# airgenome container sshd — port 2222 우회 경로.
+# Why: host sshd (ubu bare metal) 가 drill/blowup 부하로 포화되어 Mac 이
+#      `docker exec` 용 ssh hop 조차 banner timeout → 이 파일이 만드는
+#      컨테이너 내부 sshd 가 독립 리스닝 (host sshd 와 무관).
+# authorized_keys 는 runtime bind mount (/root/.ssh/authorized_keys) 로 주입.
+# 이미지에 credential 포함 금지. host keys 는 entrypoint 가 ssh-keygen -A 로 생성.
+
+Port 2222
+AddressFamily inet
+ListenAddress 0.0.0.0
+
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+
+AuthorizedKeysFile /root/.ssh/authorized_keys
+StrictModes yes
+
+# 세션 keep-alive (Mac 쪽 ssh config 와 합을 맞춰 TUI freeze 방지)
+ClientAliveInterval 15
+ClientAliveCountMax 6
+TCPKeepAlive yes
+
+# 퍼포먼스: reverse DNS 끔
+UseDNS no
+
+# subsystem (sftp 쓸 일 거의 없지만 기본값 유지)
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+# 로그 — 컨테이너 내부 파일 (journald 대신)
+LogLevel INFO
+SyslogFacility AUTH

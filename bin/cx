@@ -6,6 +6,19 @@
 #   - 원격 ~/.airgenome/cx_remote_launch 미사용 (파일 남아있어도 무해)
 #   - 트레이드오프: ssh 끊기면 원격 claude 가 SIGHUP. 집 LAN 전제로 수용.
 #
+# v4 (2026-04-19, score+slot):
+#   - Score-based 호스트 선택: (threads-load)/threads*100 - slot_in_use*20 - p95_rtt_ms/100
+#   - Per-host slot semaphore: mkdir atomic-mutex (macOS flock 부재 대응), PID liveness 로 stale 회수
+#   - airgenome slots 서브커맨드 연동 (상태/청소/--watch)
+#   - ENV override: CX_PICK_MODE=score|priority|priority_fallback (기본 score)
+#
+# v5 (2026-04-19 A+C, docker-ssh default):
+#   - 컨테이너 내부 sshd (port 2222) 로 직결 → host sshd saturate 시에도 claude 접근 가능.
+#   - hosts.json 의 docker_ssh_port 가 있는 호스트는 기본적으로 docker-ssh 시도, 실패시 host ssh 로 fallback.
+#   - ~/.ssh/config 에 <alias>-d 블록이 있어야 함 (예: Host ubu-d, Port 2222, User root).
+#   - opt-out: CX_NO_DOCKER_SSH=1 또는 --no-docker-ssh (모든 호스트에서 host ssh 만 사용).
+#   - 일부 호스트만 배포된 경우: docker_ssh_port 없는 호스트는 자동으로 host ssh.
+#
 # 책임:
 #   1. modules/claude_route.hexa select → best host
 #   2. mac 이면 local `command claude`, remote 이면 `ssh -t <alias> <inner_cmd>`
@@ -81,19 +94,161 @@ host_hot() {
     [ "${util:-0}" -ge "${cap_s:-101}" ]
 }
 
+# ─── slot semaphore (macOS 용 mkdir 기반 atomic mutex) ───────────────────────
+# Why mkdir: macOS 기본 bash 3.2 에 flock 미포함. `mkdir` 은 POSIX atomic —
+#   성공 = exclusive, 실패 = 다른 cx 가 소유. 디렉토리 내 pid 파일로 stale detect.
+# NFS 경고: $HOME/.airgenome 은 로컬 FS (Mac) 전제. sshfs mount 에는 쓰지 말 것.
+CX_SLOT_DIR="${CLAUDX_STATE:-$HOME/.airgenome}/cx_slots"
+
+# max_claude_concurrent 기본값 — hosts.json 미기입 시 kind 로 추정.
+# 사용자 요구: 초기값을 넉넉히 (자원 놀림 방지). ubu/ubu2=2, htz=4, mac=8.
+slot_host_capacity() {
+    local host=$1 n
+    n=$(jq_host "$host" '.hosts[$h].max_claude_concurrent // empty' 2>/dev/null)
+    if [ -n "$n" ] && [ "$n" != "null" ]; then
+        echo "$n"; return
+    fi
+    local kind
+    kind=$(jq_host "$host" '.hosts[$h].kind // empty' 2>/dev/null)
+    case "$host" in
+        mac)         echo 8; return ;;
+        ubu|ubu2)    echo 2; return ;;
+        htz|hetzner) echo 4; return ;;
+    esac
+    case "$kind" in
+        self)   echo 8 ;;
+        lan)    echo 2 ;;
+        remote) echo 4 ;;
+        *)      echo 2 ;;
+    esac
+}
+
+# slot 파일 liveness — pid 기록 + 프로세스 살아있는지. 죽었으면 stale.
+_slot_alive() {
+    local dir=$1 pid
+    [ -d "$dir" ] || return 1
+    pid=$(cat "$dir/pid" 2>/dev/null)
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+# 사용중 slot 개수 (stale 제외)
+slot_used_count() {
+    local host=$1 cap i used=0
+    cap=$(slot_host_capacity "$host")
+    i=1
+    while [ "$i" -le "$cap" ]; do
+        if _slot_alive "$CX_SLOT_DIR/${host}_${i}"; then
+            used=$((used + 1))
+        fi
+        i=$((i + 1))
+    done
+    echo "$used"
+}
+
+# slot 획득 시도 — 성공시 디렉토리 경로 echo, 실패 시 empty + rc!=0.
+# $$ 의 바깥 ssh process pid 를 저장해 stale detect 가능.
+acquire_slot() {
+    local host=$1 cap i dir
+    cap=$(slot_host_capacity "$host")
+    mkdir -p "$CX_SLOT_DIR" 2>/dev/null
+    i=1
+    while [ "$i" -le "$cap" ]; do
+        dir="$CX_SLOT_DIR/${host}_${i}"
+        # 선점돼 있지만 stale 이면 회수
+        if [ -d "$dir" ] && ! _slot_alive "$dir"; then
+            rm -rf "$dir" 2>/dev/null
+        fi
+        if mkdir "$dir" 2>/dev/null; then
+            echo "$$" > "$dir/pid"
+            echo "$host" > "$dir/host"
+            date +%s > "$dir/ts"
+            echo "$dir"
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    return 1
+}
+
+release_slot() {
+    local dir=$1
+    [ -n "$dir" ] && [ -d "$dir" ] && rm -rf "$dir" 2>/dev/null
+    return 0
+}
+
+# Score: (threads-load)/threads*100 - slot_in_use*20 - p95_rtt_ms/100
+#   - 아이들 capacity 비율 (높을수록 +)
+#   - slot 하나당 -20 (reserved 가중치)
+#   - rtt p95 ms 반영 (없으면 0)
+# infra_state.json 이 stale (>180s) 이면 -1 리턴 → caller 가 score 모드 포기.
+host_score() {
+    local host=$1
+    [ -r "$INFRA_STATE" ] || { echo "-1"; return; }
+    local ts_s now_s age load_s threads_s
+    ts_s=$(jq -r '.ts // ""' "$INFRA_STATE" 2>/dev/null)
+    [ -n "$ts_s" ] || { echo "-1"; return; }
+    ts_s=$(jq -nr --arg ts "$ts_s" '$ts | fromdateiso8601' 2>/dev/null) || { echo "-1"; return; }
+    now_s=$(date +%s)
+    age=$((now_s - ts_s))
+    [ "$age" -le "${CLAUDX_INFRA_MAX_AGE_SEC:-180}" ] || { echo "-1"; return; }
+
+    load_s=$(jq -r --arg h "$host" '.hosts[$h].load // empty' "$INFRA_STATE" 2>/dev/null)
+    threads_s=$(jq -r --arg h "$host" '.hosts[$h].cpu_threads // empty' "$INFRA_STATE" 2>/dev/null)
+    [ -n "$threads_s" ] || threads_s=$(jq_host "$host" '.hosts[$h].threads // 0')
+    [ -n "$load_s" ] || load_s=0
+    [ "${threads_s:-0}" -gt 0 ] 2>/dev/null || { echo "0"; return; }
+
+    local slots_used rtt_p95
+    slots_used=$(slot_used_count "$host")
+    rtt_p95=$(jq_host "$host" '.hosts[$h].claude_limits.p95_rtt_ms // 0')
+    [ -n "$rtt_p95" ] || rtt_p95=0
+
+    awk -v l="$load_s" -v t="$threads_s" -v s="$slots_used" -v r="$rtt_p95" \
+        'BEGIN{ idle=(t-l)/t*100; if (idle<0) idle=0;
+                score = idle - s*20 - r/100;
+                printf "%d", score }'
+}
+
+# infra_state 신선도 체크 — 0=fresh, 1=stale/missing
+infra_state_fresh() {
+    [ -r "$INFRA_STATE" ] || return 1
+    local ts_s now_s age
+    ts_s=$(jq -r '.ts // ""' "$INFRA_STATE" 2>/dev/null)
+    [ -n "$ts_s" ] || return 1
+    ts_s=$(jq -nr --arg ts "$ts_s" '$ts | fromdateiso8601' 2>/dev/null) || return 1
+    now_s=$(date +%s)
+    age=$((now_s - ts_s))
+    [ "$age" -le "${CLAUDX_INFRA_MAX_AGE_SEC:-180}" ]
+}
+
 # arg parsing — --force-host / --show / --docker 는 wrapper 전용, 나머지는 claude 로 forward
 force_host=""
 show_only=false
 docker_mode=${CX_DOCKER:-0}
+# docker-ssh: host sshd 우회용 직결 경로 (M14 P5, v5 기본 on).
+#   컨테이너 내부 sshd (port 2222) 로 직접 접속 → docker exec / host sshd 레이어 생략 →
+#   host sshd 포화 (A+C 배포 이후 핵심 시나리오) 에도 claude 접근 가능. opt-out:
+#     - CX_NO_DOCKER_SSH=1   : 전체 호스트 docker-ssh 비활성
+#     - --no-docker-ssh      : 이번 호출만 비활성
+#   CX_DOCKER_SSH=1 / --docker-ssh 는 기존 호환 (강제 on).
+#   hosts.json 의 docker_ssh_port 가 있는 호스트만 시도하며, 실패시 host ssh 로 자동 fallback.
+if [ "${CX_NO_DOCKER_SSH:-0}" = "1" ]; then
+    docker_ssh_mode=0
+else
+    docker_ssh_mode=${CX_DOCKER_SSH:-1}
+fi
 fwd=()
 while [ $# -gt 0 ]; do
     case "$1" in
-        --force-host) force_host=$2; shift 2 ;;
-        --show)       show_only=true; shift ;;
-        --docker)     docker_mode=1; shift ;;
-        --no-docker)  docker_mode=0; shift ;;
-        --)           shift; fwd+=("$@"); break ;;
-        *)            fwd+=("$1"); shift ;;
+        --force-host)    force_host=$2; shift 2 ;;
+        --show)          show_only=true; shift ;;
+        --docker)        docker_mode=1; shift ;;
+        --no-docker)     docker_mode=0; shift ;;
+        --docker-ssh)    docker_ssh_mode=1; shift ;;
+        --no-docker-ssh) docker_ssh_mode=0; shift ;;
+        --)              shift; fwd+=("$@"); break ;;
+        *)               fwd+=("$1"); shift ;;
     esac
 done
 
@@ -171,6 +326,12 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
         else
             _probe_cmd="true"
         fi
+        # docker-ssh probe: docker_ssh_port 있고 docker_ssh_mode=1 이면 컨테이너 sshd 로 probe.
+        _probe_extra=()
+        _cand_docker_port=$(jq_host "$cand" '.hosts[$h].docker_ssh_port // empty')
+        if [ "$docker_ssh_mode" = 1 ] && [ -n "$_cand_docker_port" ] && [ "$_cand_docker_port" != "null" ]; then
+            _probe_extra=( -p "$_cand_docker_port" -l root -o StrictHostKeyChecking=accept-new )
+        fi
         (
             # timeout: ConnectTimeout 은 TCP handshake 만 커버. banner-hang 차단용으로
             # 외부 timeout 래퍼 필수. macOS 는 gtimeout 이 있을 수도, 없으면 `timeout`(coreutils).
@@ -178,7 +339,7 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
             command -v timeout >/dev/null 2>&1 || _to=gtimeout
             if "$_to" "$_connect_t" ssh -o ControlPath=none -o ControlMaster=no \
                 -o ConnectTimeout="$_connect_t" -o BatchMode=yes \
-                "$cand_alias" "$_probe_cmd" 2>/dev/null; then
+                "${_probe_extra[@]}" "$cand_alias" "$_probe_cmd" 2>/dev/null; then
                 printf '%s' "$cand_alias" > "$probe_dir/$cand.ok"
             else
                 echo fail > "$probe_dir/$cand.fail"
@@ -189,29 +350,90 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
     done
     unset _connect_t _probe_cmd cand_alias
 
-    # first-responder-wins poll: 아무 후보라도 .ok 면 즉시 채택 (priority 는 동시-승리 시 tiebreak).
-    # Why first-responder: 사용자 요청 "속도 우선". LAN 환경에서 priority-first 상위가 과부하면
-    # 병렬의 의미가 사라짐 (상위 timeout 끝까지 대기). 병렬 중 상위와 하위가 모두 성공하면
-    # for-iteration 순서 (priority) 로 이미 상위가 뽑힘.
+    # CX_PICK_MODE: score (기본) | priority | priority_fallback
+    #   score           → 모든 probe 결과를 기다린 뒤 score 최고. infra_state stale 이면 priority 로 폴백.
+    #   priority        → 기존 2026-04-19 parallel + first-responder-wins (priority 는 tiebreak).
+    #   priority_fallback → priority 우선이지만 infra_state stale 조건에서만 priority, fresh 면 score.
+    _cx_pick_mode="${CX_PICK_MODE:-score}"
+    if [ "$_cx_pick_mode" = "priority_fallback" ]; then
+        if infra_state_fresh; then
+            _cx_pick_mode=score
+        else
+            _cx_pick_mode=priority
+        fi
+    fi
+    if [ "$_cx_pick_mode" = "score" ] && ! infra_state_fresh; then
+        echo "cx: infra_state stale → pick_mode=priority fallback" >&2
+        _cx_pick_mode=priority
+    fi
+
     deadline=$(( $(date +%s) + max_t + 1 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        pick=""
-        all_done=1
+    if [ "$_cx_pick_mode" = "score" ]; then
+        # score 모드: 모든 probe done 또는 deadline 까지 기다린 뒤 ok 후보 중 score 최고 채택.
+        #   - 아직 probing 중인 후보가 있으면 계속 대기
+        #   - 모두 done (ok or fail) 되면 즉시 스코어링
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            all_done=1
+            for cand in "${remote_to_probe[@]}"; do
+                [ -f "$probe_dir/$cand.ok" ] || [ -f "$probe_dir/$cand.fail" ] || all_done=0
+            done
+            [ "$all_done" = 1 ] && break
+            sleep 0.05
+        done
+        best_score=-999999
+        best_cand=""
+        best_alias=""
+        _pick_scores=""
         for cand in "${remote_to_probe[@]}"; do
             if [ -f "$probe_dir/$cand.ok" ]; then
-                pick=$cand
+                _sc=$(host_score "$cand")
+                _pick_scores="$_pick_scores $cand=$_sc"
+                # "-1" = score N/A → 후순위 (큰 음수 로 취급 불필요, 그냥 스킵)
+                if [ "$_sc" = "-1" ]; then continue; fi
+                if [ -z "$best_cand" ] || [ "$_sc" -gt "$best_score" ] 2>/dev/null; then
+                    best_score=$_sc
+                    best_cand=$cand
+                    best_alias=$(cat "$probe_dir/$cand.ok")
+                fi
+            fi
+        done
+        # 모든 candidate 가 score=-1 이면 첫 .ok 에 priority fallback
+        if [ -z "$best_cand" ]; then
+            for cand in "${remote_to_probe[@]}"; do
+                if [ -f "$probe_dir/$cand.ok" ]; then
+                    best_cand=$cand
+                    best_alias=$(cat "$probe_dir/$cand.ok")
+                    break
+                fi
+            done
+        fi
+        if [ -n "$best_cand" ]; then
+            host=$best_cand
+            alias=$best_alias
+            [ -n "${CX_DEBUG:-}" ] && echo "cx: score picks →$_pick_scores → picked=$host score=$best_score" >&2
+        fi
+        unset best_score best_cand best_alias _sc _pick_scores
+    else
+        # priority 모드 (기존): first-responder-wins + priority tiebreak.
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            pick=""
+            all_done=1
+            for cand in "${remote_to_probe[@]}"; do
+                if [ -f "$probe_dir/$cand.ok" ]; then
+                    pick=$cand
+                    break
+                fi
+                [ -f "$probe_dir/$cand.fail" ] || all_done=0
+            done
+            if [ -n "$pick" ]; then
+                host=$pick
+                alias=$(cat "$probe_dir/$pick.ok")
                 break
             fi
-            [ -f "$probe_dir/$cand.fail" ] || all_done=0
+            [ "$all_done" = 1 ] && break
+            sleep 0.05
         done
-        if [ -n "$pick" ]; then
-            host=$pick
-            alias=$(cat "$probe_dir/$pick.ok")
-            break
-        fi
-        [ "$all_done" = 1 ] && break
-        sleep 0.05
-    done
+    fi
 
     # 실패 후보 로그 (선택된 것 이전의 fail 만)
     for cand in "${remote_to_probe[@]}"; do
@@ -220,6 +442,16 @@ if [ ${#remote_to_probe[@]} -gt 0 ]; then
     done
 
     [ -n "$host" ] && rtt=$(( $(now_ms) - r0 ))
+
+    # probe 성공 호스트 캡쳐 (probe_dir 삭제 전) — slot 획득 단계가 사용
+    probe_ok_hosts=()
+    probe_ok_aliases=()
+    for cand in "${remote_to_probe[@]}"; do
+        if [ -f "$probe_dir/$cand.ok" ]; then
+            probe_ok_hosts+=("$cand")
+            probe_ok_aliases+=("$(cat "$probe_dir/$cand.ok")")
+        fi
+    done
 
     # 잔여 프로브 즉시 kill (wait 하지 않음 — 선택 완료 직후 cx 진행)
     for _p in "${probe_pids[@]}"; do kill "$_p" 2>/dev/null; done
@@ -234,12 +466,103 @@ fi
 
 [ -n "$host" ] || die "no host reachable"
 
+# ─── slot 획득 (per-host semaphore) ─────────────────────────────────────────
+# CX_SLOT_DISABLE=1 로 전체 비활성화 (기존 동작 원할 때).
+# 실패 시: 후보 풀에서 다른 best host 로 재시도 → 전부 full 이면 30s wait → 마지막에 abort or graceful.
+slot_dir=""
+if [ "${CX_SLOT_DISABLE:-0}" != "1" ] && [ "$show_only" != "true" ]; then
+    # 사용 가능한 후보 풀: 이미 probe 성공한 원격 + mac fallback + force_host.
+    slot_pool=()
+    if [ -n "$force_host" ]; then
+        slot_pool=("$force_host")
+    else
+        for cand in ${probe_ok_hosts[@]+"${probe_ok_hosts[@]}"}; do
+            slot_pool+=("$cand")
+        done
+        # 선택된 host 는 무조건 포함 (원격 probe fail 후 mac fallback 된 경우 대비)
+        case " ${slot_pool[*]} " in *" $host "*) : ;; *) slot_pool=("$host" "${slot_pool[@]:-}") ;; esac
+        [ "$has_mac_fallback" = 1 ] && case " ${slot_pool[*]} " in *" mac "*) : ;; *) slot_pool+=("mac") ;; esac
+    fi
+
+    _slot_deadline=$(( $(date +%s) + ${CX_SLOT_WAIT_SEC:-30} ))
+    _slot_first_pick=$host
+    while :; do
+        # 1. 현재 best host 시도
+        slot_dir=$(acquire_slot "$host" 2>/dev/null || true)
+        if [ -n "$slot_dir" ]; then
+            break
+        fi
+        # 2. 다른 후보 중 slot 있는 호스트 탐색 (score 순 정렬)
+        _alt_host=""
+        _alt_alias=""
+        _alt_best=-999999
+        for cand in "${slot_pool[@]}"; do
+            [ "$cand" = "$host" ] && continue
+            _used=$(slot_used_count "$cand")
+            _cap=$(slot_host_capacity "$cand")
+            [ "$_used" -lt "$_cap" ] 2>/dev/null || continue
+            if [ "$cand" = "mac" ]; then
+                _sc=0  # mac 은 AG6 로 회피 대상 — 제일 마지막
+            else
+                _sc=$(host_score "$cand")
+                [ "$_sc" = "-1" ] && _sc=0
+            fi
+            if [ -z "$_alt_host" ] || [ "$_sc" -gt "$_alt_best" ] 2>/dev/null; then
+                _alt_best=$_sc
+                _alt_host=$cand
+                # alias 재조회 (probe 결과가 있으면 사용)
+                if [ "$cand" = "mac" ]; then
+                    _alt_alias=""
+                else
+                    _alt_alias=$(jq -r --arg h "$cand" '.hosts[$h].ssh_alias // ""' "$REG")
+                fi
+            fi
+        done
+        if [ -n "$_alt_host" ]; then
+            slot_dir=$(acquire_slot "$_alt_host" 2>/dev/null || true)
+            if [ -n "$slot_dir" ]; then
+                host=$_alt_host
+                alias=$_alt_alias
+                break
+            fi
+        fi
+        # 3. 전부 full — deadline 까지 대기
+        _now=$(date +%s)
+        [ "$_now" -ge "$_slot_deadline" ] && break
+        sleep 1
+    done
+    unset _alt_host _alt_alias _alt_best _used _cap _sc _now
+
+    if [ -z "$slot_dir" ]; then
+        if [ "${CX_SLOT_STRICT:-0}" = "1" ]; then
+            die "all slots exhausted (pool: ${slot_pool[*]:-none}) after ${CX_SLOT_WAIT_SEC:-30}s"
+        fi
+        echo "cx: WARN all slots exhausted (pool: ${slot_pool[*]:-none}) → proceeding without slot reservation on $host" >&2
+    fi
+
+    # slot_dir 이 설정되면 cx exit 시 자동 해제.
+    if [ -n "$slot_dir" ]; then
+        trap 'release_slot "$slot_dir"' EXIT HUP INT TERM
+    fi
+fi
+unset slot_pool _slot_deadline _slot_first_pick
+
 if [ "$show_only" = true ]; then
-    echo "cx → $host${alias:+ ($alias)}"
+    slot_info=""
+    if [ -n "${slot_dir:-}" ]; then
+        slot_info=" slot=$slot_dir"
+    fi
+    # score/pick debug 정보 포함
+    _pscore=""
+    if [ "$host" != "mac" ]; then
+        _s=$(host_score "$host" 2>/dev/null)
+        [ -n "$_s" ] && _pscore=" score=$_s"
+    fi
+    echo "cx → $host${alias:+ ($alias)}${_pscore}${slot_info}"
     exit 0
 fi
 
-echo "cx → $host${alias:+ ($alias)}" >&2
+echo "cx → $host${alias:+ ($alias)}${slot_dir:+ slot=$(basename "$slot_dir")}" >&2
 
 # CLAUDE_CONFIG_DIR 매핑: cl 이 Mac 절대경로(/Users/ghost/.claude-claudeN)로 export 하므로
 # 원격에는 basename 만 뽑아서 $HOME/<basename> 형태로 전달 (호스트별 HOME 상이: /home/aiden vs /home/summer).
@@ -469,7 +792,20 @@ else
                     ;;
             esac
         fi
-        docker_cmd="sudo -n docker exec $docker_tty_flags $docker_workdir $docker_env_args $container_name "$(printf '%q ' claude ${fwd[@]+"${fwd[@]}"})
+        # [AG-Q14] Docker 컨테이너용 system prompt 자동 주입.
+        # SSOT: shared/config/docker_session_prompt.txt (Mac path, sshfs/htz 무관하게 로컬 cat).
+        # user 가 이미 --append-system-prompt 을 args 에 넣었거나 CX_DOCKER_NO_PROMPT=1 이면 skip.
+        docker_prompt_args=""
+        _cx_prompt_file="${CX_DOCKER_PROMPT_FILE:-$(dirname "$0")/../shared/config/docker_session_prompt.txt}"
+        _cx_user_set_asp=0
+        for _a in "${fwd[@]:-}"; do
+            case "$_a" in --append-system-prompt|--system-prompt|--bare) _cx_user_set_asp=1; break ;; esac
+        done
+        if [ "${CX_DOCKER_NO_PROMPT:-0}" != "1" ] && [ "$_cx_user_set_asp" = "0" ] && [ -r "$_cx_prompt_file" ]; then
+            _cx_prompt_content=$(cat "$_cx_prompt_file")
+            docker_prompt_args="--append-system-prompt $(printf '%q' "$_cx_prompt_content")"
+        fi
+        docker_cmd="sudo -n docker exec $docker_tty_flags $docker_workdir $docker_env_args $container_name "$(printf '%q ' claude)"$docker_prompt_args "$(printf '%q ' ${fwd[@]+"${fwd[@]}"})
         # fallback 안전망: native inner_cmd 도 미리 조립
         inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${add_dir_args[@]+"${add_dir_args[@]}"} ${fwd[@]+"${fwd[@]}"})
         remote_cmd="$docker_cmd; _rc=\$?; if [ \$_rc -eq 125 ] || [ \$_rc -eq 126 ] || [ \$_rc -eq 127 ]; then echo 'cx: docker exec rc='\$_rc' → native fallback' >&2; $inner_cmd; else exit \$_rc; fi"
@@ -483,12 +819,23 @@ else
     fi
     # KeepAlive 튜닝 (2026-04-19 stall observe): TCPKeepAlive=yes + ServerAliveInterval=15
     # 긴 응답 stream 중 TCP 버퍼 정체로 TUI freeze → 15s 마다 keepalive 로 버퍼 flush 유도.
+    #
+    # docker-ssh mode (M14 P5): hosts.json 의 docker_ssh_port 가 있고 docker_ssh_mode=1
+    # 이면 컨테이너 sshd 직결 (host sshd 바이패스). -p <port> -l root 를 override 로
+    # 끼워 넣고 기존 ssh_alias 는 HostName resolution 용으로만 씀.
+    ssh_override=()
+    _host_docker_ssh_port=$(jq_host "$host" '.hosts[$h].docker_ssh_port // empty')
+    if [ "$docker_ssh_mode" = 1 ] && [ -n "$_host_docker_ssh_port" ] && [ "$_host_docker_ssh_port" != "null" ]; then
+        ssh_override=( -p "$_host_docker_ssh_port" -l root -o StrictHostKeyChecking=accept-new )
+        echo "cx: docker-ssh → port $_host_docker_ssh_port root@$alias (host sshd bypass)" >&2
+    fi
     if [ -t 0 ]; then
-        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -t "$alias" "$remote_cmd"
+        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 "${ssh_override[@]}" -t "$alias" "$remote_cmd"
     else
-        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -T "$alias" "$remote_cmd"
+        ssh -S none -o ControlMaster=no -o ControlPath=none -o TCPKeepAlive=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=6 "${ssh_override[@]}" -T "$alias" "$remote_cmd"
     fi
     rc=$?
+    unset _host_docker_ssh_port ssh_override
 fi
 t1=$(date +%s)
 dur=$(( t1 - t0 ))

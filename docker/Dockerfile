@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl wget git \
         jq ripgrep fd-find \
-        openssh-client sshfs fuse3 \
+        openssh-client openssh-server sshfs fuse3 \
         tini \
         python3 python3-pip \
         build-essential pkg-config \
@@ -36,6 +36,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 # /workspace = bind mount target (Mac SSOT → sshfs → container)
 RUN mkdir -p /workspace /opt/airgenome /opt/hexa-lang /root/.airgenome
+
+# sshd runtime dirs + sshd_config (port 2222, pubkey only, root login allowed —
+# 컨테이너는 --network=host 하에 외부격리 전제, Mac host sshd 포화 시 우회 경로)
+RUN mkdir -p /var/run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh
+COPY docker/sshd_config /etc/ssh/sshd_config.d/airgenome.conf
 
 # ═════════════════════════════════════════════════════════
 # L2 claude — CLI + SDK + hexa 바이너리 (주 1~2회)
@@ -72,8 +78,12 @@ COPY shared/    /opt/airgenome/shared/
 COPY core/      /opt/airgenome/core/
 # forge/ 는 데이터 적재용 — bind mount 로만 연결 (이미지에 포함 X)
 
-# entrypoint: tini 로 PID 1 문제 해결 + signal 전파
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# entrypoint: tini 로 PID 1 문제 해결 + signal 전파.
+# sshd (port 2222) 를 background 로 띄우고 원래 CMD 를 foreground 유지.
+# authorized_keys 는 runtime bind mount (/root/.ssh/authorized_keys) 로 주입 →
+# 이미지에 키 포함 금지. host keys 는 컨테이너 startup 때 생성 (ephemeral OK).
+#   run 스크립트가 CMD 에 `sleep infinity` 를 내리므로 아래 CMD 는 compose 로컬용.
+ENTRYPOINT ["/usr/bin/tini", "--", "/bin/sh", "-c", "ssh-keygen -A >/dev/null 2>&1; /usr/sbin/sshd -f /etc/ssh/sshd_config.d/airgenome.conf -E /var/log/sshd-airgenome.log; exec \"$@\"", "--"]
 CMD ["claude"]
 
 LABEL org.opencontainers.image.source="https://github.com/need-singularity/airgenome" \

@@ -12,9 +12,11 @@
       "tags": "compute | gpu | heavy | io — dispatch 후보 필터용",
       "slots": "kind 별 동시 실행 하드캡 (executor flock). dispatch 는 active*20 감점으로 쏠림 분산. 0 이면 해당 kind 금지, 필드 누락이면 무제한.",
       "needs_mac_ip": "true 면 bin/mac_ip_push 가 5분마다 이 호스트의 ~/.ssh/config 의 'Host mac' HostName 을 Mac 의 현재 LAN IP 로 갱신. tailscale 없는 LAN 호스트용.",
-      "claude_limits": "cx/claudx 전용 admission + runtime cap. load_pct 는 최근 infra_state 기준 허용 최대 load/thread %, cpu_quota·memory_max 는 remote systemd-run scope 제한.",
+      "claude_limits": "cx/claudx 전용 admission + runtime cap. load_pct 는 최근 infra_state 기준 허용 최대 load/thread %, cpu_quota·memory_max 는 remote systemd-run scope 제한. p95_rtt_ms (옵션) = score 페널티 튜닝.",
+      "max_claude_concurrent": "bin/cx slot 상한 — 동시 claude 세션 수. 누락 시 kind 기본값 (self=8, lan=2, remote=4). 너무 낮게 잡으면 자원 놀림.",
       "home": "원격 $HOME 경로 — cx 가 CLAUDX_HOME_MAP=/Users/ghost:<home> 자동주입으로 interceptor pool.js 가 .credentials.json resolve 하도록 함. sshfs /Users/ghost 심볼릭 있는 호스트만 필요.",
       "docker": "true 면 cx 가 해당 호스트에 ssh 후 `sudo -n docker exec -it airgenome-claude claude ...` 로 wrap (M14 P4). false/미지정은 native ssh-claude. CLI --docker/--no-docker 가 우선, env CX_DOCKER=1 도 override 가능.",
+      "docker_ssh_port": "지정 시 cx 의 docker 경로가 host sshd 대신 이 port 의 컨테이너 내부 sshd 로 직결 (M14 P5, host sshd saturate 우회). hosts.json 'ssh_alias' 는 유지하되 이 port 가 있으면 ProxyCommand/Port override 로 바이패스.",
       "display_name": "menubar/UI 표시 라벨 — 유니코드 포함 가능 (M, U¹, U², H¹)",
       "short_code": "사용자 호칭 — ubu1/ubu2/htz1/mac. 문서/대화 식별자"
     }
@@ -45,6 +47,8 @@
         "tasks_max": 256
       },
       "home": "/home/aiden",
+      "max_claude_concurrent": 2,
+      "docker_ssh_port": 2222,
       "display_name": "U¹",
       "short_code": "ubu1"
     },
@@ -72,6 +76,8 @@
         "tasks_max": 256
       },
       "claudx_preload": false,
+      "max_claude_concurrent": 2,
+      "docker_ssh_port": 2222,
       "display_name": "U²",
       "short_code": "ubu2"
     },
@@ -97,6 +103,8 @@
       },
       "claudx_preload": false,
       "probe_connect_timeout": 5,
+      "max_claude_concurrent": 4,
+      "docker_ssh_port": 2222,
       "display_name": "H¹",
       "short_code": "htz1"
     },
@@ -114,6 +122,7 @@
         "heavy": 0,
         "compute": 0
       },
+      "max_claude_concurrent": 8,
       "display_name": "M",
       "short_code": "mac"
     }
