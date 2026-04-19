@@ -183,24 +183,65 @@ fn read_ring_lines() -> list {
     return result
 }
 
-// 동일 PID 의 마지막 게놈 라인을 jq 로 추출 (없으면 빈 문자열)
-fn last_for_pid(pid: int) -> str {
-    // macOS tac 부재 — Linux=tac, mac=tail -r
-    let rev = "if [ \"$(uname)\" = \"Linux\" ]; then tac; else tail -r; fi"
-    let cmd = "tail -2000 '" + RING + "' 2>/dev/null | " + rev + " | jq -c 'select(.pid == " + to_string(pid) + ")' 2>/dev/null | head -1"
-    return exec(cmd).trim()
+// (2026-04-19 ROI#1) ring 라인에서 pid 추출 — jq/echo fork 회피.
+// 입력 포맷 (encode_genome SSOT): {"ts":"...","pid":1234,"comm":"...",...,"vitals":[...],"ema":[...]}
+fn parse_pid_from_line(line: str) -> int {
+    if line == "" { return 0 }
+    let parts = line.split("\"pid\":")
+    if len(parts) < 2 { return 0 }
+    let rest = parts[1]
+    let nparts = rest.split(",")
+    if len(nparts) == 0 { return 0 }
+    let v = nparts[0].trim()
+    if v == "" { return 0 }
+    return to_int(v)
 }
 
-// JSONL 라인에서 단일 vitals[idx] 추출
-fn vit_at(line: str, idx: int) -> int {
-    if line == "" { return 0 }
-    let cmd = "echo '" + line + "' | jq -r '.vitals[" + to_string(idx) + "] // 0' 2>/dev/null"
-    let out = exec(cmd).trim()
-    if out == "" { return 0 }
-    let parts = out.split(".")
-    if len(parts) == 0 { return 0 }
-    if parts[0] == "" { return 0 }
-    return to_int(parts[0])
+// (2026-04-19 ROI#1) vitals[6] 배열을 pure-hexa 로 파싱 — 기존 vit_at 의 echo+jq 를 대체.
+// 라인 누락/깨짐 시 [0,0,0,0,0,0] fallback.
+fn parse_vitals_from_line(line: str) -> list {
+    if line == "" { return [0, 0, 0, 0, 0, 0] }
+    let parts = line.split("\"vitals\":[")
+    if len(parts) < 2 { return [0, 0, 0, 0, 0, 0] }
+    let rest = parts[1]
+    let bs = rest.split("]")
+    if len(bs) == 0 { return [0, 0, 0, 0, 0, 0] }
+    let nums_str = bs[0]
+    let nums = nums_str.split(",")
+    let result = []
+    let mut i = 0
+    while i < 6 {
+        if i < len(nums) {
+            let n = nums[i].trim()
+            if n == "" {
+                result = result + [0]
+            } else {
+                let dot_parts = n.split(".")
+                let head = dot_parts[0]
+                if head == "" {
+                    result = result + [0]
+                } else {
+                    result = result + [to_int(head)]
+                }
+            }
+        } else {
+            result = result + [0]
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// ring_lines (전체) 를 역순 스캔 — 해당 pid 의 마지막 라인. 없으면 "".
+// 기존 last_for_pid (tail+tac/tail-r+jq+head 4-way pipe) 를 완전 대체.
+fn last_line_for_pid(ring_lines: list, pid: int) -> str {
+    let mut j = len(ring_lines) - 1
+    while j >= 0 {
+        let line = ring_lines[j]
+        if parse_pid_from_line(line) == pid { return line }
+        j = j - 1
+    }
+    return ""
 }
 
 fn abs_int(x: int) -> int {
@@ -208,18 +249,26 @@ fn abs_int(x: int) -> int {
     return x
 }
 
-// 직전 게놈과 6축 diff → threshold 초과 카운트 (anomaly score)
-fn sigdiff_score(curr_vitals: list, prev_line: str) -> int {
-    if prev_line == "" { return 0 }
+// 직전 게놈 vitals[] 와 6축 diff → threshold 초과 카운트 (anomaly score).
+// (2026-04-19 ROI#1) prev_line 파싱은 호출자에서 선처리 — per-call 12-fork 회피.
+fn sigdiff_score_v(curr_vitals: list, prev_vitals: list, has_prev: bool) -> int {
+    if has_prev == false { return 0 }
     let mut score = 0
     let mut i = 0
     while i < 6 {
         let c = curr_vitals[i]
-        let p = vit_at(prev_line, i)
+        let p = prev_vitals[i]
         if abs_int(c - p) > DIFF_THRESHOLD { score = score + 1 }
         i = i + 1
     }
     return score
+}
+
+// self_test 호환 — 기존 sigdiff_score 시그니처 유지, 내부에서 parse → sigdiff_score_v.
+fn sigdiff_score(curr_vitals: list, prev_line: str) -> int {
+    let has_prev = prev_line != ""
+    let prev_v = parse_vitals_from_line(prev_line)
+    return sigdiff_score_v(curr_vitals, prev_v, has_prev)
 }
 
 fn append_ring(line: str) -> void {
@@ -265,17 +314,23 @@ fn run_harvest() -> int {
     let procs = parse_ps(raw)
     let power_block = sample_power_block(n)
 
+    // (2026-04-19 ROI#1) ring 을 한 번에 메모리 로드 → pid 역탐색 pure-hexa.
+    // 기존: per-PID (tail+tac+jq+head) + per-axis (echo+jq)×9 = ~13 fork/PID × 30 = 390 fork.
+    // 이후: batch 1× read_ring + in-memory lookup = ~30 fork (ps/top/append/rotate 만).
+    let ring_lines = read_ring_lines()
+
     // 4. 각 프로세스 인코딩 + ring 적재 + sigdiff
     let mut anomaly_total = 0
     let mut written = 0
     let mut i = 0
     while i < len(procs) {
         let p = procs[i]
-        let prev = last_for_pid(p.pid)
-        // ema: prev vitals 가 있으면 그걸로 smoothing
-        let prev_cpu = vit_at(prev, 0)
-        let prev_ram = vit_at(prev, 1)
-        let prev_pw = vit_at(prev, 4)
+        let prev_line = last_line_for_pid(ring_lines, p.pid)
+        let has_prev = prev_line != ""
+        let prev_v = parse_vitals_from_line(prev_line)
+        let prev_cpu = prev_v[0]
+        let prev_ram = prev_v[1]
+        let prev_pw = prev_v[4]
         let pw = extract_power(power_block, p.pid)
         let e_cpu = ema(p.cpu, prev_cpu)
         let e_ram = ema(p.ram, prev_ram)
@@ -283,7 +338,7 @@ fn run_harvest() -> int {
         let line = encode_genome(ts, p, e_cpu, e_ram, pw, e_pw)
         // sigdiff 전 curr_vitals — [cpu, ram, gpu=0, npu=0, power, io=0]
         let curr_v = [p.cpu, p.ram, 0, 0, pw, 0]
-        let score = sigdiff_score(curr_v, prev)
+        let score = sigdiff_score_v(curr_v, prev_v, has_prev)
         anomaly_total = anomaly_total + score
         append_ring(line)
         written = written + 1
@@ -350,6 +405,38 @@ fn self_test() -> void {
     if clamp_batch_n(TOP_N) != TOP_N { panic("self_test FAIL [clamp at max]") }
     if clamp_batch_n(TOP_N + 10) != TOP_N { panic("self_test FAIL [clamp over max]") }
     if clamp_batch_n(9223372036854775807) != TOP_N { panic("self_test FAIL [clamp maxInt regression]") }
+
+    // 9. [ROI#1] parse_pid_from_line / parse_vitals_from_line — jq 회피용 pure-hexa 파서
+    let sample_line = "{\"ts\":\"2026-04-19T00:00:00Z\",\"pid\":4242,\"comm\":\"bash\",\"rss_kb\":1000,\"vitals\":[73,12,0,0,5,0],\"ema\":[70,10,0,0,4,0]}"
+    if parse_pid_from_line(sample_line) != 4242 { panic("self_test FAIL [parse_pid basic]") }
+    if parse_pid_from_line("") != 0 { panic("self_test FAIL [parse_pid empty]") }
+    if parse_pid_from_line("{\"no_pid\":true}") != 0 { panic("self_test FAIL [parse_pid missing]") }
+    let pv = parse_vitals_from_line(sample_line)
+    if len(pv) != 6 { panic("self_test FAIL [parse_vitals len]") }
+    if pv[0] != 73 { panic("self_test FAIL [parse_vitals[0]]") }
+    if pv[1] != 12 { panic("self_test FAIL [parse_vitals[1]]") }
+    if pv[4] != 5 { panic("self_test FAIL [parse_vitals[4] power]") }
+    let pv_empty = parse_vitals_from_line("")
+    if len(pv_empty) != 6 { panic("self_test FAIL [parse_vitals empty len]") }
+    if pv_empty[0] != 0 { panic("self_test FAIL [parse_vitals empty zero]") }
+
+    // 10. [ROI#1] last_line_for_pid — in-memory reverse scan 이 jq 체인 대체
+    let ring_mock = [
+        "{\"ts\":\"t1\",\"pid\":100,\"comm\":\"a\",\"rss_kb\":0,\"vitals\":[1,0,0,0,0,0],\"ema\":[0,0,0,0,0,0]}",
+        "{\"ts\":\"t2\",\"pid\":200,\"comm\":\"b\",\"rss_kb\":0,\"vitals\":[2,0,0,0,0,0],\"ema\":[0,0,0,0,0,0]}",
+        "{\"ts\":\"t3\",\"pid\":100,\"comm\":\"a\",\"rss_kb\":0,\"vitals\":[9,0,0,0,0,0],\"ema\":[0,0,0,0,0,0]}"
+    ]
+    let found = last_line_for_pid(ring_mock, 100)
+    if found == "" { panic("self_test FAIL [last_line_for_pid hit]") }
+    if parse_vitals_from_line(found)[0] != 9 { panic("self_test FAIL [last_line_for_pid picked latest]") }
+    if last_line_for_pid(ring_mock, 999) != "" { panic("self_test FAIL [last_line_for_pid miss]") }
+
+    // 11. [ROI#1] sigdiff_score_v 새 시그니처 — has_prev=false 면 score=0
+    if sigdiff_score_v([10, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], false) != 0 { panic("self_test FAIL [sigdiff_score_v no prev]") }
+    // cpu diff 100 → 1 축 초과
+    if sigdiff_score_v([100, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0], true) != 1 { panic("self_test FAIL [sigdiff_score_v single]") }
+    // 기존 sigdiff_score 래퍼 — 파싱 후 동일 결과
+    if sigdiff_score([100, 0, 0, 0, 0, 0], sample_line) != 2 { panic("self_test FAIL [sigdiff_score wrap — cpu 100-73=27>10, power 0-5=5 no, ram 0-12=12>10]") }
 
     println("  ✅ harvest self_test PASS")
 }

@@ -2,18 +2,24 @@
   "id": "airgenome-roi",
   "kind": "roi_sot",
   "role": "AirGenome OS 게놈 스캐너 성능/속도/자원 개선 ROI",
-  "updated": "2026-04-12",
+  "updated": "2026-04-19",
   "ssot_refs": [
-    "modules/genome_harvest.hexa",
-    "sampler.hexa",
-    "modules/ring_io.hexa",
-    "modules/auto_dispatch.hexa",
-    "modules/infra_probe.hexa",
-    "scripts/genome_pack.hexa",
-    "forge/genomes.index.jsonl",
-    "modules/load_balancer.hexa"
+    "modules/harvest.hexa",
+    "modules/probe.hexa",
+    "modules/dispatch.hexa",
+    "modules/forecast.hexa",
+    "modules/label.hexa",
+    "modules/genome_merge.hexa",
+    "modules/claude_route.hexa",
+    "forge/genomes.ring"
   ],
-  "summary": { "done": 0, "running": 0, "todo": 9, "total": 9 },
+  "summary": {
+    "done": 1,
+    "running": 0,
+    "todo": 0,
+    "obsolete": 8,
+    "total": 9
+  },
   "items": [
     {
       "id": 1,
@@ -25,9 +31,14 @@
       "roi": 4.0,
       "priority": "P0",
       "difficulty": "easy",
-      "target_files": ["modules/genome_harvest.hexa"],
-      "status": "todo",
-      "note": "현재 PID당 awk fork 1회 (~4ms). 300 PID 배치 = ~1.2초 순수 fork 오버헤드. 이미 bulk ps snapshot 있으므로 hexa 내 문자열 파싱만 추가하면 0ms"
+      "target_files": [
+        "modules/harvest.hexa"
+      ],
+      "status": "done",
+      "note": "현재 PID당 awk fork 1회 (~4ms). 300 PID 배치 = ~1.2초 순수 fork 오버헤드. 이미 bulk ps snapshot 있으므로 hexa 내 문자열 파싱만 추가하면 0ms",
+      "done_at": "2026-04-19",
+      "commit": "TBD",
+      "done_note": "v2 modules/harvest.hexa — last_for_pid (tac+jq per-pid) + vit_at (echo+jq per-axis) 제거. ring_lines 1회 read → in-memory reverse scan + pure-hexa parse_pid_from_line / parse_vitals_from_line. ~390 fork/cycle → ~30 fork."
     },
     {
       "id": 2,
@@ -39,9 +50,15 @@
       "roi": 3.75,
       "priority": "P0",
       "difficulty": "medium",
-      "target_files": ["modules/genome_harvest.hexa", "scripts/genome_pack.hexa", "modules/ring_io.hexa"],
-      "status": "todo",
-      "note": "120B x 6978 = 837KB 순데이터, 27MB 디스크 점유 (32x 오버헤드). inode 압박 + find/ls 지연. ring_io.hexa 이미 AG3R 포맷 보유 — 로컬 확장만 필요"
+      "target_files": [
+        "modules/genome_harvest.hexa",
+        "scripts/genome_pack.hexa",
+        "modules/ring_io.hexa"
+      ],
+      "status": "obsolete",
+      "note": "120B x 6978 = 837KB 순데이터, 27MB 디스크 점유 (32x 오버헤드). inode 압박 + find/ls 지연. ring_io.hexa 이미 AG3R 포맷 보유 — 로컬 확장만 필요",
+      "obsolete_at": "2026-04-19",
+      "obsolete_reason": "v1 동결(2026-04-13)로 archive/v1/ 이동. v2 에서 해당 모듈 미존재 또는 재설계됨. 재오픈 시 v2 기준으로 새 ROI 항목 기록 권장."
     },
     {
       "id": 3,
@@ -53,9 +70,15 @@
       "roi": 2.67,
       "priority": "P0",
       "difficulty": "easy",
-      "target_files": ["modules/genome_harvest.hexa", "scripts/genome_pack.hexa", "modules/log_rotate.hexa"],
-      "status": "todo",
-      "note": "source_group_from_index()가 6878줄 전체 read_file+split+loop. 현재 1.3MB지만 월 2K줄 증가 속도. 6개월 뒤 8MB+ 예상. tail -N 또는 ring 방식으로 최근분만 처리"
+      "target_files": [
+        "modules/genome_harvest.hexa",
+        "scripts/genome_pack.hexa",
+        "modules/log_rotate.hexa"
+      ],
+      "status": "obsolete",
+      "note": "source_group_from_index()가 6878줄 전체 read_file+split+loop. 현재 1.3MB지만 월 2K줄 증가 속도. 6개월 뒤 8MB+ 예상. tail -N 또는 ring 방식으로 최근분만 처리",
+      "obsolete_at": "2026-04-19",
+      "obsolete_reason": "v1 동결(2026-04-13)로 archive/v1/ 이동. v2 에서 해당 모듈 미존재 또는 재설계됨. 재오픈 시 v2 기준으로 새 ROI 항목 기록 권장."
     },
     {
       "id": 4,
@@ -67,9 +90,15 @@
       "roi": 2.5,
       "priority": "P1",
       "difficulty": "easy",
-      "target_files": ["modules/log_rotate.hexa", "modules/auto_dispatch.hexa", "modules/load_balancer.hexa"],
-      "status": "todo",
-      "note": "현재 log_rotate.hexa는 dispatch.log 단일 파일만 대상. forge/ 전체 46MB 중 로그가 ~12MB. 다중 경로 배열 + gzip 압축 추가"
+      "target_files": [
+        "modules/log_rotate.hexa",
+        "modules/auto_dispatch.hexa",
+        "modules/load_balancer.hexa"
+      ],
+      "status": "obsolete",
+      "note": "현재 log_rotate.hexa는 dispatch.log 단일 파일만 대상. forge/ 전체 46MB 중 로그가 ~12MB. 다중 경로 배열 + gzip 압축 추가",
+      "obsolete_at": "2026-04-19",
+      "obsolete_reason": "v1 동결(2026-04-13)로 archive/v1/ 이동. v2 에서 해당 모듈 미존재 또는 재설계됨. 재오픈 시 v2 기준으로 새 ROI 항목 기록 권장."
     },
     {
       "id": 5,
@@ -81,9 +110,13 @@
       "roi": 2.0,
       "priority": "P1",
       "difficulty": "easy",
-      "target_files": ["sampler.hexa"],
-      "status": "todo",
-      "note": "top -l1 이 ~200ms 블로킹. ps -A 추가 ~50ms. full scan 주기 3~15초에서 250ms → 200ms. 연간 수백만 사이클 x 50ms = 수십 시간 CPU 절감"
+      "target_files": [
+        "sampler.hexa"
+      ],
+      "status": "obsolete",
+      "note": "top -l1 이 ~200ms 블로킹. ps -A 추가 ~50ms. full scan 주기 3~15초에서 250ms → 200ms. 연간 수백만 사이클 x 50ms = 수십 시간 CPU 절감",
+      "obsolete_at": "2026-04-19",
+      "obsolete_reason": "v1 동결(2026-04-13)로 archive/v1/ 이동. v2 에서 해당 모듈 미존재 또는 재설계됨. 재오픈 시 v2 기준으로 새 ROI 항목 기록 권장."
     },
     {
       "id": 6,
@@ -95,9 +128,13 @@
       "roi": 2.0,
       "priority": "P1",
       "difficulty": "easy",
-      "target_files": ["modules/growth_bus_sync.hexa"],
-      "status": "todo",
-      "note": "30초 주기 x scp 전체 파일(~수백KB). rsync --append은 새 라인만 전송. python set diff도 불필요해져 fork 1개 추가 제거"
+      "target_files": [
+        "modules/growth_bus_sync.hexa"
+      ],
+      "status": "obsolete",
+      "note": "30초 주기 x scp 전체 파일(~수백KB). rsync --append은 새 라인만 전송. python set diff도 불필요해져 fork 1개 추가 제거",
+      "obsolete_at": "2026-04-19",
+      "obsolete_reason": "v1 동결(2026-04-13)로 archive/v1/ 이동. v2 에서 해당 모듈 미존재 또는 재설계됨. 재오픈 시 v2 기준으로 새 ROI 항목 기록 권장."
     },
     {
       "id": 7,
@@ -109,9 +146,13 @@
       "roi": 1.2,
       "priority": "P1",
       "difficulty": "medium",
-      "target_files": ["modules/genome_crosscorr.hexa"],
-      "status": "todo",
-      "note": "6878줄 x 6축 = 41K 값 파싱 + 15쌍 상관계수. hexa 인터프리터 반복문은 ~10x 느림. numpy 1줄이면 <50ms"
+      "target_files": [
+        "modules/genome_crosscorr.hexa"
+      ],
+      "status": "obsolete",
+      "note": "6878줄 x 6축 = 41K 값 파싱 + 15쌍 상관계수. hexa 인터프리터 반복문은 ~10x 느림. numpy 1줄이면 <50ms",
+      "obsolete_at": "2026-04-19",
+      "obsolete_reason": "v1 동결(2026-04-13)로 archive/v1/ 이동. v2 에서 해당 모듈 미존재 또는 재설계됨. 재오픈 시 v2 기준으로 새 ROI 항목 기록 권장."
     },
     {
       "id": 8,
@@ -123,9 +164,13 @@
       "roi": 1.0,
       "priority": "P2",
       "difficulty": "medium",
-      "target_files": ["scripts/genome_pack.hexa"],
-      "status": "todo",
-      "note": "현재: 6878레코드 전체 python3 재생성 ~1초. 미래 50K+ 시 수십 초. 기존 pack에 새 레코드만 struct.pack append하면 O(delta)"
+      "target_files": [
+        "scripts/genome_pack.hexa"
+      ],
+      "status": "obsolete",
+      "note": "현재: 6878레코드 전체 python3 재생성 ~1초. 미래 50K+ 시 수십 초. 기존 pack에 새 레코드만 struct.pack append하면 O(delta)",
+      "obsolete_at": "2026-04-19",
+      "obsolete_reason": "v1 동결(2026-04-13)로 archive/v1/ 이동. v2 에서 해당 모듈 미존재 또는 재설계됨. 재오픈 시 v2 기준으로 새 ROI 항목 기록 권장."
     },
     {
       "id": 9,
@@ -137,9 +182,18 @@
       "roi": 0.75,
       "priority": "P1",
       "difficulty": "medium",
-      "target_files": ["modules/auto_dispatch.hexa", "modules/ag3_loop.hexa", "modules/infra_probe.hexa", "modules/load_balancer.hexa", "modules/ssh_gate.hexa", "modules/ubu_bridge.hexa"],
-      "status": "todo",
-      "note": "25개 파일에 134회 호출. 버그 수정 시 25곳 수정 필요. include 지시문 1줄로 교체 가능 (blowup lib/atlas_guard.hexa.inc 패턴 참조)"
+      "target_files": [
+        "modules/auto_dispatch.hexa",
+        "modules/ag3_loop.hexa",
+        "modules/infra_probe.hexa",
+        "modules/load_balancer.hexa",
+        "modules/ssh_gate.hexa",
+        "modules/ubu_bridge.hexa"
+      ],
+      "status": "obsolete",
+      "note": "25개 파일에 134회 호출. 버그 수정 시 25곳 수정 필요. include 지시문 1줄로 교체 가능 (blowup lib/atlas_guard.hexa.inc 패턴 참조)",
+      "obsolete_at": "2026-04-19",
+      "obsolete_reason": "v1 동결(2026-04-13)로 archive/v1/ 이동. v2 에서 해당 모듈 미존재 또는 재설계됨. 재오픈 시 v2 기준으로 새 ROI 항목 기록 권장."
     }
   ]
 }
