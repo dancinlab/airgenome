@@ -174,6 +174,120 @@ fn read_d_state_count() -> int {
     return to_int(s)
 }
 
+// ─── ORPHAN RUNAWAY struct + etime parser (hetzner 10×hexa 27h 사건 대응) ────
+struct OrphanProc {
+    pid: int,
+    comm: str,
+    pcpu: int,
+    etime_s: int,
+    ppid: int,
+    // sub_class = "spin" (pcpu>=pcpu_spin) OR "stuck" (pcpu<=pcpu_stuck).
+    // 둘 다 고아 hexa* 는 정상이 아님. stuck 은 shim-lock 홀더로 다른 hexa 호출 전부 block 하는 케이스.
+    sub_class: str
+}
+
+// ps etime 포맷 → seconds. 지원 포맷: "SS", "MM:SS", "HH:MM:SS", "DD-HH:MM:SS"
+// 실패 시 0. 공백/void 안전.
+fn etime_to_seconds(raw: str) -> int {
+    let s = raw.trim()
+    if s == "" { return 0 }
+    if to_string(s) == "void" { return 0 }
+    // DD-HH:MM:SS → split on "-" first
+    let mut days = 0
+    let mut rest = s
+    let dash = s.split("-")
+    if len(dash) >= 2 {
+        let d0 = dash[0]
+        if d0 != "" { days = to_int(d0) }
+        rest = dash[1]
+    }
+    let parts = rest.split(":")
+    let n = len(parts)
+    let mut h = 0
+    let mut mi = 0
+    let mut se = 0
+    if n == 1 {
+        if parts[0] != "" { se = to_int(parts[0]) }
+    }
+    if n == 2 {
+        if parts[0] != "" { mi = to_int(parts[0]) }
+        if parts[1] != "" { se = to_int(parts[1]) }
+    }
+    if n == 3 {
+        if parts[0] != "" { h = to_int(parts[0]) }
+        if parts[1] != "" { mi = to_int(parts[1]) }
+        if parts[2] != "" { se = to_int(parts[2]) }
+    }
+    return days * 86400 + h * 3600 + mi * 60 + se
+}
+
+// hexa* 고아 2 class — 둘 다 whitelist override 대상.
+//  (a) spin:  ppid=1 AND pcpu>=pcpu_spin AND etime>=etime_gate — 100% CPU 무한 루프 (hetzner 27h).
+//  (b) stuck: ppid=1 AND pcpu<=pcpu_stuck AND etime>=etime_gate — 0% CPU 로 shim-lock 홀드해
+//             다른 hexa 호출 전부 block (Mac 34min 사례, "lock timeout after 300s" 반복).
+// 고아 hexa 는 정상적 존재 이유 없음 — 부모가 exit 한 시점에 살아있으면 원인 불문 정리 대상.
+// ps 쿼리는 read_d_state_pids 와 독립 — 기존 D-state detection 건드리지 않음.
+fn parse_orphan_runaway_lines(raw_out: str, pcpu_spin: int, pcpu_stuck: int, etime_gate: int) -> list {
+    let lines = raw_out.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line != "" {
+            let f = split_fields(line)
+            // 기대 포맷: pid ppid pcpu etime comm
+            if len(f) >= 5 {
+                let pid_i = to_int(f[0])
+                let ppid_i = to_int(f[1])
+                let cpu_parts = f[2].split(".")
+                let mut cpu_i = 0
+                if len(cpu_parts) > 0 {
+                    if cpu_parts[0] != "" { cpu_i = to_int(cpu_parts[0]) }
+                }
+                let etime_s = etime_to_seconds(f[3])
+                let comm = f[4]
+                // 매칭 조건: ppid==1 AND etime>=gate AND comm ~= hexa* AND (spin OR stuck)
+                if ppid_i == 1 {
+                    if etime_s >= etime_gate {
+                        let mut sub = ""
+                        if cpu_i >= pcpu_spin { sub = "spin" }
+                        if sub == "" {
+                            if cpu_i <= pcpu_stuck { sub = "stuck" }
+                        }
+                        if sub != "" {
+                            let mut is_hexa = false
+                            if comm == "hexa" { is_hexa = true }
+                            if comm == "hexa_stage0" { is_hexa = true }
+                            if comm == "hexa_v2" { is_hexa = true }
+                            if comm == "hexa_real" { is_hexa = true }
+                            if is_hexa {
+                                if pid_i > 1 {
+                                    result = result + [OrphanProc {
+                                        pid: pid_i, comm: comm,
+                                        pcpu: cpu_i, etime_s: etime_s, ppid: ppid_i,
+                                        sub_class: sub
+                                    }]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// 실제 ps 쿼리 — 기존 read_d_state_pids 와 완전 분리. -o 포맷 고정 순서.
+// gates: spin>=90% · stuck<=5% · etime>=600s (10분).
+fn read_orphan_runaways() -> list {
+    let cmd = "ps -eo pid=,ppid=,pcpu=,etime=,comm= 2>/dev/null"
+    let out = exec(cmd)
+    if to_string(out) == "void" { return [] }
+    return parse_orphan_runaway_lines(out, 90, 5, 600)
+}
+
 // D-state PID 목록 — iowait/sshfs stall 주 원인. top-CPU 리스트에는 안 잡힘 (0% CPU while stuck).
 // state 컬럼이 'D' 포함(D+, Ds 등)인 userspace PID 만.
 // 커널 스레드(PPID=2 및 자손)는 renice/cpulimit 대상이 아니므로 제외.
@@ -938,6 +1052,130 @@ fn notify_telegram(host: str, ts: str, v: int, m: Metrics, now: int) -> void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  ORPHAN RUNAWAY — whitelist override 규칙
+//  조건: ppid==1 AND pcpu>=90 AND etime>=600s AND comm ~= hexa*
+//  action: SIGTERM (force 모드일 때만). KILL 에스컬레이션 X.
+//  dry-run 기본 — RUNAWAY_GUARD_ORPHAN_FORCE=1 또는 기존 force 플래그 시 TERM.
+// ═══════════════════════════════════════════════════════════════════════
+
+fn is_orphan_force() -> bool {
+    if env("RUNAWAY_GUARD_ORPHAN_FORCE") == "1" { return true }
+    // 기존 force 플래그 재사용 — dry-run 이 아니면 force 간주 X. 명시 env 만 수락.
+    return false
+}
+
+fn do_sigterm(pid: int) -> void {
+    let pid_s = to_string(pid)
+    let _ = exec("kill -TERM " + pid_s + " 2>/dev/null")
+}
+
+fn pid_still_alive(pid: int) -> bool {
+    let pid_s = to_string(pid)
+    let r = exec("kill -0 " + pid_s + " 2>/dev/null && echo y || echo n").trim()
+    if r == "y" { return true }
+    return false
+}
+
+struct OrphanAction {
+    kind: str,       // "orphan_term" / "orphan_dry" / "orphan_survived"
+    pid: int,
+    comm: str,
+    etime_s: int,
+    pcpu: int,
+    dry_run: bool
+}
+
+fn format_orphan_action_json(a: OrphanAction) -> str {
+    let dr = "false"
+    if a.dry_run { dr = "true" }
+    return "{\"kind\":\"" + a.kind + "\",\"pid\":" + to_string(a.pid)
+         + ",\"comm\":\"" + json_safe(a.comm) + "\""
+         + ",\"etime_s\":" + to_string(a.etime_s)
+         + ",\"pcpu\":" + to_string(a.pcpu)
+         + ",\"dry_run\":" + dr + "}"
+}
+
+fn format_orphan_actions_json(actions: list) -> str {
+    let mut out = "["
+    let mut i = 0
+    while i < len(actions) {
+        if i > 0 { out = out + "," }
+        out = out + format_orphan_action_json(actions[i])
+        i = i + 1
+    }
+    return out + "]"
+}
+
+fn format_orphans_json(orphans: list) -> str {
+    let mut out = "["
+    let mut i = 0
+    while i < len(orphans) {
+        if i > 0 { out = out + "," }
+        let p = orphans[i]
+        out = out + "{\"pid\":" + to_string(p.pid)
+            + ",\"comm\":\"" + json_safe(p.comm) + "\""
+            + ",\"ppid\":" + to_string(p.ppid)
+            + ",\"pcpu\":" + to_string(p.pcpu)
+            + ",\"etime_s\":" + to_string(p.etime_s)
+            + ",\"sub_class\":\"" + json_safe(p.sub_class) + "\"}"
+        i = i + 1
+    }
+    return out + "]"
+}
+
+// 고아 처리 — whitelist override (고아는 정상일 수 없음).
+// force=false 인 경우 전부 dry 로 기록만. survived 체크는 force 경로에서만.
+fn act_on_orphans(orphans: list, force: bool) -> list {
+    let result = []
+    let mut i = 0
+    while i < len(orphans) {
+        let p = orphans[i]
+        if force {
+            do_sigterm(p.pid)
+            result = result + [OrphanAction {
+                kind: "orphan_term", pid: p.pid, comm: p.comm,
+                etime_s: p.etime_s, pcpu: p.pcpu, dry_run: false
+            }]
+        } else {
+            result = result + [OrphanAction {
+                kind: "orphan_dry", pid: p.pid, comm: p.comm,
+                etime_s: p.etime_s, pcpu: p.pcpu, dry_run: true
+            }]
+        }
+        i = i + 1
+    }
+    // force 경로: 5s 후 잔존 PID 만 report (KILL 에스컬레이션 X)
+    if force {
+        if len(orphans) > 0 {
+            let _ = exec("sleep 5")
+            let mut j = 0
+            while j < len(orphans) {
+                let p = orphans[j]
+                if pid_still_alive(p.pid) {
+                    result = result + [OrphanAction {
+                        kind: "orphan_survived", pid: p.pid, comm: p.comm,
+                        etime_s: p.etime_s, pcpu: p.pcpu, dry_run: false
+                    }]
+                }
+                j = j + 1
+            }
+        }
+    }
+    return result
+}
+
+fn format_orphan_event(ts: str, orphans: list, actions: list, force: bool) -> str {
+    return "{\"ts\":\"" + ts + "\""
+         + ",\"source\":\"runaway_guard\""
+         + ",\"verdict\":\"orphan_runaway\""
+         + ",\"orphans\":" + format_orphans_json(orphans)
+         + ",\"actions\":" + format_orphan_actions_json(actions)
+         + ",\"force\":" + bool_str(force)
+         + ",\"dry_run\":" + bool_str(!force)
+         + "}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  TICK
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -966,6 +1204,19 @@ fn collect_metrics() -> Metrics {
 fn tick(t: Thresholds, wl: Whitelist) -> void {
     let ts = ts_iso()
     let now = ts_epoch()
+
+    // ─── ORPHAN RUNAWAY pass — 기존 verdict 파이프라인과 독립 ────────────
+    // whitelist override: hexa* 고아(ppid=1 + CPU≥90% + etime≥600s)는 절대 정상 X.
+    // hetzner 사건 (27h×10건 축적) 재발 방지. dry-run 기본, FORCE env 만 TERM.
+    let orphans = read_orphan_runaways()
+    if len(orphans) > 0 {
+        let force = is_orphan_force()
+        let oacts = act_on_orphans(orphans, force)
+        let oline = format_orphan_event(ts, orphans, oacts, force)
+        append_log(oline)
+        println(oline)
+    }
+
     let m = collect_metrics()
     let v = compute_verdict(m, t)
     let actions = collect_actions(v, m, t, wl, now)
@@ -1094,11 +1345,78 @@ fn self_test() -> void {
     // 10. token path resolve — 파일 없으면 "" (Linux prod 환경에서 Mac secret 없을 수 있음 — 허용).
     let _tp = tg_token_path()   // 결과 무관, 호출 자체가 성공이면 OK.
 
-    // 11. 마지막 self-test host 기록 정리 (누적 방지)
+    // 11. orphan_runaway detection — mock ps lines (spin+stuck 2 class)
+    //     포맷: "pid ppid pcpu etime comm"
+    //     MATCH:
+    //       - hexa ppid=1 pcpu=99 etime=27h12m       → spin  (hetzner 27h)
+    //       - hexa_stage0 ppid=1 pcpu=100 etime=10m  → spin  (경계값 etime=600s)
+    //       - hexa_real ppid=1 pcpu=92 etime=15m     → spin
+    //       - hexa_stage0 ppid=1 pcpu=0 etime=34m    → stuck (Mac lock-holder 사례)
+    //     REJECT:
+    //       - hexa ppid=1234 (부모 생존)  → ppid gate
+    //       - hexa ppid=1 pcpu=95 etime=5m → etime gate
+    //       - sshd ppid=1 pcpu=99 etime=10h → comm gate
+    //       - hexa ppid=1 pcpu=50 etime=20h → 중간 CPU (spin 도 stuck 도 아님)
+    let mock_ps = "99901 1 99.8 27:12:34 hexa\n"
+                + "99902 1 100 10:00 hexa_stage0\n"
+                + "99903 1234 99 12:00:00 hexa\n"
+                + "99904 1 50.0 20:00:00 hexa\n"
+                + "99905 1 95 05:00 hexa\n"
+                + "99906 1 99 10:00:00 sshd\n"
+                + "99907 1 92 15:00 hexa_real\n"
+                + "99908 1 0.0 34:00 hexa_stage0"
+    let orph = parse_orphan_runaway_lines(mock_ps, 90, 5, 600)
+    if len(orph) != 4 {
+        panic("self_test FAIL [orphan pick count got " + to_string(len(orph)) + " want 4]")
+    }
+    // 첫 매치: hexa pid=99901, etime≥97954s (27h12m34s), sub_class=spin
+    let o0 = orph[0]
+    if o0.pid != 99901 { panic("self_test FAIL [orphan[0] pid]") }
+    if o0.comm != "hexa" { panic("self_test FAIL [orphan[0] comm]") }
+    if o0.ppid != 1 { panic("self_test FAIL [orphan[0] ppid]") }
+    if o0.etime_s < 97000 { panic("self_test FAIL [orphan[0] etime too small]") }
+    if o0.sub_class != "spin" { panic("self_test FAIL [orphan[0] sub_class got " + o0.sub_class + " want spin]") }
+    // stuck class 도 하나 포함됐는지 확인 (pid=99908, sub_class=stuck)
+    let mut saw_stuck = false
+    let mut saw_spin = false
+    let mut k_s = 0
+    while k_s < len(orph) {
+        if orph[k_s].sub_class == "stuck" { saw_stuck = true }
+        if orph[k_s].sub_class == "spin"  { saw_spin = true }
+        k_s = k_s + 1
+    }
+    if !saw_stuck { panic("self_test FAIL [no stuck-class orphan picked]") }
+    if !saw_spin  { panic("self_test FAIL [no spin-class orphan picked]") }
+    // dry action emission
+    let oacts_dry = act_on_orphans(orph, false)
+    if len(oacts_dry) != 4 { panic("self_test FAIL [dry orphan actions count]") }
+    let mut saw_dry = false
+    let mut k = 0
+    while k < len(oacts_dry) {
+        if oacts_dry[k].kind == "orphan_dry" { saw_dry = true }
+        k = k + 1
+    }
+    if !saw_dry { panic("self_test FAIL [no orphan_dry kind]") }
+    // event JSON contains verdict=orphan_runaway
+    let oline = format_orphan_event("2026-04-20T00:00:00Z", orph, oacts_dry, false)
+    if !oline.contains("\"verdict\":\"orphan_runaway\"") {
+        panic("self_test FAIL [orphan event missing verdict]")
+    }
+    if !oline.contains("\"dry_run\":true") { panic("self_test FAIL [orphan dry_run flag]") }
+    // etime parser boundary
+    if etime_to_seconds("600") != 600 { panic("self_test FAIL [etime SS]") }
+    if etime_to_seconds("10:00") != 600 { panic("self_test FAIL [etime MM:SS]") }
+    if etime_to_seconds("1:00:00") != 3600 { panic("self_test FAIL [etime HH:MM:SS]") }
+    if etime_to_seconds("1-00:00:00") != 86400 { panic("self_test FAIL [etime DD-HH:MM:SS]") }
+    // empty mock → no orphans
+    let orph_empty = parse_orphan_runaway_lines("", 90, 5, 600)
+    if len(orph_empty) != 0 { panic("self_test FAIL [empty mock] ") }
+
+    // 12. 마지막 self-test host 기록 정리 (누적 방지)
     let p_cleanup = tg_last_critical_path()
     let _ = exec("jq --arg h '" + host_t + "' 'del(.[$h])' '" + p_cleanup + "' > '" + p_cleanup + ".tmp' 2>/dev/null && mv '" + p_cleanup + ".tmp' '" + p_cleanup + "'")
 
-    println("  ✅ runaway_guard self_test PASS (whitelist narrowed + D-state pick + ionice + tg_push)")
+    println("  ✅ runaway_guard self_test PASS (whitelist narrowed + D-state pick + ionice + tg_push + orphan_runaway)")
 }
 
 fn run_once() -> void {
