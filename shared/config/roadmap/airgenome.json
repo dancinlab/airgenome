@@ -3,7 +3,7 @@
   "kind": "roadmap_sot",
   "version": 2,
   "role": "airgenome rebuild v2 SSOT — core 분리 + roadmap 주도. 에이전트가 jq 로 읽고 다음 액션 자동 결정",
-  "updated": "2026-04-13",
+  "updated": "2026-04-19",
   "principle": "AI-NATIVE / R2 하드코딩 금지 / R5 SSOT / R6 자동 기록. todo 에 없는 것은 만들지 않는다",
   "ssot_refs": [
     "core/core.hexa",
@@ -24,7 +24,8 @@
     "신규 module 은 use \"../core/core\" 만 허용. module 끼리 직접 import 금지",
     "L0 자격: 파일 존재 + hexa parse 통과 + self-test 통과 (3중)",
     "archive 는 read-only — 부활은 PR + roadmap 등록 + L0 갱신",
-    "roadmap.json 의 milestones 에 없는 코드는 작성 금지"
+    "roadmap.json 의 milestones 에 없는 코드는 작성 금지",
+    ".session_defaults (plain text dotfile) 이 매 세션 룰 SSOT — claudx 가 cat → --append-system-prompt 로 자동 주입. 파일 == prompt, 변환 0 (NEXUS_SESSION_LAX=1 우회)"
   ],
   "status_vocab": ["todo", "active", "blocked", "done"],
   "priority_vocab": ["P0", "P1", "P2", "P3"],
@@ -581,6 +582,23 @@
         "--auto: STALL 시 pkill -TERM claudx-loop 의 child claude. claudx-loop 가 iter++ 하며 재기동",
         "--tty: Mac osascript notification / Linux notify-send / 없으면 bell",
         "smoke: stall 모의 (cost.jsonl touch 후 180s+ 대기) → STALL emit 확인"
+      ]
+    },
+    {
+      "id": "M14_session_defaults",
+      "title": "session_defaults — 매 세션 강제 룰 SSOT + 자동 주입",
+      "priority": "P0",
+      "status": "active",
+      "started": "2026-04-19",
+      "deps": ["M13_claudx"],
+      "problem": "TaskCreate 필수 / Agent bg 위임 / 채팅 블로킹 금지 / 병렬 N≥8 / 세션 재진입 catchup — 5조 룰을 매 세션 사용자가 일일이 알릴 필요 없이 Claude 가 첫 토큰부터 인지해야 함. CLAUDE.md 는 폐기 예정이라 다른 주입 표면 필요.",
+      "approach": "루트 .session_defaults (plain text dotfile, no extension) — 파일 자체가 inject 텍스트. claudx 가 cat → --append-system-prompt 로 system prompt 끝에 무손실 주입. 변환·파싱 0 단계. 외부 의존 0. NEXUS_SESSION_LAX=1 우회.",
+      "exit_criteria": [
+        ".session_defaults — plain text, S1~S5 + Why + Bypass + SSOT 라인 (파일 == 주입 텍스트)",
+        "bin/claudx — exec cx 직전 NEXUS_SESSION_LAX 미설정 + 파일 존재 시 cat → --append-system-prompt prepend",
+        "claudx-loop 는 자동 상속 (claudx 호출 경유)",
+        "README.md Session defaults 섹션 + invariant #6 등록",
+        "smoke: claudx --show 결과에 --append-system-prompt 포함 확인"
       ]
     },
     {

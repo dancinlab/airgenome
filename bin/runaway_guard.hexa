@@ -22,7 +22,8 @@
 //   dev:       HEXA_LOCAL=1 RUNAWAY_TEST=1 RUNAWAY_DRY_RUN=1 hexa run bin/runaway_guard.hexa
 //   1회 측정:  RUNAWAY_TEST=1 hexa run bin/runaway_guard.hexa
 
-use "../core/core"
+// core/core 의존 제거 — hexa `use "..."` 문법이 stage0 parse error.
+// airgenome_root() 로컬 재구현 (core.hexa:278 동일 로직).
 
 let HOME = env("HOME")
 let LOG_PATH = HOME + "/.airgenome/runaway.jsonl"
@@ -31,7 +32,9 @@ let SUSTAIN_WINDOW = 30  // runaway_pid.sustain_seconds 기본값 (thresholds.js
 
 // ─── state file 기본 위치 (Mac dev 와 Ubuntu prod 공존) ───────────────────
 fn ag_root() -> str {
-    return airgenome_root()
+    let custom = env("AIRGENOME_ROOT")
+    if custom != "" { return custom }
+    return env("HOME") + "/Dev/airgenome"
 }
 
 fn thresholds_path() -> str {

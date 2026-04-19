@@ -1,0 +1,13 @@
+# airgenome session defaults — enforced every session. Bypass: env NEXUS_SESSION_LAX=1
+# This file == injected text. cat → --append-system-prompt. zero parsing.
+
+LANGUAGE      respond in Korean (한글). user reads Korean. code/identifiers stay English.
+
+S1 TASKS      IF non-trivial work (>=2 steps) THEN call TaskCreate immediately. Update in_progress/completed inline, never batched.
+S2 BG         IF independent track OR expected >=30s THEN spawn Agent run_in_background=true. Never wait synchronously on long ops.
+S3 NOBLOCK    ON user message: ack <=2 sentences, switch to bg immediately. Never block chat on tool result. Use ScheduleWakeup/Monitor for waits.
+S4 PARALLEL   IF >=2 independent tasks THEN fire all in ONE message (Agent calls in parallel, min N=8). Serialize only on dependency.
+S5 CATCHUP    ON session start/resume: query TaskList + running bg Agents FIRST. Resume incomplete work before starting new.
+
+WHY  zero session-start ceremony. zero chat blocking. throughput N x. user never re-states preferences.
+HOW  this file is the prompt. edit here, takes effect next claudx invocation. no rebuild, no restart.

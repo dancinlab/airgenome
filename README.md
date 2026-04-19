@@ -11,16 +11,20 @@ core/                  # 분리된 라이브러리 — Vitals, sample, assess, A
   core.hexa
   test/core_test.hexa
 modules/               # roadmap milestone 모듈 (M2 이후) — use "../core/core" 만
+cl                     # 9줄 약자: exec claude → zshrc claude() → claudx-loop|claudx
 bin/
   bootstrap            # fresh Mac 17-tier init (brew → claude → ssh → cl-refresh launchd → ...)
+  claudx               # M13 limit-resilient launcher — pool.js + interceptor + loadgate
+  claudx-loop          # TUI rotation watchdog (M13e)
   cx                   # cross-host claude router (ssh -t 직결, ControlMaster 의존)
 shared/
+  claudx/              # pool.js / interceptor.js / loadgate (M13 런타임)
   config/roadmap/      # rebuild v2 SSOT (milestones, invariants)
   config/hosts.json    # cx/dispatch 용 원격 호스트 registry
   launchagents/        # com.airgenome.*.plist (launchd 스케줄)
+.session_defaults      # 매 세션 강제 룰 SSOT (plain text, cat → --append-system-prompt)
 archive/v1/            # v1 시점 모든 코드/데이터 (read-only)
 nexus/                 # cross-project SSOT (별도 프로젝트)
-CLAUDE.md              # 프로젝트 인스트럭션 (Claude Code)
 ```
 
 ## Setup (fresh Mac)
@@ -98,3 +102,37 @@ v1 의 모든 코드는 [`archive/v1/`](archive/v1/) 에 동결. 부활 절차�
 3. L0 자격 = 파일 존재 + hexa parse 통과 + self-test 통과 (3중)
 4. `archive/v1/` 는 read-only — 부활은 PR + roadmap 등록 + L0 갱신
 5. `milestones` 에 없는 코드는 작성 금지
+6. `.session_defaults` 이 매 세션 룰 SSOT — claudx/claudx-loop 가 `--append-system-prompt` 로 자동 주입
+
+## Session defaults (매 세션 강제, M14)
+
+루트 `.session_defaults` (plain text, no extension) 자체가 inject 텍스트. claudx 가
+`exec cx` 직전 `cat .session_defaults` → `--append-system-prompt` 로 system prompt
+끝에 무손실 주입. 변환·파싱 0 단계. `NEXUS_SESSION_LAX=1` 으로 일괄 우회.
+
+```
+$ cat .session_defaults
+[airgenome session_defaults — 매 세션 강제. NEXUS_SESSION_LAX=1 로 우회]
+S1-TASKS     non-trivial(≥2 step) 작업 시작 시 TaskCreate 필수 ...
+S2-BG        독립/장시간(≥30s) 작업은 Agent run_in_background=true ...
+S3-NOBLOCK   사용자 메시지엔 ≤2문장 ack 후 즉시 bg 전환 ...
+S4-PARALLEL  독립 작업은 한 메시지에 N≥8 동시 발사 ...
+S5-CATCHUP   세션 시작/재진입 시 TaskList + 실행중 BG Agent 먼저 조회
+```
+
+## Crosshost (M11e → M13)
+
+```
+cl → zshrc claude() → claudx-loop(TUI) | claudx(-p) → cx → ssh -t | local claude
+```
+
+- `cl` (루트, 9줄): `exec claude "$@"` — 분기는 zshrc `claude()` 함수
+- `bin/claudx` (M13, 257줄): `pool.pickBest` → `CLAUDE_CONFIG_DIR` → `NODE_OPTIONS`/`BUN_OPTIONS` interceptor 주입 → cx delegate
+  - upstream pin 재검증: `session_pct≥95 / week_all_pct≥100 / _retry_at>now` → re-pick
+  - 모든 계정 한도 시 earliest reset 표시 + exit 3 (`CLAUDX_ALLOW_EMPTY=1` 우회)
+  - loadgate: critical=abort, danger=60s hold
+  - `--dangerously-skip-permissions` 기본 주입 (`CLAUDX_SAFE=1` 로 끔)
+- `bin/cx`: ssh -t 직결 (M13c v3, tmux 제거). ControlMaster 로 master 세션 재사용
+- 원격 자격증명: Mac keychain → `bin/remote_account_sync` → 원격 `.credentials.json`
+- 상태 파일: `~/.airgenome/claudx/{exhausted.json,rotations.jsonl,cost.jsonl}`
+- 풀 SSOT: `~/Dev/nexus/shared/.runtime/accounts/{accounts,usage-cache}.json`
