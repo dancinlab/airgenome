@@ -392,19 +392,17 @@ fn build_menu() -> *Void {
 }
 
 // ───── 알림 — terminal-notifier (brew) 전용, osascript/NSUserNotification 폐기 ─
-// Why: NSUserNotification 은 CLI 실행본이라 app bundle icon 이 비어서 회색 placeholder.
-//      osascript 는 사용자 정책(2026-04-19)상 금지. brew terminal-notifier 의 -sender
-//      플래그로 Airgenome.app (CFBundleIconFile=AppIcon.icns) 을 지시 → 좌측 아이콘이
-//      LaunchServices 에 의해 DNA 🧬 로 렌더. -appIcon/-contentImage 는 불필요 (우측
-//      contentImage 는 사용자 판단 제거).
-// 보조: title 에도 🧬 prefix (시스템 정책상 아이콘 가려지는 케이스 대비).
+// Why: brew terminal-notifier 의 -sender 플래그로 Airgenome.app
+//      (CFBundleIconFile=AppIcon.icns) 을 지시 → 좌측 아이콘이 LaunchServices 에
+//      의해 DNA 🧬 로 렌더. title/-appIcon/-contentImage 에 이모지/이미지 전부 제거 —
+//      좌측 sender icon 하나로 식별 충분.
 fn post_notification(title: str, subtitle: str, info: str) -> void {
     let ne = cfg_notify_enabled
     if ne == 0 { return }
     let body = subtitle
     if info != "" { body = subtitle + " · " + info }
     let cmd = "/opt/homebrew/bin/terminal-notifier"
-        + " -title \"🧬 " + title + "\""
+        + " -title \"" + title + "\""
         + " -message \"" + body + "\""
         + " -sender com.need-singularity.airgenome"
         + " -group airgenome"
@@ -433,10 +431,37 @@ fn main() -> void {
         }
     }
 
-    let app = msg0(cls("NSApplication"), sel("sharedApplication"))
+    let app_cls = cls("NSApplication")
+    let shared_sel = sel("sharedApplication")
+    let app = msg0(app_cls, shared_sel)
+    if test_mode == 1 {
+        println("TEST probe0 NSApplication_cls=" + to_string(app_cls) + " sel(sharedApplication)=" + to_string(shared_sel) + " app=" + to_string(app))
+        let sb_cls_p = cls("NSStatusBar")
+        let ssb_sel_p = sel("systemStatusBar")
+        let sb_obj_p = msg0(sb_cls_p, ssb_sel_p)
+        println("TEST probe0b NSStatusBar_cls=" + to_string(sb_cls_p) + " sel(systemStatusBar)=" + to_string(ssb_sel_p) + " bar=" + to_string(sb_obj_p))
+    }
+    // [AG-Q5 2026-04-19] Sequoia 에서 LSUIElement=1 + setActivationPolicy:1 만으로는
+    // WindowServer 연결이 확립되지 않아 (`lsappinfo info <pid>` 의 `!cgsConnection
+    // !signalled`) [item button] 이 NULL 반환. Regular(0) 으로 한 번 승격 → pump →
+    // Accessory(1) 복귀 (policy-flip) 로 CGS 등록을 강제한다. Dock 아이콘은 pump 간격이
+    // 짧아서 렌더링 전에 Accessory 로 되돌아가므로 노출되지 않음.
+    msg_int(app, sel("setActivationPolicy:"), 0)
+    msg0(app, sel("finishLaunching"))
+    let flip_date_cls = cls("NSDate")
+    let flip_now_sel = sel("dateWithTimeIntervalSinceNow:")
+    let flip_next_sel = sel("nextEventMatchingMask:untilDate:inMode:dequeue:")
+    let flip_send_sel = sel("sendEvent:")
+    let flip_mode = nsstr("kCFRunLoopDefaultMode")
+    let mut flip_i = 0
+    while flip_i < 12 {
+        let flip_deadline = msg_float(flip_date_cls, flip_now_sel, 0.02)
+        let flip_ev = msg_pump(app, flip_next_sel, -1, flip_deadline, flip_mode, 1)
+        if flip_ev != 0 { msg1(app, flip_send_sel, flip_ev) }
+        flip_i = flip_i + 1
+    }
     msg_int(app, sel("setActivationPolicy:"), 1)
     msg_int(app, sel("activateIgnoringOtherApps:"), 1)
-    msg0(app, sel("finishLaunching"))
 
     let bar_obj = msg0(cls("NSStatusBar"), sel("systemStatusBar"))
     let item = msg_float(bar_obj, sel("statusItemWithLength:"), -1.0)
@@ -450,11 +475,21 @@ fn main() -> void {
     spark_htz = spark_push(spark_htz, snap_htz_pct)
 
     let button = msg0(item, sel("button"))
+    if test_mode == 1 {
+        println("TEST probe item=" + to_string(item) + " bar_obj=" + to_string(bar_obj) + " button=" + to_string(button))
+        let probe_bar2 = msg0(cls("NSStatusBar"), sel("systemStatusBar"))
+        let probe_item2 = msg_float(probe_bar2, sel("statusItemWithLength:"), -1.0)
+        let probe_btn2 = msg0(probe_item2, sel("button"))
+        println("TEST probe2 bar2=" + to_string(probe_bar2) + " item2=" + to_string(probe_item2) + " btn2=" + to_string(probe_btn2))
+    }
     if button != 0 {
         msg1(button, sel("setAttributedTitle:"), compose_title_attr())
         if test_mode == 1 { println("TEST button ok") }
     } else {
-        if test_mode == 1 { println("TEST button NULL") }
+        // [AG-Q4 2026-04-19] button=NULL fallback — legacy [item setTitle:] 로 가시성 확보.
+        // Sequoia + ad-hoc sign 상태에서 statusItem.button 이 NULL 반환하는 케이스 복구.
+        msg1(item, sel("setTitle:"), nsstr("🧬"))
+        if test_mode == 1 { println("TEST button NULL — legacy setTitle fallback") }
     }
     let initial_menu = build_menu()
     msg1(item, sel("setMenu:"), initial_menu)
@@ -567,7 +602,12 @@ fn main() -> void {
         }
 
         let btn = msg0(item, sel("button"))
-        if btn != 0 { msg1(btn, sel("setAttributedTitle:"), compose_title_attr()) }
+        if btn != 0 {
+            msg1(btn, sel("setAttributedTitle:"), compose_title_attr())
+        } else {
+            // [AG-Q4] legacy path — 매 tick status signature 반영된 간단 타이틀
+            msg1(item, sel("setTitle:"), nsstr("🧬 " + snap_level))
+        }
 
         let sig = state_signature()
         if sig != prev_sig {
