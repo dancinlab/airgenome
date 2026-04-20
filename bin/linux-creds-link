@@ -62,12 +62,10 @@ done
 # ── host list 확장 ────────────────────────────────────────────────
 hosts=()
 if [ "$target_host" = "all" ]; then
-    # enabled remote 전체. host_list 있으면 사용, 아니면 안전 fallback
-    _hl="$ROOT/bin/host_list"
-    if [ -x "$_hl" ]; then
-        while IFS= read -r h; do [ -n "$h" ] && hosts+=("$h"); done < <("$_hl" --ssh 2>/dev/null)
-    fi
-    [ ${#hosts[@]} -eq 0 ] && hosts=(ubu2-d htz-d hetzner)
+    # /mac_home sshfs 마운트가 있는 docker 호스트 전용. host_list --ssh 는 bare-metal
+    # alias(ubu, ubu2, hetzner) 를 반환해서 마운트 없는 호스트가 섞여 들어감 — 사용 X.
+    # docker 호스트 목록은 현재 ubu2-d, htz-d 로 고정 (SSH config Host 정의).
+    hosts=(ubu2-d htz-d)
 else
     hosts=("$target_host")
 fi
