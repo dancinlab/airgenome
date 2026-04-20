@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# L0 candidate — oauth-bridge: Mac-side URL opener daemon.
+# bin/oauth-bridge — Watches OAUTH_QUEUE file, `open` 으로 Mac 기본 브라우저에서 URL 엶.
+#
+# 쓰는 쪽 (원격): BROWSER=open-on-mac 이 `$URL` 을 queue 파일에 append.
+# sshfs reverse-mount 로 원격 컨테이너의 `/Users/ghost/.airgenome/oauth-queue`
+# 가 Mac 의 `~/.airgenome/oauth-queue` 와 동일 inode. 양방향 불필요 — append-only.
+#
+# 사용:
+#   bin/oauth-bridge run        tail 모드 (launchd 에서 상시)
+#   bin/oauth-bridge open <url> 1회 수동 (queue 경유 없이 직접 open)
+#   bin/oauth-bridge self-test
+#
+# Env:
+#   OAUTH_QUEUE      queue 파일 (default: ~/.airgenome/oauth-queue)
+#   OAUTH_WHITELIST  허용 URL prefix (공백구분, default: "https://claude.ai https://console.anthropic.com")
+#
+# 보안: queue 파일 append 는 누구나 가능. 반드시 whitelist prefix 만 open 함.
+# 임의 URL 실행 방지 — 악성 원격 프로세스가 queue 에 `file:///` 같은 걸 쓰는 경우 차단.
+
+set -uo pipefail
+
+: "${OAUTH_QUEUE:=$HOME/.airgenome/oauth-queue}"
+: "${OAUTH_WHITELIST:=https://claude.ai https://console.anthropic.com https://anthropic.com}"
+
+_usage() {
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+_allow() {
+    local url=$1
+    for prefix in $OAUTH_WHITELIST; do
+        case "$url" in
+            "$prefix"*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+_self_test() {
+    local rc=0
+    echo "  ✓ bash parse"
+    for c in tail open; do
+        if command -v "$c" >/dev/null 2>&1; then
+            echo "  ✓ $c available"
+        else
+            echo "  ✗ $c missing"; rc=1
+        fi
+    done
+    echo "  queue=$OAUTH_QUEUE"
+    echo "  whitelist=$OAUTH_WHITELIST"
+    [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
+    return $rc
+}
+
+sub="${1:-}"
+case "$sub" in
+    -h|--help|help|"") _usage; exit 0 ;;
+    self-test) _self_test; exit $? ;;
+    open)
+        [ $# -ge 2 ] || { echo "usage: oauth-bridge open <url>" >&2; exit 2; }
+        url=$2
+        if _allow "$url"; then
+            open "$url"
+            echo "opened: $url"
+        else
+            echo "oauth-bridge: URL not in whitelist: $url" >&2
+            exit 3
+        fi
+        ;;
+    run)
+        mkdir -p "$(dirname "$OAUTH_QUEUE")"
+        : >> "$OAUTH_QUEUE"
+        echo "oauth-bridge watching $OAUTH_QUEUE (whitelist=$OAUTH_WHITELIST)" >&2
+        # -n0: don't replay history on first start. -F: follow even on rotate.
+        tail -n0 -F "$OAUTH_QUEUE" 2>/dev/null | while IFS= read -r url; do
+            [ -z "$url" ] && continue
+            # trim
+            url="${url#"${url%%[![:space:]]*}"}"
+            url="${url%"${url##*[![:space:]]}"}"
+            if _allow "$url"; then
+                open "$url" && \
+                    printf '[%s] opened: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$url" >&2 || \
+                    printf '[%s] open fail: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$url" >&2
+            else
+                printf '[%s] skip non-whitelist: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$url" >&2
+            fi
+        done
+        ;;
+    *)
+        echo "oauth-bridge: unknown sub '$sub' (run|open|self-test|--help)" >&2
+        exit 2
+        ;;
+esac

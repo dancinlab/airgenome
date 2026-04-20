@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# open-on-mac — 원격 claude 의 BROWSER 가 호출. URL 을 Mac 의 oauth-queue 에
+# append → Mac oauth-bridge daemon 이 tail 감지 → `open <url>` 로 기본 브라우저.
+#
+# sshfs reverse-mount: 원격 컨테이너의 /Users/ghost 는 Mac 의 /Users/ghost 와
+# 동일 (bind via Dockerfile `ln -sfn /mac_home /Users/ghost`). 따라서 같은
+# 절대경로 write 가 양쪽에서 동일 파일. airgenome/bin 이 PATH 에 있으므로
+# ~/bin/open-on-mac 아닌 이 경로도 BROWSER 로 지정 가능.
+#
+# 사용: $BROWSER <url>  (claude 내부에서 OAuth flow 시 자동 호출)
+#
+# Fallback: queue write 실패 (sshfs unmounted / readonly) 면 stderr 로 URL 출력
+# → 사용자가 직접 copy/paste.
+
+set -uo pipefail
+
+url="${1:-}"
+if [ -z "$url" ]; then
+    echo "open-on-mac: URL required" >&2
+    exit 2
+fi
+
+# queue 경로 — sshfs reverse-mount 탐지 기반 선택.
+#   container (ubu/htz docker): /mac_home 이 sshfs mount → 이 경로 우선
+#   Mac 본체: /Users/ghost 가 실제 HOME
+#   ssh host-OS (sshfs 없음): $HOME 로 fallback (Mac 이 볼 수 없으므로 실질 무의미)
+QUEUE=""
+QUEUED=0
+# 1) 컨테이너 sshfs-mount: /mac_home 이 mountpoint 일 때만 사용 (로컬 빈 디렉토리 생성 회피)
+if command -v mountpoint >/dev/null 2>&1 && mountpoint -q /mac_home 2>/dev/null; then
+    QUEUE="/mac_home/.airgenome/oauth-queue"
+# 2) Mac 본체: /Users/ghost 는 실제 HOME
+elif [ "$(uname)" = "Darwin" ] && [ -d /Users/ghost ]; then
+    QUEUE="/Users/ghost/.airgenome/oauth-queue"
+# 3) Last fallback (Mac 이 보지 못함 — stderr 로만 쓰임)
+else
+    QUEUE="$HOME/.airgenome/oauth-queue"
+fi
+
+if mkdir -p "$(dirname "$QUEUE")" 2>/dev/null && printf '%s\n' "$url" >> "$QUEUE" 2>/dev/null; then
+    QUEUED=1
+fi
+
+if [ "$QUEUED" = "1" ]; then
+    echo "open-on-mac: → Mac oauth-bridge (queue=$QUEUE)" >&2
+else
+    echo "open-on-mac: queue write FAIL (모든 경로 시도)" >&2
+fi
+echo "open-on-mac: URL = $url" >&2
+exit 0
