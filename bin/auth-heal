@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# airgenome/bin/auth-heal — Claude Code 토큰 자동 재발급 + 3호스트 이식
+#
+# 목적: Mac keychain 의 refresh_token 을 사용해 access_token 을 선제 갱신 후
+#       ubu1/ubu2/htz1 의 ~/.claude/.credentials.json 에 이식. cl 컨테이너(Linux)
+#       에선 브라우저 login 불가 — Mac native 세션만이 유일한 재발급 경로.
+#
+# 원리:
+#   1) Mac native `claude -p "ok" --max-turns 1` 호출 → Claude Code 가 stale
+#      감지 시 refresh_token 으로 access_token 재발급, keychain 자동 갱신.
+#      (memory: feedback_token_force_refresh)
+#   2) security find-generic-password 로 keychain JSON 추출 → 유효성 검증.
+#      (memory: feedback_keychain_stale — 내부 valid 면 keychain 안 씀)
+#   3) tar | ssh 로 3호스트 ~/.claude/.credentials.json 덮어쓰기 (0600).
+#   4) .convergence 기록 (V7/V8).
+#
+# 실패 정책: 호스트별 실패=continue, 전체 실패=exit 1. ssh 도달 불가=skip(경고).
+# 트리거: launchd (StartInterval=43200) + 수동 (토큰 만료 감지 시).
+# 멱등: 동일 token 상태면 재전파 안전. mtime 은 갱신되지만 내용 동일.
+
+set -euo pipefail
+
+ROOT="${AIRGENOME_ROOT:-$HOME/Dev/airgenome}"
+LOG_DIR="$HOME/Library/Logs"
+LOG="$LOG_DIR/airgenome-auth-heal.log"
+CONV="$ROOT/.convergence"
+mkdir -p "$LOG_DIR"
+
+ts()   { date +'%Y-%m-%d %H:%M:%S'; }
+log()  { printf '[auth-heal %s] %s\n' "$(ts)" "$*" | tee -a "$LOG" >&2; }
+conv() { printf '%s auth-heal %s\n' "$(ts)" "$*" >> "$CONV" 2>/dev/null || true; }
+
+# ssh alias 기반 — hosts.json 의 ssh_user 는 현재 stale (root 로 박혀있으나 실제로는
+# ubu1=aiden / ubu2=summer). ~/.ssh/config 의 alias 가 정확한 SSOT.
+# alias 에 포함된 ControlMaster/User/IdentityFile 을 그대로 활용.
+SSH_OPTS=(
+    -o ConnectTimeout=8
+    -o BatchMode=yes
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=2
+)
+
+# 타겟 = 3호스트 × {host-OS, docker-container} = 6 alias.
+# ~/.ssh/config 정의 — host-OS 는 port 22, container 는 port 2222 (airgenome-claude).
+#   host   : ubu1(aiden@...), ubu2(summer@...), hetzner(root@...)
+#   docker : ubu-d (ubu1 container), ubu2-d, htz-d — 전부 root@...:2222
+# cl CL_DOCKER=1 default 경로는 container 쪽이 실제 Claude Code 실행지점이므로
+# container .credentials.json 이 최우선. host 는 직접 claude 실행용 보조.
+HOSTS=(ubu1 ubu-d ubu2 ubu2-d hetzner htz-d)
+
+# ─── Step 1: Mac keychain refresh (best-effort) ───────────────────────────
+# native claude 호출 (shim 우회). CLAUDE_EFFORT=none 으로 비용/시간 최소화.
+log "step1: mac keychain refresh"
+if command -v claude >/dev/null 2>&1; then
+    AIRGENOME_CLAUDE_SHIM=1 NO_CLAUDX=1 CL_NO_DOCKER=1 \
+        timeout 30 claude -p "ok" --max-turns 1 >/dev/null 2>&1 || {
+        log "  refresh ping timeout/fail — 기존 keychain 으로 계속"
+    }
+else
+    log "  WARN: claude binary 없음 — 현재 keychain 스냅샷 그대로 이식"
+fi
+
+# ─── Step 2: keychain → JSON 추출 + 검증 ──────────────────────────────────
+log "step2: keychain extract"
+KEY_JSON=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || true)
+if [ -z "$KEY_JSON" ]; then
+    log "FATAL: keychain 'Claude Code-credentials' entry 없음 — manual login 필요"
+    conv "FAIL keychain-missing"
+    exit 1
+fi
+
+# JSON 파싱 + access_token 필드 확인
+if ! echo "$KEY_JSON" | jq -e '.claudeAiOauth.accessToken' >/dev/null 2>&1; then
+    log "FATAL: keychain JSON malformed — accessToken 필드 없음"
+    conv "FAIL keychain-malformed"
+    exit 1
+fi
+
+TOK_TAIL=$(echo "$KEY_JSON" | jq -r '.claudeAiOauth.accessToken' | tail -c 8)
+EXP=$(echo "$KEY_JSON" | jq -r '.claudeAiOauth.expiresAt // empty' 2>/dev/null)
+log "  token ok (tail=...$TOK_TAIL, exp=${EXP:-?})"
+
+# 임시 파일 작성 (tar-pipe 용)
+TMP=$(mktemp -d -t agauth.XXXXXX)
+trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/.claude"
+printf '%s\n' "$KEY_JSON" > "$TMP/.claude/.credentials.json"
+chmod 600 "$TMP/.claude/.credentials.json"
+
+# ─── Step 3: 3호스트 이식 ─────────────────────────────────────────────────
+log "step3: ${#HOSTS[@]} alias tar|ssh port (host-OS + docker)"
+
+OK=0
+FAIL=0
+SKIP=0
+for h in "${HOSTS[@]}"; do
+    # 연결성 pre-check — banner timeout 회피 (ubu1 sshd saturation 등)
+    if ! ssh "${SSH_OPTS[@]}" "$h" true 2>/dev/null; then
+        log "  SKIP $h — ssh 도달 불가"
+        SKIP=$((SKIP+1))
+        continue
+    fi
+
+    # 원격의 ~/.claude/.credentials.json 에 쓰기 — $HOME 은 ssh user 별로 다름
+    # (ubu1=/home/aiden, ubu2=/home/summer, hetzner=/root). 알아서 올바른 곳에 감.
+    if tar -C "$TMP" -cf - .claude/.credentials.json 2>/dev/null \
+        | ssh "${SSH_OPTS[@]}" "$h" \
+            'mkdir -p "$HOME/.claude" && tar -C "$HOME" -xf - --overwrite && chmod 600 "$HOME/.claude/.credentials.json"' \
+            2>/dev/null; then
+        log "  OK $h"
+        OK=$((OK+1))
+    else
+        log "  FAIL $h"
+        FAIL=$((FAIL+1))
+    fi
+done
+
+# ─── Step 4: 요약 + .convergence ──────────────────────────────────────────
+log "summary: OK=$OK FAIL=$FAIL SKIP=$SKIP / ${#HOSTS[@]}"
+conv "OK=$OK FAIL=$FAIL SKIP=$SKIP tail=...$TOK_TAIL"
+
+# 전량 FAIL 이면 non-zero exit (launchd 알림용)
+if [ "$OK" -eq 0 ] && [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi
+exit 0
