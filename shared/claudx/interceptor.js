@@ -403,16 +403,22 @@ function readHeader(resp, name) {
 // --- Rate-limit detection ---
 
 async function isRateLimited(resp) {
-  if (resp.status === 429) return { hit: true, reason: 'status_429' };
-  if (resp.status === 401) return { hit: true, reason: 'status_401_bearer' };
+  // kind:
+  //   'rate' — 실제 quota/rate-limit 고갈 (long markExhausted 적용)
+  //   'auth' — token 만료/revoked/invalid (short penalty 만 — quota 아님)
+  // 2026-04-21: 401 을 rate 로 동일 분류하던 이전 로직이 refresh-expired 의 대량 401
+  // 을 전계정 exhausted 로 전환 → pool empty 재발. auth 분리로 차단.
+  if (resp.status === 429) return { hit: true, reason: 'status_429', kind: 'rate' };
+  if (resp.status === 401) return { hit: true, reason: 'status_401_bearer', kind: 'auth' };
   if (resp.status < 400) return { hit: false };
   try {
     const clone = resp.clone();
     const txt = await clone.text();
-    if (/rate_limit_error/i.test(txt)) return { hit: true, reason: 'body_rate_limit_error' };
-    if (/usage[ _]limit/i.test(txt)) return { hit: true, reason: 'body_usage_limit' };
-    if (/exceeded your/i.test(txt)) return { hit: true, reason: 'body_exceeded' };
-    if (/invalid[ _]bearer/i.test(txt)) return { hit: true, reason: 'body_invalid_bearer' };
+    if (/rate_limit_error/i.test(txt)) return { hit: true, reason: 'body_rate_limit_error', kind: 'rate' };
+    if (/usage[ _]limit/i.test(txt)) return { hit: true, reason: 'body_usage_limit', kind: 'rate' };
+    if (/exceeded your/i.test(txt)) return { hit: true, reason: 'body_exceeded', kind: 'rate' };
+    if (/invalid[ _]bearer/i.test(txt)) return { hit: true, reason: 'body_invalid_bearer', kind: 'auth' };
+    if (/authentication_error|invalid authentication/i.test(txt)) return { hit: true, reason: 'body_auth_error', kind: 'auth' };
   } catch (_) {}
   return { hit: false };
 }
@@ -826,7 +832,15 @@ globalThis.fetch = async function claudx_fetch(input, init) {
       return resp;
     }
     const curName = triedNames[triedNames.length - 1];
-    pool.markExhausted(curName, EXH_SEC);
+    // 2026-04-21: auth kind 는 quota 고갈 아님 (refresh 경로 문제) — 장기 exhausted 대신
+    // 짧은 penalty 만 부여해 rotation 은 유도하되 계정은 pool 에 보존. refresh-safe/
+    // refresh-expired 에서 발생하는 401 가 전계정 exhausted 로 전환되는 재발 버그 차단.
+    if (verdict.kind === 'auth') {
+      try { pool.addScorePenalty(curName, 50, 120); } catch (_) {}
+      logEvent({ event: 'auth_soft_penalty', acct: curName, reason: verdict.reason, attempt });
+    } else {
+      pool.markExhausted(curName, EXH_SEC);
+    }
     let next = pool.pickBest(triedNames);
     if (!next) {
       // pool 전체 exhausted — 원본 429 반환은 TUI crash. STALL_MAX_SEC 까지 흡수 시도.
