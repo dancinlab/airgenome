@@ -254,7 +254,10 @@ function loadPool(excludeNames, opts) {
       week_pct: u.week_all_pct || 0,
       session_pct: u.session_pct || 0,
       penalty: penDelta,
-      score: (u.week_all_pct || 0) * 2 + (u.session_pct || 0) + penDelta,
+      // 2026-04-21: ε-greedy jitter — 동점/근접 score 사이 편향 제거. 4계정 환경에서
+      // week_pct 가 비슷할 때 매번 "가장 낮은 하나" 만 나오는 현상(=claude5 독점) 방지.
+      // ±4 score 범위 내에서는 랜덤 섞임. 차이 큰 계정(week 2배 이상 차이)은 기존대로 정렬.
+      score: (u.week_all_pct || 0) * 2 + (u.session_pct || 0) + penDelta + Math.random() * 8,
     });
   }
   out.sort((x, y) => x.score - y.score);
@@ -293,7 +296,14 @@ function pickBest(excludeNames, opts) {
     }
     if (all[0]) stickySet(sid, all[0].name); // 첫 rotation 은 sticky 세팅
   }
-  return all[0] || null;
+  const best = all[0] || null;
+  // 2026-04-21: 방금 뽑힌 계정에 짧은 냉각 penalty — 연속 pick 시 같은 계정 독점 방지.
+  // 4계정 환경에서 week_pct 차이 크면 jitter 로도 못 섞여 claude5 만 뽑히는 문제 대응.
+  // sticky 가 활성(세션 내 일관성 필요)인 경우는 건너뜀 — prompt cache 훼손 방지.
+  if (best && !sid && !(opts && opts.noCool)) {
+    addScorePenalty(best.name, 60, 60);
+  }
+  return best;
 }
 
 function markExhausted(name, seconds) {
@@ -315,8 +325,14 @@ function clearExhausted(name) {
 function addScorePenalty(name, delta, seconds) {
   if (!name) return;
   const pen = readJSON(PENALTY, {});
-  const until = Math.floor(Date.now() / 1000) + (seconds || 300);
-  pen[name] = { delta: Number(delta) || 0, until, ts: new Date().toISOString() };
+  const now = Math.floor(Date.now() / 1000);
+  // 2026-04-21: 누적 반영 + 200 상한. 이전은 덮어쓰기라 pickBest cooling 이 반복 호출돼도
+  // score 가 제자리 → 같은 계정 연속 pick 못 막음. 누적으로 바꾸면 연속 pick 마다 점진적으로
+  // 뒤로 밀려 rotation 실현.
+  const prev = pen[name] && pen[name].until > now ? (Number(pen[name].delta) || 0) : 0;
+  const next = Math.min(prev + (Number(delta) || 0), 200);
+  const until = now + (seconds || 300);
+  pen[name] = { delta: next, until, ts: new Date().toISOString() };
   writeJSON(PENALTY, pen);
 }
 

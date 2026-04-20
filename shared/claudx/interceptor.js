@@ -86,8 +86,11 @@ const SCRUB = process.env.CLAUDX_SCRUB !== '0';
 const BUDGET_DAILY = parseFloat(process.env.CLAUDX_BUDGET_DAILY || '5');
 const BUDGET_MONTHLY = parseFloat(process.env.CLAUDX_BUDGET_MONTHLY || '50');
 const NO_BUDGET = process.env.CLAUDX_NO_BUDGET === '1';
-const PREEMPT_PCT = parseFloat(process.env.CLAUDX_PREEMPT_PCT || '0.30');
-const PREEMPT_HARD_PCT = parseFloat(process.env.CLAUDX_PREEMPT_HARD_PCT || '0.15');
+// 2026-04-21: 12계정 기준 설계(0.30/0.15)가 4계정 환경에서 과대 발동 → 매 요청마다
+// 남은 한도가 자연스레 15% 밑으로 떨어져 preempt_hard 폭주 → 4계정이 순식간 전부
+// exhausted 마크되고 풀 empty. 임계치를 0.10/0.03 로 낮춰 실제 임박(3%)에만 hard 발동.
+const PREEMPT_PCT = parseFloat(process.env.CLAUDX_PREEMPT_PCT || '0.10');
+const PREEMPT_HARD_PCT = parseFloat(process.env.CLAUDX_PREEMPT_HARD_PCT || '0.03');
 const PREEMPT_PENALTY = parseFloat(process.env.CLAUDX_PREEMPT_PENALTY || '50');
 const PREEMPT_PEN_TTL = parseInt(process.env.CLAUDX_PREEMPT_PEN_TTL || '300', 10);
 const CACHE_TTL = parseInt(process.env.CLAUDX_CACHE_TTL_SEC || '86400', 10);
