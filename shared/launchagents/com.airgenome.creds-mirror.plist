@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.creds-mirror</string>
+
+    <!-- Step B Phase 1 (2026-04-21): Mac keychain ↔ disk mirror 양방향 sync.
+         sshfs reverse-mount 소스 파일을 항상 fresh 하게 유지해 Linux 호스트가
+         Mac 과 같은 creds 를 보게 함. token rotation 충돌 제거의 기반. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/Dev/airgenome/bin/creds-mirror</string>
+        <string>--daemon</string>
+    </array>
+
+    <!-- RunAtLoad: 부팅/로그인 후 즉시 sync 시작. 로그인 직후 keychain 이 언락된
+         상태에서 mirror 초기화됨. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- KeepAlive: 스크립트가 예외로 죽어도 즉시 재시작. auth plane 신뢰성 -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- 내부 loop 자체가 sleep 60 이라 ThrottleInterval 은 재시작 간격 전용. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/Library/Logs/airgenome-creds-mirror.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/Library/Logs/airgenome-creds-mirror.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/ghost/.hx/bin:/Users/ghost/Dev/airgenome/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+    </dict>
+</dict>
+</plist>

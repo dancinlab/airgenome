@@ -14,6 +14,7 @@
 #   status [--json]         12 acct × {keychain, 4 remote} 매트릭스
 #   login <name>            CLAUDE_CONFIG_DIR=.claude-<name> claude /login (private-window)
 #   refresh [<name>|--all]  forced token refresh via `claude -p "ok" --max-turns 1`
+#   refresh-expired         keychain.expiresAt < now 계정만 골라 refresh (Step B Phase 1)
 #   list                    /Users/ghost/.claude-* 디렉토리 발견된 계정 나열
 #   self-test
 #
@@ -255,6 +256,48 @@ cmd_refresh() {
         log "  refresh fail — token maybe revoked"
 }
 
+# ── cmd: refresh-expired (Step B Phase 1) ────────────────────────
+# keychain 의 expiresAt 이 현재 시각보다 과거인 계정만 골라서 refresh.
+# --all 은 limit 걸린 계정까지 쿼터 소모시켜 위험 — 이 경량 변형이 creds-mirror
+# daemon 보조용. launchd 주기 호출에 안전.
+cmd_refresh_expired() {
+    local accts; accts=$(_list_accounts)
+    local now_ms=$(($(date +%s) * 1000))
+    local refreshed=0 skipped_valid=0 skipped_empty=0 failed=0
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        local service json exp
+        service=$(_acct_keychain_service "$name")
+        json=$(_fetch_json "$service")
+        if [ -z "$json" ]; then
+            skipped_empty=$((skipped_empty+1))
+            continue
+        fi
+        exp=$(echo "$json" | jq -r '.claudeAiOauth.expiresAt // 0' 2>/dev/null)
+        if [ -z "$exp" ] || [ "$exp" = "0" ]; then
+            skipped_empty=$((skipped_empty+1))
+            continue
+        fi
+        if [ "$exp" -gt "$now_ms" ] 2>/dev/null; then
+            skipped_valid=$((skipped_valid+1))
+            continue
+        fi
+        local age=$(( (now_ms - exp) / 1000 ))
+        log "refresh-expired: $name (expired ${age}s ago)"
+        if cmd_refresh "$name"; then
+            refreshed=$((refreshed+1))
+        else
+            failed=$((failed+1))
+        fi
+    done <<< "$accts"
+    log "refresh-expired summary: refreshed=$refreshed valid_skipped=$skipped_valid empty_skipped=$skipped_empty failed=$failed"
+    # mirror 쪽도 즉시 newest 반영 — creds-mirror daemon 이 곧 집어가지만 선제 호출.
+    if [ -x "$ROOT/bin/creds-mirror" ] && [ "$refreshed" -gt 0 ]; then
+        "$ROOT/bin/creds-mirror" --export >/dev/null 2>&1 && log "creds-mirror --export triggered"
+    fi
+    return 0
+}
+
 # ── cmd: self-test ───────────────────────────────────────────────
 _self_test() {
     local rc=0
@@ -292,5 +335,6 @@ case "$sub" in
     list)              cmd_list; exit $? ;;
     login)             cmd_login "$@"; exit $? ;;
     refresh)           cmd_refresh "$@"; exit $? ;;
+    refresh-expired)   cmd_refresh_expired; exit $? ;;
     *)                 echo "airgenome-auth: unknown '$sub'" >&2; exit 2 ;;
 esac

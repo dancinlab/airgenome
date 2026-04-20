@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# bin/creds-mirror — Mac keychain ↔ disk mirror 양방향 sync daemon (M-Q1, 2026-04-21)
+#
+# 목적 (Step B 설계 Phase 1):
+#   Mac Keychain 의 Claude Code OAuth creds 를 디스크 파일 (~/.airgenome/creds_mirror/claudeN.json)
+#   로 미러링 + 역방향 (디스크 변경 → keychain write-back). 이 mirror 파일은 Step B
+#   Phase 2 에서 sshfs reverse-mount 의 source 가 되어 Linux 호스트들이 같은 뷰를 공유
+#   하게 됨 → token rotation 충돌 원천 제거.
+#
+# 동작 원리:
+#   - 각 계정 (claude1..12 + default) 에 대해 keychain vs mirror 파일의 expiresAt 비교
+#   - keychain 이 더 fresh  → mirror 업데이트
+#   - mirror 가 더 fresh   → keychain write-back (security add-generic-password -U)
+#   - 동일                → skip
+#   atomic write (tmp → rename) 로 race 방지.
+#
+# subcommands:
+#   (no arg) / --daemon     60s 주기 loop. launchd 전용.
+#   --once                   1회 sync 후 exit.
+#   --import                 mirror → keychain 방향만 (초기 부트스트랩용)
+#   --export                 keychain → mirror 방향만
+#   --status [--json]        각 계정 동기화 상태 매트릭스
+#   --self-test
+#   -h|--help
+#
+# env:
+#   CREDS_MIRROR_DIR         미러 dir. 기본 $HOME/.airgenome/creds_mirror
+#   CREDS_MIRROR_INTERVAL    daemon loop 초. 기본 60
+#   CREDS_MIRROR_DEBUG=1     상세 로그
+#
+# deps: bash, jq, security (macOS), shasum. airgenome-auth 의 hex 계산 로직 재사용.
+
+set -uo pipefail
+
+ROOT="${AIRGENOME_ROOT:-$HOME/Dev/airgenome}"
+AUTH_BIN="$ROOT/bin/airgenome-auth"
+KEYMAP="${KEYMAP:-/Users/ghost/Dev/nexus/shared/config/claude_keychain_map.json}"
+MIRROR_DIR="${CREDS_MIRROR_DIR:-$HOME/.airgenome/creds_mirror}"
+INTERVAL="${CREDS_MIRROR_INTERVAL:-60}"
+DEBUG="${CREDS_MIRROR_DEBUG:-0}"
+LOG="$HOME/Library/Logs/airgenome-creds-mirror.log"
+
+mkdir -p "$MIRROR_DIR" "$(dirname "$LOG")"
+chmod 700 "$MIRROR_DIR"
+
+ts()   { date '+%Y-%m-%dT%H:%M:%S'; }
+log()  { printf '[creds-mirror %s] %s\n' "$(ts)" "$*" | tee -a "$LOG" >&2; }
+dbg()  { [ "$DEBUG" = "1" ] && log "DEBUG $*" || true; }
+
+# macOS 전용 체크
+if [ "$(uname -s)" != "Darwin" ]; then
+    echo "creds-mirror: macOS 전용 (uname=$(uname -s))" >&2
+    exit 2
+fi
+command -v jq       >/dev/null || { echo "jq 필요" >&2; exit 3; }
+command -v security >/dev/null || { echo "security 필요" >&2; exit 3; }
+command -v shasum   >/dev/null || { echo "shasum 필요" >&2; exit 3; }
+
+# ── 계정 목록 — /Users/ghost/.claude-* 디렉토리 + default ──────────
+_list_accounts() {
+    [ -d "$HOME/.claude" ] && echo "default"
+    for d in "$HOME"/.claude-*; do
+        [ -d "$d" ] || continue
+        name="${d##*/.claude-}"
+        case "$name" in env-*|.*) continue ;; esac
+        echo "$name"
+    done
+}
+
+_hash_path() { printf '%s' "$1" | shasum -a 256 | awk '{print substr($1,1,8)}'; }
+
+_acct_dir() {
+    if [ "$1" = "default" ]; then echo "$HOME/.claude"
+    else echo "$HOME/.claude-$1"; fi
+}
+
+_acct_service() {
+    if [ "$1" = "default" ]; then echo "Claude Code-credentials"
+    else echo "Claude Code-credentials-$(_hash_path "$(_acct_dir "$1")")"; fi
+}
+
+_mirror_file() {
+    echo "$MIRROR_DIR/$1.json"
+}
+
+# ── keychain → JSON (실패시 빈) ───────────────────────────────────
+_keychain_read() {
+    security find-generic-password -s "$1" -w 2>/dev/null || true
+}
+
+# ── JSON → keychain (update or add) ───────────────────────────────
+# security -U 플래그: 존재시 update, 없으면 add. account attr 은 -a ghost.
+_keychain_write() {
+    local service=$1 json=$2
+    [ -z "$json" ] && return 1
+    # pipe 는 argv 노출 방지
+    if echo -n "$json" | security add-generic-password -U \
+        -s "$service" -a ghost -T "" -w "$(cat)" 2>/dev/null; then
+        return 0
+    fi
+    # fallback: -w 를 inline 으로 (일부 macOS 버전 호환)
+    security add-generic-password -U -s "$service" -a ghost -T "" -w "$json" 2>/dev/null
+}
+
+# ── JSON validity + expiresAt 추출 ─────────────────────────────────
+_extract_exp() {
+    local json=$1
+    [ -z "$json" ] && { echo "0"; return; }
+    echo "$json" | jq -r '.claudeAiOauth.expiresAt // 0' 2>/dev/null || echo "0"
+}
+
+_has_access_token() {
+    local json=$1
+    [ -z "$json" ] && return 1
+    echo "$json" | jq -e '.claudeAiOauth.accessToken | length > 0' >/dev/null 2>&1
+}
+
+# ── 단일 계정 sync: 양방향 newest-wins ────────────────────────────
+sync_one() {
+    local name=$1
+    local service; service=$(_acct_service "$name")
+    local mfile; mfile=$(_mirror_file "$name")
+    local kc_json mr_json
+    kc_json=$(_keychain_read "$service")
+    [ -f "$mfile" ] && mr_json=$(cat "$mfile" 2>/dev/null) || mr_json=""
+
+    local kc_valid=0 mr_valid=0
+    _has_access_token "$kc_json" && kc_valid=1
+    _has_access_token "$mr_json" && mr_valid=1
+
+    if [ $kc_valid -eq 0 ] && [ $mr_valid -eq 0 ]; then
+        dbg "$name: 양쪽 모두 없음 — skip"
+        return 0
+    fi
+
+    if [ $kc_valid -eq 1 ] && [ $mr_valid -eq 0 ]; then
+        # mirror 초기화 — keychain → mirror
+        _atomic_write_mirror "$mfile" "$kc_json"
+        log "$name: keychain→mirror (initial)"
+        return 0
+    fi
+
+    if [ $mr_valid -eq 1 ] && [ $kc_valid -eq 0 ]; then
+        # keychain 복원 — mirror → keychain
+        if _keychain_write "$service" "$mr_json"; then
+            log "$name: mirror→keychain (recovery)"
+        else
+            log "$name: mirror→keychain FAIL"
+        fi
+        return 0
+    fi
+
+    # 양쪽 다 valid → expiresAt 비교 (newer wins)
+    local kc_exp mr_exp
+    kc_exp=$(_extract_exp "$kc_json")
+    mr_exp=$(_extract_exp "$mr_json")
+    if [ "$kc_exp" -gt "$mr_exp" ] 2>/dev/null; then
+        _atomic_write_mirror "$mfile" "$kc_json"
+        log "$name: keychain→mirror (kc_exp=$kc_exp > mr_exp=$mr_exp)"
+    elif [ "$mr_exp" -gt "$kc_exp" ] 2>/dev/null; then
+        if _keychain_write "$service" "$mr_json"; then
+            log "$name: mirror→keychain (mr_exp=$mr_exp > kc_exp=$kc_exp)"
+        else
+            log "$name: mirror→keychain FAIL (mr_exp=$mr_exp)"
+        fi
+    else
+        dbg "$name: in sync (exp=$kc_exp)"
+    fi
+}
+
+_atomic_write_mirror() {
+    local f=$1 data=$2
+    local tmp; tmp=$(mktemp "$f.XXXXXX")
+    printf '%s' "$data" > "$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$f"
+}
+
+# ── 전체 sync 1회 ─────────────────────────────────────────────────
+sync_all() {
+    local direction="${1:-both}"
+    local accts; accts=$(_list_accounts)
+    local count=0
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        case "$direction" in
+            export)   _export_one "$name" ;;
+            import)   _import_one "$name" ;;
+            *)        sync_one "$name" ;;
+        esac
+        count=$((count+1))
+    done <<< "$accts"
+    dbg "sync_all: direction=$direction count=$count"
+}
+
+_export_one() {
+    local name=$1
+    local service; service=$(_acct_service "$name")
+    local mfile; mfile=$(_mirror_file "$name")
+    local kc_json; kc_json=$(_keychain_read "$service")
+    if _has_access_token "$kc_json"; then
+        _atomic_write_mirror "$mfile" "$kc_json"
+        log "$name: export → $mfile"
+    else
+        dbg "$name: keychain 비어있음 — export skip"
+    fi
+}
+
+_import_one() {
+    local name=$1
+    local service; service=$(_acct_service "$name")
+    local mfile; mfile=$(_mirror_file "$name")
+    [ -f "$mfile" ] || { dbg "$name: mirror 없음 skip"; return; }
+    local mr_json; mr_json=$(cat "$mfile")
+    if _has_access_token "$mr_json"; then
+        if _keychain_write "$service" "$mr_json"; then
+            log "$name: import ← $mfile"
+        else
+            log "$name: import FAIL"
+        fi
+    fi
+}
+
+# ── status 매트릭스 ───────────────────────────────────────────────
+cmd_status() {
+    local as_json=0
+    [ "${1:-}" = "--json" ] && as_json=1
+    local accts; accts=$(_list_accounts)
+    if [ "$as_json" = "1" ]; then
+        echo "["
+        local first=1
+        while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            [ "$first" = "0" ] && echo ","
+            first=0
+            local service; service=$(_acct_service "$name")
+            local mfile; mfile=$(_mirror_file "$name")
+            local kc_exp=0 mr_exp=0
+            kc_exp=$(_extract_exp "$(_keychain_read "$service")")
+            [ -f "$mfile" ] && mr_exp=$(_extract_exp "$(cat "$mfile" 2>/dev/null)")
+            printf '  {"account":"%s","keychain_exp":%s,"mirror_exp":%s,"diff_s":%s}' \
+                "$name" "$kc_exp" "$mr_exp" "$(( (kc_exp - mr_exp) / 1000 ))"
+        done <<< "$accts"
+        echo ""; echo "]"
+        return 0
+    fi
+    printf '%-10s %-15s %-15s %-10s\n' "account" "keychain_exp" "mirror_exp" "diff(s)"
+    printf '%-10s %-15s %-15s %-10s\n' "-------" "------------" "----------" "-------"
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        local service; service=$(_acct_service "$name")
+        local mfile; mfile=$(_mirror_file "$name")
+        local kc_exp=0 mr_exp=0
+        kc_exp=$(_extract_exp "$(_keychain_read "$service")")
+        [ -f "$mfile" ] && mr_exp=$(_extract_exp "$(cat "$mfile" 2>/dev/null)")
+        local diff=$(( (kc_exp - mr_exp) / 1000 ))
+        local tag
+        if [ "$kc_exp" = "0" ] && [ "$mr_exp" = "0" ]; then tag="empty"
+        elif [ "$kc_exp" = "0" ]; then tag="mr_only"
+        elif [ "$mr_exp" = "0" ]; then tag="kc_only"
+        elif [ "$diff" = "0" ]; then tag="in_sync"
+        elif [ "$diff" -gt 0 ]; then tag="kc_newer"
+        else tag="mr_newer"; fi
+        printf '%-10s %-15s %-15s %+10ds  %s\n' "$name" "$kc_exp" "$mr_exp" "$diff" "$tag"
+    done <<< "$accts"
+}
+
+# ── daemon loop ───────────────────────────────────────────────────
+cmd_daemon() {
+    log "daemon start pid=$$ interval=${INTERVAL}s mirror_dir=$MIRROR_DIR"
+    trap 'log "daemon stop pid=$$"; exit 0' TERM INT HUP
+    while true; do
+        sync_all both
+        sleep "$INTERVAL"
+    done
+}
+
+# ── self-test ─────────────────────────────────────────────────────
+cmd_self_test() {
+    local rc=0
+    echo "  ✓ bash parse"
+    for c in jq security shasum; do
+        command -v "$c" >/dev/null && echo "  ✓ $c" || { echo "  ✗ $c missing"; rc=1; }
+    done
+    # hash 검증
+    local h; h=$(_hash_path "/Users/ghost/.claude-claude5")
+    if [ "$h" = "7f9319ca" ]; then echo "  ✓ _hash_path (claude5)"
+    else echo "  ✗ _hash_path (got=$h)"; rc=1; fi
+    local n; n=$(_list_accounts | wc -l | tr -d ' ')
+    echo "  ✓ accounts: $n"
+    [ -d "$MIRROR_DIR" ] && echo "  ✓ mirror_dir: $MIRROR_DIR" || { echo "  ✗ mirror_dir 없음"; rc=1; }
+    [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
+    return $rc
+}
+
+_usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ── dispatch ─────────────────────────────────────────────────────
+case "${1:-}" in
+    -h|--help|help) _usage; exit 0 ;;
+    --daemon|"")    cmd_daemon ;;
+    --once)         sync_all both ;;
+    --export)       sync_all export ;;
+    --import)       sync_all import ;;
+    --status)       shift; cmd_status "$@" ;;
+    --self-test)    cmd_self_test; exit $? ;;
+    *)              echo "creds-mirror: unknown '${1}'" >&2; _usage; exit 2 ;;
+esac
