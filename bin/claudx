@@ -34,6 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INTERCEPTOR="$CX_ROOT/shared/claudx/interceptor.js"
 POOL_JS="$CX_ROOT/shared/claudx/pool.js"
+OAUTH_MONITOR="$CX_ROOT/shared/claudx/oauth-monitor.js"
 
 # Mac production defaults. Override via env (e.g. Linux dev/test).
 : "${CLAUDX_POOL:=$HOME/Dev/nexus/shared/.runtime/accounts/accounts.json}"
@@ -257,16 +258,21 @@ fi
 # Mac 의 claude 는 Bun 컴파일 binary → BUN_OPTIONS 만 존중 (NODE_OPTIONS 무시)
 # 양쪽 다 세팅해서 플랫폼 감지 없이 통일
 if [ "$no_rotate" != true ] && [ -f "$INTERCEPTOR" ]; then
+    # 2026-04-21 Phase 2-A: OAUTH_MONITOR 존재 시 require 체인 끝에 추가.
+    # 파일이 없으면 자동 skip — 기존 동작 유지.
+    _req="--require $INTERCEPTOR"
+    [ -f "$OAUTH_MONITOR" ] && _req="$_req --require $OAUTH_MONITOR"
     if [ -n "${NODE_OPTIONS:-}" ]; then
-        export NODE_OPTIONS="--require $INTERCEPTOR $NODE_OPTIONS"
+        export NODE_OPTIONS="$_req $NODE_OPTIONS"
     else
-        export NODE_OPTIONS="--require $INTERCEPTOR"
+        export NODE_OPTIONS="$_req"
     fi
     if [ -n "${BUN_OPTIONS:-}" ]; then
-        export BUN_OPTIONS="--require $INTERCEPTOR $BUN_OPTIONS"
+        export BUN_OPTIONS="$_req $BUN_OPTIONS"
     else
-        export BUN_OPTIONS="--require $INTERCEPTOR"
+        export BUN_OPTIONS="$_req"
     fi
+    unset _req
 fi
 
 # 2026-04-20: 기본값 뒤집기 — bypass 는 opt-in 전용 (CLAUDX_BYPASS=1).
