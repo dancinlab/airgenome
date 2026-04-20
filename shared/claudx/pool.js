@@ -301,7 +301,9 @@ function pickBest(excludeNames, opts) {
   // 4계정 환경에서 week_pct 차이 크면 jitter 로도 못 섞여 claude5 만 뽑히는 문제 대응.
   // sticky 가 활성(세션 내 일관성 필요)인 경우는 건너뜀 — prompt cache 훼손 방지.
   if (best && !sid && !(opts && opts.noCool)) {
-    addScorePenalty(best.name, 60, 60);
+    // delta 60 / TTL 300s — 사용자가 cl /quit 후 재시도하는 텀(~분 단위)을 커버.
+    // 너무 짧으면(60s) penalty 소멸 후 다시 같은 계정만 뽑혀 "계속 claude5" 재발.
+    addScorePenalty(best.name, 60, 300);
   }
   return best;
 }
