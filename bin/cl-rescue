@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# cl-rescue — stuck claude CLI 즉시 종료 (Tier 1, 수동).
+#
+# 시나리오: Mac 이 WiFi 전환하면 claude CLI 의 TCP 소켓이 recv() 블록.
+# macOS TCP keepalive 기본 2시간이라 감지 안 됨. SIGINT 도 syscall 복귀까지
+# 대기. → 현재 쉘 응답 없음, 새 세션 개설이 유일한 복구.
+#
+# 이 스크립트는 stuck 된 claude PID 에 SIGTERM(5s)→SIGKILL 순으로 보내
+# 쉘 응답을 즉시 회복시킴. 사용자 직접 실행 시 명시적 kill 의도 —
+# feedback_no_kill_claude_cli.md 규칙의 사용자 오버라이드 케이스.
+#
+# Usage:
+#   cl-rescue              # 리스트 보기 (기본)
+#   cl-rescue --list       # 동일
+#   cl-rescue <pid>        # 특정 PID 만 종료
+#   cl-rescue --all        # 내 소유 모든 claude 종료 (확인 프롬프트)
+#   cl-rescue --all -y     # 확인 없이 전부 종료
+#   cl-rescue --tty <tty>  # 특정 tty 의 claude 만 (예: --tty s002)
+#
+# 안전장치:
+#   - 자기 uid 프로세스만 대상
+#   - comm == "claude" exact match (부분매칭 X)
+#   - SIGTERM 먼저, 5s grace, 그래도 살아있으면 SIGKILL
+#   - JSONL 감사로그 ~/.airgenome/cl_rescue.jsonl
+
+set -euo pipefail
+
+LOG_DIR="$HOME/.airgenome"
+LOG_PATH="$LOG_DIR/cl_rescue.jsonl"
+mkdir -p "$LOG_DIR"
+
+ts_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+log_event() {
+    local kind="$1" detail="$2"
+    printf '{"ts":"%s","kind":"%s","detail":"%s"}\n' "$(ts_iso)" "$kind" "$detail" >> "$LOG_PATH"
+}
+
+# 내 소유 claude 프로세스 PID. macOS pgrep -f 는 long cmdline 에서 누락
+# (injected .session_defaults 12KB 때문). ps | awk 가 신뢰 가능한 유일한 방법.
+list_claude_pids() {
+    local myuid
+    myuid=$(id -u)
+    ps -Ao uid=,pid=,command= 2>/dev/null | \
+    awk -v u="$myuid" '
+        $1 == u {
+            cmd = ""
+            for (i=3; i<=NF; i++) cmd = cmd (i==3 ? "" : " ") $i
+            # executable path 부분만 검사 — 첫 공백 이전 (argv[0])
+            n = index(cmd, " ")
+            exe = (n > 0) ? substr(cmd, 1, n-1) : cmd
+            # basename 추출
+            m = split(exe, parts, "/"); base = parts[m]
+            if (base == "claude" || base == "claude.real") print $2
+        }'
+}
+
+# PID 당 상세: tty, etime, ppid, args
+list_claude() {
+    local tty_filter="${1:-}"
+    local pids
+    pids=$(list_claude_pids)
+    [ -z "$pids" ] && return 0
+    local pid
+    for pid in $pids; do
+        local row tty etime ppid args
+        row=$(ps -o pid=,tty=,etime=,ppid=,command= -p "$pid" 2>/dev/null) || continue
+        [ -z "$row" ] && continue
+        # 파싱: pid / tty / etime / ppid / command...
+        tty=$(printf '%s' "$row" | awk '{print $2}')
+        etime=$(printf '%s' "$row" | awk '{print $3}')
+        ppid=$(printf '%s' "$row" | awk '{print $4}')
+        args=$(printf '%s' "$row" | awk '{for (i=5; i<=NF; i++) printf "%s%s", $i, (i==NF ? "" : " ")}')
+        # args 너무 길면 180자 cut
+        [ ${#args} -gt 180 ] && args="${args:0:180}..."
+        if [ -n "$tty_filter" ] && [ "$tty" != "$tty_filter" ]; then continue; fi
+        printf '%s\t%s\t%s\t%s\t%s\n' "$pid" "$tty" "$etime" "$ppid" "$args"
+    done
+}
+
+print_list() {
+    local tty_filter="${1:-}"
+    local rows
+    rows=$(list_claude "$tty_filter" || true)
+    if [ -z "$rows" ]; then
+        echo "claude 프로세스 없음 (uid=$(id -u)${tty_filter:+, tty=$tty_filter})"
+        return 0
+    fi
+    printf '%-8s %-10s %-10s %-8s %s\n' "PID" "TTY" "ETIME" "PPID" "ARGS"
+    printf '%s\n' "$rows" | awk -F'\t' '{printf "%-8s %-10s %-10s %-8s %s\n", $1, $2, $3, $4, $5}'
+}
+
+kill_pid() {
+    local pid="$1"
+    # re-verify comm before kill (TOCTOU 방지)
+    # TOCTOU 가드: command line 에 /claude 경로 토큰 포함 여부 재확인
+    local cmdline
+    cmdline=$(ps -o command= -p "$pid" 2>/dev/null | head -1)
+    if ! printf '%s' "$cmdline" | grep -qE '/(\.local/bin|airgenome/bin)/claude(\.real)?( |$)'; then
+        echo "  [$pid] SKIP: cmdline='$cmdline' (claude path not matched)" >&2
+        log_event "skip_toctou" "pid=$pid"
+        return 1
+    fi
+    local uid
+    uid=$(ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ "$uid" != "$(id -u)" ]; then
+        echo "  [$pid] SKIP: not my uid ($uid)" >&2
+        log_event "skip_foreign" "pid=$pid uid=$uid"
+        return 1
+    fi
+
+    echo "  [$pid] SIGTERM..."
+    if ! kill -TERM "$pid" 2>/dev/null; then
+        echo "  [$pid] SIGTERM 실패 (already gone?)"
+        log_event "term_fail" "pid=$pid"
+        return 0
+    fi
+
+    # grace 5s
+    local i=0
+    while [ $i -lt 10 ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "  [$pid] TERM 로 종료 ($((i * 500))ms)"
+            log_event "term_ok" "pid=$pid graceMs=$((i * 500))"
+            return 0
+        fi
+        sleep 0.5
+        i=$((i + 1))
+    done
+
+    # 여전히 살아있음 → SIGKILL
+    echo "  [$pid] SIGKILL (TERM grace 경과)"
+    kill -KILL "$pid" 2>/dev/null || true
+    log_event "kill_forced" "pid=$pid"
+}
+
+# ─── argv ─────────────────────────────────────────────────────
+
+sub="${1:-}"
+case "$sub" in
+    ""|--list|-l)
+        tty_f=""
+        [ "${2:-}" = "--tty" ] && tty_f="${3:-}"
+        print_list "$tty_f"
+        ;;
+    --tty)
+        print_list "${2:-}"
+        ;;
+    --all)
+        auto_yes=0
+        [ "${2:-}" = "-y" ] && auto_yes=1
+        rows=$(list_claude "" || true)
+        if [ -z "$rows" ]; then
+            echo "claude 프로세스 없음"
+            exit 0
+        fi
+        echo "대상:"
+        print_list ""
+        if [ "$auto_yes" != "1" ]; then
+            printf "전부 종료? [y/N] "
+            read -r ans
+            [ "$ans" != "y" ] && [ "$ans" != "Y" ] && { echo "취소"; exit 1; }
+        fi
+        log_event "all_start" "count=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')"
+        while IFS=$'\t' read -r pid _rest; do
+            kill_pid "$pid" || true
+        done <<< "$rows"
+        log_event "all_done" "-"
+        ;;
+    -h|--help|help)
+        sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        if [[ "$sub" =~ ^[0-9]+$ ]]; then
+            kill_pid "$sub"
+        else
+            echo "알 수 없는 옵션: $sub" >&2
+            echo "사용법: cl-rescue --help" >&2
+            exit 64
+        fi
+        ;;
+esac
