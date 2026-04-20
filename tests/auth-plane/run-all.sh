@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# tests/auth-plane/run-all.sh
+# 전 테스트 러너. node + bash 파일 자동 실행, PASS/FAIL 집계.
+set -uo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+total_pass=0
+total_fail=0
+suites_fail=0
+
+run_suite() {
+    local f="$1" cmd="$2"
+    local name
+    name=$(basename "$f")
+    echo "─── $name ───"
+    local out rc
+    out=$("$cmd" "$f" 2>&1) || rc=$?
+    rc=${rc:-0}
+    printf '%s\n' "$out"
+    # 마지막 라인에서 "N pass, M fail" 추출
+    local last
+    last=$(printf '%s\n' "$out" | grep -E '[0-9]+ pass.*[0-9]+ fail' | tail -1 || true)
+    if [ -n "$last" ]; then
+        local p f_
+        p=$(echo "$last" | sed -E 's/.*: ([0-9]+) pass.*/\1/')
+        f_=$(echo "$last" | sed -E 's/.* ([0-9]+) fail.*/\1/')
+        total_pass=$((total_pass + p))
+        total_fail=$((total_fail + f_))
+    fi
+    [ "$rc" -ne 0 ] && suites_fail=$((suites_fail + 1))
+    echo
+}
+
+echo "═══ airgenome auth-plane test suite ═══"
+for f in "$DIR"/test-*.js; do
+    [ -f "$f" ] || continue
+    run_suite "$f" node
+done
+for f in "$DIR"/test-*.sh; do
+    [ -f "$f" ] || continue
+    run_suite "$f" bash
+done
+
+echo "═══ summary ═══"
+echo "total:    ${total_pass} pass / ${total_fail} fail"
+echo "suites:   $suites_fail failed"
+[ "$suites_fail" -eq 0 ] && { echo "ALL GREEN"; exit 0; }
+echo "FAIL"
+exit 1

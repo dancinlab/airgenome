@@ -256,7 +256,7 @@ cmd_refresh() {
     local dir; dir=$(_acct_dir "$target")
     log "refresh: $target"
     if AIRGENOME_CLAUDE_SHIM=1 NO_CLAUDX=1 CL_NO_DOCKER=1 CLAUDE_CONFIG_DIR="$dir" \
-        timeout 30 claude -p "ok" --max-turns 1 >/dev/null 2>&1; then
+        timeout 30 "${AIRGENOME_CLAUDE_CMD:-claude}" -p "ok" --max-turns 1 >/dev/null 2>&1; then
         return 0
     fi
     log "  refresh fail — token maybe revoked"
@@ -376,7 +376,7 @@ cmd_refresh_safe() {
 
     log "refresh-safe $target: begin (old_rt=${old_rt:-<none>})"
     if AIRGENOME_CLAUDE_SHIM=1 NO_CLAUDX=1 CL_NO_DOCKER=1 CLAUDE_CONFIG_DIR="$dir" \
-        timeout 30 claude -p "ok" --max-turns 1 >/dev/null 2>&1; then
+        timeout 30 "${AIRGENOME_CLAUDE_CMD:-claude}" -p "ok" --max-turns 1 >/dev/null 2>&1; then
         refresh_result="ok"
     else
         refresh_result="failed"
@@ -489,6 +489,24 @@ _self_test() {
     fi
     local accts; accts=$(_list_accounts | wc -l | tr -d ' ')
     echo "  ✓ accounts discovered: $accts"
+    # auth-plane 단위/통합 스위트 실행 (tests/auth-plane/run-all.sh)
+    # 재진입 가드: suite 내부 테스트가 self-test 를 다시 부를 수 있으므로 env flag 로 skip.
+    if [ "${AIRGENOME_AUTH_IN_SUITE:-0}" = "1" ]; then
+        echo "  ▸ auth-plane suite (nested) — skipped"
+    else
+        local suite="$ROOT/tests/auth-plane/run-all.sh"
+        if [ -f "$suite" ]; then
+            echo "  ▸ running auth-plane suite"
+            if AIRGENOME_AUTH_IN_SUITE=1 bash "$suite" >/dev/null 2>&1; then
+                echo "  ✓ auth-plane suite ALL GREEN"
+            else
+                echo "  ✗ auth-plane suite FAIL — run '$suite' for details" >&2
+                rc=1
+            fi
+        else
+            echo "  ⚠ auth-plane suite not found at $suite" >&2
+        fi
+    fi
     [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
     return $rc
 }
