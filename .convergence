@@ -511,6 +511,26 @@
 @followup: CLAUDX_PREEMPT_HARD_PCT env 로 threshold 조정만으로는 근본 해결 안 됨 (헤더 부재 시 값이 무엇이든 항상 0 < threshold). 이 fix 는 필수.
 @rollback: revert this turn 의 interceptor.js. 단 되돌리면 streaming 응답 받는 매 계정이 5분마다 락 → pool empty 재발.
 
+[health-watcher-daemon]
+@state: converged
+@date: 2026-04-21
+@commit: 887786d7
+@scope: bin/airgenome-heal (신규) + run.hexa:1579-1583 (airgenome heal 서브커맨드) + ~/Library/LaunchAgents/com.airgenome.heal.plist
+@problem: 전 세션에서 interceptor 의 preempt_hard 폭주 버그(자원분배 체크 시 발견) 가 exhausted.json 에 12/12 계정 등록 → pool empty → claudx ABORT. 즉시 복구는 `echo '{}' > exhausted.json` 수동이었고, infra_state 는 probe daemon 정지로 24h stale 인 채였음. 재발 감지 + 자가치유 진입점이 없었다.
+@decision: 주기형 watchdog bin/airgenome-heal 신설. 4축 점검 + 복구 — (1) infra_state mtime > 600s → probe 재실행, (2) exhausted 의 expired 엔트리 정리, (3) exhausted count > EXH_LIMIT(6) → 전체 wipe (preempt 버그 대비), (4) probe/menubar launchd 사망 감지 → kickstart. airgenome CLI 단일 진입점 확장 원칙(C5 EXTEND) 에 따라 `airgenome heal [check|run]` 서브커맨드로도 노출.
+@changes:
+  - bin/airgenome-heal (신규, ~130 lines): check(읽기 전용 진단) / run(조치 실행). log → $HOME/.airgenome/heal.log. jq 로 exhausted 파싱.
+  - run.hexa: `if sub == "heal" { run_bin_sh("airgenome-heal", ...) }` 라우팅 추가.
+  - com.airgenome.heal.plist (LaunchAgents): StartInterval=300, RunAtLoad=true, ProgramArguments=[/Users/ghost/Dev/airgenome/bin/airgenome-heal, run].
+  - shared/config/infrastructure.json, shared/infra_state.json — nexus/shared 경로 복구 symlink 작업 동반.
+@why:
+  - exhausted.json 은 interceptor(Node 프로세스) 의 out-of-band 상태. 외부에서 주기 감시 + 정리해야 재발 방지.
+  - auth-guard daemon(10m, refresh) 과 역할 구분: guard 는 auth 축, heal 은 runtime pool 축.
+  - 수동 초기화 명령(echo '{}' > ...) 을 매번 사용자가 쳐야 하는 구조는 지속가능하지 않다.
+@verified: airgenome-heal check → "status: HEALTHY" / "status: DRIFT (infra=N exh=N daemons=N)" 출력. launchctl bootstrap 후 5분 주기 활성. airgenome heal check → 동일 출력 (run.hexa 라우팅 검증).
+@followup: probe daemon 자체의 hexa stage0 락 이슈는 별도 [probe-bash-replace-hexa] 로 해소됨 (9d6e6e57).
+@rollback: revert 887786d7 + launchctl bootout gui/$UID ~/Library/LaunchAgents/com.airgenome.heal.plist + heal.plist 파일 제거.
+
 [probe-bash-replace-hexa]
 @state: converged
 @date: 2026-04-21
