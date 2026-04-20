@@ -1,0 +1,96 @@
+#!/bin/bash
+# airgenome-hexa-lint — RUNTIME hexa 바이너리로 .hexa parse-check.
+#
+# WHY: 시스템에 hexa 가 여러 개 (Homebrew v0.2.0 stage0 vs ~/.hx/bin/hexa newer)
+#      깔려있고 reserved keyword 가 다르다. launchd plist 가 ~/.hx/bin/hexa 를
+#      쓰는데 /opt/homebrew/bin/hexa 로 검증하면 silent pass → 운영중 parse fail
+#      → 함수 미정의 → 무음으로 잘못된 동작 (예: tg_bot strip_dispatch_noise
+#      미작동 → 노이즈 그대로 텔레그램 노출 사건 2026-04-20).
+#
+# RUNTIME 선택 우선순위:
+#   1. $AIRGENOME_HEXA  (env override)
+#   2. ~/.hx/bin/hexa   (newer 빌드, launchd 가 실제로 쓰는 경로)
+#   3. command -v hexa  (PATH 첫번째)
+#
+# 판정: hexa parse 가 Parse error 출력해도 rc=0 반환하는 버그가 있어
+#       grep '^Parse error' 로 1줄이라도 매칭되면 fail.
+#
+# Usage:
+#   airgenome-hexa-lint <file1.hexa> [file2.hexa ...]
+#   airgenome-hexa-lint --staged              (git staged .hexa 자동 수집)
+#   airgenome-hexa-lint --all                 (repo 전체 .hexa)
+
+set -u
+
+HEXA="${AIRGENOME_HEXA:-}"
+if [ -z "$HEXA" ] && [ -x "$HOME/.hx/bin/hexa" ]; then
+    HEXA="$HOME/.hx/bin/hexa"
+fi
+if [ -z "$HEXA" ]; then
+    HEXA="$(command -v hexa 2>/dev/null || true)"
+fi
+if [ -z "$HEXA" ] || [ ! -x "$HEXA" ]; then
+    echo "airgenome-hexa-lint: ❌ hexa 바이너리 없음 (AIRGENOME_HEXA / ~/.hx/bin/hexa / PATH 모두 실패)" >&2
+    exit 2
+fi
+
+# Verify it supports `parse` subcommand (older Homebrew v0.2.0 doesn't).
+if ! "$HEXA" --help 2>&1 | grep -q '^[[:space:]]*parse '; then
+    echo "airgenome-hexa-lint: ❌ '$HEXA' 가 'parse' subcommand 미지원 (older stage0?)" >&2
+    echo "  → ~/.hx/bin/hexa (newer) 설치 필요. AIRGENOME_HEXA=<path> 로 override 가능." >&2
+    exit 2
+fi
+
+# Collect target files
+files=()
+case "${1:-}" in
+    --staged)
+        while IFS= read -r f; do
+            [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+        done < <(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null | grep -E '\.hexa$' || true)
+        ;;
+    --all)
+        while IFS= read -r f; do
+            [ -n "$f" ] && files+=("$f")
+        done < <(git ls-files '*.hexa' 2>/dev/null)
+        ;;
+    "")
+        echo "Usage: airgenome-hexa-lint <file.hexa>... | --staged | --all" >&2
+        exit 2
+        ;;
+    *)
+        for arg in "$@"; do
+            case "$arg" in
+                *.hexa) [ -f "$arg" ] && files+=("$arg") ;;
+            esac
+        done
+        ;;
+esac
+
+if [ ${#files[@]} -eq 0 ]; then
+    exit 0
+fi
+
+fail=0
+checked=0
+for f in "${files[@]}"; do
+    checked=$((checked+1))
+    out=$("$HEXA" parse "$f" 2>&1 || true)
+    if echo "$out" | grep -qE '^Parse error'; then
+        echo "❌ hexa-lint FAIL: $f  (runtime: $HEXA)" >&2
+        echo "$out" | grep -E '^Parse error' | head -10 | sed 's/^/    /' >&2
+        fail=1
+    fi
+done
+
+if [ $fail -ne 0 ]; then
+    echo "" >&2
+    echo "🚫 hexa parse-check 실패. 운영 런타임 ('$HEXA') 에서 reject 됨." >&2
+    echo "   같은 파일이 다른 hexa 빌드 (Homebrew v0.2.0 stage0 등) 에서는" >&2
+    echo "   통과할 수 있음 — reserved keyword 차이. 변수명을 길게 (skip/should_skip 등) 변경." >&2
+    exit 1
+fi
+
+# Silent on success (hook context). For interactive use, set HEXA_LINT_VERBOSE=1.
+[ "${HEXA_LINT_VERBOSE:-0}" = "1" ] && echo "✅ hexa-lint OK ($checked file(s), runtime=$HEXA)"
+exit 0

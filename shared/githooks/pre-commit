@@ -1,0 +1,45 @@
+#!/bin/bash
+# pre-commit (repo-tracked, SSOT). Install: `git config core.hooksPath shared/githooks`.
+#  (1) hexa-lint runtime parse-check — staged .hexa 를 ~/.hx/bin/hexa 로 검증
+#  (2) loop-guard --fix — 기존 자동 수정 + 재스테이지
+
+R=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+
+# ─── (1) hexa parse-check ────────────────────────────────────────────
+# Runtime hexa 가 reject 하면 commit 차단. WHY: Homebrew hexa (v0.2.0
+# stage0) 와 ~/.hx/bin/hexa (newer) 의 reserved keyword 가 다름 → silent
+# pass 후 운영 fail 사고 (2026-04-20 tg_bot strip_dispatch_noise 에서
+# `let drop = ...` 가 stage0 OK / newer FAIL → 함수 미정의 → 노이즈
+# 그대로 텔레그램 노출).
+LINT="$R/bin/airgenome-hexa-lint"
+if [ -x "$LINT" ]; then
+    HEXA_STAGED=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null | grep -E '\.hexa$' || true)
+    if [ -n "$HEXA_STAGED" ]; then
+        # shellcheck disable=SC2086
+        "$LINT" $HEXA_STAGED || exit 1
+    fi
+fi
+
+# ─── (2) loop-guard --fix ────────────────────────────────────────────
+# loop-guard 자체 커밋이면 스킵
+MSG=$(cat .git/MERGE_MSG 2>/dev/null || git log -1 --format=%s 2>/dev/null)
+echo "$MSG" | grep -q "loop-guard\|loop 정합" && exit 0
+
+GUARD="$R/.shared/hooks/loop-guard.hexa"
+[ -f "$GUARD" ] || exit 0
+
+HEXA=$(which hexa 2>/dev/null)
+[ -z "$HEXA" ] && HEXA="$HOME/Dev/hexa-lang/hexa"
+[ -x "$HEXA" ] || exit 0
+
+# --fix 실행, 수정된 파일 자동 stage
+# WHY not `git add -A`: 작업트리 전체 재스테이지 → pathspec 제한 무효화
+# + 타세션 변경 끌려옴. 훅 진입 시점 staged 파일만 재스테이지.
+STAGED_SNAPSHOT=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null)
+"$HEXA" "$GUARD" --fix >/tmp/.loop-pre-commit.log 2>&1
+if [ -n "$STAGED_SNAPSHOT" ]; then
+    echo "$STAGED_SNAPSHOT" | while IFS= read -r f; do
+        [ -n "$f" ] && [ -e "$f" ] && git add -- "$f" 2>/dev/null
+    done
+fi
+exit 0

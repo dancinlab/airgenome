@@ -488,10 +488,37 @@ init_remote() {
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
+# git hooks (repo-tracked SSOT) — target 무관, repo 가 git work-tree 이면 적용
+# ═════════════════════════════════════════════════════════════════════════════
+init_repo_hooks() {
+    [ -d "$ROOT/.git" ] || return 0
+    [ -d "$ROOT/shared/githooks" ] || return 0
+    local cur
+    cur="$(git -C "$ROOT" config --get core.hooksPath 2>/dev/null || true)"
+    if [ "$cur" = "shared/githooks" ]; then
+        info "core.hooksPath 이미 shared/githooks (skip)"
+        step_skip
+        return
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        info "[DRY] git config core.hooksPath shared/githooks (current: ${cur:-<unset>})"
+        step_pass
+        return
+    fi
+    if git -C "$ROOT" config core.hooksPath shared/githooks; then
+        ok "core.hooksPath = shared/githooks (pre-commit hexa-lint 활성)"
+        step_pass
+    else
+        step_fail "git config core.hooksPath 실패"
+    fi
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
 # 라우팅
 # ═════════════════════════════════════════════════════════════════════════════
 log "airgenome-init target=$TARGET dry_run=$DRY_RUN force=$FORCE skip_docker=$SKIP_DOCKER"
 log "ROOT=$ROOT"
+init_repo_hooks
 
 if [ "$TARGET" = "all" ]; then
     init_mac
