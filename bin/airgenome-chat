@@ -291,7 +291,6 @@ cmd_dispatch() {
         esac
     done
     [ -z "$tg_token" ] && [ -n "$tg_token_file" ] && [ -f "$tg_token_file" ] && tg_token=$(cat "$tg_token_file")
-    # tg_token 은 현재 S2 에서 사용 안 함 (S3 에서 streaming editMessage 에 활용)
 
     local user_text
     user_text=$(cat)
@@ -302,13 +301,12 @@ cmd_dispatch() {
     local active
     active=$(jq -r '.active // ""' "$d/index.json")
     if [ -z "$active" ]; then
-        # auto-create on first dispatch
         cmd_new "$chat" "자동 세션" >&2
         active=$(jq -r '.active' "$d/index.json")
     fi
     local jsonl="$d/$active.jsonl"
 
-    # 1. append user turn (crash-safe — flush before claudx call)
+    # 1. append user turn (crash-safe)
     local user_ts
     user_ts=$(now_iso)
     jq -nc --arg ts "$user_ts" --arg text "$user_text" \
@@ -318,46 +316,85 @@ cmd_dispatch() {
     local prompt
     prompt=$(build_prompt "$jsonl")
 
-    # 3. call claudx with stream-json output
-    #    PATH 에 airgenome/bin 선두 → claude shim → session_defaults 자동 주입
+    # 3. claudx 호출 (stream-json + partial messages)
     local out_file="$d/.dispatch-$$.out"
     local err_file="$d/.dispatch-$$.err"
     local agroot="${AIRGENOME:-$HOME/Dev/airgenome}"
-    (
+
+    # streaming 활성 조건: tg-* 옵션 모두 있고 token 존재
+    local stream_mode=0
+    if [ -n "$tg_chat" ] && [ -n "$tg_msg" ] && [ -n "$tg_token" ]; then
+        stream_mode=1
+    fi
+
+    local resp_text="" input_tok=0 output_tok=0 buf="" final_id="$tg_msg"
+    local last_edit=0
+    local rc=0
+    local extra_flag=""
+    [ "$stream_mode" = "1" ] && extra_flag="--include-partial-messages"
+
+    # 자식 stream 을 line by line 으로 읽어 throttle edit + result capture.
+    # process substitution 으로 변수 propagate 가능 (subshell 회피).
+    while IFS= read -r line; do
+        printf '%s\n' "$line" >> "$out_file"
+        local typ
+        typ=$(jq -r '.type // ""' <<< "$line" 2>/dev/null) || continue
+        case "$typ" in
+            stream_event)
+                if [ "$stream_mode" = "1" ]; then
+                    local chunk
+                    chunk=$(jq -r '.event.delta.text // ""' <<< "$line" 2>/dev/null)
+                    if [ -n "$chunk" ]; then
+                        buf+="$chunk"
+                        local now
+                        now=$(date +%s)
+                        if [ $((now - last_edit)) -ge 1 ]; then
+                            tg_edit_message "$tg_token" "$tg_chat" "$final_id" "$buf"
+                            last_edit=$now
+                        fi
+                    fi
+                fi
+                ;;
+            result)
+                resp_text=$(jq -r '.result // ""' <<< "$line")
+                input_tok=$(jq -r '.usage.input_tokens // 0' <<< "$line")
+                output_tok=$(jq -r '.usage.output_tokens // 0' <<< "$line")
+                ;;
+        esac
+    done < <(
         cd "$agroot"
         export CLAUDX_LOADGATE_OFF=1
         export PATH="$agroot/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
         timeout 180 "$agroot/bin/claudx" --print "$prompt" \
-            --output-format stream-json --max-turns 12 --verbose
-    ) > "$out_file" 2> "$err_file"
-    local rc=$?
+            --output-format stream-json --max-turns 12 --verbose $extra_flag \
+            2> "$err_file"
+    )
+    rc=$?
 
-    # 4. parse final result event (last `result` line)
-    local result_line
-    result_line=$(grep '^{"type":"result"' "$out_file" | tail -1)
-    local resp_text input_tok output_tok
-    if [ -n "$result_line" ]; then
-        resp_text=$(jq -r '.result // ""' <<< "$result_line")
-        input_tok=$(jq -r '.usage.input_tokens // 0' <<< "$result_line")
-        output_tok=$(jq -r '.usage.output_tokens // 0' <<< "$result_line")
-    else
-        # fallback — concat all assistant text events
-        resp_text=$(jq -r 'select(.type=="assistant") | .message.content[0].text // ""' "$out_file" | tr -d '\0')
-        input_tok=0; output_tok=0
+    # 4. fallback — result 이벤트 누락 시 stream_event delta 합산
+    if [ -z "$resp_text" ]; then
+        if [ -n "$buf" ]; then
+            resp_text=$buf
+        else
+            # last-resort: assistant content 합산
+            resp_text=$(jq -r 'select(.type=="assistant") | .message.content[]?.text // ""' "$out_file" 2>/dev/null | tr -d '\0')
+        fi
     fi
 
-    # 5. account from stderr (claudx prints `claudx: acct=claudeN`)
+    # 5. account from stderr
     local account
     account=$(grep -oE 'acct=claude[0-9a-z]+' "$err_file" | head -1 | sed 's/acct=//')
     [ -z "$account" ] && account="unknown"
 
     if [ "$rc" -ne 0 ] || [ -z "$resp_text" ]; then
-        # 실패 — assistant turn 은 기록하되 error flag, output 으로 stderr+rc 알림
         local errbody
-        errbody=$(grep -v '^security warning' "$err_file" 2>/dev/null | tail -10)
-        echo "❌ dispatch 실패 (rc=$rc, account=$account)"
-        echo
-        echo "$errbody"
+        errbody=$(grep -vE '^(security warning|PERF:)' "$err_file" 2>/dev/null | tail -10)
+        local errmsg="❌ dispatch 실패 (rc=$rc, account=$account)
+${errbody}"
+        if [ "$stream_mode" = "1" ]; then
+            tg_edit_message "$tg_token" "$tg_chat" "$final_id" "$errmsg"
+        fi
+        echo "$errmsg"
         rm -f "$out_file" "$err_file"
         return 1
     fi
@@ -380,11 +417,30 @@ cmd_dispatch() {
         | .sessions[$uuid].accounts_used = ((.sessions[$uuid].accounts_used // []) + [$acct] | unique)
     ' "$d/index.json" | atomic_write "$d/index.json"
 
-    # 8. output assistant text
+    # 8. final TG edit + stdout
+    if [ "$stream_mode" = "1" ]; then
+        tg_edit_message "$tg_token" "$tg_chat" "$final_id" "$resp_text"
+    fi
     echo "$resp_text"
 
     rm -f "$out_file" "$err_file"
     return 0
+}
+
+# ── TG editMessage helper ────────────────────────────────────────────
+# 4096 byte 초과 시 …트림. 멀티버블 split 은 S5 확장.
+tg_edit_message() {
+    local token=$1 chat=$2 msg=$3 text=$4
+    [ -n "$token" ] && [ -n "$chat" ] && [ -n "$msg" ] || return 0
+    local trimmed=$text
+    if [ "${#trimmed}" -gt 4000 ]; then
+        trimmed="${trimmed:0:3990}…"
+    fi
+    curl -sS --max-time 10 -X POST "https://api.telegram.org/bot$token/editMessageText" \
+        --data-urlencode "chat_id=$chat" \
+        --data-urlencode "message_id=$msg" \
+        --data-urlencode "text=$trimmed" \
+        > /dev/null 2>&1 || true
 }
 
 # ── /recap — active 세션 요약 (별도 claudx 호출, 짧은 system prompt) ─
