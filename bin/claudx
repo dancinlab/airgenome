@@ -259,11 +259,12 @@ if [ "$no_rotate" != true ] && [ -f "$INTERCEPTOR" ]; then
     fi
 fi
 
-# M13f+: --dangerously-skip-permissions 기본 주입 (CLAUDX_SAFE=1 이면 skip).
-# bypassPermissions defaultMode + skipDangerousModePermissionPrompt 에도 특정
-# 패턴 (rm 포함 chain 등) 에 대한 프롬프트가 뜨는 것을 완전 차단.
+# 2026-04-20: 기본값 뒤집기 — bypass 는 opt-in 전용 (CLAUDX_BYPASS=1).
+# 이전 (M13f+): CLAUDX_SAFE != 1 이면 --dangerously-skip-permissions 자동 주입.
+# 지금    : CLAUDX_BYPASS == 1 일 때만 주입. 기본은 프롬프트 정상 동작.
+# 필요한 escape hatch 는 airgenome 서브커맨드 (e.g. airgenome fs-write) 로 통합.
 # 이미 사용자가 같은 플래그를 줬다면 중복 방지.
-if [ "${CLAUDX_SAFE:-0}" != "1" ] && [ "$show_only" != true ]; then
+if [ "${CLAUDX_BYPASS:-0}" = "1" ] && [ "$show_only" != true ]; then
     _has_dsp=0
     for a in ${fwd[@]+"${fwd[@]}"}; do
         case "$a" in --dangerously-skip-permissions|--allow-dangerously-skip-permissions) _has_dsp=1; break ;; esac

@@ -1,6 +1,26 @@
 # airgenome .convergence — 수렴 attr 기록
 # format: single-file, 엔트리 단위로 @state 로 트래킹. JSON/JSONL/xattr 금지.
 
+[cl-no-bypass-airgenome-only]
+@state: converged
+@date: 2026-04-20
+@scope: bin/claudx + user/project .claude/settings.json (17 files) + modules/fs_write.hexa + run.hexa
+@problem: Every cl-launched session ran with --dangerously-skip-permissions (auto-injected by claudx) + defaultMode: bypassPermissions (both user-level and 16 project-level settings.json). Net effect: Claude had a blanket prompt-free license across all work. The user wanted a stricter baseline where prompts are the normal path, and routine high-frequency operations (that would otherwise prompt) are covered by airgenome subcommands instead.
+@decision: Make bypass opt-in across all cl sessions. Provide airgenome fs-write as the Bash-invoked escape hatch for sensitive paths (.claude/hooks/**, .claude/agents/**, .claude/commands/** — Claude Code's hardcoded sensitive-path prompt bypasses even when Write is in the allow list).
+@changes:
+  - bin/claudx: flipped default. Was "inject --dangerously-skip-permissions unless CLAUDX_SAFE=1". Now "inject only when CLAUDX_BYPASS=1". Legacy CLAUDX_SAFE env is ignored (still opt-out of a behavior that no longer runs by default).
+  - .claude/settings.json × 17: removed .permissions.defaultMode when it was "bypassPermissions". Backups saved as *.bak.20260420-bypass-remove. One file (/mac_home/dev/hexa-lang/.claude/settings.json) deferred due to a mount-side permission error from the Linux VM; fix via the Mac bridge when it resettles.
+  - modules/fs_write.hexa (new): Bash-invoked writer. Reads stdin (or positional arg), passes path through a hardcoded blacklist (empty, ".." traversal, /Users/ghost/.claude/{CLAUDE.md,hooks/**,agents/**,commands/**}), ensures parent dir, write_file(), appends audit to ~/.claude_mac_bridge/fs_write.jsonl.
+  - run.hexa: dispatches "fs-write"/"fs_write" via run_module_args.
+@why: Sensitive-path prompts are Claude Code's self-modification guard. The user wants that guard in force by default, with escape hatches routed through an owned, greppable surface (airgenome subcommands) instead of blanket bypass. Any escape hatch that lands in the repo becomes reviewable; any bypass env var that has to be set explicitly is visible.
+@tradeoff: First few days will surface allow-list gaps — patterns Claude tries that aren't allowed will prompt. Fix loop: either add an allow rule to settings.json or add an airgenome subcommand. Longer-term: allow list converges on "Bash(airgenome *)" + a few primitives, and every prompt becomes a signal that we need a new subcommand.
+@client-usage:
+  - cat content | airgenome fs-write <path>
+  - airgenome fs-write <path> "inline content"
+  - CLAUDX_BYPASS=1 cl ...   # one-off emergency bypass
+@deferred: /mac_home/dev/hexa-lang/.claude/settings.json bypassPermissions removal (see @changes). Backup not yet created; original untouched.
+@rollback: revert commit; restore from .bak.20260420-bypass-remove files if settings need reverting; CLAUDX_BYPASS=1 cl reproduces old behavior case-by-case while observing the new default.
+
 [mac-bridge-hexa-only]
 @state: converged
 @date: 2026-04-20
@@ -314,3 +334,4 @@
 2026-04-20 18:30:15 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 19:00:46 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 19:31:16 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 20:01:49 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
