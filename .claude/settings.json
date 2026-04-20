@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/ghost/Dev/airgenome/.claude/hooks/enforce_dist"
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/enforce_dist"
           }
         ]
       },
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/ghost/Dev/airgenome/.claude/hooks/enforce_dist"
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/enforce_dist"
           }
         ]
       }
