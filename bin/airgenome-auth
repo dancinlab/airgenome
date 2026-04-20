@@ -15,6 +15,10 @@
 #   login <name>            CLAUDE_CONFIG_DIR=.claude-<name> claude /login (private-window)
 #   refresh [<name>|--all]  forced token refresh via `claude -p "ok" --max-turns 1`
 #   refresh-expired         keychain.expiresAt < now 계정만 골라 refresh (Step B Phase 1)
+#   refresh-safe <name>     flock + rotation capture + token-health 기록 (Phase 2 단일호스트)
+#   guard                   expiresAt < now+600s 계정 선제 refresh-safe (launchd 주기용)
+#   drift [--json]          12계정 × file vs KC refresh_token 해시 비교 (읽기만)
+#   doctor [--json]         12계정 × (source, alive, has_refresh, drift, session_pct, exhausted) 매트릭스
 #   list                    /Users/ghost/.claude-* 디렉토리 발견된 계정 나열
 #   self-test
 #
@@ -251,9 +255,12 @@ cmd_refresh() {
     fi
     local dir; dir=$(_acct_dir "$target")
     log "refresh: $target"
-    AIRGENOME_CLAUDE_SHIM=1 NO_CLAUDX=1 CL_NO_DOCKER=1 CLAUDE_CONFIG_DIR="$dir" \
-        timeout 30 claude -p "ok" --max-turns 1 >/dev/null 2>&1 || \
-        log "  refresh fail — token maybe revoked"
+    if AIRGENOME_CLAUDE_SHIM=1 NO_CLAUDX=1 CL_NO_DOCKER=1 CLAUDE_CONFIG_DIR="$dir" \
+        timeout 30 claude -p "ok" --max-turns 1 >/dev/null 2>&1; then
+        return 0
+    fi
+    log "  refresh fail — token maybe revoked"
+    return 1
 }
 
 # ── cmd: refresh-expired (Step B Phase 1) ────────────────────────
@@ -284,7 +291,7 @@ cmd_refresh_expired() {
         fi
         local age=$(( (now_ms - exp) / 1000 ))
         log "refresh-expired: $name (expired ${age}s ago)"
-        if cmd_refresh "$name"; then
+        if cmd_refresh_safe "$name"; then
             refreshed=$((refreshed+1))
         else
             failed=$((failed+1))
@@ -295,6 +302,168 @@ cmd_refresh_expired() {
     if [ -x "$ROOT/bin/creds-mirror" ] && [ "$refreshed" -gt 0 ]; then
         "$ROOT/bin/creds-mirror" --export >/dev/null 2>&1 && log "creds-mirror --export triggered"
     fi
+    return 0
+}
+
+# ── cmd: guard — proactive refresh (launchd 10m 주기용) ──────────
+# expiresAt 이 threshold_sec (기본 600s) 안에 도달한 계정을 refresh-safe 로 선제 갱신.
+# race window 를 줄여 revoke 방지. refresh-safe 자체가 flock 을 가지므로 중복 실행 안전.
+cmd_guard() {
+    local threshold_sec="${GUARD_THRESHOLD_SEC:-600}"
+    local accts; accts=$(_list_accounts)
+    local now_ms=$(($(date +%s) * 1000))
+    local cutoff_ms=$(( now_ms + threshold_sec * 1000 ))
+    local refreshed=0 skipped=0 failed=0
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        [ "$name" = "default" ] && continue
+        local service json exp
+        service=$(_acct_keychain_service "$name")
+        json=$(_fetch_json "$service")
+        [ -z "$json" ] && { skipped=$((skipped+1)); continue; }
+        exp=$(echo "$json" | jq -r '.claudeAiOauth.expiresAt // 0' 2>/dev/null)
+        if [ -z "$exp" ] || [ "$exp" = "0" ]; then
+            skipped=$((skipped+1))
+            continue
+        fi
+        if [ "$exp" -lt "$cutoff_ms" ] 2>/dev/null; then
+            local delta=$(( (exp - now_ms) / 1000 ))
+            log "guard: $name expires_in=${delta}s → refresh-safe"
+            if cmd_refresh_safe "$name"; then
+                refreshed=$((refreshed+1))
+            else
+                failed=$((failed+1))
+            fi
+        else
+            skipped=$((skipped+1))
+        fi
+    done <<< "$accts"
+    log "guard summary: refreshed=$refreshed skipped=$skipped failed=$failed threshold=${threshold_sec}s"
+    return 0
+}
+
+# ── cmd: refresh-safe — flock + rotation capture + audit ─────────
+# 계정별 단일 refresh 보장 (mkdir atomic lock). 전/후 refresh_token 해시 비교
+# 로 rotation 감지, 결과 token-health.jsonl 에 기록.
+#
+# Phase 1 한계:
+# - rotation 은 claude CLI 의 write 에 위임 — 우리는 관측만.
+# - lock 은 mac 단일호스트 유효. cross-host race 방어는 Phase 2 (coordinator).
+cmd_refresh_safe() {
+    local target="${1:-}"
+    [ -z "$target" ] && { echo "usage: refresh-safe <name>" >&2; return 2; }
+    local dir; dir=$(_acct_dir "$target")
+    [ -z "$dir" ] && { log "refresh-safe: unknown acct $target"; return 2; }
+
+    local lock_dir="$HOME/.airgenome/claudx/locks/refresh-${target}.lockd"
+    mkdir -p "$(dirname "$lock_dir")"
+    # stale lock: 5분 이상이면 강제 제거 (프로세스 크래시 복구)
+    if [ -d "$lock_dir" ]; then
+        local age
+        age=$(( $(date +%s) - $(stat -f %m "$lock_dir" 2>/dev/null || echo 0) ))
+        if [ "$age" -gt 300 ]; then
+            log "refresh-safe $target: stale lock ${age}s → reclaim"
+            rmdir "$lock_dir" 2>/dev/null || true
+        fi
+    fi
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        log "refresh-safe $target: lock busy — skip"
+        return 2
+    fi
+
+    local old_rt new_rt refresh_result event
+    old_rt=$(node "$ROOT/shared/claudx/token-core.js" probe "$dir" 2>/dev/null | jq -r '.fp.file.rt // ""')
+
+    log "refresh-safe $target: begin (old_rt=${old_rt:-<none>})"
+    if AIRGENOME_CLAUDE_SHIM=1 NO_CLAUDX=1 CL_NO_DOCKER=1 CLAUDE_CONFIG_DIR="$dir" \
+        timeout 30 claude -p "ok" --max-turns 1 >/dev/null 2>&1; then
+        refresh_result="ok"
+    else
+        refresh_result="failed"
+    fi
+
+    new_rt=$(node "$ROOT/shared/claudx/token-core.js" probe "$dir" 2>/dev/null | jq -r '.fp.file.rt // ""')
+
+    if [ "$refresh_result" = "ok" ] && [ -n "$new_rt" ] && [ "$old_rt" != "$new_rt" ]; then
+        event="rotate"
+    elif [ "$refresh_result" = "ok" ]; then
+        event="refresh"
+    else
+        event="revoke"
+    fi
+
+    AG_WRITER=airgenome-auth node "$ROOT/shared/claudx/token-health.js" append \
+        "{\"acct\":\"$target\",\"event\":\"$event\",\"old_rt_sha8\":\"$old_rt\",\"new_rt_sha8\":\"$new_rt\",\"result\":\"$refresh_result\",\"reason\":\"airgenome-auth refresh-safe\"}" >/dev/null
+
+    log "refresh-safe $target: $event ($refresh_result) old=$old_rt new=$new_rt"
+    rmdir "$lock_dir" 2>/dev/null || true
+    [ "$refresh_result" = "ok" ]
+}
+
+# ── cmd: drift — file vs KC refresh_token 해시 비교 (읽기만) ──────
+cmd_drift() {
+    local json_mode=0
+    [ "${1:-}" = "--json" ] && json_mode=1
+    local out
+    out=$(node "$ROOT/shared/claudx/token-core.js" probe-all) || {
+        log "drift: token-core probe-all 실패"
+        return 1
+    }
+    if [ $json_mode -eq 1 ]; then
+        printf '%s\n' "$out"
+        return 0
+    fi
+    # 테이블 포맷 + drift 이벤트 기록
+    printf '%-10s %-12s %-6s %-10s %-20s\n' "acct" "source" "alive" "drift" "file_exp"
+    printf '%s\n' "$out" | jq -r '.[] | [.name, .source, (.alive|tostring), .drift, (.file_exp//"-")] | @tsv' | \
+        while IFS=$'\t' read -r name source alive drift fexp; do
+            printf '%-10s %-12s %-6s %-10s %-20s\n' "$name" "$source" "$alive" "$drift" "$fexp"
+            if [ "$drift" != "in_sync" ] && [ "$drift" != "both_missing" ]; then
+                AG_WRITER=airgenome-auth node "$ROOT/shared/claudx/token-health.js" append \
+                    "{\"acct\":\"$name\",\"event\":\"drift\",\"result\":\"$drift\",\"reason\":\"airgenome-auth drift\"}" >/dev/null
+            fi
+        done
+    return 0
+}
+
+# ── cmd: doctor — 12계정 전체 매트릭스 ──────────────────────────
+cmd_doctor() {
+    local json_mode=0
+    [ "${1:-}" = "--json" ] && json_mode=1
+    local probe exhausted usage
+    probe=$(node "$ROOT/shared/claudx/token-core.js" probe-all) || return 1
+    exhausted=$(cat "$HOME/.airgenome/claudx/exhausted.json" 2>/dev/null || echo '{}')
+    usage=$(cat "$HOME/Dev/nexus/shared/.runtime/accounts/usage-cache.json" 2>/dev/null || echo '{}')
+    local merged
+    merged=$(node --input-type=module -e '
+        import fs from "fs";
+        const probe = JSON.parse(process.argv[1]);
+        const ex = JSON.parse(process.argv[2]);
+        const u = JSON.parse(process.argv[3]);
+        const now = Math.floor(Date.now()/1000);
+        const rows = probe.map(p => ({
+          name: p.name,
+          source: p.source,
+          alive: p.alive,
+          has_refresh: p.has_refresh,
+          drift: p.drift,
+          session_pct: (u[p.name]||{}).session_pct || 0,
+          week_pct: (u[p.name]||{}).week_all_pct || 0,
+          exhausted_until: (ex[p.name]||{}).until || null,
+          exh_active: !!((ex[p.name]||{}).until > now),
+          file_exp: p.file_exp,
+        }));
+        process.stdout.write(JSON.stringify(rows, null, 2));
+    ' "$probe" "$exhausted" "$usage" 2>&1) || { log "doctor: merge 실패: $merged"; return 1; }
+    if [ $json_mode -eq 1 ]; then
+        printf '%s\n' "$merged"
+        return 0
+    fi
+    printf '%-10s %-12s %-6s %-8s %-7s %-6s %-6s %-8s\n' "acct" "source" "alive" "refresh" "drift" "sess%" "week%" "exh"
+    printf '%s\n' "$merged" | jq -r '.[] | [.name, .source, (.alive|tostring), (.has_refresh|tostring), .drift, .session_pct, .week_pct, (.exh_active|tostring)] | @tsv' | \
+        while IFS=$'\t' read -r name source alive refr drift sess week exh; do
+            printf '%-10s %-12s %-6s %-8s %-7s %-6s %-6s %-8s\n' "$name" "$source" "$alive" "$refr" "$drift" "$sess" "$week" "$exh"
+        done
     return 0
 }
 
@@ -336,5 +505,9 @@ case "$sub" in
     login)             cmd_login "$@"; exit $? ;;
     refresh)           cmd_refresh "$@"; exit $? ;;
     refresh-expired)   cmd_refresh_expired; exit $? ;;
+    refresh-safe)      cmd_refresh_safe "$@"; exit $? ;;
+    guard)             cmd_guard "$@"; exit $? ;;
+    drift)             cmd_drift "$@"; exit $? ;;
+    doctor)            cmd_doctor "$@"; exit $? ;;
     *)                 echo "airgenome-auth: unknown '$sub'" >&2; exit 2 ;;
 esac
