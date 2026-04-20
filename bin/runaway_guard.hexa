@@ -1176,6 +1176,229 @@ fn format_orphan_event(ts: str, orphans: list, actions: list, force: bool) -> st
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  MAC HEAVY VIOLATION — AG6 Mac compute ZERO 안전망 (2026-04-20)
+//
+//  배경: 2026-04-20 03:33 kernel panic — /private/tmp/train_alm_lora_mac
+//        (anima LoRA training Mac native binary) 가 memory 폭증 → 49 swapfiles
+//        → loginwindow watchdog 91s timeout → panic. 4회 연쇄 reset.
+//  책임: anima 수정이 빠져도 airgenome runaway_guard 가 Mac compute 위반
+//        프로세스를 cross-project 안전망으로 감지/로깅 (+ opt-in kill).
+//  제약:
+//    - Darwin (uname=Darwin) 에서만 발동. Linux tick 엔 no-op.
+//    - dry-run 기본 — log only. env RUNAWAY_MAC_HEAVY_KILL=1 일 때만 TERM→KILL.
+//    - claude (comm) 는 항상 보호 (R-MAC-01 + feedback_no_kill_claude_cli).
+//    - Telegram alert off (project_runaway_telegram_off). log/journal 만.
+//    - 기존 orphan / verdict 파이프라인과 완전 독립 (간섭 X).
+//  패턴: /private/tmp/train_alm_lora* 또는 /private/tmp/*_mac  (full command path)
+// ═══════════════════════════════════════════════════════════════════════
+
+struct MacHeavyProc {
+    pid: int,
+    comm: str,
+    path: str   // full argv[0] 또는 ps command 필드 first token
+}
+
+fn is_darwin() -> bool {
+    let u = exec("uname -s 2>/dev/null").trim()
+    if to_string(u) == "void" { return false }
+    if u == "Darwin" { return true }
+    return false
+}
+
+fn is_mac_heavy_kill() -> bool {
+    if env("RUNAWAY_MAC_HEAVY_KILL") == "1" { return true }
+    return false
+}
+
+// comm == "claude" 은 R-MAC-01 절대 보호. 기타 claude* prefix 도 보호.
+fn is_mac_heavy_protected(comm: str) -> bool {
+    if comm == "" { return true }
+    if comm == "claude" { return true }
+    if comm.starts_with("claude") { return true }
+    if comm == "hexa" { return true }
+    if comm == "hexa_stage0" { return true }
+    if comm == "hexa_v2" { return true }
+    return false
+}
+
+// path 가 /private/tmp/train_alm_lora* 또는 /private/tmp/*_mac 패턴인지.
+// hexa-lang 에 정규식 없음 — prefix/suffix 수동 매칭.
+fn mac_heavy_path_match(path: str) -> bool {
+    if path == "" { return false }
+    if path.starts_with("/private/tmp/train_alm_lora") { return true }
+    // /private/tmp/*_mac  — prefix 확인 후 suffix 확인.
+    if path.starts_with("/private/tmp/") {
+        if path.ends_with("_mac") { return true }
+    }
+    return false
+}
+
+// mock 가능한 parser — 입력은 "pid\tcomm\tcommand..." 각 줄 (ps -eo pid=,comm=,command=).
+// command 필드는 첫 토큰(exec path) 만 매칭에 사용.
+fn parse_mac_heavy_lines(raw_out: str) -> list {
+    let lines = raw_out.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line != "" {
+            let f = split_fields(line)
+            if len(f) >= 3 {
+                let pid_i = to_int(f[0])
+                let comm = f[1]
+                // command 필드 첫 토큰 (split_fields 가 공백 기준으로 나눴으니 f[2]).
+                let path = f[2]
+                if pid_i > 1 {
+                    if mac_heavy_path_match(path) {
+                        result = result + [MacHeavyProc {
+                            pid: pid_i, comm: comm, path: path
+                        }]
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn read_mac_heavy_violations() -> list {
+    if !is_darwin() { return [] }
+    // ps -eo pid=,comm=,command=  → BSD ps. comm 은 basename, command 는 argv.
+    // command 필드 내부 공백이 있을 수 있으나 우리는 첫 토큰(exec path)만 씀.
+    let cmd = "ps -eo pid=,comm=,command= 2>/dev/null"
+    let out = exec(cmd)
+    if to_string(out) == "void" { return [] }
+    return parse_mac_heavy_lines(out)
+}
+
+struct MacHeavyAction {
+    kind: str,   // "mac_heavy_dry" / "mac_heavy_term" / "mac_heavy_kill" / "mac_heavy_survived" / "mac_heavy_skip_protected"
+    pid: int,
+    comm: str,
+    path: str,
+    dry_run: bool
+}
+
+fn do_sigkill(pid: int) -> void {
+    let pid_s = to_string(pid)
+    let _ = exec("kill -KILL " + pid_s + " 2>/dev/null")
+}
+
+fn act_on_mac_heavy(viols: list, force: bool) -> list {
+    let result = []
+    let mut i = 0
+    while i < len(viols) {
+        let p = viols[i]
+        if is_mac_heavy_protected(p.comm) {
+            result = result + [MacHeavyAction {
+                kind: "mac_heavy_skip_protected", pid: p.pid, comm: p.comm,
+                path: p.path, dry_run: !force
+            }]
+        } else {
+            if force {
+                do_sigterm(p.pid)
+                result = result + [MacHeavyAction {
+                    kind: "mac_heavy_term", pid: p.pid, comm: p.comm,
+                    path: p.path, dry_run: false
+                }]
+            } else {
+                result = result + [MacHeavyAction {
+                    kind: "mac_heavy_dry", pid: p.pid, comm: p.comm,
+                    path: p.path, dry_run: true
+                }]
+            }
+        }
+        i = i + 1
+    }
+    // force 경로: 3s 후 잔존 PID → SIGKILL 에스컬레이션 (orphan 과 달리 Mac panic 은 5s 도 길다)
+    if force {
+        if len(viols) > 0 {
+            let _ = exec("sleep 3")
+            let mut j = 0
+            while j < len(viols) {
+                let p = viols[j]
+                if !is_mac_heavy_protected(p.comm) {
+                    if pid_still_alive(p.pid) {
+                        do_sigkill(p.pid)
+                        result = result + [MacHeavyAction {
+                            kind: "mac_heavy_kill", pid: p.pid, comm: p.comm,
+                            path: p.path, dry_run: false
+                        }]
+                        // kill 후 1s 잔존 재확인
+                        let _ = exec("sleep 1")
+                        if pid_still_alive(p.pid) {
+                            result = result + [MacHeavyAction {
+                                kind: "mac_heavy_survived", pid: p.pid, comm: p.comm,
+                                path: p.path, dry_run: false
+                            }]
+                        }
+                    }
+                }
+                j = j + 1
+            }
+        }
+    }
+    return result
+}
+
+fn format_mac_heavy_proc_json(p: MacHeavyProc) -> str {
+    return "{\"pid\":" + to_string(p.pid)
+         + ",\"comm\":\"" + json_safe(p.comm) + "\""
+         + ",\"path\":\"" + json_safe(p.path) + "\"}"
+}
+
+fn format_mac_heavy_procs_json(viols: list) -> str {
+    let mut out = "["
+    let mut i = 0
+    while i < len(viols) {
+        if i > 0 { out = out + "," }
+        out = out + format_mac_heavy_proc_json(viols[i])
+        i = i + 1
+    }
+    return out + "]"
+}
+
+fn format_mac_heavy_action_json(a: MacHeavyAction) -> str {
+    let dr = "false"
+    if a.dry_run { dr = "true" }
+    return "{\"kind\":\"" + a.kind + "\",\"pid\":" + to_string(a.pid)
+         + ",\"comm\":\"" + json_safe(a.comm) + "\""
+         + ",\"path\":\"" + json_safe(a.path) + "\""
+         + ",\"dry_run\":" + dr + "}"
+}
+
+fn format_mac_heavy_actions_json(actions: list) -> str {
+    let mut out = "["
+    let mut i = 0
+    while i < len(actions) {
+        if i > 0 { out = out + "," }
+        out = out + format_mac_heavy_action_json(actions[i])
+        i = i + 1
+    }
+    return out + "]"
+}
+
+fn format_mac_heavy_event(ts: str, viols: list, actions: list, force: bool) -> str {
+    return "{\"ts\":\"" + ts + "\""
+         + ",\"source\":\"runaway_guard\""
+         + ",\"verdict\":\"mac_heavy_violation\""
+         + ",\"violations\":" + format_mac_heavy_procs_json(viols)
+         + ",\"actions\":" + format_mac_heavy_actions_json(actions)
+         + ",\"force\":" + bool_str(force)
+         + ",\"dry_run\":" + bool_str(!force)
+         + "}"
+}
+
+// 개별 violation 라인 — MAC_HEAVY_VIOLATION: pid=X comm=Y path=Z.
+// log/journal 한 줄 사람 읽기용 (JSONL 은 별도 append).
+fn format_mac_heavy_oneline(p: MacHeavyProc) -> str {
+    return "MAC_HEAVY_VIOLATION: pid=" + to_string(p.pid)
+         + " comm=" + p.comm
+         + " path=" + p.path
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  TICK
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1204,6 +1427,30 @@ fn collect_metrics() -> Metrics {
 fn tick(t: Thresholds, wl: Whitelist) -> void {
     let ts = ts_iso()
     let now = ts_epoch()
+
+    // ─── MAC HEAVY VIOLATION pass — AG6 cross-project 안전망 ─────────────
+    // Darwin 전용. /private/tmp/train_alm_lora* 또는 /private/tmp/*_mac 패턴
+    // 발견 시 log (+ opt-in TERM→KILL via RUNAWAY_MAC_HEAVY_KILL=1).
+    // anima LoRA 2026-04-20 panic (49 swapfiles → loginwindow watchdog) 재발 방지.
+    // Linux 에선 is_darwin()=false 로 즉시 빈 리스트 — no-op.
+    let mac_viols = read_mac_heavy_violations()
+    if len(mac_viols) > 0 {
+        let mh_force = is_mac_heavy_kill()
+        let mh_acts = act_on_mac_heavy(mac_viols, mh_force)
+        // 사람 읽기용 한 줄 (systemd/journal) — violation 마다 1줄.
+        let mut vi = 0
+        while vi < len(mac_viols) {
+            println(format_mac_heavy_oneline(mac_viols[vi]))
+            vi = vi + 1
+        }
+        // JSONL append
+        let mhline = format_mac_heavy_event(ts, mac_viols, mh_acts, mh_force)
+        append_log(mhline)
+        println(mhline)
+    }
+
+    // Darwin 에서는 /proc 읽기가 무의미 — Mac heavy pass 만 돌리고 조기 return.
+    if is_darwin() { return }
 
     // ─── ORPHAN RUNAWAY pass — 기존 verdict 파이프라인과 독립 ────────────
     // whitelist override: hexa* 고아(ppid=1 + CPU≥90% + etime≥600s)는 절대 정상 X.
@@ -1416,7 +1663,76 @@ fn self_test() -> void {
     let p_cleanup = tg_last_critical_path()
     let _ = exec("jq --arg h '" + host_t + "' 'del(.[$h])' '" + p_cleanup + "' > '" + p_cleanup + ".tmp' 2>/dev/null && mv '" + p_cleanup + ".tmp' '" + p_cleanup + "'")
 
-    println("  ✅ runaway_guard self_test PASS (whitelist narrowed + D-state pick + ionice + tg_push + orphan_runaway)")
+    // 13. MAC HEAVY VIOLATION — mock ps parser + action gate
+    //     입력 포맷: "pid\tcomm\tcommand ..." 공백 분리 split_fields 경유.
+    //     MATCH:
+    //       - /private/tmp/train_alm_lora_mac            → train_alm_lora prefix
+    //       - /private/tmp/train_alm_lora_arm64_mac      → prefix + suffix 동시
+    //       - /private/tmp/foo_mac                       → suffix _mac
+    //     REJECT:
+    //       - /opt/homebrew/bin/python3                  → /private/tmp 아님
+    //       - /private/tmp/not_matching                  → 패턴 no-match
+    //       - /private/tmp/train_alm_lora_mac  (pid=1)   → pid>1 gate
+    let mock_mac_ps = "50001 train_alm_lora_mac /private/tmp/train_alm_lora_mac --steps 100\n"
+                    + "50002 python3 /opt/homebrew/bin/python3 train.py\n"
+                    + "50003 foo /private/tmp/foo_mac\n"
+                    + "50004 bar /private/tmp/not_matching\n"
+                    + "50005 train_alm_lora_arm64_mac /private/tmp/train_alm_lora_arm64_mac\n"
+                    + "1 launchd /sbin/launchd"
+    let viols = parse_mac_heavy_lines(mock_mac_ps)
+    if len(viols) != 3 {
+        panic("self_test FAIL [mac_heavy pick count got " + to_string(len(viols)) + " want 3]")
+    }
+    if viols[0].pid != 50001 { panic("self_test FAIL [mac_heavy[0] pid]") }
+    if viols[0].comm != "train_alm_lora_mac" { panic("self_test FAIL [mac_heavy[0] comm]") }
+    if viols[1].pid != 50003 { panic("self_test FAIL [mac_heavy[1] pid got " + to_string(viols[1].pid) + "]") }
+    if viols[2].pid != 50005 { panic("self_test FAIL [mac_heavy[2] pid]") }
+    // claude 보호 — 동일 path 위반이어도 comm=claude 는 skip_protected.
+    let viols_claude = [
+        MacHeavyProc { pid: 60001, comm: "claude", path: "/private/tmp/train_alm_lora_mac" }
+    ]
+    let acts_claude = act_on_mac_heavy(viols_claude, true)  // force 켜도
+    if len(acts_claude) != 1 { panic("self_test FAIL [mac_heavy claude acts count]") }
+    if acts_claude[0].kind != "mac_heavy_skip_protected" {
+        panic("self_test FAIL [mac_heavy claude NOT protected got " + acts_claude[0].kind + "]")
+    }
+    // claude* prefix 보호
+    if !is_mac_heavy_protected("claude-worker") { panic("self_test FAIL [claude prefix not protected]") }
+    if !is_mac_heavy_protected("hexa") { panic("self_test FAIL [hexa not protected mac_heavy]") }
+    // 일반 프로세스는 보호 X
+    if is_mac_heavy_protected("train_alm_lora_mac") { panic("self_test FAIL [target was protected]") }
+    // dry 경로 (force=false) — mac_heavy_dry 만 emit, 실제 kill 없음.
+    let viols_dry = [
+        MacHeavyProc { pid: 70001, comm: "train_alm_lora_mac", path: "/private/tmp/train_alm_lora_mac" }
+    ]
+    let acts_dry = act_on_mac_heavy(viols_dry, false)
+    if len(acts_dry) != 1 { panic("self_test FAIL [mac_heavy dry acts count]") }
+    if acts_dry[0].kind != "mac_heavy_dry" {
+        panic("self_test FAIL [mac_heavy dry kind got " + acts_dry[0].kind + "]")
+    }
+    if !acts_dry[0].dry_run { panic("self_test FAIL [mac_heavy dry flag]") }
+    // event JSON 에 verdict=mac_heavy_violation 포함
+    let mhline = format_mac_heavy_event("2026-04-20T03:33:00Z", viols_dry, acts_dry, false)
+    if !mhline.contains("\"verdict\":\"mac_heavy_violation\"") {
+        panic("self_test FAIL [mac_heavy event missing verdict]")
+    }
+    if !mhline.contains("\"dry_run\":true") { panic("self_test FAIL [mac_heavy dry_run flag json]") }
+    if !mhline.contains("train_alm_lora_mac") { panic("self_test FAIL [mac_heavy path in json]") }
+    // oneline format
+    let one = format_mac_heavy_oneline(viols_dry[0])
+    if !one.contains("MAC_HEAVY_VIOLATION") { panic("self_test FAIL [mac_heavy oneline prefix]") }
+    if !one.contains("pid=70001") { panic("self_test FAIL [mac_heavy oneline pid]") }
+    // path match edge cases
+    if !mac_heavy_path_match("/private/tmp/train_alm_lora_mac") { panic("self_test FAIL [path prefix match]") }
+    if !mac_heavy_path_match("/private/tmp/anything_mac") { panic("self_test FAIL [path suffix _mac match]") }
+    if mac_heavy_path_match("/private/tmp/safe_script.sh") { panic("self_test FAIL [path false positive]") }
+    if mac_heavy_path_match("/opt/foo_mac") { panic("self_test FAIL [path outside /private/tmp]") }
+    if mac_heavy_path_match("") { panic("self_test FAIL [empty path match]") }
+    // 빈 입력 → 빈 리스트
+    let viols_empty = parse_mac_heavy_lines("")
+    if len(viols_empty) != 0 { panic("self_test FAIL [mac_heavy empty parse]") }
+
+    println("  ✅ runaway_guard self_test PASS (whitelist narrowed + D-state pick + ionice + tg_push + orphan_runaway + mac_heavy)")
 }
 
 fn run_once() -> void {
