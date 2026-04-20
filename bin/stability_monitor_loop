@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# stability_monitor_loop — 상주 루프로 stability_monitor 를 sub-5s cadence 로 실행.
+#
+# 2026-04-20: launchd StartInterval 60s 로는 5초 이내 런어웨이 차단 불가.
+# 이 wrapper 는 KeepAlive=true 로 띄워 2s 간격으로 tick 을 돌림.
+# 프로세스가 죽으면 launchd 가 재부팅.
+#
+# env:
+#   STABILITY_INTERVAL — tick 간격 초 (default 2)
+# 자식 프로세스 (stability_monitor) 에는 STABILITY_LOOP_MODE=1 을 내려주어,
+# 스크립트 내부의 fast-tick 중첩 루프는 skip 하도록 함 (본 loop 가 이미 2s 폴링).
+
+set -u
+export LANG=en_US.UTF-8
+export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+export STABILITY_LOOP_MODE=1
+
+INTERVAL="${STABILITY_INTERVAL:-1}"
+MON="/Users/ghost/Dev/airgenome/bin/stability_monitor"
+RUNDIR="${HOME}/.airgenome"
+mkdir -p "$RUNDIR"
+LOOP_LOG="$RUNDIR/stability_loop.stderr.log"
+
+printf '%s loop start interval=%s mon=%s pid=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$INTERVAL" "$MON" "$$" >> "$LOOP_LOG"
+
+trap 'printf "%s loop exit sig=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$?" >> "$LOOP_LOG"; exit 0' TERM INT
+
+while true; do
+    t0=$(date +%s)
+    "$MON" || printf '%s tick rc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$?" >> "$LOOP_LOG"
+    t1=$(date +%s)
+    elapsed=$(( t1 - t0 ))
+    # 최소 interval 보장 — tick 이 INTERVAL 보다 오래 걸리면 즉시 다음으로 (sleep 0)
+    if [ "$elapsed" -lt "$INTERVAL" ]; then
+        sleep $(( INTERVAL - elapsed ))
+    fi
+done

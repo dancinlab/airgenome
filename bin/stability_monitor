@@ -222,12 +222,96 @@ if [ -n "$top_pid" ] && [ "$free_mb" -lt 500 ]; then
     fi
 fi
 
+# --- [5.6] Last-resort KILL — 확장 범위 (MEM + CPU) ---
+# [5.5] 가 처리 못하는 runaway 를 잡는 최후 방어선.
+# 조건 (OR, 매 tick 1개만):
+#   (a) free_mb < 500 AND top-RSS(>=256MB) non-protected → kill (하드 whitelist 무시)
+#   (b) 어떤 non-protected proc 의 %cpu >= 200 AND etime > 30s → kill (순수 CPU 폭주)
+# 보호 (AND, 절대 kill 금지):
+#   - uid != $(id -u) (본인 소유 프로세스만)
+#   - name 에 claude 포함
+#   - 시스템/셸 프로세스 (WindowServer, kernel_task, launchd, bash, zsh, ssh, tmux, ...)
+# [5.5] 가 이미 killed 면 skip.
+MY_UID="$(id -u)"
+last_resort_kill="no"
+last_resort_detail=""
+if [ "$emergency_kill" != "killed" ]; then
+    # ps: uid pid %cpu rss etime comm  — 보호 필터 적용
+    procs="$(ps -Ao uid=,pid=,%cpu=,rss=,etime=,comm= 2>/dev/null | awk -v myuid="$MY_UID" '
+        {
+            uid=$1; pid=$2; cpu=$3+0; rss=$4+0; et=$5;
+            comm=$6; for(i=7;i<=NF;i++) comm=comm" "$i
+            n=split(comm,a,"/"); name=a[n]
+            if (uid+0 != myuid+0) next
+            if (name ~ /claude/) next
+            if (name ~ /^(WindowServer|Finder|kernel_task|launchd|loginwindow|coreaudiod|UserEventAgent|cfprefsd|distnoted|Dock|SystemUIServer|assistantd|sharingd|bluetoothd|trustd|tccd|opendirectoryd|syslogd|notifyd|powerd|hidd)$/) next
+            if (name ~ /^(mds|mdworker)/) next
+            if (name ~ /^(bash|zsh|sh|fish|tmux|ssh|sshd|screen|login|tty|Terminal|iTerm2)$/) next
+            print pid, cpu, rss, et, name
+        }')"
+
+    lr_trigger=""; lr_pid=""; lr_cpu="0"; lr_rss_kb="0"; lr_name=""
+
+    # (a) RAM 경로
+    if [ "$free_mb" -lt 500 ]; then
+        ram_line="$(printf '%s\n' "$procs" | awk 'NF && $3+0 >= 262144' | sort -k3 -n -r | head -1)"
+        if [ -n "$ram_line" ]; then
+            lr_trigger="ram"
+            lr_pid="$(awk '{print $1}' <<<"$ram_line")"
+            lr_cpu="$(awk '{print $2}' <<<"$ram_line")"
+            lr_rss_kb="$(awk '{print $3}' <<<"$ram_line")"
+            lr_name="$(awk '{print $5}' <<<"$ram_line")"
+        fi
+    fi
+
+    # (b) CPU 경로 (RAM 경로에서 후보 없을 때만)
+    if [ -z "$lr_trigger" ]; then
+        cpu_line="$(printf '%s\n' "$procs" | awk 'NF && $2+0 >= 200' | sort -k2 -n -r | head -1)"
+        if [ -n "$cpu_line" ]; then
+            cpu_et="$(awk '{print $4}' <<<"$cpu_line")"
+            cpu_et_sec="$(etime_to_sec "$cpu_et")"
+            if [ "$cpu_et_sec" -gt 30 ]; then
+                lr_trigger="cpu"
+                lr_pid="$(awk '{print $1}' <<<"$cpu_line")"
+                lr_cpu="$(awk '{print $2}' <<<"$cpu_line")"
+                lr_rss_kb="$(awk '{print $3}' <<<"$cpu_line")"
+                lr_name="$(awk '{print $5}' <<<"$cpu_line")"
+            fi
+        fi
+    fi
+
+    if [ -n "$lr_trigger" ] && [ -n "$lr_pid" ]; then
+        lr_rss_mb=$(( lr_rss_kb / 1024 ))
+        # race 방지 — 최종 재확인
+        lr_verify="$(ps -o comm= -p "$lr_pid" 2>/dev/null || true)"
+        lr_vname="${lr_verify##*/}"
+        case "$lr_vname" in
+            *claude*|claude|WindowServer|Finder|kernel_task|launchd|loginwindow|coreaudiod|"")
+                last_resort_kill="skip_recheck_protected"
+                last_resort_detail="pid=$lr_pid comm=$lr_verify"
+                ;;
+            *)
+                kill -KILL "$lr_pid" 2>/dev/null
+                lr_rc=$?
+                last_resort_kill="killed"
+                last_resort_detail="pid=$lr_pid trigger=$lr_trigger cpu=$lr_cpu rss_mb=$lr_rss_mb free_mb=$free_mb name=$lr_name rc=$lr_rc"
+                printf 'LAST-RESORT KILL pid=%s trigger=%s cpu=%s rss_mb=%s free_mb=%s name=%s rc=%s\n' \
+                    "$lr_pid" "$lr_trigger" "$lr_cpu" "$lr_rss_mb" "$free_mb" "$lr_name" "$lr_rc" >&2
+                printf '{"ts":"%s","type":"last_resort_kill","trigger":"%s","pid":"%s","cpu":"%s","rss_mb":%s,"free_mb":%s,"name":"%s","rc":%s}\n' \
+                    "$NOW_ISO" "$lr_trigger" "$lr_pid" "$lr_cpu" "$lr_rss_mb" "$free_mb" "$lr_name" "$lr_rc" \
+                    >> "$JSONL"
+                ;;
+        esac
+    fi
+fi
+
 # --- [6] 로그 기록 ---
 # stability.jsonl — 매 tick
-printf '{"ts":"%s","level":"%s","free_gb":%s,"free_mb":%s,"comp_gb":%s,"load_1m":"%s","claude_count":%s,"stage0_count":%s,"hexa_v2_count":%s,"top_pid":"%s","top_rss_gb":%s,"top_etime_s":%s,"crit_streak":%s,"action":"%s","detail":"%s","emergency":"%s","emergency_detail":"%s"}\n' \
+printf '{"ts":"%s","level":"%s","free_gb":%s,"free_mb":%s,"comp_gb":%s,"load_1m":"%s","claude_count":%s,"stage0_count":%s,"hexa_v2_count":%s,"top_pid":"%s","top_rss_gb":%s,"top_etime_s":%s,"crit_streak":%s,"action":"%s","detail":"%s","emergency":"%s","emergency_detail":"%s","last_resort":"%s","last_resort_detail":"%s"}\n' \
     "$NOW_ISO" "$level" "$free_gb" "$free_mb" "$comp_gb" "$load_1m" "$claude_count" "$stage0_count" "$hexa_v2_count" \
     "${top_pid:-}" "$top_rss_gb" "$top_etime_sec" "$crit_streak" "$action" "$action_detail" \
     "$emergency_kill" "$emergency_detail" \
+    "$last_resort_kill" "$last_resort_detail" \
     >> "$JSONL"
 
 # WARN/CRITICAL 만 alerts
@@ -300,7 +384,9 @@ emergency_check_only() {
 }
 
 # Entry: 현재 tick 직후의 free_mb 기준으로 fast-loop 여부 결정.
-if [ "$free_mb" -lt 1024 ]; then
+# STABILITY_LOOP_MODE=1 (상주 wrapper 에서 실행) 이면 외부 loop 가 이미 2s 폴링 중이므로
+# 내부 fast-tick 은 중복 — skip.
+if [ "${STABILITY_LOOP_MODE:-0}" != "1" ] && [ "$free_mb" -lt 1024 ]; then
     printf '{"ts":"%s","type":"fast_tick_enter","free_mb":%s}\n' \
         "$NOW_ISO" "$free_mb" >> "$JSONL"
     printf '%s FAST-TICK ENTER free_mb=%s\n' "$NOW_ISO" "$free_mb" >> "$ALERTS"
