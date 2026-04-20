@@ -233,6 +233,36 @@
   - commits: 9da5e174 (loadgate grace) · 5108a38a (runaway_guard mac_heavy) · f978de8f (oauth-bridge SSOT)
   - branch: feat/m11a-cross-host (origin push 완)
 
+[tailscale-extension-runaway-restart]
+@state: converged
+@date: 2026-04-20
+@scope: cl 기동 실패 (loadgate=critical) · Tailscale network-extension runaway · load 171 근본 원인
+@symptom:
+  - `cl` 진입 시 `claudx: loadgate=critical — abort (CLAUDX_LOADGATE_OFF=1 로 우회)` 반복 발생.
+  - 사용자 "core 도 분리했는데" — slice 격리에도 불구하고 loadgate 통과 못함.
+  - 실측 load avg = 171.50 (1분) / 73.92 (5분) / 33.45 (15분). ncpu=8, critical 임계=48.
+@root:
+  - **주 원인**: Tailscale macsys.network-extension (PID 953) 2h24m 동안 124% CPU 지속. systemextension 폭주가 load avg 의 주 기여자.
+  - **부 원인**: hexa_stage0 self-rebuild (PID 38263) 97.6% 1분 13초째 동시 진행.
+  - **설계적 오해**: slice(cgroups) 는 **Linux 전용**. macOS 에는 미적용 — load avg 는 시스템 전역 지표라 slice 격리와 무관. loadgate 는 `sysctl vm.loadavg` 로 판정하므로 slice 로는 회피 불가.
+  - phantom cleanup 미발동: etime≥300s 필터 때문에 73초짜리 stage0 은 보호됨 (정상).
+@fix:
+  - 코드 수정 없음 (loadgate 600s 부팅 grace + critical threshold 는 직전 converged 블록에서 확정).
+  - 운영 조치: `osascript -e 'quit app "Tailscale"'` → 4s wait → `open -a Tailscale`. extension PID 953 → 60228 교체.
+@verified:
+  - extension CPU: 124.6% → **0.1%** (PID 60228, 15s)
+  - load 1분: 171.50 → 12.01 (재시작 전 자연 감소) → **4.66** (재시작 후)
+  - `bash shared/claudx/loadgate` → `ok` rc=0 (우회 env 없이 통과)
+  - `tailscale status` peer 목록 정상 (aiden-b650m-k active / relay "tok")
+  - 활성 inbound Tailscale SSH 1건 (100.72.76.118→Mac:22) 일시 단절 — 재연결 자가 회복.
+@followup:
+  - Tailscale 1.96.5 extension runaway 가 **재발 주기** 가진다면 launchd watchdog (CPU% > 80 / 30min 초과 시 자동 quit+relaunch) 필요. 현재 1회 관측 — 주기 확인 위해 `ps -Ao pcpu,etime,command | grep tailscale` 일일 스냅샷 고려.
+  - macOS 에서 loadgate 는 slice 와 독립된 전역 게이트라는 사실을 memory/feedback 에 명시할지 판단 (사용자 오해 반복 방지).
+@ref:
+  - memory: feedback_mac_compute_ban.md · project_ag6-mac-compute-zero.md
+  - tailscale: /Library/SystemExtensions/B80F575A-A179-432F-8706-BCAC4D45BAAC/io.tailscale.ipn.macsys.network-extension.systemextension
+  - loadgate: shared/claudx/loadgate (v M13d, ncpu×6 critical, 600s boot grace)
+
 @__raw__
 2026-04-20 03:26:02 auth-heal OK=0 FAIL=0 SKIP=3 tail=...GWC0AAA
 2026-04-20 03:27:09 auth-heal OK=2 FAIL=0 SKIP=1 tail=...GWC0AAA
@@ -251,3 +281,5 @@
 2026-04-20 13:09:41 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 13:40:12 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 14:18:16 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 14:48:49 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 15:19:23 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
