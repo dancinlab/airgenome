@@ -1,5 +1,5 @@
 // L0 CORE — 수정 금지 (nexus/shared/L0.json 등록). 변경 시 PR + L0 갱신.
-// @convergence: interceptor-401-auth-kind-split, interceptor-title-lock-tty-guard
+// @convergence: interceptor-401-auth-kind-split, interceptor-title-lock-tty-guard, interceptor-preempt-header-absent-guard
 // claudx interceptor — M13 + M13c (경제) + M13d (v1/hive 이식)
 // Loaded via NODE_OPTIONS="--require .../interceptor.js"
 //
@@ -526,12 +526,17 @@ function synthetic429(reason, detail) {
 // --- Preemptive swap (e2) ---
 
 function preemptSwapCheck(resp, acct) {
-  const rem = parseInt(readHeader(resp, 'anthropic-ratelimit-requests-remaining') || '0', 10);
-  const lim = parseInt(readHeader(resp, 'anthropic-ratelimit-requests-limit') || '1', 10);
-  const tokRem = parseInt(readHeader(resp, 'anthropic-ratelimit-input-tokens-remaining') || '0', 10);
-  const tokLim = parseInt(readHeader(resp, 'anthropic-ratelimit-input-tokens-limit') || '1', 10);
-  const rPct = lim > 0 ? rem / lim : 1;
-  const tPct = tokLim > 0 ? tokRem / tokLim : 1;
+  // 2026-04-21: 헤더 부재(streaming/heavy_skip 응답 등) 시 default=0 파싱이
+  // req_rem_pct=0, tok_rem_pct=0 → HARD 임계(0.03) 밑으로 떨어져 매 응답마다
+  // preempt_hard 연쇄 → 특정 계정 반복 락(claude10/11 재발). freshenUsageCache
+  // 와 동일하게 default=-1 + 가드로 판정 자체를 skip.
+  const rem = parseInt(readHeader(resp, 'anthropic-ratelimit-requests-remaining') || '-1', 10);
+  const lim = parseInt(readHeader(resp, 'anthropic-ratelimit-requests-limit') || '-1', 10);
+  const tokRem = parseInt(readHeader(resp, 'anthropic-ratelimit-input-tokens-remaining') || '-1', 10);
+  const tokLim = parseInt(readHeader(resp, 'anthropic-ratelimit-input-tokens-limit') || '-1', 10);
+  if (rem < 0 || lim <= 0 || tokRem < 0 || tokLim <= 0) return;
+  const rPct = rem / lim;
+  const tPct = tokRem / tokLim;
   // AND 가 아닌 weighted: 둘 중 하나라도 임계 미만이면 발동.
   //  - HARD (< 15% 기본): 완전 exhausted 마크 (5분) → 전체 pool 에서 제외
   //  - SOFT (< 30% 기본): pool.addScorePenalty(+50, 300s) → sort 후순위로만 내림 (fallback 가능)

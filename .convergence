@@ -496,6 +496,21 @@
 @verified: bash run-all.sh → 45/0 ALL GREEN. airgenome-auth self-test → PASS (suite 포함). 수정 전 동일 명령 → 43/2 FAIL (oauth-monitor ENOENT + self-test 연쇄).
 @rollback: revert de1ce212 의 run-all.sh 부분. 단 claudx preload 가 shell 에 주입된 상태로 테스트 돌리면 재발 — 사용자가 직접 env -u NODE_OPTIONS 로 감싸야 함.
 
+[interceptor-preempt-header-absent-guard]
+@state: converged
+@date: 2026-04-21
+@commit: (this turn)
+@scope: shared/claudx/interceptor.js (L0 CORE) preemptSwapCheck 헤더 파싱
+@problem: streaming(SSE) / heavy_skip 응답은 `anthropic-ratelimit-*` 헤더가 부재. preemptSwapCheck 는 부재 시 default='0' 로 파싱 → rem=0, lim=1, tokRem=0, tokLim=1 → rPct/tPct 모두 0 → minPct(0) < PREEMPT_HARD_PCT(0.03) → **매 응답마다 preempt_hard** → pool.markExhausted(acct, 300). 자원분배 체크 중 rotations.jsonl 최근 1h 에 251 preempt_hard + 247 heavy_skip 관측. claude10/11 이 5분 주기로 재락되고 현 세션이 해당 계정을 continue 쓰는 구조. 사용자 반복 관찰 "claude10/11 exh=true".
+@decision: freshenUsageCache 와 동일한 가드 — default='-1' 로 바꾸고 `rem < 0 || lim <= 0 || tokRem < 0 || tokLim <= 0` 이면 판정 자체 skip. 헤더 없는 응답은 "정보 없음" = 판정 유보 (기존엔 "남은 quota 0%" 로 오해석).
+@changes: shared/claudx/interceptor.js:528-542 — default 문자열 '0'→'-1', 파싱 후 음수/0 가드 return, 삼항 lim>0 체크 제거 (가드에서 처리).
+@why: preemptSwapCheck 는 "다음 요청 전에 선제 스왑" 이 목적. 헤더 없는 응답으로 판정하면 잘못된 선제 스왑이 폭주. 실제 수치가 들어올 때만 판정 = 의도한 동작.
+@verified: 수정 전 tail -500 rotations.jsonl → 251 preempt_hard / 247 heavy_skip (거의 1:1 쌍, 전부 req_rem_pct=0 tok_rem_pct=0). auth-plane suite 45/0 ALL GREEN 유지.
+@limitations: 파일 기준 새 cl 세션부터 효과. 현 pid=5945 (분석 당시 실행중) 는 old interceptor 메모리 유지 → 세션 종료까지 폭주 계속. exhausted.json 수동 초기화로도 즉시 재등록됨.
+@l0: interceptor.js 변경 → nexus/shared/L0.json 갱신 PR (이전 401/TITLE 수정과 묶어 1 PR 권장).
+@followup: CLAUDX_PREEMPT_HARD_PCT env 로 threshold 조정만으로는 근본 해결 안 됨 (헤더 부재 시 값이 무엇이든 항상 0 < threshold). 이 fix 는 필수.
+@rollback: revert this turn 의 interceptor.js. 단 되돌리면 streaming 응답 받는 매 계정이 5분마다 락 → pool empty 재발.
+
 @__raw__
 2026-04-20 03:26:02 auth-heal OK=0 FAIL=0 SKIP=3 tail=...GWC0AAA
 2026-04-20 03:27:09 auth-heal OK=2 FAIL=0 SKIP=1 tail=...GWC0AAA
@@ -546,3 +561,4 @@
 2026-04-21 02:13:36 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
 2026-04-21 02:38:52 airgenome-auth sync local_ok=13 remote_ok=26 remote_fail=0 remote_skip=26
 2026-04-21 03:09:31 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
+2026-04-21 03:40:09 airgenome-auth sync local_ok=13 remote_ok=26 remote_fail=0 remote_skip=26
