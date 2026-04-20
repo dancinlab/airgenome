@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/airgenome-heal — self-healing periodic watchdog.
-# @convergence: health-watcher-daemon
+# @convergence: health-watcher-daemon, probe-bash-replace-hexa
 #
 # 책임: infra_state freshness + claudx pool 상태 주기 점검 + 자동 복구.
 #   1. infra_state.json age > INFRA_STALE_SEC (default 600s) → airgenome probe 재실행
@@ -38,12 +38,17 @@ check_infra() {
 }
 
 heal_infra() {
-    log "infra_state stale/missing — triggering airgenome probe"
-    if command -v airgenome >/dev/null 2>&1; then
-        airgenome probe >/dev/null 2>&1 &
-        log "  airgenome probe fired (bg pid=$!)"
+    log "infra_state stale/missing — triggering airgenome-probe"
+    # 2026-04-21: `airgenome probe` 는 hexa-lang stage0 전역 락을 거쳐
+    # 다른 hexa 프로세스가 장시간 점유 중이면 300s timeout→SIGKILL 경로로
+    # 재발. bin/airgenome-probe 직접 호출해 stage0 락 회피.
+    local probe_bin
+    probe_bin="$(dirname "$0")/airgenome-probe"
+    if [ -x "$probe_bin" ]; then
+        "$probe_bin" >/dev/null 2>&1 &
+        log "  airgenome-probe fired (bg pid=$!)"
     else
-        log "  airgenome not in PATH — attempting launchctl kickstart com.airgenome.probe"
+        log "  airgenome-probe 미발견 — launchctl kickstart com.airgenome.probe"
         launchctl kickstart -k gui/$(id -u)/com.airgenome.probe 2>/dev/null || true
     fi
 }

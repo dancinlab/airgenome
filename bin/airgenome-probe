@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# bin/airgenome-probe — vitals probe (Mac + ubu1 + ubu2 + htz) → infra_state.json
+# @convergence: probe-bash-replace-hexa
+#
+# 책임:
+#   1. Mac: sysctl/vm_stat 로 self vitals
+#   2. ubu/htz/ubu2: ssh 5s timeout CSV 수집
+#   3. $HOME/Dev/nexus/shared/infra_state.json 원자적 갱신
+#
+# 제약:
+#   - AG6: Mac heavy compute 금지 — sysctl/uptime 만 사용, ssh outbound 만
+#   - bash 단일 파일 (hexa-lang stage0 lock 회피)
+#
+# Subcommands:
+#   (no args)      한번 probe 후 infra_state.json 갱신
+#   self-test      json 경계/합성 테스트 (daemon 로드 전 verify 용)
+set -uo pipefail
+
+INFRA_STATE="${INFRA_STATE:-$HOME/Dev/nexus/shared/infra_state.json}"
+
+ts_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Mac vitals — AG6 compute zero: ps 1회, vm_stat 1회.
+mac_vitals_json() {
+    local ncpu cpu_sum cpu_pct ram_total_mb ram_active_mb ram_pct
+    ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 8)
+    cpu_sum=$(ps -A -o %cpu= 2>/dev/null | awk '{s+=$1}END{printf "%.0f",s}')
+    [ -z "$cpu_sum" ] && cpu_sum=0
+    # ps 는 per-core %cpu → ncpu 로 나눠 시스템 총합 %
+    cpu_pct=$(awk -v s="$cpu_sum" -v n="$ncpu" 'BEGIN{printf "%.0f", (n>0)?(s/n):0}')
+    ram_total_mb=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1048576}')
+    ram_active_mb=$(vm_stat 2>/dev/null | awk '/Pages active/{gsub(/\./,"",$3); printf "%d", $3*4096/1048576}')
+    if [ -n "$ram_total_mb" ] && [ "$ram_total_mb" -gt 0 ] 2>/dev/null; then
+        ram_pct=$(awk -v a="$ram_active_mb" -v t="$ram_total_mb" 'BEGIN{printf "%.0f", (t>0)?(a*100/t):0}')
+    else
+        ram_pct=0
+    fi
+    # power 는 macOS 에서 비직관 — AG6 tag 로 0 고정 (hexa probe 와 schema 호환)
+    printf '{"status":"active","cpu_pct":%s,"ram_pct":%s,"swap_pct":0,"reason":"AG6 compute zero"}' \
+        "$cpu_pct" "$ram_pct"
+}
+
+# ubu1 (GPU host) — uptime/free/nvidia-smi
+probe_ubu_csv() {
+    ssh -o ConnectTimeout=5 -o BatchMode=yes ubu '
+        export LANG=C
+        L=$(uptime | awk -F"load average: " "{print \$2}" | cut -d, -f1)
+        M=$(free -m | awk "/^Mem:/{t=\$2; a=\$7; print t \",\" (t-a)}")
+        G=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d " ")
+        echo "$L,$M,$G"
+    ' 2>/dev/null
+}
+
+# htz / ubu2 — uptime/free, GPU 없음
+probe_linux_csv() {
+    local host="$1"
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" '
+        export LANG=C
+        L=$(uptime | awk -F"load average: " "{print \$2}" | cut -d, -f1)
+        N=$(nproc)
+        M=$(free -m | awk "/^Mem:/{t=\$2; a=\$7; print t \",\" (t-a)}")
+        echo "$L,$N,$M"
+    ' 2>/dev/null
+}
+
+# ubu1 CSV "LOAD,RAM_TOTAL,RAM_USED,GPU_UTIL,GPU_USED,GPU_TOTAL" → JSON
+ubu_json() {
+    local csv="$1"
+    [ -z "$csv" ] && { echo '{"status":"offline","reason":"ssh timeout"}'; return; }
+    local IFS=,
+    local -a p
+    read -r -a p <<<"$csv"
+    if [ "${#p[@]}" -lt 6 ]; then
+        echo '{"status":"offline","reason":"parse_fail"}'; return
+    fi
+    printf '{"status":"active","load":"%s","ram_used_mb":%s,"ram_total_mb":%s,"gpu_util":%s,"gpu_vram_used_mb":%s,"gpu_vram_total_mb":%s}' \
+        "${p[0]}" "${p[2]}" "${p[1]}" "${p[3]}" "${p[4]}" "${p[5]}"
+}
+
+# htz/ubu2 CSV "LOAD,NCPU,RAM_TOTAL,RAM_USED" → JSON
+linux_json() {
+    local csv="$1"
+    [ -z "$csv" ] && { echo '{"status":"offline","reason":"ssh timeout"}'; return; }
+    local IFS=,
+    local -a p
+    read -r -a p <<<"$csv"
+    if [ "${#p[@]}" -lt 4 ]; then
+        echo '{"status":"offline","reason":"parse_fail"}'; return
+    fi
+    printf '{"status":"active","load":"%s","cpu_threads":%s,"ram_used_mb":%s,"ram_total_mb":%s}' \
+        "${p[0]}" "${p[1]}" "${p[3]}" "${p[2]}"
+}
+
+write_atomic() {
+    local path="$1" content="$2"
+    local tmp="$path.tmp.$$"
+    printf '%s\n' "$content" > "$tmp" || return 1
+    mv -f "$tmp" "$path"
+}
+
+self_test() {
+    local off_u off_h mj infra
+    off_u=$(ubu_json "")
+    [ "$off_u" = '{"status":"offline","reason":"ssh timeout"}' ] || { echo "FAIL ubu_json empty" >&2; exit 1; }
+    off_h=$(linux_json "bad")
+    [ "$off_h" = '{"status":"offline","reason":"parse_fail"}' ] || { echo "FAIL linux_json short" >&2; exit 1; }
+    mj=$(mac_vitals_json)
+    [ "${#mj}" -ge 20 ] || { echo "FAIL mac_json len" >&2; exit 1; }
+    infra=$(printf '{"ts":"%s","source":"bin/airgenome-probe","hosts":{"ubu1":%s,"ubu2":%s,"htz":%s,"mac":%s}}' \
+        "2026-04-21T00:00:00Z" "$off_u" "$off_h" "$off_h" "$mj")
+    [ "${#infra}" -ge 80 ] || { echo "FAIL infra len" >&2; exit 1; }
+    [[ "$infra" == *'"ubu2"'* ]] || { echo "FAIL ubu2 key missing" >&2; exit 1; }
+    echo "  ✅ probe self_test PASS"
+}
+
+main() {
+    if [ "${1:-}" = "self-test" ]; then
+        self_test
+        return
+    fi
+    local ts mac_j ubu_j ubu2_j htz_j infra
+    ts=$(ts_iso)
+    mac_j=$(mac_vitals_json)
+    ubu_j=$(ubu_json "$(probe_ubu_csv)")
+    ubu2_j=$(linux_json "$(probe_linux_csv ubu2)")
+    htz_j=$(linux_json "$(probe_linux_csv hetzner)")
+    infra=$(printf '{"ts":"%s","source":"bin/airgenome-probe","hosts":{"ubu1":%s,"ubu2":%s,"htz":%s,"mac":%s}}' \
+        "$ts" "$ubu_j" "$ubu2_j" "$htz_j" "$mac_j")
+    write_atomic "$INFRA_STATE" "$infra"
+}
+
+main "$@"

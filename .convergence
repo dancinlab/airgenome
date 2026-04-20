@@ -511,6 +511,30 @@
 @followup: CLAUDX_PREEMPT_HARD_PCT env 로 threshold 조정만으로는 근본 해결 안 됨 (헤더 부재 시 값이 무엇이든 항상 0 < threshold). 이 fix 는 필수.
 @rollback: revert this turn 의 interceptor.js. 단 되돌리면 streaming 응답 받는 매 계정이 5분마다 락 → pool empty 재발.
 
+[probe-bash-replace-hexa]
+@state: converged
+@date: 2026-04-21
+@commit: (this turn)
+@scope: bin/airgenome-probe (신규) + bin/airgenome-heal heal_infra() + ~/Library/LaunchAgents/com.airgenome.probe.plist ProgramArguments
+@problem: modules/probe.hexa 가 hexa stage0 전역 락(/tmp/hexa_stage0.lock.d)을 획득해야 실행. nexus 내 다른 agent worktree (pid=47456, atlas_cluster.hexa) 가 88분째 락 점유 → probe daemon 이 300s shim timeout 후 SIGKILL(-9). 어제부터 infra_state.json 갱신 정지 → menubar 자원 표시 최저 고정. airgenome-heal 의 `airgenome probe` 복구 경로도 동일 lock 에 재걸림.
+@decision: probe 를 hexa 의존 제거해 bash 단일 파일(bin/airgenome-probe)로 재작성. stage0 락 자체를 우회. probe.plist 의 ProgramArguments 를 hexa run → airgenome-probe 로 교체. heal_infra 도 `airgenome probe`(= hexa 경유) 대신 bin/airgenome-probe 직접 호출.
+@changes:
+  - bin/airgenome-probe (신규, ~120 lines): mac_vitals_json (sysctl+vm_stat+ps), probe_ubu_csv / probe_linux_csv (ssh 5s BatchMode), ubu_json / linux_json, write_atomic, self_test, main. schema 는 기존 probe.hexa 와 바이트 단위 호환.
+  - bin/airgenome-heal:heal_infra() — `airgenome probe &` → `"$(dirname $0)/airgenome-probe" &`. 사유 주석 추가.
+  - com.airgenome.probe.plist: ProgramArguments=[/Users/ghost/Dev/hexa-lang/hexa, run, modules/probe.hexa] → [/Users/ghost/Dev/airgenome/bin/airgenome-probe]. PlistBuddy 로 in-place.
+  - launchctl bootstrap gui/$UID 재로드 (probe + heal 양쪽).
+@why:
+  - probe 로직은 exec() 쉘 호출 모음 — hexa 고유 기능 쓰는 부분 없음. bash 재작성 cost 낮다.
+  - stage0 락 구조 개선(RW 분리 등)은 hexa-lang 쪽 큰 변경이라 별도. 본 fix 는 airgenome 만 수정.
+  - 다른 agent 의 atlas_cluster 작업을 kill 하는 것은 타 세션 work 손실 위험 → 근본 회피가 옳다.
+@verified:
+  - airgenome-probe self-test → PASS
+  - airgenome-probe 실행 → infra_state.json 04:17→04:32 갱신, Mac cpu_pct=27 ram_pct=8, htz active load=11.30, ubu1/ubu2 ssh timeout 정상 표기.
+  - airgenome-heal check → status: HEALTHY (age=8s, daemons=ok).
+  - launchctl list → com.airgenome.probe 로드, com.airgenome.heal 로드 (5분 주기).
+@limitations: ubu1/ubu2 ssh offline 은 별도 이슈 (tailscale/host down 여부 점검 필요). 이 fix 범위 밖.
+@rollback: ProgramArguments 복원(hexa run modules/probe.hexa) + heal_infra 이전 로직 복원. probe 는 다시 stage0 락에 종속 — 다른 agent 작업 중이면 재발.
+
 @__raw__
 2026-04-20 03:26:02 auth-heal OK=0 FAIL=0 SKIP=3 tail=...GWC0AAA
 2026-04-20 03:27:09 auth-heal OK=2 FAIL=0 SKIP=1 tail=...GWC0AAA
@@ -562,3 +586,4 @@
 2026-04-21 02:38:52 airgenome-auth sync local_ok=13 remote_ok=26 remote_fail=0 remote_skip=26
 2026-04-21 03:09:31 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
 2026-04-21 03:40:09 airgenome-auth sync local_ok=13 remote_ok=26 remote_fail=0 remote_skip=26
+2026-04-21 04:10:39 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
