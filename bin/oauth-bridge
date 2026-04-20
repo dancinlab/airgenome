@@ -12,8 +12,13 @@
 #   bin/oauth-bridge self-test
 #
 # Env:
-#   OAUTH_QUEUE      queue 파일 (default: ~/.airgenome/oauth-queue)
-#   OAUTH_WHITELIST  허용 URL prefix (공백구분, default: "https://claude.ai https://console.anthropic.com")
+#   OAUTH_QUEUE        queue 파일 (default: ~/.airgenome/oauth-queue)
+#   OAUTH_WHITELIST    허용 URL prefix (공백구분)
+#   OAUTH_TUNNEL_HOST  OAuth callback 포트 forward 대상 (default: ubu2-d)
+#                       URL 의 redirect_uri=localhost:<port> 를 자동 파싱해 `ssh -L
+#                       <port>:localhost:<port> <host>` tunnel 5분 spawn — open 전.
+#                       "none" 이면 tunnel skip (Mac-local /login 전용).
+#   OAUTH_TUNNEL_TTL   tunnel 유지 시간 (default: 300s = 5분)
 #
 # 보안: queue 파일 append 는 누구나 가능. 반드시 whitelist prefix 만 open 함.
 # 임의 URL 실행 방지 — 악성 원격 프로세스가 queue 에 `file:///` 같은 걸 쓰는 경우 차단.
@@ -22,9 +27,45 @@ set -uo pipefail
 
 : "${OAUTH_QUEUE:=$HOME/.airgenome/oauth-queue}"
 : "${OAUTH_WHITELIST:=https://claude.ai https://claude.com https://console.anthropic.com https://platform.claude.com https://anthropic.com}"
+: "${OAUTH_TUNNEL_HOST:=ubu2-d}"
+: "${OAUTH_TUNNEL_TTL:=300}"
 
 _usage() {
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# URL 에서 redirect_uri 의 localhost:<port> 파싱. 없으면 빈 문자열.
+# Anthropic OAuth 는 redirect_uri=http%3A%2F%2Flocalhost%3A<port>%2Fcallback 형태.
+# URL-encoded 와 decoded 둘 다 대응.
+_extract_port() {
+    local u=$1 p
+    # URL-encoded (%3A = :, %2F = /)
+    p=$(printf '%s' "$u" | grep -oE 'redirect_uri=[^&]*localhost%3A[0-9]+' | grep -oE '[0-9]+$' | head -1)
+    if [ -z "$p" ]; then
+        p=$(printf '%s' "$u" | grep -oE 'redirect_uri=[^&]*localhost:[0-9]+' | grep -oE '[0-9]+$' | head -1)
+    fi
+    echo "$p"
+}
+
+# port-forward tunnel spawn — 이미 열려있으면 skip. TTL 뒤 auto-kill.
+_ensure_tunnel() {
+    local port=$1
+    [ -z "$port" ] && return 0
+    [ "$OAUTH_TUNNEL_HOST" = "none" ] && return 0
+    # 이미 해당 포트 listen 중? (tunnel 재사용 or 충돌 — skip)
+    if lsof -i ":$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        printf '  tunnel: port %s 이미 listen 중 — skip\n' "$port" >&2
+        return 0
+    fi
+    # ssh -f -N -L 로 daemonize. ExitOnForwardFailure 로 즉시 실패 인지.
+    if ssh -o ConnectTimeout=5 -o ExitOnForwardFailure=yes -o BatchMode=yes \
+           -f -N -L "$port:localhost:$port" "$OAUTH_TUNNEL_HOST" 2>/dev/null; then
+        printf '  tunnel: Mac:%s → %s:%s (TTL=%ss)\n' "$port" "$OAUTH_TUNNEL_HOST" "$port" "$OAUTH_TUNNEL_TTL" >&2
+        # TTL 후 tunnel kill (같은 -L 패턴 매칭).
+        ( sleep "$OAUTH_TUNNEL_TTL" && pkill -f "ssh.*-L $port:localhost:$port" 2>/dev/null; ) &
+    else
+        printf '  tunnel: FAIL → %s (ssh 실패 — Mac-local /login 이어야 함)\n' "$OAUTH_TUNNEL_HOST" >&2
+    fi
 }
 
 _allow() {
@@ -61,6 +102,7 @@ case "$sub" in
         [ $# -ge 2 ] || { echo "usage: oauth-bridge open <url>" >&2; exit 2; }
         url=$2
         if _allow "$url"; then
+            _ensure_tunnel "$(_extract_port "$url")"
             open "$url"
             echo "opened: $url"
         else
@@ -71,7 +113,7 @@ case "$sub" in
     run)
         mkdir -p "$(dirname "$OAUTH_QUEUE")"
         : >> "$OAUTH_QUEUE"
-        echo "oauth-bridge watching $OAUTH_QUEUE (whitelist=$OAUTH_WHITELIST)" >&2
+        echo "oauth-bridge watching $OAUTH_QUEUE (whitelist=$OAUTH_WHITELIST tunnel=$OAUTH_TUNNEL_HOST ttl=${OAUTH_TUNNEL_TTL}s)" >&2
         # -n0: don't replay history on first start. -F: follow even on rotate.
         tail -n0 -F "$OAUTH_QUEUE" 2>/dev/null | while IFS= read -r url; do
             [ -z "$url" ] && continue
@@ -79,6 +121,8 @@ case "$sub" in
             url="${url#"${url%%[![:space:]]*}"}"
             url="${url%"${url##*[![:space:]]}"}"
             if _allow "$url"; then
+                # port-forward 선행 (OAuth callback → container claude).
+                _ensure_tunnel "$(_extract_port "$url")"
                 open "$url" && \
                     printf '[%s] opened: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$url" >&2 || \
                     printf '[%s] open fail: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$url" >&2
