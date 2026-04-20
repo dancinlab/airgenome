@@ -499,7 +499,7 @@
 [interceptor-preempt-header-absent-guard]
 @state: converged
 @date: 2026-04-21
-@commit: (this turn)
+@commit: 743a50b3
 @scope: shared/claudx/interceptor.js (L0 CORE) preemptSwapCheck 헤더 파싱
 @problem: streaming(SSE) / heavy_skip 응답은 `anthropic-ratelimit-*` 헤더가 부재. preemptSwapCheck 는 부재 시 default='0' 로 파싱 → rem=0, lim=1, tokRem=0, tokLim=1 → rPct/tPct 모두 0 → minPct(0) < PREEMPT_HARD_PCT(0.03) → **매 응답마다 preempt_hard** → pool.markExhausted(acct, 300). 자원분배 체크 중 rotations.jsonl 최근 1h 에 251 preempt_hard + 247 heavy_skip 관측. claude10/11 이 5분 주기로 재락되고 현 세션이 해당 계정을 continue 쓰는 구조. 사용자 반복 관찰 "claude10/11 exh=true".
 @decision: freshenUsageCache 와 동일한 가드 — default='-1' 로 바꾸고 `rem < 0 || lim <= 0 || tokRem < 0 || tokLim <= 0` 이면 판정 자체 skip. 헤더 없는 응답은 "정보 없음" = 판정 유보 (기존엔 "남은 quota 0%" 로 오해석).
