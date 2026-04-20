@@ -317,7 +317,18 @@ function markExhausted(name, seconds) {
 
 function clearExhausted(name) {
   const ex = readJSON(EXHAUSTED, {});
-  if (name) delete ex[name]; else for (const k of Object.keys(ex)) delete ex[k];
+  if (name) {
+    delete ex[name];
+  } else {
+    // 2026-04-21: "전부 삭제" → "만료된 것만 정리" 로 변경. zshrc 의 cl 훅이
+    // 호출할 때마다 실제 limit 걸린 계정(until 이 미래)을 지워버려 claude5 부활
+    // → 또 limit → 또 삭제 루프를 만들던 root cause. until<=now 만 제거.
+    const now = Math.floor(Date.now() / 1000);
+    for (const k of Object.keys(ex)) {
+      const u = Number(ex[k] && ex[k].until) || 0;
+      if (!u || u <= now) delete ex[k];
+    }
+  }
   writeJSON(EXHAUSTED, ex);
 }
 
