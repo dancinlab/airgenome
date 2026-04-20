@@ -1179,6 +1179,7 @@ fn print_help() -> void {
     println("EXTERNAL TOOLS (bash, PATH=$AIRGENOME/bin)")
     println("  cx [args]                Claude CLI router (ubu1/ubu2 우선, docker-ssh 기본)")
     println("  cx-core <mode> [args]    L0 minimal Claude exec primitive (local|remote|self-test, probe/slot 0)")
+    println("  tg_bot-core <sub>        L0 minimal Telegram bot primitive (run|send|self-test, hexa/claudx 의존 0)")
     println("  claudx [args]            limit-resilient Claude launcher (12 account pool)")
     println("  claudx-observe           rotation/usage 실시간 추적")
     println("  enq <kind> -- <cmd>      AI-native queue frontend (compute|heavy|gpu slots)")
