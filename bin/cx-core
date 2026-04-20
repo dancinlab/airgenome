@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# L0 CORE — 수정 금지 (nexus/shared/L0.json 등록 예정). 변경 시 PR + L0 갱신.
+# bin/cx-core — Minimal Claude exec primitive. probe/slot/rotate/fallback 0.
+#
+# 왜 분리: bin/cx 는 score-pick / slot semaphore / docker-ssh probe / RTT / genome
+# 로 1300줄. 한 곳만 깨져도 claude 안 뜸. cx-core 는 "주어진 target 으로 무조건
+# claude 를 띄운다" 만 책임. 비상시 사용자가 이것만 호출하면 반드시 작동.
+#
+# Contract:
+#   cx-core local  [--cwd <p>] [--env K=V]... -- <claude args>
+#   cx-core remote --target <ssh_alias>
+#                  [--cwd <p>] [--env K=V]... -- <claude args>
+#   cx-core self-test
+#
+# Dependencies: bash, ssh, env, cd, exec, printf. 외부 도구 0 (jq/awk/node 없음).
+# State files: 0 (hosts.json/infra_state/slot 전부 참조 안 함).
+# Network side-effects: ssh 1회만. probe/rtt 없음.
+#
+# Exit codes:
+#   0       claude exited 0
+#   2       usage error (bad mode, --target missing, ...)
+#   127     claude not found (local) — PATH 문제
+#   255     ssh connect failed
+#   other   claude's own exit code
+
+set -uo pipefail
+
+_usage() {
+    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+_self_test() {
+    # 외부 의존 최소 확인. 네트워크/원격 테스트 제외 (L0 primitive 는 local-only
+    # self-test 만 보장). remote path 는 실 사용 시 자연 검증.
+    local rc=0
+    # 1. bash 구문 OK (여기까지 실행됐으면 PASS)
+    echo "  ✓ bash parse"
+    # 2. 필수 builtin/tool
+    for cmd in env cd exec printf ssh; do
+        if command -v "$cmd" >/dev/null 2>&1 || type "$cmd" >/dev/null 2>&1; then
+            echo "  ✓ $cmd available"
+        else
+            echo "  ✗ $cmd missing" >&2
+            rc=1
+        fi
+    done
+    # 3. claude resolvable
+    if command -v claude >/dev/null 2>&1; then
+        echo "  ✓ claude in PATH ($(command -v claude))"
+    else
+        echo "  ! claude NOT in PATH (local mode will fail with 127)" >&2
+    fi
+    # 4. --help dry-run
+    "$0" --help >/dev/null 2>&1 || { echo "  ✗ --help failed" >&2; rc=1; }
+    echo "  ✓ --help OK"
+    echo ""
+    [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
+    return $rc
+}
+
+mode="${1:-}"
+case "$mode" in
+    -h|--help|help|"")
+        _usage; exit 0 ;;
+    self-test)
+        _self_test; exit $? ;;
+    local|remote)
+        shift ;;
+    *)
+        echo "cx-core: unknown mode '$mode' (need: local|remote|self-test|--help)" >&2
+        exit 2 ;;
+esac
+
+cwd=""
+target=""
+envs=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --cwd)    [ $# -ge 2 ] || { echo "cx-core: --cwd needs value" >&2; exit 2; }
+                  cwd="$2"; shift 2 ;;
+        --target) [ $# -ge 2 ] || { echo "cx-core: --target needs value" >&2; exit 2; }
+                  target="$2"; shift 2 ;;
+        --env)    [ $# -ge 2 ] || { echo "cx-core: --env needs KEY=VAL" >&2; exit 2; }
+                  envs+=("$2"); shift 2 ;;
+        --)       shift; break ;;
+        -*)       echo "cx-core: unknown flag '$1'" >&2; exit 2 ;;
+        *)        break ;;
+    esac
+done
+
+if [ "$mode" = "local" ]; then
+    if [ -n "$cwd" ]; then
+        cd "$cwd" || { echo "cx-core: cd '$cwd' failed" >&2; exit 2; }
+    fi
+    # env 주입 후 claude exec. `command claude` 로 shell alias/function 우회.
+    if [ ${#envs[@]} -gt 0 ]; then
+        exec env "${envs[@]}" command claude "$@"
+    fi
+    exec command claude "$@"
+fi
+
+# ── remote mode ──────────────────────────────────────────────────
+[ -n "$target" ] || { echo "cx-core: --target required for remote mode" >&2; exit 2; }
+
+inner=""
+[ -n "$cwd" ] && inner="cd $(printf '%q' "$cwd") && "
+for kv in ${envs[@]+"${envs[@]}"}; do
+    [ -z "$kv" ] && continue
+    # KEY=VAL 그대로 주입. VAL 은 이미 사용자 책임이지만 안전하게 인용.
+    _k="${kv%%=*}"
+    _v="${kv#*=}"
+    inner+="${_k}=$(printf '%q' "${_v}") "
+done
+# claude + args. printf %q 로 각 arg 안전 인코딩.
+inner+="claude"
+for a in "$@"; do
+    inner+=" $(printf '%q' "$a")"
+done
+
+# tty 감지 → -t/-T. stdin tty 면 interactive (-t), 아니면 pipe-safe (-T).
+if [ -t 0 ]; then
+    ssh_flag=-t
+else
+    ssh_flag=-T
+fi
+
+# ServerAliveInterval=15 → TCP stall (stream freeze) 시 keepalive.
+# ConnectTimeout=10 → 죽은 호스트에서 오래 안 매달림.
+# ControlMaster/Path=no → L0 primitive 는 multiplexing 의존 X (stale socket 회피).
+exec ssh \
+    -o ConnectTimeout=10 \
+    -o ServerAliveInterval=15 \
+    -o ServerAliveCountMax=6 \
+    -o TCPKeepAlive=yes \
+    -o ControlMaster=no \
+    -o ControlPath=none \
+    "$ssh_flag" "$target" "$inner"
