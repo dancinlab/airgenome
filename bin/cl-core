@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# L0 CORE — chflags uchg 후 수정 금지. 변경 시 `chflags nouchg`.
+# bin/cl-core — Minimal `claude` launcher. claudx/cx/pool/rotation/interceptor 우회.
+#
+# 왜 분리: cl → zshrc claude() fn → claudx-loop → claudx → pool.js/interceptor.js →
+# cx → score/slot/probe → ssh/docker → real claude. 10-layer 체인 중 하나만
+# 깨져도 claude 안 뜸. cl-core 는 "단일 계정 + 바로 exec claude" 만. 계정 rotation
+# 문제, pool empty, interceptor 버그, cx probe 실패, ssh 타임아웃 전부 무관.
+#
+# Contract:
+#   cl-core [args...]      CLAUDE_CONFIG_DIR (default ~/.claude) 로 claude 직접 실행
+#   cl-core --real [args]  airgenome/bin/claude shim 도 우회 → real binary 직격
+#   cl-core self-test
+#
+# Env:
+#   CLAUDE_CONFIG_DIR    Claude 인증 디렉토리 (default: $HOME/.claude — Mac system keychain)
+#   CL_CORE_REAL_CLAUDE  real claude binary path (default: PATH 탐색으로 shim 아닌 첫 것)
+#
+# Dependencies: bash + real claude binary. 외부도구 0.
+# State files: 0. Network: claude 가 직접 Anthropic API.
+#
+# Exit codes:
+#   claude 의 exit code 그대로. real claude 못 찾으면 127.
+
+set -uo pipefail
+
+_usage() {
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+_find_real_claude() {
+    # CL_CORE_REAL_CLAUDE override 우선
+    if [ -n "${CL_CORE_REAL_CLAUDE:-}" ] && [ -x "$CL_CORE_REAL_CLAUDE" ]; then
+        echo "$CL_CORE_REAL_CLAUDE"; return 0
+    fi
+    # PATH 순회 — airgenome/bin/claude shim 은 skip
+    local self_dir
+    self_dir=$(cd "$(dirname "$0")" && pwd)
+    local shim="$self_dir/claude"
+    IFS=':' read -ra _paths <<< "$PATH"
+    for p in "${_paths[@]}"; do
+        local cand="$p/claude"
+        [ -x "$cand" ] || continue
+        local resolved
+        resolved=$(readlink -f "$cand" 2>/dev/null || realpath "$cand" 2>/dev/null || echo "$cand")
+        local shim_resolved
+        shim_resolved=$(readlink -f "$shim" 2>/dev/null || realpath "$shim" 2>/dev/null || echo "$shim")
+        if [ "$resolved" != "$shim_resolved" ]; then
+            echo "$cand"; return 0
+        fi
+    done
+    return 1
+}
+
+_self_test() {
+    local rc=0
+    echo "  ✓ bash parse"
+    local r
+    if r=$(_find_real_claude); then
+        echo "  ✓ real claude = $r"
+    else
+        echo "  ✗ real claude not found in PATH (excluding shim)" >&2
+        rc=1
+    fi
+    local cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    if [ -d "$cfg" ]; then
+        echo "  ✓ CLAUDE_CONFIG_DIR = $cfg (exists)"
+    else
+        echo "  ! CLAUDE_CONFIG_DIR = $cfg (not a directory — claude may fail auth)" >&2
+    fi
+    [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
+    return $rc
+}
+
+real_mode=0
+if [ "${1:-}" = "--real" ]; then
+    real_mode=1
+    shift
+fi
+
+case "${1:-}" in
+    -h|--help|help)
+        _usage; exit 0 ;;
+    self-test)
+        _self_test; exit $? ;;
+esac
+
+# 기본 config dir — 사용자가 override 가능.
+: "${CLAUDE_CONFIG_DIR:=$HOME/.claude}"
+export CLAUDE_CONFIG_DIR
+
+if [ "$real_mode" = "1" ]; then
+    # shim 우회 — real claude 직격. .session_defaults 주입 없음.
+    real=$(_find_real_claude) || { echo "cl-core: real claude not found" >&2; exit 127; }
+    exec "$real" --dangerously-skip-permissions "$@"
+fi
+
+# default — shim 경로 유지 (.session_defaults 주입 유지). command 로 shell function 우회.
+exec command claude --dangerously-skip-permissions "$@"
