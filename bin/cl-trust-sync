@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""cl-trust-sync — Propagate hasTrustDialogAccepted=True across every claudx pool home.
+
+claudx rotates across ~/.claude-claudeN pool homes. Each home keeps its own
+.claude.json (settings.json is symlinked and shared; .claude.json is not). Trust
+state lives in .claude.json, so without syncing the user sees the trust prompt
+every time the pool lands on a fresh home.
+
+Usage:
+    cl-trust-sync                 # dry-run summary
+    cl-trust-sync --apply         # write changes (creates *.trustfix.bak-<ts>)
+    cl-trust-sync --apply --add /extra/path   # include additional trusted path
+
+Default trusted paths: {core,Dev,dev}/{airgenome,nexus,n6-architecture,
+hexa-lang,hexa-os,anima,contact,data,papers,void} + ~, ~/mango.
+"""
+import argparse
+import glob
+import json
+import os
+import shutil
+import sys
+import time
+
+OWN_BASES = [
+    "/Users/ghost/core",
+    "/Users/ghost/Dev",
+    "/Users/ghost/dev",
+]
+OWN_SUBDIRS = [
+    "airgenome", "anima", "contact", "data", "hexa-lang", "hexa-os",
+    "n6-architecture", "nexus", "papers", "void",
+]
+EXTRA_PATHS = [
+    "/Users/ghost",
+    "/Users/ghost/mango",
+]
+
+
+def default_trusted():
+    paths = set(EXTRA_PATHS)
+    for base in OWN_BASES:
+        for sub in OWN_SUBDIRS:
+            paths.add(f"{base}/{sub}")
+    return paths
+
+
+def iter_homes():
+    for p in sorted(glob.glob(os.path.expanduser("~/.claude-claude*"))):
+        yield p
+    yield os.path.expanduser("~")
+
+
+def patch_file(path, trusted, trusted_roots, apply):
+    with open(path) as f:
+        data = json.load(f)
+    projects = data.setdefault("projects", {})
+    changes = []
+
+    for p in trusted:
+        if p not in projects:
+            projects[p] = {
+                "hasTrustDialogAccepted": True,
+                "allowedTools": [],
+                "history": [],
+                "mcpContextUris": [],
+                "mcpServers": {},
+                "enabledMcpjsonServers": [],
+                "disabledMcpjsonServers": [],
+                "hasClaudeMdExternalIncludesApproved": False,
+                "hasClaudeMdExternalIncludesWarningShown": False,
+            }
+            changes.append(f"+{p}")
+        elif not projects[p].get("hasTrustDialogAccepted", False):
+            projects[p]["hasTrustDialogAccepted"] = True
+            changes.append(f"~{p}")
+
+    for p, v in projects.items():
+        if not isinstance(v, dict) or p in trusted:
+            continue
+        if p.startswith(trusted_roots) or p == "/Users/ghost":
+            if not v.get("hasTrustDialogAccepted", False):
+                v["hasTrustDialogAccepted"] = True
+                changes.append(f"~{p}")
+
+    if changes and apply:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = f"{path}.trustfix.bak-{stamp}"
+        shutil.copy2(path, backup)
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+        return changes, backup
+    return changes, None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
+    ap.add_argument("--add", action="append", default=[], help="extra path to trust")
+    args = ap.parse_args()
+
+    trusted = default_trusted() | set(args.add)
+    trusted_roots = tuple(OWN_BASES) + ("/Users/ghost/mango",)
+
+    total_changes = 0
+    patched_homes = 0
+    for home in iter_homes():
+        path = os.path.join(home, ".claude.json")
+        if not os.path.isfile(path):
+            continue
+        try:
+            changes, backup = patch_file(path, trusted, trusted_roots, args.apply)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"SKIP {path}: {e}", file=sys.stderr)
+            continue
+        if changes:
+            patched_homes += 1
+            total_changes += len(changes)
+            head = os.path.basename(home) or "HOME"
+            status = "PATCHED" if args.apply else "WOULD PATCH"
+            print(f"{status} {head} ({len(changes)} ch)" + (f" → {backup}" if backup else ""))
+
+    mode = "applied" if args.apply else "dry-run (pass --apply to write)"
+    print(f"\n{mode}: {patched_homes} homes, {total_changes} total changes")
+
+
+if __name__ == "__main__":
+    main()

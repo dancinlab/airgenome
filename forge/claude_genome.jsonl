@@ -22799,3 +22799,8 @@ cx: docker-ssh → ubu-d (host sshd bypass)
 {"ts":"2026-04-20T18:07:32Z","host":"mac","duration_s":8401,"exit":137,"rtt_ms":0}
 {"ts":"2026-04-20T18:07:32Z","host":"mac","duration_s":9945,"exit":137,"rtt_ms":232}
 {"ts":"2026-04-20T18:12:04Z","host":"mac","duration_s":8,"exit":0,"rtt_ms":285}
+{"ts":"2026-04-20T18:58:35Z","host":"ubu2","duration_s":3056,"exit":255,"rtt_ms":270}
+{"ts":"2026-04-20T19:00:27Z","host":"ubu2","duration_s":0,"exit":1,"rtt_ms":363}
+{"ts":"2026-04-20T19:02:43Z","host":"mac","duration_s":11,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:02:47Z","host":"mac","duration_s":8,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:02:48Z","host":"mac","duration_s":22,"exit":0,"rtt_ms":0}
