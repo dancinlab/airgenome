@@ -516,7 +516,7 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
         // PATH 에 airgenome/bin 추가 → claude shim 경유 → session_defaults 주입.
         cmd = "ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 mac "
             + "'bash -lc \"" + ag_cwd + " && export " + ag_loadgate_off + " " + ag_path_prefix + ":\\$PATH; timeout " + timeout_s + " /Users/ghost/Dev/airgenome/bin/claudx -p "
-            + "\\\"$(cat '" + mac_tmp + "')\\\" --max-turns 1 2>&1\"' 2>&1; echo _RC_=$?"
+            + "\\\"$(cat '" + mac_tmp + "')\\\" --max-turns 12 2>&1\"' 2>&1; echo _RC_=$?"
     } else if dispatch_mode == "cx" {
         // Mac bot → local claudx (pool rotation + cx auto-pick, no host force).
         // session_defaults 자동 주입 위해 airgenome/bin 을 PATH 선두 + CWD=airgenome.
@@ -525,11 +525,11 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
         if agroot != "" { claudx_bin = agroot + "/bin/claudx" }
         cmd = "(" + ag_cwd + " && export " + ag_loadgate_off + " " + ag_path_prefix + ":$PATH && '"
             + timeout_bin + "' " + timeout_s + " '" + claudx_bin + "' -p "
-            + "\"$(cat '" + tmp + "')\" --max-turns 1 2>&1); echo _RC_=$?"
+            + "\"$(cat '" + tmp + "')\" --max-turns 12 2>&1); echo _RC_=$?"
     } else {
         // dispatch=cl (Mac 전용 경로 — Linux bot 은 cx 권장).
         cmd = "NO_CLAUDX=1 timeout " + timeout_s + " '" + claude + "'"
-            + " -p \"$(cat '" + tmp + "')\" --max-turns 1 2>&1; echo _RC_=$?"
+            + " -p \"$(cat '" + tmp + "')\" --max-turns 12 2>&1; echo _RC_=$?"
     }
     cmd = cmd + "; rm -f '" + tmp + "' 2>/dev/null"
     let out = exec(cmd)
