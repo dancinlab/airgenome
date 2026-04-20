@@ -1,6 +1,31 @@
 # airgenome .convergence — 수렴 attr 기록
 # format: single-file, 엔트리 단위로 @state 로 트래킹. JSON/JSONL/xattr 금지.
 
+[claude-settings-wildcards-init-sync]
+@state: converged
+@date: 2026-04-20
+@scope: ~/.claude/settings.json (user-level) + bin/airgenome-init sync_claude_settings() + .claude/settings.json (project, PreToolUse hooks removed) + modules/fs_write.hexa (removed) + run.hexa (fs-write dispatch removed)
+@supersedes: [cl-no-bypass-airgenome-only] — that entry's fs-write escape hatch turned out unnecessary (user doesn't touch .claude/hooks/agents/commands) and bypassPermissions turned out unreliable (still prompts for sensitive paths AND adds a separate "additional approval" step in the TUI that is more annoying than useful).
+@decision: Converge on wildcard-based allow list. No defaultMode: bypassPermissions anywhere. Keep only force-push in deny. Let airgenome-init enforce this shape on every mac init run.
+@settings-shape:
+  permissions:
+    allow: ["*", "Bash", "Bash(*)", "Edit", "Edit(*)", "ExitPlanMode", "Glob", "Grep", "NotebookEdit", "Read", "Read(*)", "SlashCommand", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write", "Write(*)", "mcp__*"]
+    deny: ["Bash(git push -f*)", "Bash(git push --force*)", "Bash(git push * -f*)", "Bash(git push * --force*)", "Bash(git push * +*)"]
+    additionalDirectories: ["/"]
+  (no defaultMode, no hooks)
+@changes:
+  - bin/airgenome-init: new sync_claude_settings() called by init_mac. Creates settings if missing; otherwise jq-merges (union of allow/deny/additionalDirectories, strips defaultMode if it's "bypassPermissions"). Backup written as .bak.YYYYMMDD-HHMMSS.
+  - .claude/settings.json (project airgenome): removed entire hooks section. Deny list retained (covers .py/.rs/.sh/.c hexa-only guard via Write(**/*.py) etc).
+  - .claude/hooks/enforce_dist: deleted. Consequence: Mac-local hexa is no longer blocked by PreToolUse — rely on stability_monitor SIGKILL as the reactive guard.
+  - modules/fs_write.hexa: deleted. run.hexa fs-write dispatch: removed. (User doesn't write to sensitive .claude/** paths anyway.)
+@why:
+  - bypassPermissions is leaky: hardcoded sensitive-path check (.claude/hooks/**, agents/**, commands/**, CLAUDE.md) still prompts. User reported a second "additional approval" gate in bypass mode.
+  - PreToolUse enforce_dist traded one class of prompt (Mac heavy compute) for reactive SIGKILL protection in stability_monitor. User explicitly opted for the reactive approach.
+  - fs-write solved a problem (writing to sensitive paths) that doesn't exist once the paths are unused.
+@tradeoff: Mac-local hexa is no longer blocked preemptively. If Claude runs a heavy hexa from Mac, stability_monitor catches runaways at free_mb<500 + rss>5GB (existing guard). Acceptable since the user already carries stability_monitor as the load-bearing safety net.
+@idempotent-apply: `airgenome init --target=mac` reapplies the wildcard allow + force-push deny + additionalDirectories=/, regardless of prior state. Run after reinstall or settings drift.
+@rollback: revert this commit; restore the .bak.20260420-* settings files on affected projects; re-add PreToolUse hooks to project settings and restore .claude/hooks/enforce_dist from git history.
+
 [cl-no-bypass-airgenome-only]
 @state: converged
 @date: 2026-04-20
@@ -335,3 +360,5 @@
 2026-04-20 19:00:46 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 19:31:16 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 20:01:49 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 20:32:20 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 21:02:50 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0

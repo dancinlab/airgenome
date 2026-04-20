@@ -253,10 +253,64 @@ init_mac() {
         warn "실패한 label: ${failed_labels[*]}"
     fi
 
+    # ── Claude Code user-level settings 동기화 ────────────────────────────
+    # 2026-04-20 cl-no-bypass-airgenome-only convergence 후속.
+    # allow 는 와일드카드로 넓게, deny 는 force-push 만, additionalDirectories=["/"]
+    # defaultMode=bypassPermissions 는 명시적으로 제거 (센시티브 경로 프롬프트는
+    # 하드코드라 bypass 로 못 막는데다 추가 승인구간 생겨 귀찮음 — 와일드카드 allow
+    # 로 커버).
+    sync_claude_settings
+
     # 선택: docker_authorized_keys SSOT 존재 확인 (원격 단계에서 사용).
     if [ ! -r "$HOME/.airgenome/docker_authorized_keys" ]; then
         warn "~/.airgenome/docker_authorized_keys 없음 — 원격 컨테이너 sshd pubkey 가 누락될 수 있음"
     fi
+}
+
+sync_claude_settings() {
+    local settings="$HOME/.claude/settings.json"
+    local required_allow='["*","Bash","Bash(*)","Edit","Edit(*)","ExitPlanMode","Glob","Grep","NotebookEdit","Read","Read(*)","SlashCommand","Task","TodoWrite","WebFetch","WebSearch","Write","Write(*)","mcp__*"]'
+    local required_deny='["Bash(git push -f*)","Bash(git push --force*)","Bash(git push * -f*)","Bash(git push * --force*)","Bash(git push * +*)"]'
+
+    mkdir -p "$(dirname "$settings")"
+    if [ ! -f "$settings" ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+            log "[dry-run] Claude settings 신규 생성 예정: $settings"
+            return 0
+        fi
+        jq -n --argjson ra "$required_allow" --argjson rd "$required_deny" '{
+            permissions: {
+                allow: $ra,
+                deny: $rd,
+                additionalDirectories: ["/"]
+            }
+        }' > "$settings"
+        ok "Claude settings 신규 생성: $settings"
+        return 0
+    fi
+
+    if [ "$DRY_RUN" = "1" ]; then
+        log "[dry-run] Claude settings 머지 예정: $settings"
+        return 0
+    fi
+    local backup="$settings.bak.$(date +%Y%m%d-%H%M%S)"
+    cp "$settings" "$backup" 2>/dev/null || true
+
+    if ! jq --argjson ra "$required_allow" --argjson rd "$required_deny" '
+        .permissions = (.permissions // {}) |
+        .permissions.allow = ((.permissions.allow // []) + $ra | unique) |
+        .permissions.deny = ((.permissions.deny // []) + $rd | unique) |
+        .permissions.additionalDirectories = (((.permissions.additionalDirectories // []) + ["/"]) | unique) |
+        if (.permissions.defaultMode // "") == "bypassPermissions" then .permissions |= del(.defaultMode) else . end
+    ' "$settings" > "$settings.tmp"; then
+        err "Claude settings 머지 실패 (jq error) — 원본 유지"
+        rm -f "$settings.tmp"
+        step_fail "claude-settings-merge"
+        return 1
+    fi
+    mv "$settings.tmp" "$settings"
+    ok "Claude settings 머지: $settings (backup: $backup)"
+    step_pass
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
