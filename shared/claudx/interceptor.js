@@ -245,7 +245,10 @@ function todayCostUSD() {
 
 // Title lock — stdout 의 OSC 0;...\007 / 1;... / 2;... 이스케이프 필터
 // claude TUI 가 session 중 title 덮어쓰는 것 방지.
-if (TITLE_LOCK && process.stdout && typeof process.stdout.write === 'function') {
+// 2026-04-21: isTTY 가드 추가 — stdout 이 pipe/file 로 redirect 될 때는 title
+// escape 를 섞으면 JSON.parse 등 파이프 소비자가 깨짐 (airgenome-auth doctor
+// 가 node -e 결과 파싱 실패 재현). TUI 에만 필요한 기능이므로 TTY 일 때만 주입.
+if (TITLE_LOCK && process.stdout && process.stdout.isTTY && typeof process.stdout.write === 'function') {
   const cwdName = path.basename(process.cwd());
   const origWrite = process.stdout.write.bind(process.stdout);
   const TITLE_RE = /\x1B\]([012]);[^\x07\x1B]*(?:\x07|\x1B\\)/g;

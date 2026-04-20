@@ -5,6 +5,13 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# 2026-04-21: 호출 shell 의 NODE_OPTIONS/BUN_OPTIONS 는 claudx interceptor +
+# oauth-monitor 를 --require 로 주입해 둔 상태일 수 있음. preload 는 테스트
+# 모듈이 process.env 를 재설정하기 **전에** 실행되므로, 경로/상태 캐시가
+# 테스트의 temp dir 과 어긋나 ENOENT 같은 환경 누출 발생. 테스트 프로세스는
+# preload 없이 깨끗하게 띄운다.
+unset NODE_OPTIONS BUN_OPTIONS
+
 total_pass=0
 total_fail=0
 suites_fail=0

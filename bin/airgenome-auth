@@ -355,7 +355,7 @@ cmd_health_stats() {
         return 0
     fi
     local cutoff; cutoff=$(($(date +%s) - days * 86400))
-    printf '%-12s %-8s %-8s %-8s %-8s\n' "acct" "refresh" "rotate" "revoke" "drift"
+    printf '%-12s %-8s %-8s %-8s %-8s %-8s\n' "acct" "refresh" "rotate" "revoke" "drift" "oauth"
     jq -rs --argjson cutoff "$cutoff" '
       [ .[] | select(((.ts // "1970-01-01T00:00:00Z") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $cutoff) ]
       | group_by(.acct // "<none>")
@@ -364,12 +364,13 @@ cmd_health_stats() {
           refresh: (map(select(.event=="refresh")) | length),
           rotate:  (map(select(.event=="rotate"))  | length),
           revoke:  (map(select(.event=="revoke"))  | length),
-          drift:   (map(select(.event=="drift"))   | length)
+          drift:   (map(select(.event=="drift"))   | length),
+          oauth:   (map(select(.event=="oauth_request")) | length)
         })
       | sort_by(.acct)
-      | .[] | "\(.acct)\t\(.refresh)\t\(.rotate)\t\(.revoke)\t\(.drift)"
-    ' "$logfile" 2>/dev/null | while IFS=$'\t' read -r a r o v d; do
-        printf '%-12s %-8s %-8s %-8s %-8s\n' "$a" "$r" "$o" "$v" "$d"
+      | .[] | "\(.acct)\t\(.refresh)\t\(.rotate)\t\(.revoke)\t\(.drift)\t\(.oauth)"
+    ' "$logfile" 2>/dev/null | while IFS=$'\t' read -r a r o v d oa; do
+        printf '%-12s %-8s %-8s %-8s %-8s %-8s\n' "$a" "$r" "$o" "$v" "$d" "$oa"
     done
     return 0
 }
