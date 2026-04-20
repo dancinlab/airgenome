@@ -712,23 +712,76 @@ fn run_local(local_cmd: str, timeout_s: int) -> str {
     return out.trim()
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  AIRGENOME-CHAT INTEGRATION (S4)
+// ═══════════════════════════════════════════════════════════════════════
+// airgenome-chat 가 SSOT — TG 봇은 chat_id + 메시지 텍스트만 전달하고
+// dispatch / 메타 명령(ls, new, switch, ...) 모두 위임. claudx pool rotation
+// 그대로 활용 (계정 핀 X). 자체 jsonl 로 history 보유 → multi-turn 컨텍스트.
+
+fn chat_bin() -> str {
+    let agroot = env("AIRGENOME")
+    let mut root = agroot
+    if root == "" { root = HOME + "/Dev/airgenome" }
+    return root + "/bin/airgenome-chat"
+}
+
+// 메타 명령 (stream X, 짧은 응답). e.g. ls/new/switch/del/title/show/recap.
+fn ag_chat_meta(chat_id: int, sub: str, args: str) -> str {
+    let bin = chat_bin()
+    let cmd = bin + " " + sub + " " + to_string(chat_id) + " " + args
+    return run_local(cmd, 60)
+}
+
+// dispatch — text 를 stdin 으로 전달, --tg-* 로 streaming editMessage 위임.
+fn dispatch_chat(cfg: Config, chat_id: int, text: str, wait_id: int) -> str {
+    if env("TG_DRY") == "1" {
+        return "[DRY] dispatch: " + text
+    }
+    let bin = chat_bin()
+    // Write text to temp file (heredoc 우회) — airgenome-chat dispatch 는 stdin=text.
+    let tmp = HOME + "/.airgenome/.tg_chat_in." + to_string(ts_epoch())
+    let _ = write_file(tmp, text)
+    let timeout_s = to_string(cfg.dispatch_timeout + 30)
+    // --tg-token 직접 전달 (URL-safe alphanumeric+:_-).
+    let cmd = "cat '" + tmp + "' | timeout " + timeout_s + " '" + bin + "' dispatch "
+        + to_string(chat_id)
+        + " --tg-chat-id " + to_string(chat_id)
+        + " --tg-msg-id " + to_string(wait_id)
+        + " --tg-token " + cfg.token
+        + " 2>&1; rm -f '" + tmp + "' 2>/dev/null"
+    log_line("INFO", "dispatch_chat chat=" + to_string(chat_id) + " wait_id=" + to_string(wait_id))
+    let out = exec(cmd)
+    if to_string(out) == "void" { return "(void)" }
+    return out.trim()
+}
+
 // ─── /help ────────────────────────────────────────────────────────────
 fn cmd_help() -> str {
     let b = ""
     let mut s = b + "airgenome tg bot — 명령어 목록\n"
     s = s + "\n"
-    s = s + "/status           — 전체 호스트 건강 요약 (uptime, load, docker, claude/hexa 수)\n"
-    s = s + "/wake             — 최근 30분 에이전트/백그라운드 활동 요약\n"
-    s = s + "/soak <min>       — runaway guard soak 실행 (기본 15분, 최대 120분)\n"
-    s = s + "/deploy <svc>     — 서비스 재기동 (confirm 토큰 필요)\n"
-    s = s + "                    svc: airgenome-claude | airgenome-runaway | tg-bot\n"
-    s = s + "/logs <host> [N]  — journalctl 최근 N줄 (기본 20)\n"
-    s = s + "                    host: ubu | ubu2 | hetzner\n"
-    s = s + "/tail             — airgenome 1분 상태 요약\n"
-    s = s + "/drill            — 고부하 프로세스 점검 (CPU 상위)\n"
-    s = s + "/help             — 이 도움말\n"
+    s = s + "── 대화 세션 (stateful, multi-turn) ──\n"
+    s = s + "/sessions or /ls   — 세션 리스트 (active 표시)\n"
+    s = s + "/new [라벨]        — 새 세션 생성 + active 전환\n"
+    s = s + "/switch <번호>     — active 세션 변경\n"
+    s = s + "/del <번호>        — 세션 삭제 (active 거부)\n"
+    s = s + "/title <라벨>      — active 세션 이름 변경\n"
+    s = s + "/show [번호]       — 세션 메타 + 최근 turn\n"
+    s = s + "/recap             — active 세션 요약\n"
+    s = s + "/clear or /reset   — fresh 세션 시작 (이전 보존)\n"
     s = s + "\n"
-    s = s + "(/로 시작하지 않는 메시지는 claude -p 로 디스패치됩니다)\n"
+    s = s + "── 호스트/운영 ──\n"
+    s = s + "/status            — 전체 호스트 건강 요약\n"
+    s = s + "/wake              — 최근 30분 활동 요약\n"
+    s = s + "/soak <min>        — runaway guard soak (기본 15분)\n"
+    s = s + "/deploy <svc>      — 서비스 재기동 (confirm 필요)\n"
+    s = s + "/logs <host> [N]   — journalctl 최근 N줄\n"
+    s = s + "/tail              — airgenome 1분 요약\n"
+    s = s + "/drill             — 고부하 프로세스 점검\n"
+    s = s + "/help              — 이 도움말\n"
+    s = s + "\n"
+    s = s + "(/로 시작하지 않는 메시지는 active 세션에 dispatch — 이전 컨텍스트 유지)\n"
     return s
 }
 
@@ -1038,6 +1091,51 @@ fn route_command(cfg: Config, chat_id: int, text: str) -> CmdResult {
     if cmd0 == "drill" {
         return CmdResult { handled: true, reply: cmd_drill() }
     }
+    // ── airgenome-chat 세션 관리 (S4) ──
+    if cmd0 == "sessions" || cmd0 == "ls" {
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "ls", "") }
+    }
+    if cmd0 == "new" {
+        let mut title = ""
+        if len(argv) >= 2 {
+            let mut k = 1
+            while k < len(argv) {
+                if title == "" { title = argv[k] } else { title = title + " " + argv[k] }
+                k = k + 1
+            }
+        }
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "new", shell_quote(title)) }
+    }
+    if cmd0 == "switch" {
+        if len(argv) < 2 { return CmdResult { handled: true, reply: "사용법: /switch <번호 또는 uuid>" } }
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "switch", shell_quote(argv[1])) }
+    }
+    if cmd0 == "del" || cmd0 == "delete" {
+        if len(argv) < 2 { return CmdResult { handled: true, reply: "사용법: /del <번호 또는 uuid>" } }
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "del", shell_quote(argv[1])) }
+    }
+    if cmd0 == "title" {
+        if len(argv) < 2 { return CmdResult { handled: true, reply: "사용법: /title <라벨 텍스트>" } }
+        let mut t = ""
+        let mut k = 1
+        while k < len(argv) {
+            if t == "" { t = argv[k] } else { t = t + " " + argv[k] }
+            k = k + 1
+        }
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "title", shell_quote(t)) }
+    }
+    if cmd0 == "show" {
+        let mut a = ""
+        if len(argv) >= 2 { a = shell_quote(argv[1]) }
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "show", a) }
+    }
+    if cmd0 == "recap" || cmd0 == "summary" {
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "recap", "") }
+    }
+    // /clear /reset 은 /new 와 동일 — fresh 세션 시작
+    if cmd0 == "clear" || cmd0 == "reset" {
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "new", shell_quote("자동 세션")) }
+    }
     // Unknown slash command — be explicit (don't silently dispatch to claude).
     return CmdResult {
         handled: true,
@@ -1068,25 +1166,24 @@ fn handle_update(cfg: Config, u: Update) -> void {
         return
     }
 
-    // Freeform text → claude dispatch. "⏳ 디스패치 중…" 를 먼저 보낸 뒤
-    // 응답이 도착하면 새 메시지 대신 같은 메시지를 editMessageText 로 덮어쓴다.
+    // Freeform text → airgenome-chat dispatch (S4).
+    //   1. wait_id 메시지 전송
+    //   2. dispatch_chat 가 wait_id 를 그대로 streaming editMessage 대상으로 사용
+    //      → claudx stream-json output 의 partial 마다 1s throttle 로 buffer 갱신
+    //   3. 종료 시 dispatch_chat 가 final text 로 마지막 edit + stdout 반환
+    //   여기서는 edit 추가로 안 함 (이미 airgenome-chat 가 final edit 완료).
+    //   단, dispatch_chat stdout (final text 또는 error) 를 로깅 + wait_id 실패 시 fallback.
     let wait_id = send_message_id(cfg.token, u.chat_id, "⏳ 디스패치 중…")
-    let reply = dispatch_claude(cfg, u.text).trim()
+    let reply = dispatch_chat(cfg, u.chat_id, u.text, wait_id).trim()
     let mut body = reply
     if body == "" { body = "(빈 응답)" }
-    if body == "void" { body = "(void)" }   // to_string(void) guard
+    if body == "void" { body = "(void)" }
     if wait_id == 0 {
-        // 초기 sendMessage 실패 — fallback 으로 새 메시지 전송.
+        // wait_id 못 받음 → airgenome-chat 가 streaming editMessage 못 했음.
+        // body (final text) 를 새 메시지로 전송.
         send_chunks(cfg.token, u.chat_id, body)
-    } else if len(body) <= CHUNK_SIZE {
-        let _ = edit_message(cfg.token, u.chat_id, wait_id, body)
-    } else {
-        // 본문이 단일 edit 한계 초과 → 첫 chunk 는 edit, 나머지는 새 메시지로 이어 전송.
-        let first = str_sub(body, 0, CHUNK_SIZE)
-        let rest = str_sub(body, CHUNK_SIZE, len(body))
-        let _ = edit_message(cfg.token, u.chat_id, wait_id, first)
-        send_chunks(cfg.token, u.chat_id, rest)
     }
+    // wait_id != 0 인 경우 airgenome-chat 가 이미 final edit 완료. 추가 작업 X.
     log_line("INFO", "replied uid=" + to_string(u.update_id) + " len=" + to_string(len(body)) + " edit_id=" + to_string(wait_id))
 }
 
