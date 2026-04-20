@@ -481,7 +481,12 @@ while [ $# -gt 0 ]; do
         --docker-ssh)      docker_ssh_mode=1; shift ;;
         --no-docker-ssh)   docker_ssh_mode=0; shift ;;
         --ignore-settings) ignore_settings=1; shift ;;
-        --resume)          resume_id=$2; resume_requested=1; shift 2 ;;
+        --resume)
+            if [ $# -ge 2 ] && [ -n "${2:-}" ] && [ "${2#-}" = "$2" ]; then
+                resume_id=$2; resume_requested=1; shift 2
+            else
+                resume_requested=1; shift
+            fi ;;
         --resume-last)     resume_requested=1; shift ;;
         --sessions)
             # 최근 세션 목록 (JSON lines). 2번째 arg 가 숫자면 limit.
