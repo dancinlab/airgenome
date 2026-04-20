@@ -36,6 +36,8 @@
 #   cx --resume-last           # 직전 세션 (host+cwd+args+env) 복원해 재실행
 #   cx --resume <id>           # 특정 세션 ID 로 복원
 #   cx --resume-last --show    # resume dry-run (복원만 확인)
+#   cx --core [args...]        # L0 bypass — 지능레이어 skip, cx-core 로 직행 (local mac)
+#                              #   cx 깨졌을 때 비상탈출. remote target 필요하면 cx-core 직접 호출.
 #   cx --sessions [N]          # 최근 N (default 10) 세션 JSON lines
 #   cx --session-show [id]     # 세션 상세 (id 생략 시 last)
 #   cx --ignore-settings       # hooks/skills/CLAUDE.md/memory 전부 무시 — 깨끗한 세션
@@ -464,6 +466,14 @@ resume_requested=0
 case "${CX_IGNORE_SETTINGS:-0}" in 1|true|yes|YES|TRUE) ignore_settings=1 ;; *) ignore_settings=0 ;; esac
 while [ $# -gt 0 ]; do
     case "$1" in
+        --core)
+            # L0 bypass — 지능레이어 (pick/probe/slot/rotate) 전부 우회 → cx-core 로 직행 (local mac).
+            # 비상탈출: cx 어딘가 깨졌을 때. remote target 이 필요하면 cx-core 를 직접 호출.
+            shift
+            _core_bin="$(dirname "$0")/cx-core"
+            [ -x "$_core_bin" ] || { echo "cx: --core bypass failed — $_core_bin not found" >&2; exit 2; }
+            exec "$_core_bin" local --cwd "${CALLER_CWD:-$PWD}" -- "$@"
+            ;;
         --force-host)      force_host=$2; shift 2 ;;
         --show)            show_only=true; shift ;;
         --docker)          docker_mode=1; shift ;;
