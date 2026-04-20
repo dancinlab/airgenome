@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# mac_bridge_worker — Mac 측 launchd 가 req/ 변경 감지 시 호출.
+# Linux VM 이 req/UUID.cmd 에 쓴 명령을 실행하고 rsp/UUID.{out,err,rc,done} 로 결과 반환.
+#
+# 보안: 누구든 req/ 에 쓰면 실행됨. /mac_home 마운트 쓰기 권한과 동일 신뢰 경계.
+# 런타임 제한: 명령당 5분 하드 타임아웃.
+
+set -u
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export LANG="en_US.UTF-8"
+
+BRIDGE="$HOME/.claude_mac_bridge"
+REQ="$BRIDGE/req"
+RSP="$BRIDGE/rsp"
+LOG="$BRIDGE/log.jsonl"
+mkdir -p "$REQ" "$RSP"
+
+shopt -s nullglob
+
+for f in "$REQ"/*.cmd; do
+    base="$(basename "$f" .cmd)"
+    running="$REQ/$base.running"
+
+    # Atomic claim — 동시 트리거 대비
+    if ! mv "$f" "$running" 2>/dev/null; then
+        continue
+    fi
+
+    cmd="$(cat "$running")"
+    out="$RSP/$base.out"
+    err="$RSP/$base.err"
+    rcf="$RSP/$base.rc"
+    donef="$RSP/$base.done"
+
+    # 실행 — 5분 하드 타임아웃 (SIGTERM → SIGKILL)
+    bash -c "$cmd" > "$out" 2> "$err" &
+    pid=$!
+    ( sleep 300; kill -TERM "$pid" 2>/dev/null; sleep 2; kill -KILL "$pid" 2>/dev/null ) &
+    wd=$!
+    wait "$pid"; rc=$?
+    kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+
+    printf '%s\n' "$rc" > "$rcf"
+    # done 은 마지막 — Linux client 는 done 존재만 polling
+    : > "$donef"
+
+    rm -f "$running"
+
+    # 감사 로그
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    cmd1="$(head -c 300 "$running" 2>/dev/null; head -c 300 <<<"$cmd")"
+    esc="$(printf '%s' "$cmd" | head -c 300 | tr '\n"' '  ')"
+    printf '{"ts":"%s","id":"%s","rc":%s,"cmd_head":"%s"}\n' "$ts" "$base" "$rc" "$esc" >> "$LOG"
+done
+
+exit 0

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# mac_exec — Linux VM 에서 Mac 에 명령 전달 (file-bridge).
+# 사용:
+#   mac_exec 'launchctl kickstart -k gui/$(id -u)/com.airgenome.stability'
+#   echo 'git push' | mac_exec
+# 환경:
+#   MAC_EXEC_TIMEOUT — polling timeout (default 120s)
+#   MAC_BRIDGE_DIR  — bridge dir (default /mac_home/.claude_mac_bridge)
+# 출력: Mac 측 stdout → 본 stdout, stderr → stderr, 종료코드 전달.
+
+set -u
+
+BRIDGE="${MAC_BRIDGE_DIR:-/mac_home/.claude_mac_bridge}"
+REQ="$BRIDGE/req"
+RSP="$BRIDGE/rsp"
+mkdir -p "$REQ" "$RSP"
+
+if [ "$#" -gt 0 ]; then
+    CMD="$*"
+else
+    CMD="$(cat)"
+fi
+
+if [ -z "${CMD//[[:space:]]/}" ]; then
+    echo "mac_exec: empty command" >&2
+    exit 2
+fi
+
+TIMEOUT="${MAC_EXEC_TIMEOUT:-120}"
+UUID="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM:-0}${RANDOM:-0}"
+REQ_TMP="$REQ/$UUID.cmd.tmp"
+REQ_FINAL="$REQ/$UUID.cmd"
+DONE="$RSP/$UUID.done"
+OUT="$RSP/$UUID.out"
+ERR="$RSP/$UUID.err"
+RC="$RSP/$UUID.rc"
+
+printf '%s\n' "$CMD" > "$REQ_TMP"
+mv "$REQ_TMP" "$REQ_FINAL"
+
+t0=$(date +%s)
+while [ ! -f "$DONE" ]; do
+    sleep 0.2
+    now=$(date +%s)
+    if [ $(( now - t0 )) -ge "$TIMEOUT" ]; then
+        echo "mac_exec: timeout ${TIMEOUT}s id=$UUID (worker not running?)" >&2
+        exit 124
+    fi
+done
+
+[ -s "$OUT" ] && cat "$OUT"
+[ -s "$ERR" ] && cat "$ERR" >&2
+rc="$(cat "$RC" 2>/dev/null || echo 1)"
+
+rm -f "$OUT" "$ERR" "$RC" "$DONE"
+
+exit "$rc"
