@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# bin/airgenome-chat — TG 봇용 stateful conversation manager (SSOT).
+#
+# 왜: TG 봇이 매 메시지마다 독립 claude -p 호출 → 컨텍스트 0. claudx pool
+# rotation 으로 계정이 바뀌므로 ~/.claude-XXX/projects/ 의 session 파일에
+# 의존하면 분실. airgenome 자체가 conversation history 를 jsonl 로 보유 →
+# 어느 계정으로 호출하든 일관된 multi-turn.
+#
+# 데이터 모델:
+#   ~/.airgenome/tg_sessions/<chat_id>/
+#     index.json         {active, sessions:{<uuid>:{title,msgs,tokens_in,tokens_out,...}}}
+#     <uuid>.jsonl       1줄 = 1 turn (role=user|assistant|system|summary)
+#     <uuid>.archive.jsonl  compaction 백업
+#
+# 서브커맨드 (S1 — 메타 관리만, dispatch 는 S2 에서):
+#   ls       <chat>                   세션 리스트 (active 표시)
+#   new      <chat> [title]           새 세션 생성 + active 전환 → uuid 출력
+#   switch   <chat> <num|uuidprefix>  active 변경
+#   del      <chat> <num|uuidprefix>  세션 삭제 (active 거부)
+#   title    <chat> <text...>         active 세션 라벨링
+#   show     <chat> [num|uuidprefix]  세션 메타 + 최근 turn (default=active)
+#   active   <chat>                   active uuid 출력
+#   path     <chat>                   세션 디렉토리 경로
+#   help                              사용법
+#
+# deps: bash, jq, uuidgen (mac/linux 모두 기본).
+
+set -euo pipefail
+
+CHAT_ROOT="${AIRGENOME_TG_SESSIONS:-$HOME/.airgenome/tg_sessions}"
+
+die() { echo "airgenome-chat: $*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ── chat dir bootstrap ──────────────────────────────────────────────
+chat_dir() {
+    local chat=$1
+    [ -n "$chat" ] || die "chat_id required"
+    local d="$CHAT_ROOT/$chat"
+    mkdir -p "$d"
+    if [ ! -f "$d/index.json" ]; then
+        printf '%s\n' '{"active":"","sessions":{}}' > "$d/index.json"
+    fi
+    printf '%s' "$d"
+}
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+new_uuid() {
+    if have uuidgen; then uuidgen | tr '[:upper:]' '[:lower:]'
+    else cat /proc/sys/kernel/random/uuid 2>/dev/null || die "uuidgen unavailable"
+    fi
+}
+
+# Atomic JSON write — write tmp + mv.
+atomic_write() {
+    local path=$1
+    local tmp="${path}.tmp.$$"
+    cat > "$tmp"
+    mv "$tmp" "$path"
+}
+
+# Resolve <num|uuidprefix> → full uuid. num is 1-based index in session list
+# sorted by last_used desc (matches /ls display).
+resolve_session() {
+    local d=$1
+    local key=$2
+    [ -n "$key" ] || die "session id/num required"
+    # numeric: pick by sorted index (last_used desc)
+    if [[ "$key" =~ ^[0-9]+$ ]]; then
+        local uuid
+        uuid=$(jq -r --argjson n "$key" '
+            .sessions
+            | to_entries
+            | sort_by(-(.value.last_used // ""|fromdateiso8601? // 0))
+            | .[$n - 1].key // empty
+        ' "$d/index.json")
+        [ -n "$uuid" ] || die "no session at index $key"
+        printf '%s' "$uuid"
+        return
+    fi
+    # uuid prefix match
+    local matches
+    matches=$(jq -r --arg p "$key" '.sessions | keys[] | select(startswith($p))' "$d/index.json")
+    local count=0
+    while IFS= read -r line; do [ -n "$line" ] && count=$((count + 1)); done <<< "$matches"
+    [ "$count" -eq 1 ] || die "ambiguous or missing session: $key (matches=$count)"
+    printf '%s' "$matches"
+}
+
+# ── commands ────────────────────────────────────────────────────────
+
+cmd_ls() {
+    local chat=$1
+    local d
+    d=$(chat_dir "$chat")
+    local active
+    active=$(jq -r '.active // ""' "$d/index.json")
+    local count
+    count=$(jq -r '.sessions | length' "$d/index.json")
+    if [ "$count" = "0" ]; then
+        echo "(세션 없음 — /new 으로 시작)"
+        return
+    fi
+    echo "세션 목록 (chat=$chat)"
+    echo "─────────────────────────────"
+    jq -r --arg active "$active" '
+        .sessions
+        | to_entries
+        | sort_by(-(.value.last_used // ""|fromdateiso8601? // 0))
+        | to_entries[]
+        | "\((.key + 1)) \(if .value.key == $active then "*" else " " end) [\(.value.value.title // "무제")]  msgs=\(.value.value.msgs // 0)  tok=\(.value.value.tokens_in // 0)/\(.value.value.tokens_out // 0)  \(.value.value.last_used // "?")  uuid=\(.value.key[0:8])"
+    ' "$d/index.json"
+    echo "─────────────────────────────"
+    echo "* = active. 전환: /switch <번호>"
+}
+
+cmd_new() {
+    local chat=$1; shift
+    local title="${*:-무제}"
+    local d
+    d=$(chat_dir "$chat")
+    local uuid
+    uuid=$(new_uuid)
+    local ts
+    ts=$(now_iso)
+    # touch jsonl (empty — system prompt injected at dispatch time)
+    : > "$d/$uuid.jsonl"
+    # update index
+    jq --arg uuid "$uuid" --arg ts "$ts" --arg title "$title" '
+        .active = $uuid
+        | .sessions[$uuid] = {
+            title: $title,
+            created_at: $ts,
+            last_used: $ts,
+            msgs: 0,
+            tokens_in: 0,
+            tokens_out: 0,
+            accounts_used: [],
+            compacted_at: null
+        }
+    ' "$d/index.json" | atomic_write "$d/index.json"
+    echo "✅ 새 세션 생성: [$title]"
+    echo "   uuid=$uuid"
+    echo "   active 전환됨"
+}
+
+cmd_switch() {
+    local chat=$1
+    local key=$2
+    local d
+    d=$(chat_dir "$chat")
+    local uuid
+    uuid=$(resolve_session "$d" "$key")
+    jq --arg uuid "$uuid" '.active = $uuid' "$d/index.json" | atomic_write "$d/index.json"
+    local title
+    title=$(jq -r --arg u "$uuid" '.sessions[$u].title // "무제"' "$d/index.json")
+    echo "🔀 active=[$title] (uuid=${uuid:0:8})"
+}
+
+cmd_del() {
+    local chat=$1
+    local key=$2
+    local d
+    d=$(chat_dir "$chat")
+    local uuid
+    uuid=$(resolve_session "$d" "$key")
+    local active
+    active=$(jq -r '.active // ""' "$d/index.json")
+    if [ "$uuid" = "$active" ]; then
+        die "active 세션은 삭제 불가 — 먼저 /switch 또는 /new"
+    fi
+    local title
+    title=$(jq -r --arg u "$uuid" '.sessions[$u].title // "무제"' "$d/index.json")
+    rm -f "$d/$uuid.jsonl" "$d/$uuid.archive.jsonl"
+    jq --arg uuid "$uuid" 'del(.sessions[$uuid])' "$d/index.json" | atomic_write "$d/index.json"
+    echo "🗑 삭제됨: [$title] (${uuid:0:8})"
+}
+
+cmd_title() {
+    local chat=$1; shift
+    local title="$*"
+    [ -n "$title" ] || die "title text required"
+    local d
+    d=$(chat_dir "$chat")
+    local active
+    active=$(jq -r '.active // ""' "$d/index.json")
+    [ -n "$active" ] || die "active 세션 없음 — /new"
+    jq --arg uuid "$active" --arg title "$title" '.sessions[$uuid].title = $title' \
+        "$d/index.json" | atomic_write "$d/index.json"
+    echo "🏷 라벨: [$title]"
+}
+
+cmd_show() {
+    local chat=$1
+    local key="${2:-}"
+    local d
+    d=$(chat_dir "$chat")
+    local uuid
+    if [ -n "$key" ]; then
+        uuid=$(resolve_session "$d" "$key")
+    else
+        uuid=$(jq -r '.active // ""' "$d/index.json")
+        [ -n "$uuid" ] || die "active 세션 없음"
+    fi
+    local meta
+    meta=$(jq --arg u "$uuid" '.sessions[$u]' "$d/index.json")
+    echo "세션 [$(jq -r '.title // "무제"' <<< "$meta")]"
+    echo "  uuid:        $uuid"
+    echo "  msgs:        $(jq -r '.msgs // 0' <<< "$meta")"
+    echo "  tokens_in:   $(jq -r '.tokens_in // 0' <<< "$meta")"
+    echo "  tokens_out:  $(jq -r '.tokens_out // 0' <<< "$meta")"
+    echo "  created_at:  $(jq -r '.created_at // "?"' <<< "$meta")"
+    echo "  last_used:   $(jq -r '.last_used // "?"' <<< "$meta")"
+    echo "  accounts:    $(jq -r '.accounts_used // [] | join(",")' <<< "$meta")"
+    echo "  compacted:   $(jq -r '.compacted_at // "no"' <<< "$meta")"
+    if [ -f "$d/$uuid.jsonl" ]; then
+        local n
+        n=$(wc -l < "$d/$uuid.jsonl" | tr -d ' ')
+        echo "  jsonl_lines: $n"
+        if [ "$n" -gt 0 ]; then
+            echo "  최근 turn (max 3):"
+            tail -3 "$d/$uuid.jsonl" | jq -r '"    [\(.role)] \(.text[0:120])\(if (.text|length) > 120 then "..." else "" end)"'
+        fi
+    fi
+}
+
+cmd_active() {
+    local chat=$1
+    local d
+    d=$(chat_dir "$chat")
+    jq -r '.active // ""' "$d/index.json"
+}
+
+cmd_path() {
+    local chat=$1
+    chat_dir "$chat"
+    echo
+}
+
+cmd_help() {
+    cat <<'EOF'
+airgenome-chat — TG 봇 stateful conversation manager
+
+서브커맨드:
+  ls       <chat>                   세션 리스트
+  new      <chat> [title]           새 세션 + active 전환
+  switch   <chat> <num|uuidprefix>  active 변경
+  del      <chat> <num|uuidprefix>  세션 삭제 (active 거부)
+  title    <chat> <text>            active 세션 라벨링
+  show     <chat> [num|uuidprefix]  세션 메타 + 최근 turn
+  active   <chat>                   active uuid 출력
+  path     <chat>                   세션 디렉토리 경로
+  help                              이 메시지
+
+스토리지: $AIRGENOME_TG_SESSIONS (default: ~/.airgenome/tg_sessions)
+EOF
+}
+
+# ── dispatch ────────────────────────────────────────────────────────
+sub="${1:-help}"
+shift || true
+
+case "$sub" in
+    ls)      cmd_ls      "$@" ;;
+    new)     cmd_new     "$@" ;;
+    switch)  cmd_switch  "$@" ;;
+    del)     cmd_del     "$@" ;;
+    title)   cmd_title   "$@" ;;
+    show)    cmd_show    "$@" ;;
+    active)  cmd_active  "$@" ;;
+    path)    cmd_path    "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *) die "unknown subcommand: $sub (try: help)" ;;
+esac
