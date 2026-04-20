@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+# bin/airgenome-auth — airgenome 의 auth plane 통제자. 12 계정 headless sync.
+#
+# 핵심: Mac keychain 의 path-hashed credentials entries (SHA256(path)[0:8])
+# 전수 추출 → Mac 내 모든 CLAUDE_CONFIG_DIR (.claude + .claude-claude1..N) 에
+# 로컬 .credentials.json 으로 materialize → 원격 4 호스트 (ubu2/-d, htz/-d)
+# 에 per-account dir 구조 그대로 이식. 원격 rotation 지원.
+#
+# 제약: Anthropic OAuth 최초 consent 1회 per account = 브라우저 불가피.
+# 이후 refreshToken 재사용 → headless 영구.
+#
+# subcommands:
+#   sync                    keychain → Mac local files → 원격 이식 (기본 12 acct)
+#   status [--json]         12 acct × {keychain, 4 remote} 매트릭스
+#   login <name>            CLAUDE_CONFIG_DIR=.claude-<name> claude /login (private-window)
+#   refresh [<name>|--all]  forced token refresh via `claude -p "ok" --max-turns 1`
+#   list                    /Users/ghost/.claude-* 디렉토리 발견된 계정 나열
+#   self-test
+#
+# deps: bash, shasum, security, jq, ssh, scp, tar. (Mac 전용 — security, shasum -a 256)
+
+set -uo pipefail
+
+ROOT="${AIRGENOME_ROOT:-$HOME/Dev/airgenome}"
+LOG_DIR="$HOME/Library/Logs"
+LOG="$LOG_DIR/airgenome-auth.log"
+mkdir -p "$LOG_DIR"
+
+ts()   { date +'%Y-%m-%dT%H:%M:%S'; }
+log()  { printf '[airgenome-auth %s] %s\n' "$(ts)" "$*" | tee -a "$LOG" >&2; }
+
+SSH_OPTS=(-o ConnectTimeout=8 -o BatchMode=yes -o ServerAliveInterval=5)
+REMOTE_HOSTS=(ubu2 ubu2-d hetzner htz-d)
+
+_usage() {
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# ── hash: SHA256(path)[0:8] ──────────────────────────────────────
+_hash_path() {
+    printf '%s' "$1" | shasum -a 256 | awk '{print substr($1,1,8)}'
+}
+
+# ── 계정 목록 — /Users/ghost/.claude-* 디렉토리 존재 기준 ─────────
+_list_accounts() {
+    # default first, 이어서 per-account.
+    if [ -d "$HOME/.claude" ]; then
+        echo "default"
+    fi
+    for d in "$HOME"/.claude-*; do
+        [ -d "$d" ] || continue
+        name="${d##*/.claude-}"
+        # skip false positives: .claude-env-* 류
+        case "$name" in
+            env-*|.*) continue ;;
+        esac
+        echo "$name"
+    done
+}
+
+# ── 계정명 → dir 변환 ─────────────────────────────────────────────
+_acct_dir() {
+    if [ "$1" = "default" ]; then echo "$HOME/.claude"
+    else echo "$HOME/.claude-$1"
+    fi
+}
+
+# ── 계정명 → keychain service name ───────────────────────────────
+_acct_keychain_service() {
+    local dir; dir=$(_acct_dir "$1")
+    if [ "$1" = "default" ]; then
+        echo "Claude Code-credentials"
+    else
+        echo "Claude Code-credentials-$(_hash_path "$dir")"
+    fi
+}
+
+# ── keychain → JSON (없으면 빈 문자열) ───────────────────────────
+_fetch_json() {
+    security find-generic-password -s "$1" -w 2>/dev/null || true
+}
+
+# ── Mac local materialize: keychain → .credentials.json ──────────
+_materialize_local() {
+    local name=$1 service json dir
+    service=$(_acct_keychain_service "$name")
+    json=$(_fetch_json "$service")
+    [ -z "$json" ] && return 1
+    # 유효성 — accessToken 있는지
+    echo "$json" | jq -e '.claudeAiOauth.accessToken' >/dev/null 2>&1 || return 1
+    dir=$(_acct_dir "$name")
+    mkdir -p "$dir"
+    printf '%s\n' "$json" > "$dir/.credentials.json.tmp"
+    chmod 600 "$dir/.credentials.json.tmp"
+    mv "$dir/.credentials.json.tmp" "$dir/.credentials.json"
+    return 0
+}
+
+# ── 한 계정의 credentials 원격 이식 ──────────────────────────────
+_sync_one_to_remote() {
+    local name=$1 host=$2 local_file remote_dir
+    local_file="$(_acct_dir "$name")/.credentials.json"
+    [ -f "$local_file" ] || return 2
+    # 원격 dir 은 ssh-user HOME 기준 상대 경로. ~ 경유 sh 확장.
+    if [ "$name" = "default" ]; then
+        remote_dir=".claude"
+    else
+        remote_dir=".claude-$name"
+    fi
+    # stream 이식 (tar 로 mtime + perm 보존). inline cleanup — trap RETURN 는
+    # local 변수 scope 가 unwind 된 뒤 실행돼 set -u 와 충돌.
+    local TMP; TMP=$(mktemp -d)
+    mkdir -p "$TMP/$remote_dir"
+    cp "$local_file" "$TMP/$remote_dir/.credentials.json"
+    chmod 600 "$TMP/$remote_dir/.credentials.json"
+    local rc=1
+    if tar -C "$TMP" -cf - "$remote_dir" 2>/dev/null \
+       | ssh "${SSH_OPTS[@]}" "$host" \
+           "tar -C \"\$HOME\" -xf - --overwrite && chmod 600 \"\$HOME/$remote_dir/.credentials.json\"" \
+           2>/dev/null; then
+        rc=0
+    fi
+    rm -rf "$TMP"
+    return $rc
+}
+
+# ── cmd: sync ────────────────────────────────────────────────────
+cmd_sync() {
+    local accts; accts=$(_list_accounts)
+    local total_acct=0 ok_acct=0 miss_acct=0
+    # 1) Mac local materialize
+    log "step1: Mac local materialize"
+    local ok_local=() missing_local=()
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        total_acct=$((total_acct+1))
+        if _materialize_local "$name"; then
+            ok_local+=("$name")
+            ok_acct=$((ok_acct+1))
+        else
+            missing_local+=("$name")
+            miss_acct=$((miss_acct+1))
+        fi
+    done <<< "$accts"
+    log "  local: OK=${#ok_local[@]} MISS=${#missing_local[@]}"
+    [ ${#missing_local[@]} -gt 0 ] && log "  missing: ${missing_local[*]}"
+
+    # 2) 원격 호스트 이식
+    log "step2: remote sync (${#REMOTE_HOSTS[@]} hosts × ${#ok_local[@]} accts)"
+    local REMOTE_OK=0 REMOTE_FAIL=0 REMOTE_SKIP=0
+    for host in "${REMOTE_HOSTS[@]}"; do
+        # 연결 check
+        if ! ssh "${SSH_OPTS[@]}" "$host" true 2>/dev/null; then
+            log "  SKIP $host — unreachable"
+            REMOTE_SKIP=$((REMOTE_SKIP + ${#ok_local[@]}))
+            continue
+        fi
+        local host_ok=0 host_fail=0
+        for name in "${ok_local[@]}"; do
+            if _sync_one_to_remote "$name" "$host"; then
+                host_ok=$((host_ok+1))
+            else
+                host_fail=$((host_fail+1))
+            fi
+        done
+        REMOTE_OK=$((REMOTE_OK + host_ok))
+        REMOTE_FAIL=$((REMOTE_FAIL + host_fail))
+        log "  $host: OK=$host_ok FAIL=$host_fail"
+    done
+    log "summary: local_ok=$ok_acct local_miss=$miss_acct remote_ok=$REMOTE_OK remote_fail=$REMOTE_FAIL remote_skip=$REMOTE_SKIP"
+    # .convergence 기록 (V7)
+    local CONV="$ROOT/.convergence"
+    printf '%s airgenome-auth sync local_ok=%s remote_ok=%s remote_fail=%s remote_skip=%s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$ok_acct" "$REMOTE_OK" "$REMOTE_FAIL" "$REMOTE_SKIP" >> "$CONV" 2>/dev/null || true
+    [ "$REMOTE_OK" -eq 0 ] && [ "$REMOTE_FAIL" -gt 0 ] && return 1
+    return 0
+}
+
+# ── cmd: status ──────────────────────────────────────────────────
+cmd_status() {
+    local as_json=0
+    [ "${1:-}" = "--json" ] && as_json=1
+    local accts; accts=$(_list_accounts)
+    if [ "$as_json" = "1" ]; then
+        echo "["; local first=1
+        while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            [ "$first" = "0" ] && echo ","
+            first=0
+            local svc; svc=$(_acct_keychain_service "$name")
+            local has_kc=false has_local=false
+            [ -n "$(_fetch_json "$svc")" ] && has_kc=true
+            [ -f "$(_acct_dir "$name")/.credentials.json" ] && has_local=true
+            printf '  {"account":"%s","keychain":%s,"local":%s}' \
+                "$name" "$has_kc" "$has_local"
+        done <<< "$accts"
+        echo ""; echo "]"
+        return 0
+    fi
+    # 사람 읽기 모드 — 매트릭스 간단본
+    printf '%-10s %-8s %-8s %s\n' "account" "keychain" "local" "keychain-service"
+    printf '%-10s %-8s %-8s %s\n' "-------" "--------" "-----" "----------------"
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        local svc kc_mark local_mark
+        svc=$(_acct_keychain_service "$name")
+        [ -n "$(_fetch_json "$svc")" ] && kc_mark="OK" || kc_mark="MISS"
+        [ -f "$(_acct_dir "$name")/.credentials.json" ] && local_mark="OK" || local_mark="MISS"
+        printf '%-10s %-8s %-8s %s\n' "$name" "$kc_mark" "$local_mark" "$svc"
+    done <<< "$accts"
+}
+
+# ── cmd: list ────────────────────────────────────────────────────
+cmd_list() {
+    _list_accounts
+}
+
+# ── cmd: login ───────────────────────────────────────────────────
+# private-window 강제 → Safari 프로필 매핑 불필요.
+cmd_login() {
+    local name="${1:-}"
+    [ -z "$name" ] && { echo "usage: airgenome-auth login <name>" >&2; return 2; }
+    local dir; dir=$(_acct_dir "$name")
+    mkdir -p "$dir"
+    log "login: name=$name dir=$dir (private-window via oauth-bridge)"
+    # OAUTH_TUNNEL_HOST=none — Mac-local login 이므로 tunnel 불필요.
+    # claude /login 이 BROWSER 를 쓰지 않고 자기가 직접 브라우저 spawn — 한계.
+    # 따라서 BROWSER=$ROOT/bin/open-on-mac → oauth-bridge 에서 private window.
+    CLAUDE_CONFIG_DIR="$dir" BROWSER="$ROOT/bin/open-on-mac" \
+        AIRGENOME_CLAUDE_SHIM=1 NO_CLAUDX=1 CL_NO_DOCKER=1 \
+        claude /login
+    local rc=$?
+    [ $rc -eq 0 ] && log "  login OK name=$name — running sync..." || log "  login rc=$rc"
+    cmd_sync
+}
+
+# ── cmd: refresh ─────────────────────────────────────────────────
+cmd_refresh() {
+    local target="${1:-}"
+    if [ "$target" = "--all" ] || [ -z "$target" ]; then
+        local accts; accts=$(_list_accounts)
+        local n=0
+        while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            cmd_refresh "$name" || true
+            n=$((n+1))
+        done <<< "$accts"
+        log "refresh --all: touched=$n"
+        return 0
+    fi
+    local dir; dir=$(_acct_dir "$target")
+    log "refresh: $target"
+    AIRGENOME_CLAUDE_SHIM=1 NO_CLAUDX=1 CL_NO_DOCKER=1 CLAUDE_CONFIG_DIR="$dir" \
+        timeout 30 claude -p "ok" --max-turns 1 >/dev/null 2>&1 || \
+        log "  refresh fail — token maybe revoked"
+}
+
+# ── cmd: self-test ───────────────────────────────────────────────
+_self_test() {
+    local rc=0
+    echo "  ✓ bash parse"
+    for c in shasum security jq ssh scp tar; do
+        if command -v "$c" >/dev/null 2>&1; then
+            echo "  ✓ $c available"
+        else
+            echo "  ✗ $c missing" >&2
+            rc=1
+        fi
+    done
+    # hash 검증 — 알려진 값
+    h=$(_hash_path "/Users/ghost/.claude-claude5")
+    if [ "$h" = "7f9319ca" ]; then
+        echo "  ✓ _hash_path 정상 (claude5=7f9319ca)"
+    else
+        echo "  ✗ _hash_path 오동작 (claude5=$h, expected 7f9319ca)" >&2
+        rc=1
+    fi
+    local accts; accts=$(_list_accounts | wc -l | tr -d ' ')
+    echo "  ✓ accounts discovered: $accts"
+    [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
+    return $rc
+}
+
+# ── dispatch ─────────────────────────────────────────────────────
+sub="${1:-}"
+shift || true
+case "$sub" in
+    -h|--help|help|"") _usage; exit 0 ;;
+    self-test)         _self_test; exit $? ;;
+    sync)              cmd_sync; exit $? ;;
+    status)            cmd_status "$@"; exit $? ;;
+    list)              cmd_list; exit $? ;;
+    login)             cmd_login "$@"; exit $? ;;
+    refresh)           cmd_refresh "$@"; exit $? ;;
+    *)                 echo "airgenome-auth: unknown '$sub'" >&2; exit 2 ;;
+esac
