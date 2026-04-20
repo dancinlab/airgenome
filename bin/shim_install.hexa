@@ -1,0 +1,366 @@
+// bin/shim_install.hexa — Layer ②′ shim 설치/검증/센티넬/제거
+//
+// 목적:
+//   ~/.local/bin/claude 를 airgenome bash shim 으로 교체, real claude 를
+//   ~/.local/bin/claude.real 로 보존. .session_defaults 자동 주입이 PATH
+//   무관하게 (절대경로 호출 포함) 100% 적용되도록 함.
+//
+// 서브커맨드:
+//   install    — idempotent 설치 (symlink → shim+real 분리)
+//   verify     — 현 상태 PASS/FAIL 보고
+//   sentinel   — 1-shot drift 검사 + 자동 재설치 (launchd StartInterval 용)
+//   uninstall  — shim 제거 + real 원복
+//
+// Usage:
+//   hexa run bin/shim_install.hexa install
+//   hexa run bin/shim_install.hexa verify
+//   SHIM_DRY_RUN=1 hexa run bin/shim_install.hexa install   # 미리보기
+//
+// 안전:
+//   - cp -L 로 real 복사 검증 후에만 원본 symlink 제거
+//   - shim 배치 후 `claude --version` 실행 검증, 실패 시 자동 롤백
+//   - 비행중 claude 세션 영향 없음 (exec 된 프로세스는 inode 유지)
+//
+// 제약:
+//   - Mac 전용 (darwin). Linux 는 파일 레이아웃 다름 — 별도 처리.
+//   - hexa-lang stage1 quirks 준수 (try/catch X, list.push no-op, void JSON 가드)
+
+let HOME = env("HOME")
+let LOCAL_BIN = HOME + "/.local/bin"
+let CLAUDE_PATH = LOCAL_BIN + "/claude"
+let CLAUDE_REAL = LOCAL_BIN + "/claude.real"
+let VERSIONS_DIR = HOME + "/.local/share/claude/versions"
+let AG_ROOT = HOME + "/Dev/airgenome"
+let SHIM_TEMPLATE = AG_ROOT + "/bin/claude_local_shim"
+let LOG_PATH = HOME + "/.airgenome/shim_sentinel.jsonl"
+
+// ─── util ─────────────────────────────────────────────────────────────
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn sha12(path: str) -> str {
+    // split("") 불안정 — cut 사용
+    return exec("shasum -a 256 " + shq(path) + " 2>/dev/null | awk '{print $1}' | cut -c1-12").trim()
+}
+
+fn sha256(path: str) -> str {
+    return exec("shasum -a 256 " + shq(path) + " 2>/dev/null | awk '{print $1}'").trim()
+}
+
+fn shq(s: str) -> str {
+    // POSIX single-quote escape: ' → '"'"'
+    let parts = s.split("'")
+    let mut out = "'"
+    let mut i = 0
+    while i < len(parts) {
+        if i > 0 { out = out + "'\"'\"'" }
+        out = out + parts[i]
+        i = i + 1
+    }
+    return out + "'"
+}
+
+fn file_kind(path: str) -> str {
+    // missing | symlink | regular | other
+    let exists = exec("[ -e " + shq(path) + " ] && echo y || echo n").trim()
+    if exists == "n" {
+        let lnk = exec("[ -L " + shq(path) + " ] && echo y || echo n").trim()
+        if lnk == "y" { return "symlink_broken" }
+        return "missing"
+    }
+    let is_lnk = exec("[ -L " + shq(path) + " ] && echo y || echo n").trim()
+    if is_lnk == "y" { return "symlink" }
+    let is_reg = exec("[ -f " + shq(path) + " ] && echo y || echo n").trim()
+    if is_reg == "y" { return "regular" }
+    return "other"
+}
+
+fn resolve_link(path: str) -> str {
+    return exec("readlink -f " + shq(path) + " 2>/dev/null || realpath " + shq(path) + " 2>/dev/null").trim()
+}
+
+fn is_dry_run() -> bool {
+    return env("SHIM_DRY_RUN") == "1"
+}
+
+fn log_event(kind: str, detail: str) -> void {
+    let _ = exec("mkdir -p " + shq(HOME + "/.airgenome"))
+    let line = "{\"ts\":\"" + ts_iso() + "\",\"kind\":\"" + kind + "\",\"detail\":\"" + detail + "\"}"
+    let _ = exec("printf '%s\\n' " + shq(line) + " >> " + shq(LOG_PATH))
+}
+
+// ─── 상태 진단 ────────────────────────────────────────────────────────
+
+// returns "shim_ok" | "stale_shim" | "symlink_original" | "regular_unknown" | "missing" | "symlink_broken"
+fn current_state() -> str {
+    let kind = file_kind(CLAUDE_PATH)
+    if kind == "missing" { return "missing" }
+    if kind == "symlink_broken" { return "symlink_broken" }
+    if kind == "symlink" { return "symlink_original" }
+    if kind == "regular" {
+        let actual = sha256(CLAUDE_PATH)
+        let expected = sha256(SHIM_TEMPLATE)
+        if actual == expected && expected != "" { return "shim_ok" }
+        // 우리 shim 의 서명 (첫 줄 shebang + 고유 문자열) 확인 → stale_shim 분류
+        let sig = exec("head -5 " + shq(CLAUDE_PATH) + " 2>/dev/null | grep -c 'OS-level shim for .session_defaults'").trim()
+        if sig != "0" && sig != "" { return "stale_shim" }
+        return "regular_unknown"
+    }
+    return "unknown"
+}
+
+// ─── 설치 플로우 ──────────────────────────────────────────────────────
+
+fn install() -> int {
+    println("shim install — target: " + CLAUDE_PATH)
+
+    // pre-check: 템플릿 존재
+    if file_kind(SHIM_TEMPLATE) != "regular" {
+        println("FAIL: template missing at " + SHIM_TEMPLATE)
+        return 1
+    }
+
+    let state = current_state()
+    println("current state: " + state)
+
+    if state == "shim_ok" {
+        println("OK: shim already installed (sha match). no-op.")
+        return 0
+    }
+
+    if state == "regular_unknown" {
+        println("ABORT: " + CLAUDE_PATH + " is a regular file with unexpected sha.")
+        println("  manual inspection required. expected sha: " + sha12(SHIM_TEMPLATE))
+        println("  actual sha:   " + sha12(CLAUDE_PATH))
+        return 2
+    }
+
+    // state ∈ {missing, symlink_broken, symlink_original, stale_shim}
+    //
+    // stale_shim 은 우리 shim 의 old 버전 — claude.real 이 이미 분리돼 있음.
+    // 템플릿만 교체하면 됨 (real 재복사 불필요).
+    if state == "stale_shim" {
+        if file_kind(CLAUDE_REAL) != "regular" {
+            println("FAIL: stale_shim state but claude.real missing. manual fix required.")
+            return 9
+        }
+        if is_dry_run() {
+            println("DRY_RUN: would overwrite stale shim at " + CLAUDE_PATH)
+            return 0
+        }
+        let _ = exec("rm -f " + shq(CLAUDE_PATH))
+        let rc = exec("cp " + shq(SHIM_TEMPLATE) + " " + shq(CLAUDE_PATH) + " && chmod +x " + shq(CLAUDE_PATH) + " && echo OK || echo FAIL").trim()
+        if rc != "OK" {
+            println("FAIL: template copy failed — attempting rollback")
+            let _ = exec("cp " + shq(CLAUDE_REAL) + " " + shq(CLAUDE_PATH) + " && chmod +x " + shq(CLAUDE_PATH))
+            return 10
+        }
+        let ver = exec("NEXUS_SHIM_BYPASS=1 " + shq(CLAUDE_PATH) + " --version 2>&1 | head -1").trim()
+        if ver == "" {
+            println("FAIL: refreshed shim --version empty — rolling back")
+            let _ = exec("rm -f " + shq(CLAUDE_PATH) + " && mv " + shq(CLAUDE_REAL) + " " + shq(CLAUDE_PATH))
+            return 11
+        }
+        log_event("refresh", "sha=" + sha12(SHIM_TEMPLATE))
+        println("OK: stale shim refreshed. check: " + ver)
+        return 0
+    }
+
+    // Step 1: real 복사 준비 (symlink 면 cp -L, missing 이면 versions/<latest>)
+    let mut source_bin = ""
+    if state == "symlink_original" {
+        source_bin = resolve_link(CLAUDE_PATH)
+    } else {
+        // missing/broken — versions 디렉토리 fallback
+        let latest = exec("ls -1 " + shq(VERSIONS_DIR) + " 2>/dev/null | sort -V | tail -1").trim()
+        if latest == "" {
+            println("FAIL: no claude binary found (neither symlink nor versions dir)")
+            return 3
+        }
+        source_bin = VERSIONS_DIR + "/" + latest
+    }
+
+    if file_kind(source_bin) != "regular" {
+        println("FAIL: source binary not a regular file: " + source_bin)
+        return 4
+    }
+    println("  source: " + source_bin)
+
+    if is_dry_run() {
+        println("DRY_RUN: would cp " + source_bin + " → " + CLAUDE_REAL)
+        println("DRY_RUN: would install shim at " + CLAUDE_PATH)
+        return 0
+    }
+
+    // Step 2: source → claude.real 복사 (L 옵션 불필요 — source_bin 이미 resolve 됨)
+    let cp_rc = exec("cp -f " + shq(source_bin) + " " + shq(CLAUDE_REAL) + " && chmod +x " + shq(CLAUDE_REAL) + " && echo OK || echo FAIL").trim()
+    if cp_rc != "OK" {
+        println("FAIL: cp real failed: " + cp_rc)
+        return 5
+    }
+    println("  real saved: " + CLAUDE_REAL + " (sha: " + sha12(CLAUDE_REAL) + ")")
+
+    // Step 2.5: real 실행 sanity (Mach-O executable?)
+    let sanity = exec(shq(CLAUDE_REAL) + " --version 2>&1 | head -1").trim()
+    if sanity == "" {
+        println("FAIL: real binary sanity check empty output")
+        let _ = exec("rm -f " + shq(CLAUDE_REAL))
+        return 6
+    }
+    println("  real sanity: " + sanity)
+
+    // Step 3: 기존 symlink/파일 제거
+    let _ = exec("rm -f " + shq(CLAUDE_PATH))
+
+    // Step 4: shim 배치
+    let install_rc = exec("cp " + shq(SHIM_TEMPLATE) + " " + shq(CLAUDE_PATH) + " && chmod +x " + shq(CLAUDE_PATH) + " && echo OK || echo FAIL").trim()
+    if install_rc != "OK" {
+        println("FAIL: shim install failed — attempting rollback")
+        let _ = exec("cp " + shq(CLAUDE_REAL) + " " + shq(CLAUDE_PATH) + " && chmod +x " + shq(CLAUDE_PATH))
+        return 7
+    }
+
+    // Step 5: shim 동작 검증 (NEXUS_SHIM_BYPASS 로 inject 우회 + version 체크)
+    let ver_out = exec("NEXUS_SHIM_BYPASS=1 " + shq(CLAUDE_PATH) + " --version 2>&1 | head -1").trim()
+    if ver_out == "" {
+        println("FAIL: shim --version empty — rolling back")
+        let _ = exec("rm -f " + shq(CLAUDE_PATH) + " && mv " + shq(CLAUDE_REAL) + " " + shq(CLAUDE_PATH))
+        return 8
+    }
+    println("  shim check: " + ver_out)
+
+    log_event("install", "state=" + state + " source=" + source_bin)
+    println("OK: shim installed.")
+    return 0
+}
+
+// ─── verify ───────────────────────────────────────────────────────────
+
+fn do_verify() -> int {
+    println("=== shim verify ===")
+    let state = current_state()
+    println("state:        " + state)
+    println("CLAUDE_PATH:  " + CLAUDE_PATH)
+    println("  kind:       " + file_kind(CLAUDE_PATH))
+    if file_kind(CLAUDE_PATH) == "regular" {
+        println("  sha12:      " + sha12(CLAUDE_PATH))
+    }
+    println("CLAUDE_REAL:  " + CLAUDE_REAL)
+    println("  kind:       " + file_kind(CLAUDE_REAL))
+    if file_kind(CLAUDE_REAL) == "regular" {
+        println("  sha12:      " + sha12(CLAUDE_REAL))
+    }
+    println("TEMPLATE:     " + SHIM_TEMPLATE)
+    println("  sha12:      " + sha12(SHIM_TEMPLATE))
+
+    if state == "shim_ok" {
+        // 실행 증명
+        let out = exec("NEXUS_SHIM_BYPASS=1 " + shq(CLAUDE_PATH) + " --version 2>&1 | head -1").trim()
+        println("exec bypass:  " + out)
+        println("PASS")
+        return 0
+    }
+    println("FAIL")
+    return 1
+}
+
+// ─── sentinel (1-shot drift check + auto-heal) ────────────────────────
+
+fn sentinel() -> int {
+    let state = current_state()
+    if state == "shim_ok" {
+        let r_kind = file_kind(CLAUDE_REAL)
+        if r_kind != "regular" {
+            log_event("sentinel_realmissing", "real=" + r_kind)
+            // real 파손 — versions 에서 재복사
+            let latest = exec("ls -1 " + shq(VERSIONS_DIR) + " 2>/dev/null | sort -V | tail -1").trim()
+            if latest != "" {
+                let src = VERSIONS_DIR + "/" + latest
+                let _ = exec("cp -f " + shq(src) + " " + shq(CLAUDE_REAL) + " && chmod +x " + shq(CLAUDE_REAL))
+                log_event("sentinel_real_restored", "from=" + src)
+            }
+            return 0
+        }
+        // heartbeat 로그는 5% 샘플링으로만 기록 (noise 방지)
+        let pct = to_int(exec("printf '%s' $RANDOM | awk '{print $1 % 100}'").trim())
+        if pct < 5 { log_event("heartbeat", "ok") }
+        return 0
+    }
+
+    // drift 감지 — 자동 재설치
+    log_event("sentinel_drift", "state=" + state)
+    println("[sentinel] drift: " + state + " → reinstall")
+    return install()
+}
+
+// ─── uninstall ────────────────────────────────────────────────────────
+
+fn uninstall() -> int {
+    let state = current_state()
+    if state != "shim_ok" {
+        println("no shim in place (state=" + state + ")")
+        return 0
+    }
+    if file_kind(CLAUDE_REAL) != "regular" {
+        println("FAIL: cannot uninstall — claude.real missing")
+        return 1
+    }
+    if is_dry_run() {
+        println("DRY_RUN: would mv " + CLAUDE_REAL + " → " + CLAUDE_PATH)
+        return 0
+    }
+    let _ = exec("rm -f " + shq(CLAUDE_PATH))
+    let rc = exec("mv " + shq(CLAUDE_REAL) + " " + shq(CLAUDE_PATH) + " && chmod +x " + shq(CLAUDE_PATH) + " && echo OK || echo FAIL").trim()
+    if rc != "OK" {
+        println("FAIL: restore failed: " + rc)
+        return 2
+    }
+    log_event("uninstall", "restored")
+    println("OK: uninstalled, real restored.")
+    return 0
+}
+
+// ─── dispatch ─────────────────────────────────────────────────────────
+
+fn main() -> void {
+    let a = args()
+    let mut sub = "verify"
+    // args() 레이아웃 디버그: 첫 토큰부터 스캔해서 install/verify/sentinel/uninstall 매칭.
+    let mut i = 0
+    let mut found = false
+    while i < len(a) {
+        let t = a[i]
+        if t == "install" || t == "verify" || t == "sentinel" || t == "uninstall" {
+            sub = t
+            found = true
+            i = len(a)  // break
+        } else {
+            i = i + 1
+        }
+    }
+    if !found {
+        eprintln("[shim] no subcommand matched in args(): len=" + to_string(len(a)))
+        let mut j = 0
+        while j < len(a) {
+            eprintln("  a[" + to_string(j) + "] = " + a[j])
+            j = j + 1
+        }
+    }
+
+    let mut rc = 0
+    if sub == "install" {
+        rc = install()
+    } else if sub == "verify" {
+        rc = do_verify()
+    } else if sub == "sentinel" {
+        rc = sentinel()
+    } else if sub == "uninstall" {
+        rc = uninstall()
+    } else {
+        println("usage: hexa run bin/shim_install.hexa <install|verify|sentinel|uninstall>")
+        rc = 64
+    }
+    if rc != 0 { eprintln("[shim] exit rc=" + to_string(rc)) }
+}

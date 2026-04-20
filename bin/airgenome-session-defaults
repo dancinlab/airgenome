@@ -144,6 +144,43 @@ cmd_doctor() {
         _warn "Dockerfile 부재 ($DOCKERFILE)"
     fi
 
+    # 8. Layer ②′ shim — canonical path 교체 (~/.local/bin/claude)
+    local LCL="$HOME/.local/bin/claude"
+    local LCL_REAL="$HOME/.local/bin/claude.real"
+    local SHIM_TPL="$AG_ROOT/bin/claude_local_shim"
+    if [ -f "$SHIM_TPL" ]; then
+        local tpl_sha lcl_sha
+        tpl_sha=$(_hash "$SHIM_TPL" 2>/dev/null)
+        if [ -L "$LCL" ]; then
+            _fail "Layer②′: $LCL is still a symlink (shim not installed). run: hexa run bin/shim_install.hexa install"
+        elif [ -f "$LCL" ]; then
+            lcl_sha=$(_hash "$LCL" 2>/dev/null)
+            if [ "$tpl_sha" = "$lcl_sha" ]; then
+                _pass "Layer②′: $LCL = shim (sha=$lcl_sha)"
+            else
+                _warn "Layer②′: $LCL sha=$lcl_sha ≠ template $tpl_sha — sentinel will refresh on next tick"
+            fi
+            if [ -x "$LCL_REAL" ]; then
+                _pass "Layer②′: claude.real present ($(_hash "$LCL_REAL"))"
+            else
+                _fail "Layer②′: claude.real missing — inject will fallback to versions/<latest>"
+            fi
+        else
+            _fail "Layer②′: $LCL missing (neither symlink nor regular)"
+        fi
+
+        # sentinel LaunchAgent liveness
+        local sen_state
+        sen_state=$(launchctl print "gui/$(id -u)/com.airgenome.shim-sentinel" 2>/dev/null | awk -F'= ' '/^[[:space:]]*state[[:space:]]*=/ {print $2; exit}')
+        if [ -n "$sen_state" ]; then
+            _pass "Layer②′: shim-sentinel LaunchAgent state=$sen_state"
+        else
+            _warn "Layer②′: shim-sentinel LaunchAgent not loaded. run: launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/com.airgenome.shim-sentinel.plist"
+        fi
+    else
+        _warn "Layer②′: template $SHIM_TPL missing (skipping)"
+    fi
+
     # 7. 원격 호스트 (opt)
     if [ "$include_remote" = "1" ]; then
         for host in ubu1 ubu2 htz; do

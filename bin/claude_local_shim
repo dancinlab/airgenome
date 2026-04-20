@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# ~/.local/bin/claude (installed copy) — OS-level shim for .session_defaults.
+#
+# Layer ②′ design: shim lives AT the canonical claude path (not PATH-sibling).
+# 효과: PATH / 절대경로 / MCP 서브프로세스 — 전부 이 shim 을 경유.
+#
+# Real binary: $self.real (sibling). cp -L 된 실제 Mach-O.
+# Fallback:    ~/.local/share/claude/versions/<latest>/claude-code bin.
+#
+# Self-heal: bin/shim_sentinel.hexa 가 60s 주기로 sha256 drift 감시.
+#            claude-code 업데이트가 심볼릭 교체하면 재설치.
+#
+# Safety escape: NEXUS_SHIM_BYPASS=1 → inject 없이 real 직접 exec.
+#                shim 파손 수동 복구: rm ~/.local/bin/claude && mv ~/.local/bin/claude.real ~/.local/bin/claude
+#
+# Bypass: NEXUS_SESSION_LAX=1 또는 args 에 --append-system-prompt / --bare.
+
+set -euo pipefail
+
+self=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
+self_dir=$(dirname "$self")
+real="$self.real"
+
+# --- real binary 해석 ---
+if [ ! -x "$real" ]; then
+    # 시놀릭 sibling 이 없으면 versions 디렉토리에서 최신판 시도.
+    vers_dir="$HOME/.local/share/claude/versions"
+    if [ -d "$vers_dir" ]; then
+        latest=$(ls -1 "$vers_dir" 2>/dev/null | sort -V | tail -1)
+        if [ -n "$latest" ] && [ -x "$vers_dir/$latest" ]; then
+            real="$vers_dir/$latest"
+        fi
+    fi
+fi
+if [ ! -x "$real" ]; then
+    echo "claude(shim): FATAL real binary not found." >&2
+    echo "claude(shim):   expected: $self.real" >&2
+    echo "claude(shim):   recover:  rm $self && mv $self.real $self  (if backup exists)" >&2
+    echo "claude(shim):   or reinstall: cd ~/Dev/airgenome && hexa run bin/shim_install.hexa" >&2
+    exit 127
+fi
+
+# --- 안전 탈출구: bypass 시 directly exec ---
+if [ "${NEXUS_SHIM_BYPASS:-0}" = "1" ]; then
+    exec "$real" "$@"
+fi
+
+# --- inject 판정 ---
+AGROOT="${AIRGENOME:-$HOME/Dev/airgenome}"
+SD="$AGROOT/.session_defaults"
+inject=1
+[ "${NEXUS_SESSION_LAX:-0}" = "1" ] && inject=0
+for a in "$@"; do
+    if [ "$a" = "--append-system-prompt" ] || [ "$a" = "--system-prompt" ] || [ "$a" = "--bare" ]; then
+        inject=0
+        break
+    fi
+done
+
+# .session_defaults fail-fast (airgenome repo 맥락에서만)
+if [ "$inject" = "1" ] && [ ! -f "$SD" ]; then
+    if [ -f "$AGROOT/project.hexa" ]; then
+        echo "claude(shim): FATAL .session_defaults missing at $SD (airgenome repo detected)" >&2
+        echo "claude(shim):  fix: restore file, or NEXUS_SESSION_LAX=1 for clean mode" >&2
+        exit 2
+    fi
+    inject=0
+fi
+
+# 진단: NEXUS_SHIM_DUMP=1 이면 실제 exec argv 를 stderr 에 찍고 종료.
+#       주입 여부 확인 + 문제 진단용.
+if [ "${NEXUS_SHIM_DUMP:-0}" = "1" ]; then
+    echo "shim_dump: inject=$inject real=$real" >&2
+    echo "shim_dump: sd_size=$(wc -c < "$SD" 2>/dev/null || echo 0)" >&2
+    if [ "$inject" = "1" ]; then
+        echo "shim_dump: argv=[$real, --append-system-prompt, <$(wc -c < "$SD" 2>/dev/null)bytes>, $*]" >&2
+    else
+        echo "shim_dump: argv=[$real, $*]" >&2
+    fi
+    exit 0
+fi
+
+if [ "$inject" = "1" ]; then
+    exec "$real" --append-system-prompt "$(cat "$SD")" "$@"
+else
+    exec "$real" "$@"
+fi
