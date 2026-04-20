@@ -1,0 +1,43 @@
+// hooks/subagent_stop.hexa — SubagentStop handler
+//
+// Responsibility:
+//   - Audit subagent completion.
+//   - Capture final subagent response via tail+jq (same deterministic path as Stop).
+//   - Never blocks.
+
+use "lib/event"
+
+fn subagent_log() -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root + "/.hook-subagents.jsonl"
+}
+
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let sess = event_session(p)
+    let tpath = event_transcript(p)
+    let _ = exec("rm -f '" + p + "'")
+
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let mut text_sha = "-"
+    let mut text_len = "0"
+    if tpath != "" && file_exists(tpath) {
+        let extract = "tail -n 200 '" + tpath + "' | jq -rs '[.[] | select(.type==\"assistant\" or .role==\"assistant\")] | last | (.message.content // .content) | if type==\"array\" then (map(select(.type==\"text\") | .text) | join(\"\\n\")) else (.|tostring) end' 2>/dev/null"
+        let text = exec(extract)
+        text_sha = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | shasum -a 256 | awk '{print $1}'").trim()
+        text_len = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | wc -c | tr -d ' '").trim()
+    }
+
+    let line = "{\"ts\":\"" + ts +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"transcript\":\"" + json_escape(tpath) +
+               "\",\"response_bytes\":" + text_len +
+               ",\"response_sha256\":\"" + text_sha + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + subagent_log() + "'")
+
+    println(allow_json())
+    exit(0)
+}

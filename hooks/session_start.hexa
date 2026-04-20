@@ -1,0 +1,38 @@
+// hooks/session_start.hexa — SessionStart handler
+//
+// Responsibility:
+//   - Initialize audit log with GENESIS line if absent.
+//   - Emit a session-start marker into $root/.hook-sessions.jsonl.
+//
+// No blocking. Deterministic.
+
+use "lib/event"
+use "lib/audit"
+
+fn sessions_path() -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root + "/.hook-sessions.jsonl"
+}
+
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let sess = event_session(p)
+    let src = event_source(p)
+    let cwd_ = event_cwd(p)
+    let _ = exec("rm -f '" + p + "'")
+
+    let _ = audit_ensure_genesis()
+
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let line = "{\"ts\":\"" + ts +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"source\":\"" + json_escape(src) +
+               "\",\"cwd\":\"" + json_escape(cwd_) + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + sessions_path() + "'")
+
+    println(allow_json())
+    exit(0)
+}

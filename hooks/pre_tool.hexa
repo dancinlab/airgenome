@@ -1,0 +1,48 @@
+// hooks/pre_tool.hexa — PreToolUse handler
+//
+// Responsibility: permission-gate certain tool_name patterns.
+// Deterministic blocklist — no LLM call. Blocks return decision="block".
+//
+// Current rules (extend locally, no dispatcher touch needed):
+//   Bash(rm -rf ~ ...)  → block
+//   Bash(git push --force ...) → block (double-safety over settings.json deny)
+//   Write(**/.env)      → block (secret file ban)
+
+use "lib/event"
+
+fn jq_tool_input(path: str, expr: str) -> str {
+    let cmd = "jq -r '.tool_input." + expr + " // \"\"' '" + path + "' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let tool = event_tool_name(p)
+
+    if tool == "Bash" {
+        let bashcmd = jq_tool_input(p, "command").to_lower()
+        if bashcmd.contains("rm -rf ~") || bashcmd.contains("rm -rf /") {
+            let _ = exec("rm -f '" + p + "'")
+            println(decision_json("block", "destructive rm -rf on home or root denied by pre_tool gate"))
+            exit(2)
+        }
+        if bashcmd.contains("git push") && (bashcmd.contains("--force") || bashcmd.contains(" -f")) {
+            let _ = exec("rm -f '" + p + "'")
+            println(decision_json("block", "force-push denied by pre_tool gate"))
+            exit(2)
+        }
+    }
+    if tool == "Write" || tool == "Edit" {
+        let fpath = jq_tool_input(p, "file_path")
+        if fpath.contains("/.env") || fpath.ends_with(".env") {
+            let _ = exec("rm -f '" + p + "'")
+            println(decision_json("block", "writing to .env file denied — secrets must live outside repo"))
+            exit(2)
+        }
+    }
+
+    let _ = exec("rm -f '" + p + "'")
+    println(allow_json())
+    exit(0)
+}

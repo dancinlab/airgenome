@@ -1,0 +1,35 @@
+// hooks/universal_audit.hexa — "*" wildcard handler (runs on EVERY event)
+//
+// Responsibility:
+//   - Emit a structured observability line to $root/.hook-observe.jsonl
+//   - Pass-through (always allow; audit chain handled by dispatcher)
+//
+// Deterministic: no LLM, no network, O(1) jq extraction.
+
+use "lib/event"
+
+fn observe_path() -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root + "/.hook-observe.jsonl"
+}
+
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let name = event_name(p)
+    let sess = event_session(p)
+    let cwd_ = event_cwd(p)
+    let tool = event_tool_name(p)
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let line = "{\"ts\":\"" + ts +
+               "\",\"event\":\"" + json_escape(name) +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"cwd\":\"" + json_escape(cwd_) +
+               "\",\"tool\":\"" + json_escape(tool) + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + observe_path() + "'")
+    let _ = exec("rm -f '" + p + "'")
+    println(allow_json())
+    exit(0)
+}

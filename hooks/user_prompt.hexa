@@ -1,0 +1,47 @@
+// hooks/user_prompt.hexa — UserPromptSubmit handler
+//
+// Responsibility: keyword-match on user prompt, emit systemMessage on risky patterns.
+// Deterministic regex/contains — no LLM. Never blocks (observability only).
+//
+// Matched keywords (literal contains, case-insensitive via lowercase compare):
+//   "rm -rf /"     → warn (irreversible fs delete)
+//   "force push"   → warn (history rewrite)
+//   "secrets"      → hint (consider env/secret manager)
+//
+// Pattern list is local to this file — add/remove freely without touching dispatcher.
+
+use "lib/event"
+
+struct KwRule {
+    needle: str
+    level: str   // "warn" | "hint"
+    advice: str
+}
+
+fn rules() -> [KwRule] {
+    return [
+        KwRule { needle: "rm -rf /",   level: "warn", advice: "irreversible filesystem delete detected in prompt — double-check target path" },
+        KwRule { needle: "force push", level: "warn", advice: "force-push requested — confirm branch is not shared and history rewrite is intended" },
+        KwRule { needle: "secrets",    level: "hint", advice: "prompt mentions secrets — prefer env vars / secret manager over inline values" }
+    ]
+}
+
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let prompt = event_prompt(p).to_lower()
+    let _ = exec("rm -f '" + p + "'")
+
+    let rs = rules()
+    let mut i = 0
+    while i < rs.len() {
+        let r = rs[i]
+        if prompt.contains(r.needle) {
+            println(system_message_json("[" + r.level + "] " + r.advice))
+            exit(0)
+        }
+        i = i + 1
+    }
+    println(allow_json())
+    exit(0)
+}
