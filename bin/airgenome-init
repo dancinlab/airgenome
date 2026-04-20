@@ -311,6 +311,44 @@ sync_claude_settings() {
     mv "$settings.tmp" "$settings"
     ok "Claude settings 머지: $settings (backup: $backup)"
     step_pass
+
+    strip_project_local_bypass
+}
+
+# project-local .claude/settings.local.json 의 defaultMode=bypassPermissions 스트립.
+# 2026-04-21 follow-up: user-level 만 정리했더니 project-local 이 우선권을 가져
+# 계정 돌려도 bypass 가 켜져 뜨는 현상 재발 (e.g. ~/Dev/nexus + worktrees).
+# allow/deny 는 프로젝트 자체 스코프라 건드리지 않음. 오직 defaultMode strip.
+strip_project_local_bypass() {
+    shopt -s nullglob
+    local stripped=0 scanned=0 f
+    for f in \
+        "$HOME"/core/*/.claude/settings.local.json \
+        "$HOME"/Dev/*/.claude/settings.local.json \
+        "$HOME"/Dev/*/.claude/worktrees/*/.claude/settings.local.json
+    do
+        scanned=$((scanned+1))
+        [ -r "$f" ] && [ -w "$f" ] || continue
+        local mode
+        mode=$(jq -r '.permissions.defaultMode // ""' "$f" 2>/dev/null || echo "")
+        [ "$mode" = "bypassPermissions" ] || continue
+        if [ "$DRY_RUN" = "1" ]; then
+            log "[dry-run] project-local bypass strip 예정: $f"
+            continue
+        fi
+        local bak="$f.bak.$(date +%Y%m%d-%H%M%S)"
+        cp -p "$f" "$bak" 2>/dev/null || true
+        if jq '.permissions |= del(.defaultMode)' "$f" > "$f.tmp" 2>/dev/null; then
+            mv "$f.tmp" "$f"
+            stripped=$((stripped+1))
+            ok "project-local bypass 제거: $f (backup: $bak)"
+        else
+            rm -f "$f.tmp"
+            warn "project-local bypass strip 실패 (jq) — 원본 유지: $f"
+        fi
+    done
+    shopt -u nullglob
+    [ $stripped -gt 0 ] && ok "project-local settings scanned=$scanned stripped=$stripped" || true
 }
 
 # ═════════════════════════════════════════════════════════════════════════════

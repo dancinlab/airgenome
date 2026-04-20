@@ -1,6 +1,19 @@
 # airgenome .convergence — 수렴 attr 기록
 # format: single-file, 엔트리 단위로 @state 로 트래킹. JSON/JSONL/xattr 금지.
 
+[project-local-bypass-strip]
+@state: converged
+@date: 2026-04-21
+@scope: ~/Dev/nexus/.claude/settings.local.json + 4× ~/Dev/nexus/.claude/worktrees/agent-*/.claude/settings.local.json + bin/airgenome-init (new strip_project_local_bypass())
+@problem: 사용자 리포트 — 새 세션이어도 "⏵⏵ bypass permissions on" 이 떠 있음. 계정(claude3 등) 문제로 보였으나 실제로는 프로젝트-로컬 우선권 이슈. [cl-no-bypass-airgenome-only] 일괄 정리 때 user-level 13개는 잡혔지만 project-local .claude/settings.local.json (nexus + 4 worktrees) 은 스캔 밖이었음. settings.local.json 이 user settings.json 을 override 하므로 nexus 디렉토리에서 cl 띄우면 어떤 계정이든 bypass 켜진 상태로 뜸.
+@decision: project-local 5개 파일에서 .permissions.defaultMode=bypassPermissions strip + airgenome-init 에 strip_project_local_bypass() 추가해 재발 방지.
+@changes:
+  - ~/Dev/nexus/.claude/settings.local.json + 4 worktrees: .permissions.defaultMode 제거. 백업 .bak.20260421-*-bypass-remove.
+  - bin/airgenome-init: sync_claude_settings() 마지막에 strip_project_local_bypass() 호출. nullglob 로 $HOME/{core,Dev}/*/.claude/settings.local.json + $HOME/Dev/*/.claude/worktrees/*/.claude/settings.local.json 스캔, bypassPermissions 만 선택적 strip (다른 defaultMode 값은 보존).
+@why: settings.local.json 은 프로젝트별 스코프라 allow/deny 머지는 건드리지 않음. 오직 bypass 만 strip — [cl-no-bypass-airgenome-only] 의 "bypass 는 opt-in (CLAUDX_BYPASS=1)" 원칙을 project-local 에도 일관 적용.
+@verified: /tmp 임시 트리로 e2e 테스트 — 2개 bypassPermissions strip, 1개 acceptEdits 보존 (scanned=3 stripped=2). 실사용 5개 파일도 strip 후 defaultMode=— 확인.
+@rollback: revert commit + restore .bak.20260421-*-bypass-remove.
+
 [claude-settings-wildcards-init-sync]
 @state: converged
 @date: 2026-04-20
@@ -362,3 +375,11 @@
 2026-04-20 20:01:49 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 20:32:20 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 21:02:50 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 21:33:21 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 22:03:52 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 22:34:19 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 23:04:55 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 23:35:27 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 23:59:21 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-21 00:05:59 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-21 00:20:13 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
