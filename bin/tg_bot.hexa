@@ -394,6 +394,26 @@ fn send_chunks(token: str, chat_id: int, text: str) -> void {
 //  DISPATCH — claude/cx
 // ═══════════════════════════════════════════════════════════════════════
 
+// claudx/cx wrapper 가 stderr 로 찍는 진행 상태(`claudx: ...`, `cx: ...`,
+// `cx → host ...`) 를 dispatch 응답 body 에서 제거. 텔레그램 사용자에게는
+// 실제 모델 출력만 보여야 한다.
+fn strip_dispatch_noise(s: str) -> str {
+    if s == "" { return s }
+    let lines = s.split("\n")
+    let mut out = ""
+    let mut i = 0
+    while i < len(lines) {
+        let ln = lines[i]
+        let t = ln.trim()
+        let drop = t.starts_with("claudx:") || t.starts_with("cx:") || t.starts_with("cx →")
+        if !drop {
+            if out == "" { out = ln } else { out = out + "\n" + ln }
+        }
+        i = i + 1
+    }
+    return out.trim()
+}
+
 fn dispatch_claude(cfg: Config, text: str) -> str {
     if env("TG_DRY") == "1" {
         return "[DRY] 디스패치 예정: " + text
@@ -482,8 +502,9 @@ fn dispatch_claude(cfg: Config, text: str) -> str {
         j = j + 1
     }
     if rc == "0" {
-        if body == "" { return "(빈 응답)" }
-        return body
+        let clean = strip_dispatch_noise(body)
+        if clean == "" { return "(빈 응답)" }
+        return clean
     }
     // Non-zero RC — surface stderr to telegram (원래 '⏳' 후 침묵 문제 해결).
     log_line("ERROR", "dispatch rc=" + rc + " bin=" + active_bin + " body=" + truncate(body, 200))
