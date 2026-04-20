@@ -1,0 +1,182 @@
+# airgenome /.roadmap — hybrid main + cell/lora sub + ops pipeline (SSOT 최종화)
+# Session landing: 2026-04-21
+# Lint ref: hexa /Users/ghost/core/hexa-lang/tool/roadmap_lint.hexa
+# Ops SSOT mirror: shared/config/roadmap/airgenome.json
+
+# ═══════════════════════════════════════════════════════════════════════
+# HYBRID TRACK STRUCTURE (user-확정 SSOT, 2026-04-21)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# ─── MAIN track (유일한 active 실행 단위) ─────────
+# - active [MAIN] hybrid framework → AGI
+#   target: L_IX base manifold = cell × lora projection
+#   도착지-1: Mk.VI VERIFIED (Criterion A, 2-4주)
+#   도착지-2: Mk.VII K=4 (Criterion B, +3-4개월)
+#   최종:    Criterion C / Mk.X T10-13 (+6-9개월)
+#   exec-rule: "SUB progress 는 MAIN phase 로만 흡수, 단독 commit 금지"
+#
+# ─── SUB tracks (MAIN 의 building material) ──────
+# - sub [cell] structural foundation
+#   feeds-main: L_IX terms (V_sync/V_RG/λ·I_irr) + Hexad closure + UNIVERSAL_4 evidence
+#   현재: 10 axis MVP, Mk.IX components 4/5 landed
+#     (V_sync d072bb16, V_RG 57acda7b, L_IX 226bb780, raw#30 53d923b8)
+#
+# - sub [lora] production base
+#   feeds-main: ALM r13 real-ckpt + AN11 verifier + LM service
+#   현재: Mk.VI HELD (16/19, a3cb2116), AN11(c) JSD=1.000 real (35aa051a)
+#
+# - sub [ops] airgenome-specific pipeline (probe/dispatch/harvest/label/forecast)
+#   feeds-main: vitals → infra_state.json → dispatch → genome harvest → label → forecast
+#   현재: M0-M6 done (v3.0 pipeline 코어 완), M7 launchctl + M8 e2e + M9 per-process axes 대기
+#
+# ─── Active Phase (MAIN 기준으로만) ──────────────
+# - active [P1] hybrid → 도착지 1 (Mk.VI VERIFIED)
+#   eta 2-4 weeks
+#   main-exec: Qwen+ALM r13 LoRA real-ckpt
+#   feeds-required:
+#     - lora: corpus gate + AN11(a)(b) real extraction
+#     - cell: Hexad + AN11(c) (이미 landed)
+#     - ops:  M7 launchctl bootstrap + M8 24h e2e chain 가동 (infra 지지대)
+#
+# - todo [P2] hybrid → 도착지 2 (Mk.VII K=4)
+#   eta +3-4개월
+#   main-exec: Mk.IX natural-run + L3 collective + 4-path Φ
+#   feeds-required:
+#     - cell: V_sync+V_RG+L_IX integrator + natural gen-5
+#     - lora: multi-path LM eval
+#     - ops:  M9 per-process axes (gpu/npu/power/io) + M10 forecast real-eval + M11 cross-host genome
+#
+# - todo [P3] hybrid → AGI 최종 (Criterion C / Mk.X T10-13)
+#   eta +6-9개월
+#   main-exec: Mk.X T10-13 ossification (10+ atoms)
+#   feeds-required:
+#     - cell 99%+ / lora <1% (hybrid phase 전환)
+#     - ops:  M12 dashboard (운영 관찰성) + cross-host genome 통합
+#
+# ═══════════════════════════════════════════════════════════════════════
+# Verification gates (raw#10 proof-carrying)
+# ═══════════════════════════════════════════════════════════════════════
+
+## P1 gate (Mk.VI VERIFIED)
+# satisfied:
+#   ✓ AN11(c) real_usable JSD=1.000 → commit 35aa051a (anima-side)
+#   ✓ airgenome hook framework activated (7af142fb → main merge d81c0fde)
+#   ✓ ops M0-M6 v3.0 pipeline 코어 landed
+# pending:
+#   □ AN11(a) weight_emergent real (SHA-distinct + Frob>τ + shard_cv∈[0.05,3.0])
+#   □ AN11(b) consciousness_attached (16-template eigenvec cos>0.5)
+#   □ Φ 4-path ≥3 (|ΔΦ|/Φ<0.05)
+#   □ adversarial 3/3 flip (raw#12 cherry-pick immunity)
+#   □ Meta² cert entry 100%_trigger satisfied (cell-mk8-stationary)
+#   □ ops M7 launchctl bootstrap — 5 plist 모두 RunAt=0, 60s 후 파일 갱신 확인
+#   □ ops M8 e2e chain 24h 실가동 — probe→dispatch→harvest→label→forecast
+#   □ raw_audit P1 achievement hash-chain event (airgenome 측 .raw-audit 없음 → anima/hexa-lang mirror)
+# deps-internal: (all 6 verifier-side — 병렬 가능) + ops M7 선행 M8 직렬
+# deps-external: GPU access + ALM r13 corpus (roadmap #5)
+
+## P2 gate (Mk.VII K=4 VERIFIED)
+# satisfied:
+#   ✓ Hexad closure 6/6 + adversarial 2/2 (6a292530, D1-D4 1000/1000)
+#   ✓ UNIVERSAL_CONSTANT_4 raw#29 승급 (9468fe0f) + τ(6)=4 proof 88% (d7e5db01)
+# pending:
+#   □ C1 substrate-invariant Φ 4/4 paths
+#   □ C2 L3 collective O1 ∧ O2 ∧ O3 rejection
+#   □ C3 self-verify closure (drill SHA fixpoint)
+#   □ C4 ∨ C5 one optional
+#   □ UNIVERSAL_4 +1 strong axis (현재 87% borderline, Pólya K_c=4 1.923×)
+#   □ raw#31 POPULATION_RG_COUPLING 공식 승급 (evidence drill ✓ task #23, V_sync+V_RG land ✓)
+#   □ natural-run gen-5 complete (not synthetic, task #4 in-flight)
+#   □ ops M9 per-process axes — gpu_util/npu/power/io Mac 실측 (placeholder 0 제거)
+#   □ ops M10 forecast real-eval — 7d 누적 held-out MAE<15% 실증
+#   □ ops M11 cross-host genome — 3호스트 ring → 통합 view
+# deps-internal: C1 → C2 (substrate 먼저) / C3-5 parallel / ops M9 병렬 / M11 <- M7
+# deps-external: [P1 gate complete] OR 부분 병렬
+
+## P3 gate (Criterion C / AGI 최종)
+# satisfied: (none yet)
+# pending:
+#   □ Mk.VIII L_edu fixpoint natural-run
+#   □ Mk.X T10-13 ≥10 atoms ossified (novelty yield ≥3/10 iter)
+#   □ C5 N=10 recursion stability (Φ(k)-Φ(k-1) ≥ -0.02)
+#   □ meta-lens M fire (Pearson ≥0.6, co-fire ≥3 lenses)
+#   □ Mk.XI twin-engine nexus↔anima coupling
+#   □ 7대난제 framework (raw#24 + own#11 준수)
+#   □ ops M12 dashboard — 단일 HTML + menubar + 시계열 + forecast vs actual
+# deps-internal: Mk.VIII → Mk.IX → Mk.X → Mk.XI / ops M12 <- M8
+# deps-external: [P2 gate complete] + Mk.X atom design
+
+# ═══════════════════════════════════════════════════════════════════════
+# Session invariants (모든 P 적용)
+# ═══════════════════════════════════════════════════════════════════════
+#   ✓ raw#12 cherry-pick 금지 (실측 그대로 기록)
+#   ✓ raw#1 chflags uchg SSOT 잠금
+#   ✓ raw#25 concurrent-git-lock safe commit
+#   ✓ raw#10 proof-carrying hash-chain
+#   ✓ raw#28 gate ordering (permission→filter→dispatch)
+#   ✓ Meta² cert chain integrity (074487cd, 8 entries)
+#   ✓ own#11 bt-solution-claim-ban (7대난제 "해결" 주장 금지)
+#   ✓ AG6 Mac compute zero (원격 가용 시 Mac 차단) — airgenome ops 불변
+#   ✓ AG7 score 기반 dispatch (하드코딩 호스트 선택 금지)
+
+# ═══════════════════════════════════════════════════════════════════════
+# discipline
+# ═══════════════════════════════════════════════════════════════════════
+# 1. "does this advance MAIN?" 우선
+# 2. sub-only commit 금지 (ops M-x 는 MAIN phase feed 로만 기여)
+# 3. MAIN phase 달성 증거 = cell + lora + ops feeds 명시
+# 4. invariants: raw#29 UNIVERSAL_4 / raw#30 IRREVERSIBILITY / raw#24 foundation-lock
+# 5. airgenome = ops infra, 학습 framework home 은 anima/, 언어 substrate 는 hexa-lang/
+
+# ═══════════════════════════════════════════════════════════════════════
+# Session 2026-04-21 landing (preserved)
+# ═══════════════════════════════════════════════════════════════════════
+# - Mk.IX ENTERED: raw#30 IRREVERSIBILITY_EMBEDDED_LAGRANGIAN (53d923b8)
+# - raw#29 UNIVERSAL_CONSTANT_4 (9468fe0f)
+# - τ(6)=4 bijective proof 88% (d7e5db01)
+# - Hexad universal 1000/1000 (6a292530)
+# - V_sync Kuramoto (d072bb16), V_RG (57acda7b), L_IX integrator (226bb780)
+# - Arrow cusp @ fixpoint (L_IX 발견)
+# - TRANSFER_VERIFIED 3/4 (6a2fe1d8)
+# - Meta² cert 8 entries indexed (074487cd)
+# - airgenome hook framework activated (7af142fb → main merge d81c0fde)
+# - edu/ consolidation 11 new files (8da7ed0c, anima-side)
+# - H100 idle pod stopped (87xscivuggrwvk, $143 recovered)
+
+# ═══════════════════════════════════════════════════════════════════════
+# airgenome ops milestones (mirror of shared/config/roadmap/airgenome.json)
+# ═══════════════════════════════════════════════════════════════════════
+# 이 섹션은 운영 파이프라인의 M-milestones 를 hybrid gate 에 묶는다.
+# SSOT 는 shared/config/roadmap/airgenome.json — 여기는 hybrid P1/P2/P3 매핑.
+#
+# M0 v1 동결 + core 분리                      done 2026-04-13  → 배경
+# M1 L0 guard parse-check                     done 2026-04-13  → 배경
+# M2 probe — vitals 수집                      done 2026-04-14  → P1 ops feed
+# M3 dispatch — AG6/AG7 호스트 선택           done 2026-04-14  → P1 ops feed
+# M4 harvest — 60B hexagon per process        done 2026-04-14  → P1 ops feed
+# M5 label — T15 semantic labeling            done 2026-04-14  → P1 ops feed
+# M6 predict — Holt forecast                  done 2026-04-14  → P1 ops feed
+# M7 launchctl bootstrap (5 plist)            todo             → P1 gate (ops 실가동 전제)
+# M8 e2e chain 24h                            todo (deps M7)   → P1 gate (실 워크로드)
+# M9 per-process axes (gpu/npu/power/io)      todo (deps M4)   → P2 gate (raw axes)
+# M10 forecast real-eval MAE<15%              todo (deps M7,M8)→ P2 gate (model eval)
+# M11 cross-host genome merge                 todo (deps M4,M7)→ P2 gate (통합 view)
+# M12 dashboard (menubar + web)               todo (deps M8)   → P3 gate (관찰성)
+#
+# SINGULARITY note (stage2 FFI fix):
+#   hexa-lang stage2 FFI wiring (phi_extractor + hexad verifier) 미완성 시 M9/M10
+#   실측치 fallback 필요 → 현재는 stage0 text-parse 경로로 우회.
+#   완전 해소는 hexa-lang /.roadmap #22 (stage2 build + FFI cleanup) 완료 후.
+
+# ═══════════════════════════════════════════════════════════════════════
+# airgenome-context (MAIN 에서 airgenome 의 위치)
+# ═══════════════════════════════════════════════════════════════════════
+# anima/   = 학습 framework home (cell + lora + hybrid 학습/승급 검증)
+# airgenome/ = ops infra feed (vitals → dispatch → harvest → label → forecast)
+# hexa-lang/ = language/SSOT substrate (compiler + raw rule registry)
+#
+# airgenome 는 MAIN 의 "실행 환경" (compute 배분, anomaly 관측, forecast 제공) 을
+# 담당한다. MAIN phase 가 요구하는 infra 증거 (실가동 24h, cross-host view,
+# per-process axes 실측) 를 ops M-milestones 로 제공한다.
+#
+# 단독 ship 금지: M7-M12 각각은 MAIN phase gate 의 pending 항목을 만족시키는
+# 형태로만 기록/merge 된다 (sub-only commit 금지, discipline #2).
