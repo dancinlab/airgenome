@@ -200,6 +200,39 @@
   - 복구 순서는 handle_update 먼저 (호출부 없애야 미정의 함수 참조 안 남음) → 나머지 3 fn 삭제.
 @file: bin/tg_bot.hexa:374-407 (send_message_id, edit_message), :436-445 (strip_ansi), :1071-1089 (handle_update freeform)
 
+[mac-death-root-and-safety-net]
+@state: converged
+@date: 2026-04-20
+@scope: loadgate 부팅 grace · runaway_guard mac_heavy · anima/train_alm_lora guard · oauth-bridge LaunchAgent
+@symptom:
+  - (1) `cl` 기동 시 `claudx: loadgate=critical — abort` (부팅 직후 uptime 8m/1m load 51)
+  - (2) Mac 재사망 연쇄 4회 — 2026-04-20 03:33 kernel panic → 09:47 / 10:13 / 13:01 reset
+  - (3) 원격 /login OAuth URL 이 queue 에 append 되어도 Mac 기본 브라우저에서 안 열림
+@root:
+  - Mac panic 근본: `/private/tmp/train_alm_lora_mac` (anima LoRA 14B training Mac native 바이너리) 이 Ghostty 터미널 parent 로 heavy compute → Compressor 64%/segments 95% + 49 swapfiles + LOW swap → loginwindow watchdog 91s checkin 누락 → kernel panic. 증거 `/Library/Logs/DiagnosticReports/panic-full-2026-04-20-033330.0002.panic` + `~/Library/Logs/DiagnosticReports/train_alm_lora_mac-2026-04-20-09053*.ips` (09:05 3회 crash). **AG6 Mac Compute ZERO 직접 위반**.
+  - oauth-bridge 미오픈 근본: `bin/oauth-bridge` 스크립트는 3번 commit (bb9e43ed/8f90c4ce/5db96011) 됐으나 **LaunchAgent 상시 가동 설정이 한 번도 없었음** → queue(~/.airgenome/oauth-queue) 에 URL append 되어도 tail -F 하는 daemon 없어 `open` 호출 안 됨.
+  - loadgate critical abort: 부팅 grace 240s(4분) 가 짧아 uptime 8m(480s)/load 51 구간에서 강등 실패. critical 판정(ncpu 8 × 6 = 48) 통과.
+@fix:
+  1. `shared/claudx/loadgate` — 부팅 transient grace 240s → 600s (commit 9da5e174). critical threshold ncpu×6 은 D1 재증식 보호용으로 유지.
+  2. `bin/runaway_guard.hexa` +317/-1 — Darwin 전용 블록, `/private/tmp/train_alm_lora*` prefix + `/private/tmp/*_mac` suffix 패턴 매칭, claude/hexa* 보호 화이트리스트, **dry_run 기본** (log only, `RUNAWAY_MAC_HEAVY_KILL=1` 일 때만 TERM→KILL). self-test 13 mock case 추가 (commit 5108a38a).
+  3. `~/Dev/anima/training/train_alm_lora.hexa` — fn main() 첫 줄 Darwin 가드 26줄 (HEXA_LOCAL=1 opt-out, ubu dispatch 가이드). **anima 쪽 미커밋 — 사용자 검토 후 `git add training/train_alm_lora.hexa && git commit` 직접 수행**. 자매 trainer (train_alm_14b*/train_alm_32b_r1/train_clm_gpu) 는 same guard 복붙 follow-up.
+  4. `~/Library/LaunchAgents/com.airgenome.oauth-bridge.plist` 신규 (KeepAlive=true + RunAtLoad=true + Background + ThrottleInterval 10) + `~/.airgenome/mac_allow` 에 `com.airgenome.oauth-bridge` 추가 (자원 승인제 통과) + `nexus/shared/launchagent.jsonl` SSOT entry (commit f978de8f). daemon pid 9320 live, log "watching ... tunnel=ubu2-d".
+@verified:
+  - loadgate: `bash shared/claudx/loadgate` → `ok` rc=0 (load 3.83 / critical 48 / grace 600s 적용)
+  - runaway_guard: `~/.hx/bin/hexa parse` → `OK: parses cleanly`; self-test 13 mock case 전수 PASS; comm=claude + force=true 조합에서도 kill 호출 없음 확인
+  - oauth-bridge: `launchctl list` pid 9320 live; log `watching /Users/ghost/.airgenome/oauth-queue (whitelist=... tunnel=ubu2-d ttl=300s)`; self-test `bash parse / tail / open` 모두 available → PASS
+  - anima: 이번 턴 미검증 (hexa run 실 경로 = 사용자 수동)
+@followup:
+  1. 기존 `/private/tmp/train_alm_lora_mac` 바이너리 (pre-r11 빌드, 가드 없음) 는 사용자가 rebuild 또는 `rm` 해야 최종 안전. Agent A 는 삭제 금지 지시 준수해서 남겨둠.
+  2. anima 자매 trainer (train_alm_14b.hexa, train_alm_14b_r5.hexa, train_alm_32b_r1.hexa, train_clm_gpu.hexa) 동일 26줄 guard 복붙 필요. hexa single-file 규약상 common include 금지.
+  3. anima `.claude/worktrees/agent-*/training/train_alm_lora.hexa` 7개 pre-r11 구버전 — worktree 병합/삭제 시 자연 해결.
+  4. runaway_guard force-kill 경로 (`RUNAWAY_MAC_HEAVY_KILL=1`) 는 사용자 명시 승인 전까지 dry_run 고정.
+  5. queue 에 남은 14:31 이전 URL 은 `tail -n0` 특성상 daemon 재시작 후 replay 안 됨. 재시도 필요 시 `bin/oauth-bridge open '<url>'` 수동.
+@ref:
+  - memory: project_mac_panic_2026_04_20_0333.md · project_ag6-mac-compute-zero.md · feedback_mac_compute_ban.md · feedback_mac_compute_approval_only.md
+  - commits: 9da5e174 (loadgate grace) · 5108a38a (runaway_guard mac_heavy) · f978de8f (oauth-bridge SSOT)
+  - branch: feat/m11a-cross-host (origin push 완)
+
 @__raw__
 2026-04-20 03:26:02 auth-heal OK=0 FAIL=0 SKIP=3 tail=...GWC0AAA
 2026-04-20 03:27:09 auth-heal OK=2 FAIL=0 SKIP=1 tail=...GWC0AAA
@@ -209,3 +242,12 @@
 2026-04-20 09:48:28 auth-heal OK=4 FAIL=0 SKIP=2 tail=...bjkrAAA
 2026-04-20 10:14:42 auth-heal OK=4 FAIL=0 SKIP=2 tail=...bjkrAAA
 2026-04-20 10:25:03 mac-compute-lockdown Mac LaunchAgent 18개 전부 Disabled=true + bootout. ~/.airgenome/mac_allow 빈 allow list SSOT 생성. 재enable 은 사용자 명시 승인 (allow list 편집 + plutil + bootstrap). panic 3회 (04-16 WindowServer 156s / 04-18 WindowServer 121s / 04-20 watchdogd 91s) 근본 조치.
+2026-04-20 11:43:29 auth-heal OK=4 FAIL=0 SKIP=2 tail=...bjkrAAA
+2026-04-20 12:13:47 auth-heal OK=4 FAIL=0 SKIP=2 tail=...xLeXwAA
+2026-04-20 12:44:04 auth-heal OK=4 FAIL=0 SKIP=2 tail=...xLeXwAA
+2026-04-20 12:57:32 airgenome-auth sync local_ok=13 remote_ok=52 remote_fail=0 remote_skip=0
+2026-04-20 12:58:30 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 12:59:59 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 13:09:41 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 13:40:12 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 14:18:16 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
