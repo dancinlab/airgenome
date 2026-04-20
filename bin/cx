@@ -998,8 +998,14 @@ echo "cx → $host${alias:+ ($alias)}${dssh_alias:+ dssh=$dssh_alias}${slot_dir:
 
 # CLAUDE_CONFIG_DIR 매핑: cl 이 Mac 절대경로(/Users/ghost/.claude-claudeN)로 export 하므로
 # 원격에는 basename 만 뽑아서 $HOME/<basename> 형태로 전달 (호스트별 HOME 상이: /home/aiden vs /home/summer).
+#
+# 2026-04-20 401 근본fix: 원격에 per-account .credentials.json 이 없어서 CLAUDE_CONFIG_DIR
+# 매핑시 원격 claude 가 매번 401. Mac keychain 은 path-hashed 12개 (계정별) 이지만
+# 원격엔 auth-heal 이 sync 한 단일 default ~/.claude/.credentials.json 만 존재. 원격에선
+# 항상 default config dir 를 사용 (rotation 은 Mac 전용). opt-in: CX_REMOTE_PER_ACCOUNT=1
+# 로 per-account 경로 강제 (원격에 해당 credentials 이 미리 준비된 경우에만).
 remote_env_prefix=""
-if [ "$host" != "mac" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+if [ "$host" != "mac" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "${CX_REMOTE_PER_ACCOUNT:-0}" = "1" ]; then
     base=$(basename "$CLAUDE_CONFIG_DIR")
     remote_env_prefix='CLAUDE_CONFIG_DIR="$HOME/'"$base"'" '
 fi
