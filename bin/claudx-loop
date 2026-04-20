@@ -146,7 +146,7 @@ while true; do
     # 복구 불가능 (arg/auth/state) 로 간주하고 즉시 종료.
     # rc=3 (ABORT, 모든 계정 capped) 은 아래 all_exhausted_sleep 가 처리하므로 예외.
     if [ "$rc" != "0" ] && [ "$rc" != "3" ] && [ "$dur" -lt "$CLAUDX_LOOP_FASTFAIL_DUR" ]; then
-        fastfail_streak=$((fastfail_streak + 1))
+        fastfail_streak=$((${fastfail_streak:-0} + 1))
         if [ "$fastfail_streak" -ge "$CLAUDX_LOOP_FASTFAIL_MAX" ]; then
             log_evt '{ts:$ts,pid:$pid,event:"fastfail_break",streak:($s|tonumber),rc:($rc|tonumber),dur:($d|tonumber)}' \
                 --arg s "$fastfail_streak" --arg rc "$rc" --arg d "$dur"
