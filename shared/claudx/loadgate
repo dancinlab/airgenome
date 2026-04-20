@@ -65,8 +65,9 @@ di=$((danger * 100))
 ci=$((critical * 100))
 
 # 부팅 transient grace: Mac/Linux 모두 부팅 직후 launchd/systemd 가
-# 일제 spawn 하면 1분 loadavg 가 ncpu×4 이상 스파이크하는 게 정상.
-# uptime < 240s 면 critical/danger → warn 로 강등 (진행 OK, hold 없음).
+# 일제 spawn 하면 1분 loadavg 가 ncpu×6 이상 스파이크하는 게 정상 (2026-04-20 실측
+# uptime 8m 에서 load 51 observed — 240s 로는 부족). 600s 로 상향.
+# uptime < 600s 면 critical/danger → warn 로 강등 (진행 OK, hold 없음).
 _uptime_sec() {
     if [ -r /proc/uptime ]; then
         awk '{printf "%d", $1}' /proc/uptime
@@ -86,9 +87,9 @@ if [ "$li" -ge "$ci" ]; then
     li=$(_read_load_x100)
 fi
 
-# 부팅 grace 적용: uptime<240s 는 launchd/systemd spawn storm 이 정상이므로
+# 부팅 grace 적용: uptime<600s 는 launchd/systemd spawn storm 이 정상이므로
 # critical/danger 모두 warn 로 강등 (진행 OK, hold 없음).
-if [ "$(_uptime_sec)" -lt 240 ] && [ "$li" -ge "$di" ]; then
+if [ "$(_uptime_sec)" -lt 600 ] && [ "$li" -ge "$di" ]; then
     echo "warn"; exit 1
 fi
 
