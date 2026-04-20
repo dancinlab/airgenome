@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.htz-tunnel</string>
+
+    <!-- Step B Phase 4 (2026-04-21): htz-d → Mac reverse SSH tunnel 영속화.
+         NAT 안쪽 Mac 에 htz-d 가 닿을 경로를 launchd 가 보장. 끊기면 5s 후 재시도. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/Dev/airgenome/bin/htz-tunnel</string>
+        <string>--daemon</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- tunnel spawn 간격. -daemon 의 내부 루프가 5s 재시도. plist 재시작 시엔 30s. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/Library/Logs/airgenome-htz-tunnel.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/Library/Logs/airgenome-htz-tunnel.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/ghost/.hx/bin:/Users/ghost/Dev/airgenome/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+    </dict>
+</dict>
+</plist>

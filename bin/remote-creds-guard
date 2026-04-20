@@ -1,0 +1,143 @@
+#!/bin/bash
+# remote-creds-guard — Linux 원격에서 실행. Mac sshfs mount 상태에 따라
+# .credentials.json 심링크를 mount 또는 local cache 로 auto-flip.
+# (airgenome Step B Phase 4c, 2026-04-21)
+#
+# 배포 방식: 이 스크립트가 원격 호스트의 $HOME/.airgenome/bin/creds-guard.sh 로 설치됨.
+# 실행은 systemd user unit / cron @reboot / 로그인 셸 중 택1. (bin/linux-creds-link
+# --install-guard 가 installer.)
+#
+# 동작:
+#   - 60s 주기 (INTERVAL) 로 mount 상태 평가:
+#     * mount live (=/mac_home/.../creds_mirror/claude5.json read 가능):
+#       1) 각 계정 mount→cache snapshot (atomic tmp-rename)
+#       2) symlink 가 cache 를 가리키고 있으면 mount 로 flip
+#     * mount dead:
+#       1) symlink 가 mount 를 가리키고 있으면 cache 로 flip (cache 파일 있을 때만)
+#   - 로그: ~/.airgenome/logs/creds-guard.log (1MB rotate)
+#
+# 안전:
+#   - cache 파일이 없으면 flip 거부 (broken symlink 만드는 것보다 낫다)
+#   - mount 복귀시 cache 는 그대로 유지 (다음 끊김 대비)
+#   - SIGTERM 에서 graceful exit
+#
+# env:
+#   CREDS_GUARD_INTERVAL  주기 초. 기본 60
+#   CREDS_GUARD_MIRROR    mount path. 기본 /mac_home/.airgenome/creds_mirror
+#   CREDS_GUARD_CACHE     cache dir. 기본 $HOME/.airgenome/creds_cache
+#   CREDS_GUARD_DEBUG=1   verbose
+
+set -uo pipefail
+
+INTERVAL="${CREDS_GUARD_INTERVAL:-60}"
+MIRROR="${CREDS_GUARD_MIRROR:-/mac_home/.airgenome/creds_mirror}"
+CACHE_DIR="${CREDS_GUARD_CACHE:-$HOME/.airgenome/creds_cache}"
+DEBUG="${CREDS_GUARD_DEBUG:-0}"
+LOG_DIR="$HOME/.airgenome/logs"
+LOG="$LOG_DIR/creds-guard.log"
+PROBE_NAME="${CREDS_GUARD_PROBE:-claude5}"
+
+ACCTS=(claude1 claude2 claude3 claude4 claude5 claude6 claude7 claude8 claude9 claude10 claude11 claude12)
+
+mkdir -p "$CACHE_DIR" "$LOG_DIR"
+chmod 700 "$CACHE_DIR" 2>/dev/null || true
+
+ts()  { date '+%Y-%m-%dT%H:%M:%S'; }
+log() {
+    printf '[creds-guard %s] %s\n' "$(ts)" "$*" >> "$LOG"
+    # 간단한 rotate — 1MB 초과시 .1 로 옮김
+    if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+        mv -f "$LOG" "$LOG.1"
+    fi
+}
+dbg() { [ "$DEBUG" = "1" ] && log "DEBUG $*" || true; }
+
+mount_alive() {
+    # 가장 빠른 검사: probe 파일 read. mount 끊겼으면 read 실패 (broken I/O).
+    [ -r "$MIRROR/$PROBE_NAME.json" ] || return 1
+    return 0
+}
+
+snapshot_cache() {
+    local n=$1
+    local src="$MIRROR/$n.json"
+    local dst="$CACHE_DIR/$n.json"
+    [ -r "$src" ] || return 0
+    # atomic + content 변경시만 업데이트 (cmp 로 노이즈 억제)
+    local tmp="$dst.tmp.$$"
+    cp "$src" "$tmp" 2>/dev/null || return 0
+    if [ -f "$dst" ] && cmp -s "$tmp" "$dst" 2>/dev/null; then
+        rm -f "$tmp"
+        return 0
+    fi
+    chmod 600 "$tmp" 2>/dev/null
+    mv "$tmp" "$dst"
+    dbg "$n: cache 갱신"
+}
+
+flip_link() {
+    local n=$1 target_base=$2  # "mount" | "cache"
+    local link="$HOME/.claude-$n/.credentials.json"
+    local want
+    if [ "$target_base" = "mount" ]; then
+        want="$MIRROR/$n.json"
+    else
+        want="$CACHE_DIR/$n.json"
+    fi
+    # 대상 파일 존재/read 가능성 확인
+    [ -r "$want" ] 2>/dev/null || return 0
+    if [ -L "$link" ]; then
+        local cur
+        cur=$(readlink "$link" 2>/dev/null)
+        [ "$cur" = "$want" ] && return 0
+    elif [ -e "$link" ]; then
+        # regular file — guard 가 관여 X (linux-creds-link 가 초기 전환했어야)
+        return 0
+    else
+        mkdir -p "$(dirname "$link")" 2>/dev/null
+    fi
+    ln -sfn "$want" "$link"
+    log "$n: flip → $target_base"
+}
+
+cycle_once() {
+    if mount_alive; then
+        for n in "${ACCTS[@]}"; do snapshot_cache "$n"; done
+        for n in "${ACCTS[@]}"; do flip_link "$n" mount; done
+        dbg "cycle: mount live — cache synced + links→mount"
+    else
+        for n in "${ACCTS[@]}"; do flip_link "$n" cache; done
+        log "WARN mount dead — links flipped → cache"
+    fi
+}
+
+if [ "${1:-}" = "--once" ]; then
+    cycle_once
+    exit 0
+fi
+
+if [ "${1:-}" = "--status" ]; then
+    if mount_alive; then echo "mount: LIVE"; else echo "mount: DEAD"; fi
+    printf '%-10s %s\n' "account" "symlink_target"
+    for n in "${ACCTS[@]}"; do
+        link="$HOME/.claude-$n/.credentials.json"
+        if [ -L "$link" ]; then
+            t=$(readlink "$link")
+            [ -r "$t" ] && r="OK" || r="BROKEN"
+            printf '%-10s %s [%s]\n' "$n" "$t" "$r"
+        elif [ -f "$link" ]; then
+            printf '%-10s FILE\n' "$n"
+        else
+            printf '%-10s MISSING\n' "$n"
+        fi
+    done
+    exit 0
+fi
+
+# daemon mode
+log "daemon start pid=$$ interval=${INTERVAL}s mirror=$MIRROR cache=$CACHE_DIR"
+trap 'log "daemon stop pid=$$"; exit 0' TERM INT HUP
+while true; do
+    cycle_once
+    sleep "$INTERVAL"
+done

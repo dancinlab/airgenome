@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# bin/htz-tunnel — Mac → htz-d reverse SSH tunnel 유지 daemon (Step B Phase 4, 2026-04-21)
+#
+# 목적: htz-d 가 creds-mirror SSOT 에 접근하려면 Mac sshd 로 닿아야 하는데, htz-d 는
+#       hetzner cloud (NAT 안쪽 Mac 접근 불가). 따라서 Mac 측에서 outbound SSH + remote
+#       port forward 로 tunnel 생성. 이 스크립트가 그 tunnel 을 항상 살아있게 유지.
+#
+# 원리:
+#   - ssh -N (no cmd) -R 13522:localhost:22 htz-d 를 foreground 로 실행
+#   - ssh 가 예외로 죽으면 5s 뒤 재시도 (launchd KeepAlive 이 프로세스 자체 KeepAlive)
+#   - autossh 대체: ServerAliveInterval / ExitOnForwardFailure 로 죽은 tunnel 빠르게 감지
+#
+# 사용:
+#   htz-tunnel                   foreground daemon (launchd 용)
+#   htz-tunnel --status          현재 tunnel PID + htz-d 의 :13522 listen 여부
+#   htz-tunnel --verify          tunnel 끝단(htz-d→Mac) 통신 확인
+#   htz-tunnel --kill            tunnel 종료
+#
+# env:
+#   HTZ_TUNNEL_PORT           원격 listen port. 기본 13522
+#   HTZ_TUNNEL_HOST           ssh alias. 기본 htz-d
+#   HTZ_TUNNEL_ALIVE_INTERVAL ServerAliveInterval 초. 기본 30
+#   HTZ_TUNNEL_RETRY_SEC      crash 후 재시도 대기. 기본 5
+
+set -uo pipefail
+
+PORT="${HTZ_TUNNEL_PORT:-13522}"
+HOST="${HTZ_TUNNEL_HOST:-htz-d}"
+ALIVE="${HTZ_TUNNEL_ALIVE_INTERVAL:-30}"
+RETRY="${HTZ_TUNNEL_RETRY_SEC:-5}"
+LOG="$HOME/Library/Logs/airgenome-htz-tunnel.log"
+mkdir -p "$(dirname "$LOG")"
+
+ts()  { date '+%Y-%m-%dT%H:%M:%S'; }
+log() { printf '[htz-tunnel %s] %s\n' "$(ts)" "$*" | tee -a "$LOG" >&2; }
+
+_match_pattern() {
+    echo "ssh.*-R ${PORT}:localhost:22 ${HOST}"
+}
+
+cmd_status() {
+    local p
+    p=$(pgrep -af "$(_match_pattern)" 2>/dev/null | grep -v grep)
+    if [ -n "$p" ]; then
+        echo "tunnel_pid: $(echo "$p" | awk '{print $1}' | head -1)"
+    else
+        echo "tunnel_pid: none"
+    fi
+    ssh -o ConnectTimeout=5 "$HOST" "ss -tlnp 2>&1 | grep ':${PORT}'" 2>&1 | head -2 || true
+}
+
+cmd_verify() {
+    ssh -o ConnectTimeout=5 "$HOST" "ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -p ${PORT} ghost@localhost 'echo tunnel_alive'" 2>&1 | head -3
+}
+
+cmd_kill() {
+    local pids
+    pids=$(pgrep -f "$(_match_pattern)" 2>/dev/null)
+    if [ -n "$pids" ]; then
+        kill $pids 2>/dev/null
+        log "killed: $pids"
+    else
+        log "no tunnel process"
+    fi
+}
+
+cmd_daemon() {
+    log "daemon start pid=$$ port=$PORT host=$HOST"
+    trap 'log "daemon stop pid=$$"; exit 0' TERM INT HUP
+
+    while true; do
+        # pre-clean stale entries
+        pkill -f "$(_match_pattern)" 2>/dev/null
+        sleep 1
+
+        log "spawn tunnel → $HOST:$PORT"
+        # foreground ssh (launchd 프로세스로서 이 자체가 KeepAlive 대상)
+        # -N: 원격 명령 없이 tunnel 만. ExitOnForwardFailure: bind 실패 시 즉시 exit.
+        # ControlMaster=no: session 충돌 방지.
+        ssh -N \
+            -o ExitOnForwardFailure=yes \
+            -o ControlMaster=no \
+            -o ControlPath=none \
+            -o ServerAliveInterval="$ALIVE" \
+            -o ServerAliveCountMax=3 \
+            -o TCPKeepAlive=yes \
+            -R "${PORT}:localhost:22" "$HOST"
+        rc=$?
+        log "ssh exit rc=$rc — retry in ${RETRY}s"
+        sleep "$RETRY"
+    done
+}
+
+case "${1:-}" in
+    --status)  cmd_status ;;
+    --verify)  cmd_verify ;;
+    --kill)    cmd_kill ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --daemon|"") cmd_daemon ;;
+    *) echo "htz-tunnel: unknown '${1}'" >&2; exit 2 ;;
+esac

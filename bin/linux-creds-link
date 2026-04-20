@@ -22,6 +22,9 @@
 #   linux-creds-link --host=ubu2-d --revert          # symlink → regular file 로 복구
 #   linux-creds-link --host=ubu2-d --dry-run         # 변경 없이 예정 동작 출력
 #   linux-creds-link --status --host=ubu2-d          # 현재 링크 상태 매트릭스
+#   linux-creds-link --install-guard --host=ubu2-d   # remote-creds-guard daemon 배포+기동
+#   linux-creds-link --guard-status  --host=ubu2-d   # guard 프로세스/링크 상태
+#   linux-creds-link --guard-stop    --host=ubu2-d   # guard daemon 종료
 #
 # 안전:
 #   - 기존 파일은 .credentials.json.bak 으로 백업 (첫 실행에만; bak 있으면 skip)
@@ -44,16 +47,22 @@ target_host=""
 do_revert=false
 dry_run=false
 do_status=false
+do_install_guard=false
+do_guard_status=false
+do_guard_stop=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --host=*)     target_host="${1#--host=}"; shift ;;
-        --host)       target_host="$2"; shift 2 ;;
-        --revert)     do_revert=true; shift ;;
-        --dry-run)    dry_run=true; shift ;;
-        --status)     do_status=true; shift ;;
-        -h|--help)    _usage; exit 0 ;;
-        *)            echo "linux-creds-link: unknown '$1'" >&2; exit 2 ;;
+        --host=*)          target_host="${1#--host=}"; shift ;;
+        --host)            target_host="$2"; shift 2 ;;
+        --revert)          do_revert=true; shift ;;
+        --dry-run)         dry_run=true; shift ;;
+        --status)          do_status=true; shift ;;
+        --install-guard)   do_install_guard=true; shift ;;
+        --guard-status)    do_guard_status=true; shift ;;
+        --guard-stop)      do_guard_stop=true; shift ;;
+        -h|--help)         _usage; exit 0 ;;
+        *)                 echo "linux-creds-link: unknown '$1'" >&2; exit 2 ;;
     esac
 done
 
@@ -173,12 +182,104 @@ done
 REMOTE_EOF
 }
 
+GUARD_LOCAL="$ROOT/bin/remote-creds-guard"
+GUARD_REMOTE_DIR='$HOME/.airgenome/bin'
+GUARD_REMOTE_PATH='$HOME/.airgenome/bin/creds-guard.sh'
+GUARD_PID_FILE='$HOME/.airgenome/creds-guard.pid'
+
+_install_guard_script() {
+    # 원격에서 PID-lock 기반으로 이미 돌고 있으면 skip, 아니면 nohup 으로 기동.
+    cat <<REMOTE_EOF
+set -uo pipefail
+mkdir -p $GUARD_REMOTE_DIR "\$HOME/.airgenome/logs"
+# 이미 살아있는지 확인
+if [ -f $GUARD_PID_FILE ]; then
+    pid=\$(cat $GUARD_PID_FILE 2>/dev/null)
+    if [ -n "\$pid" ] && kill -0 "\$pid" 2>/dev/null; then
+        echo "already running pid=\$pid"
+        # 스크립트 업그레이드 필요 여부 확인
+        if [ -f $GUARD_REMOTE_PATH ] && ! diff -q /tmp/creds-guard.new $GUARD_REMOTE_PATH >/dev/null 2>&1; then
+            echo "스크립트 변경 감지 → daemon 재시작"
+            kill "\$pid" 2>/dev/null; sleep 1
+        else
+            cp /tmp/creds-guard.new $GUARD_REMOTE_PATH
+            chmod +x $GUARD_REMOTE_PATH
+            exit 0
+        fi
+    fi
+fi
+cp /tmp/creds-guard.new $GUARD_REMOTE_PATH
+chmod +x $GUARD_REMOTE_PATH
+# nohup 으로 기동 + PID 저장
+nohup $GUARD_REMOTE_PATH >/dev/null 2>&1 &
+echo \$! > $GUARD_PID_FILE
+sleep 1
+new_pid=\$(cat $GUARD_PID_FILE)
+if kill -0 "\$new_pid" 2>/dev/null; then
+    echo "guard started pid=\$new_pid"
+else
+    echo "guard FAIL to start"
+    exit 1
+fi
+REMOTE_EOF
+}
+
+_guard_status_script() {
+    cat <<REMOTE_EOF
+set -uo pipefail
+pid=\$(cat $GUARD_PID_FILE 2>/dev/null)
+if [ -n "\$pid" ] && kill -0 "\$pid" 2>/dev/null; then
+    echo "daemon: RUNNING pid=\$pid"
+else
+    echo "daemon: NOT RUNNING"
+fi
+if [ -x $GUARD_REMOTE_PATH ]; then
+    $GUARD_REMOTE_PATH --status 2>&1
+else
+    echo "guard script 없음: $GUARD_REMOTE_PATH"
+fi
+REMOTE_EOF
+}
+
+_guard_stop_script() {
+    cat <<REMOTE_EOF
+set -uo pipefail
+pid=\$(cat $GUARD_PID_FILE 2>/dev/null)
+if [ -n "\$pid" ] && kill "\$pid" 2>/dev/null; then
+    echo "killed pid=\$pid"
+    rm -f $GUARD_PID_FILE
+else
+    echo "no running guard"
+fi
+REMOTE_EOF
+}
+
 # ── execute ──────────────────────────────────────────────────────
 SSH_OPTS=(-o ConnectTimeout=8 -o BatchMode=yes -o ServerAliveInterval=10)
 for host in "${hosts[@]}"; do
     log "=== $host ==="
     if [ "$do_status" = "true" ]; then
         ssh "${SSH_OPTS[@]}" "$host" "$(_remote_status_script)" 2>&1 || log "$host: status 실패"
+        continue
+    fi
+    if [ "$do_guard_status" = "true" ]; then
+        ssh "${SSH_OPTS[@]}" "$host" "$(_guard_status_script)" 2>&1 || log "$host: guard-status 실패"
+        continue
+    fi
+    if [ "$do_guard_stop" = "true" ]; then
+        ssh "${SSH_OPTS[@]}" "$host" "$(_guard_stop_script)" 2>&1 || log "$host: guard-stop 실패"
+        continue
+    fi
+    if [ "$do_install_guard" = "true" ]; then
+        if [ ! -f "$GUARD_LOCAL" ]; then
+            log "$host: 로컬 guard 스크립트 없음 ($GUARD_LOCAL)"
+            continue
+        fi
+        # scp 로 script 전송 → install script 호출
+        scp -q -o ConnectTimeout=8 "$GUARD_LOCAL" "$host:/tmp/creds-guard.new" 2>&1 || {
+            log "$host: scp 실패"; continue
+        }
+        ssh "${SSH_OPTS[@]}" "$host" "$(_install_guard_script)" 2>&1 || log "$host: install 실패"
         continue
     fi
     script=$(_remote_apply_script "$do_revert" "$dry_run")
