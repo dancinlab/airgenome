@@ -769,6 +769,10 @@ fn cmd_help() -> str {
     s = s + "/title <라벨>      — active 세션 이름 변경\n"
     s = s + "/show [번호]       — 세션 메타 + 최근 turn\n"
     s = s + "/recap             — active 세션 요약\n"
+    s = s + "/cost              — 토큰 사용량 + 추정 비용\n"
+    s = s + "/export [번호]     — markdown dump\n"
+    s = s + "/fork [번호]       — 세션 복제 → 새 active\n"
+    s = s + "/compact [force]   — 오래된 turn 요약 압축\n"
     s = s + "/clear or /reset   — fresh 세션 시작 (이전 보존)\n"
     s = s + "\n"
     s = s + "── 호스트/운영 ──\n"
@@ -1131,6 +1135,24 @@ fn route_command(cfg: Config, chat_id: int, text: str) -> CmdResult {
     }
     if cmd0 == "recap" || cmd0 == "summary" {
         return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "recap", "") }
+    }
+    if cmd0 == "cost" {
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "cost", "") }
+    }
+    if cmd0 == "export" {
+        let mut a = ""
+        if len(argv) >= 2 { a = shell_quote(argv[1]) }
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "export", a) }
+    }
+    if cmd0 == "fork" {
+        let mut a = ""
+        if len(argv) >= 2 { a = shell_quote(argv[1]) }
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "fork", a) }
+    }
+    if cmd0 == "compact" {
+        let mut a = ""
+        if len(argv) >= 2 && argv[1] == "force" { a = "force" }
+        return CmdResult { handled: true, reply: ag_chat_meta(chat_id, "compact", a) }
     }
     // /clear /reset 은 /new 와 동일 — fresh 세션 시작
     if cmd0 == "clear" || cmd0 == "reset" {
