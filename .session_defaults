@@ -52,6 +52,14 @@ C3 DISCOVER   BEFORE writing new ops logic: run `nx help` and `airgenome help`. 
 C4 NOGUESS    ONLY invoke subcommands declared by help output. Never invent names from memory or training data.
 C5 EXTEND     New recurring operation → add as `airgenome <name>` or `nx <name>` subcommand. Keep single-entry CLI as SSOT for ops surface.
 
+[KEYWORD-DISPATCH] — user message → immediate Bash dispatch via .workspace.lock keyword table. probabilistic matching, deterministic effect.
+W1 LOCK_READ  ON Session start: read ~/core/.workspace.lock [keywords] section (when available). IF absent, skip this section entirely.
+W2 MATCH      ON user message: regex match message against loaded keyword list (exact, case-insensitive). Keywords currently: drill, drilL, 드릴 (from .workspace.lock).
+W3 DISPATCH   ON match: IMMEDIATELY invoke Bash("nexus <bin> <entry> '<seed>'") where: bin + entry = from [commands] section; seed = user message minus matched keyword, trimmed. NO natural language clarification. NO confirmation request. NO additional interpretation of user intent beyond keyword extraction.
+W4 REPORT     report Bash exit_code + first 10 lines stdout immediately after dispatch.
+W5 NOMATCH    ON no keyword match: treat as normal user message. No implicit drill.
+W6 FALLBACK   IF user message ambiguous (e.g., mentions "drill" in theoretical discussion, not command): 1) ask user once: "dispatch? (y/n)"; 2) execute or skip based on response.
+
 [ROADMAP] — shared/config/roadmap/airgenome.json 이 actionable SSOT. milestones[] 밖 작업 금지.
 R1 SSOT       roadmap path = shared/config/roadmap/airgenome.json (kind=roadmap_sot). milestones[].status ∈ {todo,active,blocked,done}, priority ∈ {P0..P3}.
 R2 CATCHUP    세션 시작/resume 시 jq '.milestones|map(select(.status=="active"))' 1회 → active 집합을 in_progress 로 취급. TaskList 와 병행, 중복은 S7 DUP GUARD 로 흡수.
