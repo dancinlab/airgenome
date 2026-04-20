@@ -117,11 +117,15 @@ cx_sess_list() {
     done
 }
 
-# last id — LAST pointer 먼저, 없으면 list 첫줄.
+# last id — LAST pointer 먼저, 없으면 list 첫줄. stale pointer (파일 소실) 면 list fallback.
 cx_sess_last_id() {
     if [ -r "$CX_SESS_DIR/LAST" ]; then
-        cat "$CX_SESS_DIR/LAST" 2>/dev/null
-        return 0
+        local _last
+        _last=$(cat "$CX_SESS_DIR/LAST" 2>/dev/null)
+        if [ -n "$_last" ] && [ -r "$CX_SESS_DIR/$_last.json" ]; then
+            printf '%s\n' "$_last"
+            return 0
+        fi
     fi
     cx_sess_list 1
 }
@@ -129,7 +133,10 @@ cx_sess_last_id() {
 # snapshot 로드 → 현재 shell 변수에 주입. resume 플래그 세팅 시 caller 가 호출.
 # 반환: 0 = ok, 1 = 파일 없음.
 cx_sess_load() {
-    local id=$1 fp="$CX_SESS_DIR/$id.json" j k v
+    local id=${1:-}
+    local fp="$CX_SESS_DIR/$id.json"
+    local j k v
+    [ -n "$id" ] || return 1
     [ -r "$fp" ] || return 1
     j=$(cat "$fp" 2>/dev/null) || return 1
     # host / cwd / args / env 복원 — force_host 는 resume 의도상 stored host 를 직접 지정.
