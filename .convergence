@@ -343,6 +343,121 @@
   - tailscale: /Library/SystemExtensions/B80F575A-A179-432F-8706-BCAC4D45BAAC/io.tailscale.ipn.macsys.network-extension.systemextension
   - loadgate: shared/claudx/loadgate (v M13d, ncpu×6 critical, 600s boot grace)
 
+[auth-plane-phase1-refresh-defense]
+@state: converged
+@date: 2026-04-21
+@commit: 9293b06f
+@scope: shared/claudx/token-core.js + shared/claudx/token-health.js + bin/airgenome-auth (drift/doctor/refresh-safe/guard + refresh-expired 재작성) + ~/Library/LaunchAgents/com.airgenome.auth-guard.plist
+@problem: claudx 가 claude5 만 반복 선택 → loadPool 후보 1개로 축소. 12/15 계정의 .credentials.json / Keychain 이 expiresAt 이 24~70h 전 정지. refresh-expired 단순 재시도는 8계정 401 "Invalid authentication credentials" 로 실패 — Anthropic 이 refresh token 을 revoke. 단순 재시도로 복구 불가.
+@decision: revoke 방어 4층 설계 — (1) refresh-lock (동시 refresh race 차단), (2) rotation-capture (서버가 rotation 하면 새 rt 즉시 저장), (3) proactive refresh (만료 전 선제 갱신), (4) drift guard (file vs KC rt 해시 비교). Phase 1 은 mac 단일호스트 방어.
+@changes:
+  - shared/claudx/token-core.js (신규): isAccessAlive/hasRefresh/oauthFingerprint/readFileCred/readKcCred/pickCredential/detectDrift 순수 함수 + CLI probe/probe-all/drift/sha8. pool.js 는 미수정 (L0 보호).
+  - shared/claudx/token-health.js (신규): append-only audit log (~/.airgenome/claudx/token-health.jsonl). 이벤트 {ts,host,writer,acct,event,old_rt_sha8,new_rt_sha8,result,reason,...}.
+  - bin/airgenome-auth drift/doctor: 12계정 (source, alive, has_refresh, drift, session_pct, week_pct, exh) 매트릭스 리포트. 읽기 전용.
+  - bin/airgenome-auth refresh-safe <name>: mkdir atomic lock + 전/후 rt sha8 비교로 refresh/rotate/revoke 분류 + token-health 기록. stale lock(5분+)은 재소유.
+  - bin/airgenome-auth refresh-expired: refresh-safe 기반 재작성. summary 거짓보고 버그 수정 (cmd_refresh 가 `|| log` 로 exit code 먹던 문제 if/then 분기로 교체).
+  - bin/airgenome-auth guard + com.airgenome.auth-guard.plist: expiresAt<now+GUARD_THRESHOLD_SEC(600) 계정 선제 refresh-safe. launchd 10m 주기 (StartInterval=600, ThrottleInterval=60).
+@why:
+  - revoke 는 사후복구(/login)가 유일 경로지만 proactive 로 race window 를 좁히면 재발 빈도 크게 낮춤.
+  - drift detect 결과: 12/12 in_sync → mac 내부 file/KC race 는 원인 배제. server-side revoke 거나 cross-host race 로 좁힘.
+@verified:
+  - refresh-safe smoke: alive(claude5)→refresh, revoked(claude1)→revoke 이벤트 token-health.jsonl 정확 기록.
+  - guard smoke: alive 4 skipped, revoked 8 각각 revoke. summary 정확.
+  - launchctl load com.airgenome.auth-guard 성공 (list → "-\t0\tcom.airgenome.auth-guard").
+@limitations:
+  - Anthropic OAuth 의 rotation 여부 미실증 (refresh 후 rt sha8 동일 관찰) → rotation-capture 실효성 불확실. oauth-monitor 로 증거 수집 예정.
+  - cross-host race 방어는 Phase 2 — 후속 조사에서 creds-mirror daemon(60s) 이 사실상 대응 중임 확인.
+@rollback: revert 9293b06f + launchctl unload com.airgenome.auth-guard + com.airgenome.auth-guard.plist 제거.
+
+[auth-plane-test-suite-36-45]
+@state: converged
+@date: 2026-04-21
+@commit: e39715b8 (36) → 이후 7fe74c08 에서 +9 (oauth-monitor) → 총 45
+@scope: tests/auth-plane/{test-token-core.js, test-token-health.js, test-doctor-drift.sh, test-refresh-safe.sh, test-cli-smoke.sh, run-all.sh} + bin/airgenome-auth self-test 확장 + AIRGENOME_CLAUDE_CMD env hook
+@problem: Phase 1 신규 모듈들이 실행 smoke 만 확인됨. 회귀 방지 공백. airgenome-auth self-test 는 deps check 수준, 기능 검증 없음.
+@decision: 계층별 테스트 스위트 신설 + self-test 가 suite 자동 실행. fake claude 주입으로 rotate/concurrent lock 같은 엣지 케이스 도달. 재진입 가드 (AIRGENOME_AUTH_IN_SUITE) 로 cli-smoke 의 self-test 호출이 재귀 fork 되는 버그 차단.
+@changes:
+  - test-token-core.js (12): sha8/isAccessAlive/hasRefresh/oauthFingerprint/readFileCred(정상/malformed)/pickCredential(alive/stale/empty)/detectDrift edge case.
+  - test-token-health.js (5): appendEvent 스키마/persist/tail(n)/reject-null/LOG_PATH 격리.
+  - test-doctor-drift.sh (6): drift/doctor --json 배열 + 스키마 필드 존재 (bash -c 인용 이슈는 positional arg 패턴으로 회피).
+  - test-refresh-safe.sh (5): AIRGENOME_CLAUDE_CMD 로 fake claude 주입 → refresh/rotate/revoke 분류, mkdir lock 동시 호출 rc=2, stale lock(400s 전 mtime) 재소유.
+  - test-cli-smoke.sh (8): help/list/drift/doctor/self-test + token-core/health CLI.
+  - run-all.sh: node+bash 러너 + per-suite "N pass / M fail" 집계.
+  - bin/airgenome-auth self-test: suite 자동 실행 + AIRGENOME_AUTH_IN_SUITE env guard. fork bomb 방지.
+  - bin/airgenome-auth cmd_refresh/cmd_refresh_safe: `${AIRGENOME_CLAUDE_CMD:-claude}` env hook — fake binary 주입 지점.
+@why:
+  - 순수 함수는 temp dir + env override 로 실 계정 무접촉 격리.
+  - refresh-safe 의 event 분류 + lock 은 fake claude mock 없이 edge case 도달 불가능.
+  - self-test 자동 실행은 "돌려봤다는 기록" vs "진짜 돌고 있다" 차이 해소.
+@verified: 45/0 ALL GREEN (token-core 12 + token-health 5 + doctor-drift 6 + refresh-safe 5 + cli-smoke 8 + oauth-monitor 9). self-test PASS.
+@rollback: revert e39715b8 (+ oauth-monitor 부분은 7fe74c08 별도).
+
+[auth-plane-observability-ubu2-recovery]
+@state: converged
+@date: 2026-04-21
+@commit: b438f256
+@scope: bin/airgenome-auth health-stats + cross-drift + ubu2 원격 환경 수리
+@problem: token-health.jsonl 이벤트 집계 수단 부재 → rotation/revoke 패턴 관측 불가. 또 airgenome-auth sync 가 ubu2 에 12/13 계정 FAIL — 원격 ~/.claude-* 소유자 Mac UID 501:staff + broken symlink(.credentials.json → /mac_home/...) 로 tar 추출 시 ELOOP + permission 경고.
+@decision:
+  - health-stats: N일(default 7) refresh/rotate/revoke/drift per-acct 카운트. Phase 2 실증 증거 도구.
+  - cross-drift: mac vs 지정 원격 host 의 expiresAt 비교 → sync/remote_stale/mac_stale/remote_missing.
+  - ubu2 수리: 원격 쉘에서 `rm -rf ~/.claude-*/` (permission 경고 무시) + airgenome-auth sync 재실행.
+@changes:
+  - bin/airgenome-auth cmd_health_stats: jq -rs 로 token-health.jsonl 파싱. fromdateiso8601 가 ms(.174Z) 미지원 → sub("\\.[0-9]+Z$";"Z") 전처리로 회피.
+  - bin/airgenome-auth cmd_cross_drift [host=ubu2]: ssh BatchMode 로 원격 `~/mac_home/.claude-*/.credentials.json` expiresAt 수집 → 로컬 mac 값과 비교.
+  - ubu2 원격 쉘: rm -rf ~/.claude-*/ (일부 file-history subdir 는 소유자 501:staff 로 permission denied — 무시). airgenome-auth sync 재실행 → sync log FAIL=12 유지되나 cross-drift 로 실동기 확인.
+@why:
+  - health-stats 없이 Phase 2 설계는 추측. jsonl 이 쌓이는 동안 통계 도구 필수.
+  - sync FAIL=12 가 실제 credential 동기 실패인지, tar warning 만 집계된 cosmetic 인지 cross-drift 로만 분별 가능.
+@verified:
+  - cross-drift ubu2 → 12/12 status=sync (mac_exp==remote_exp 완전 일치).
+  - health-stats 7d → 지난 refresh-safe 실행 per-acct 이벤트 출력.
+  - airgenome-auth sync 의 FAIL=12 표시는 tar permission 경고 (cosmetic). credentials 실동기 OK.
+@followup: cmd_sync 의 ubu2 OK/FAIL 판정 기준 완화 (tar stderr warning 을 FAIL 로 카운트 않도록) — cosmetic bug, 후속 기회.
+@rollback: revert b438f256. ubu2 원격 상태는 git 외 — 재 sync 로 회복.
+
+[auth-plane-phase2-oauth-monitor]
+@state: converged
+@date: 2026-04-21
+@commit: 7fe74c08
+@scope: shared/claudx/oauth-monitor.js (신규) + bin/claudx (L0 CORE) NODE/BUN_OPTIONS require chain + tests/auth-plane/test-oauth-monitor.js
+@problem: Anthropic OAuth 가 refresh rotation 수행 여부 미실증. revoke 재발 시 "rotation race 가 원인인지" 판단할 증거 없음. 증거 없이 phase 2 설계는 무책임.
+@decision: no-op 관측 hook 먼저. Node/Bun http(s).request monkey-patch 로 anthropic.com|claude.ai + /oauth/token|/v1/oauth/ 경로 탐지, token-health.jsonl 에 {event:oauth_request,proto,host,path,acct,pid} 기록. serialize/lock 은 증거 확보 후.
+@changes:
+  - shared/claudx/oauth-monitor.js (신규): _patch(http)/_patch(https). _isOauthTarget(anthropic|claude.ai + /oauth/token|/v1/oauth/), _extractHostPath(string|options|null) silent. observer 실패는 try/catch silent — main process 보호.
+  - bin/claudx (L0 CORE): OAUTH_MONITOR="$CX_ROOT/shared/claudx/oauth-monitor.js". NODE_OPTIONS/BUN_OPTIONS 의 --require 체인에 INTERCEPTOR 뒤 자동 chain (파일 존재 시만 — no-op 가드).
+  - tests/auth-plane/test-oauth-monitor.js (9): _isOauthTarget 매칭 (anthropic+oauth/token/v1/oauth — hit; non-anthropic oauth/non-oauth path — miss), _extractHostPath(string/options/null), _logEvent jsonl append.
+@why:
+  - interceptor.js 직접 수정은 파급 큼 — 별도 monitor 로 독립.
+  - 증거 수집 후 serialize/lock 추가가 올바른 순서 — "rotation 존재 여부" 자체가 선행 질문.
+  - Phase 2-B (cross-host coordinator): creds-mirror daemon 이 60s 주기 mac↔원격 bi-directional mirror 중임을 launchd plist 확인으로 파악 → 중복 구현 skip.
+@verified: 45/0 ALL GREEN (9 추가). claudx bash -n syntax OK. oauth-monitor.js require OK (monkey-patch 예외 없음).
+@l0: bin/claudx 변경 → nexus/shared/L0.json 갱신 PR 별도 필요.
+@followup: 수일 실사용 후 `airgenome-auth health-stats 7` 로 oauth_request 이벤트 수/패턴 분석. rotation 실증되면 serialize 레이어 추가.
+@rollback: revert 7fe74c08. oauth-monitor.js 파일만 삭제해도 bin/claudx 의 파일 부재 가드로 기존 동작 유지.
+
+[interceptor-401-auth-kind-split]
+@state: converged
+@date: 2026-04-21
+@commit: b2e5954d
+@scope: shared/claudx/interceptor.js (L0 CORE) isRateLimited + rotation branch
+@problem: airgenome-auth refresh-expired 반복 실행 → 8계정 401 (revoked) 대량 발생 → interceptor 의 rotation 경로가 401 을 rate-limit 과 동일 분류 → pool.markExhausted(3600s) 전 계정 반복 → pool empty → claudx ABORT 재발. /login 으로 토큰 복구해도 exhausted.until 이 미래라 pool 에 안 들어옴. 사용자 관찰 "또 이상해" 재현.
+@decision: isRateLimited 반환에 kind 필드 도입. 401/invalid_bearer/authentication_error 는 'auth' — rate-limit 아님. rotation 분기에서 auth 면 markExhausted 대신 addScorePenalty(50, 120s) 만 — rotation 유도하되 pool 에 계정 보존.
+@changes:
+  - shared/claudx/interceptor.js isRateLimited: 각 hit 에 kind:'rate'|'auth' 부여. 401 → auth. body 매칭에 authentication_error/invalid_authentication 패턴 추가.
+  - shared/claudx/interceptor.js rotation 분기 (line 828): verdict.kind==='auth' 면 pool.addScorePenalty(curName, 50, 120) + logEvent(event:'auth_soft_penalty'). 기존 rate 분기는 pool.markExhausted(EXH_SEC) 유지.
+  - 즉시 복구: `echo '{}' > ~/.airgenome/claudx/exhausted.json` → pool 12/12 후보 복원.
+@why:
+  - 401 = token 교체 필요, 429 = quota 회복 대기 — 전혀 다른 대응 도메인. 같은 markExhausted 경로는 auth 문제를 quota 고갈로 오해하게 만듦.
+  - refresh-expired / refresh-safe 같이 **의도적** 401 을 발생시키는 도구가 늘수록 오분류 파급 확대.
+@verified:
+  - interceptor.js require 예외 없음 (syntax).
+  - auth-plane suite 45/0 ALL GREEN.
+  - pool.loadPool() 12 candidates 재확인.
+  - git push 완료 (feat/m11a-cross-host → origin).
+@l0: interceptor.js 변경 → nexus/shared/L0.json 갱신 PR 필요.
+@rollback: revert b2e5954d. 단 "401 → markExhausted" 로 되돌리면 refresh-expired 재실행 시 재발 — 수렴 취소 신중.
+
 @__raw__
 2026-04-20 03:26:02 auth-heal OK=0 FAIL=0 SKIP=3 tail=...GWC0AAA
 2026-04-20 03:27:09 auth-heal OK=2 FAIL=0 SKIP=1 tail=...GWC0AAA
@@ -387,3 +502,8 @@
 2026-04-21 01:07:13 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
 2026-04-21 01:10 auth-plane Step B 완료 — creds-mirror (launchd pid 91776) + /mac_home sshfs + linux-creds-link symlink + remote-creds-guard fallback cache + htz-tunnel (launchd pid 28218 via 13522 reverse). htz-d 12/12 symlink + cache populated. ubu2-d 재부팅으로 container 소실 + root@ubu2 key 미등록으로 airgenome-init 실패 → guard 설치 보류.
 2026-04-21 01:10 claudx rotation root-fix — zshrc cl 훅 `claudx --clear-exhausted` 가 활성 limit (until>now) 까지 삭제해 claude5/6/3 limit 상태가 매 cl 호출마다 wipe → pickBest 재선택 → API limit → 재마킹 루프. pool.js clearExhausted() 를 "만료된 것만 제거" 로 수정 (commit 41788a96). 부가 원인: penalty.json 4계정 전부 delta=200 포화 (cooling 차별 못함).
+2026-04-21 01:37:44 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
+2026-04-21 01:53:40 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
+2026-04-21 02:08:15 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
+2026-04-21 02:13:36 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
+2026-04-21 02:38:52 airgenome-auth sync local_ok=13 remote_ok=26 remote_fail=0 remote_skip=26
