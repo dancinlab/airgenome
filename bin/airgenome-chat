@@ -238,20 +238,218 @@ cmd_path() {
     echo
 }
 
+# ── dispatch — claudx 호출 + history inline + 메타 누적 ─────────────
+# 입력: stdin = user text, 출력: stdout = assistant text
+# 호출: airgenome-chat dispatch <chat> [--tg-chat-id N --tg-msg-id M --tg-token-file F]
+# (--tg-* 는 S3 streaming 에서 활용; S2 에서는 무시)
+
+# Render conversation history inline. summary turn 은 [SUMMARY] 로 표기.
+build_prompt() {
+    local jsonl=$1
+    local total
+    total=$(wc -l < "$jsonl" | tr -d ' ')
+    if [ "$total" -le 1 ]; then
+        # only the new user turn — no history
+        tail -n 1 "$jsonl" | jq -r '.text'
+        return
+    fi
+    local hist
+    hist=$(head -n $((total - 1)) "$jsonl" | jq -r '
+        if   .role == "user"      then "[USER] " + .text
+        elif .role == "assistant" then "[ASSISTANT] " + .text
+        elif .role == "summary"   then "[SUMMARY of earlier turns] " + .text
+        else empty end
+    ')
+    local current
+    current=$(tail -n 1 "$jsonl" | jq -r '.text')
+    cat <<HEREDOC
+<conversation_history>
+$hist
+</conversation_history>
+
+<current_user_message>
+$current
+</current_user_message>
+
+위 conversation_history 는 너와 사용자의 이전 대화. [ASSISTANT] 줄은 너 자신의 이전 응답이야. current_user_message 에만 응답해.
+HEREDOC
+}
+
+cmd_dispatch() {
+    local chat=""
+    local tg_chat="" tg_msg="" tg_token_file="" tg_token=""
+    # parse args
+    chat="${1:-}"; shift || true
+    [ -n "$chat" ] || die "chat_id required"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --tg-chat-id)    tg_chat=$2; shift 2 ;;
+            --tg-msg-id)     tg_msg=$2; shift 2 ;;
+            --tg-token-file) tg_token_file=$2; shift 2 ;;
+            --tg-token)      tg_token=$2; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    [ -z "$tg_token" ] && [ -n "$tg_token_file" ] && [ -f "$tg_token_file" ] && tg_token=$(cat "$tg_token_file")
+    # tg_token 은 현재 S2 에서 사용 안 함 (S3 에서 streaming editMessage 에 활용)
+
+    local user_text
+    user_text=$(cat)
+    [ -n "$user_text" ] || die "stdin text required"
+
+    local d
+    d=$(chat_dir "$chat")
+    local active
+    active=$(jq -r '.active // ""' "$d/index.json")
+    if [ -z "$active" ]; then
+        # auto-create on first dispatch
+        cmd_new "$chat" "자동 세션" >&2
+        active=$(jq -r '.active' "$d/index.json")
+    fi
+    local jsonl="$d/$active.jsonl"
+
+    # 1. append user turn (crash-safe — flush before claudx call)
+    local user_ts
+    user_ts=$(now_iso)
+    jq -nc --arg ts "$user_ts" --arg text "$user_text" \
+        '{role:"user", ts:$ts, text:$text}' >> "$jsonl"
+
+    # 2. build prompt
+    local prompt
+    prompt=$(build_prompt "$jsonl")
+
+    # 3. call claudx with stream-json output
+    #    PATH 에 airgenome/bin 선두 → claude shim → session_defaults 자동 주입
+    local out_file="$d/.dispatch-$$.out"
+    local err_file="$d/.dispatch-$$.err"
+    local agroot="${AIRGENOME:-$HOME/Dev/airgenome}"
+    (
+        cd "$agroot"
+        export CLAUDX_LOADGATE_OFF=1
+        export PATH="$agroot/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+        timeout 180 "$agroot/bin/claudx" --print "$prompt" \
+            --output-format stream-json --max-turns 12 --verbose
+    ) > "$out_file" 2> "$err_file"
+    local rc=$?
+
+    # 4. parse final result event (last `result` line)
+    local result_line
+    result_line=$(grep '^{"type":"result"' "$out_file" | tail -1)
+    local resp_text input_tok output_tok
+    if [ -n "$result_line" ]; then
+        resp_text=$(jq -r '.result // ""' <<< "$result_line")
+        input_tok=$(jq -r '.usage.input_tokens // 0' <<< "$result_line")
+        output_tok=$(jq -r '.usage.output_tokens // 0' <<< "$result_line")
+    else
+        # fallback — concat all assistant text events
+        resp_text=$(jq -r 'select(.type=="assistant") | .message.content[0].text // ""' "$out_file" | tr -d '\0')
+        input_tok=0; output_tok=0
+    fi
+
+    # 5. account from stderr (claudx prints `claudx: acct=claudeN`)
+    local account
+    account=$(grep -oE 'acct=claude[0-9a-z]+' "$err_file" | head -1 | sed 's/acct=//')
+    [ -z "$account" ] && account="unknown"
+
+    if [ "$rc" -ne 0 ] || [ -z "$resp_text" ]; then
+        # 실패 — assistant turn 은 기록하되 error flag, output 으로 stderr+rc 알림
+        local errbody
+        errbody=$(grep -v '^security warning' "$err_file" 2>/dev/null | tail -10)
+        echo "❌ dispatch 실패 (rc=$rc, account=$account)"
+        echo
+        echo "$errbody"
+        rm -f "$out_file" "$err_file"
+        return 1
+    fi
+
+    # 6. append assistant turn
+    local asst_ts
+    asst_ts=$(now_iso)
+    jq -nc --arg ts "$asst_ts" --arg text "$resp_text" --arg acct "$account" \
+        --argjson tok_in "$input_tok" --argjson tok_out "$output_tok" \
+        '{role:"assistant", ts:$ts, text:$text, account:$acct, tokens_in:$tok_in, tokens_out:$tok_out}' \
+        >> "$jsonl"
+
+    # 7. update index.json
+    jq --arg uuid "$active" --arg ts "$asst_ts" --arg acct "$account" \
+       --argjson tok_in "$input_tok" --argjson tok_out "$output_tok" '
+        .sessions[$uuid].msgs = ((.sessions[$uuid].msgs // 0) + 1)
+        | .sessions[$uuid].tokens_in = ((.sessions[$uuid].tokens_in // 0) + $tok_in)
+        | .sessions[$uuid].tokens_out = ((.sessions[$uuid].tokens_out // 0) + $tok_out)
+        | .sessions[$uuid].last_used = $ts
+        | .sessions[$uuid].accounts_used = ((.sessions[$uuid].accounts_used // []) + [$acct] | unique)
+    ' "$d/index.json" | atomic_write "$d/index.json"
+
+    # 8. output assistant text
+    echo "$resp_text"
+
+    rm -f "$out_file" "$err_file"
+    return 0
+}
+
+# ── /recap — active 세션 요약 (별도 claudx 호출, 짧은 system prompt) ─
+cmd_recap() {
+    local chat=$1
+    local d
+    d=$(chat_dir "$chat")
+    local active
+    active=$(jq -r '.active // ""' "$d/index.json")
+    [ -n "$active" ] || die "active 세션 없음"
+    local jsonl="$d/$active.jsonl"
+    [ -s "$jsonl" ] || { echo "(빈 세션 — 메시지 없음)"; return; }
+
+    local hist
+    hist=$(jq -r '
+        if   .role == "user"      then "[USER] " + .text
+        elif .role == "assistant" then "[ASSISTANT] " + .text
+        elif .role == "summary"   then "[SUMMARY] " + .text
+        else empty end' "$jsonl")
+
+    local prompt
+    prompt=$(cat <<HEREDOC
+다음은 너와 사용자의 대화 기록이야. 100단어 이내로 핵심 주제 + 합의된 결정 + 미해결 항목을 요약해. bullet 3-5개로.
+
+$hist
+HEREDOC
+)
+    local agroot="${AIRGENOME:-$HOME/Dev/airgenome}"
+    (
+        cd "$agroot"
+        export CLAUDX_LOADGATE_OFF=1
+        export PATH="$agroot/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+        timeout 90 "$agroot/bin/claudx" --print "$prompt" --max-turns 4 2>&1 \
+            | _strip_noise
+    )
+}
+
+# stdin → stdout 노이즈 제거: ANSI/OSC + claudx/cx 헤더 라인.
+_strip_noise() {
+    perl -pe 's/\e\][^\a]*\a//g; s/\e\[[0-9;?]*[a-zA-Z]//g' 2>/dev/null \
+        | grep -vE '^(claudx:|cx:|cx →|cl:)' \
+        | sed '/./,$!d'  # leading blank lines 제거
+}
+
 cmd_help() {
     cat <<'EOF'
 airgenome-chat — TG 봇 stateful conversation manager
 
 서브커맨드:
-  ls       <chat>                   세션 리스트
-  new      <chat> [title]           새 세션 + active 전환
-  switch   <chat> <num|uuidprefix>  active 변경
-  del      <chat> <num|uuidprefix>  세션 삭제 (active 거부)
-  title    <chat> <text>            active 세션 라벨링
-  show     <chat> [num|uuidprefix]  세션 메타 + 최근 turn
-  active   <chat>                   active uuid 출력
-  path     <chat>                   세션 디렉토리 경로
-  help                              이 메시지
+  ls        <chat>                   세션 리스트
+  new       <chat> [title]           새 세션 + active 전환
+  switch    <chat> <num|uuidprefix>  active 변경
+  del       <chat> <num|uuidprefix>  세션 삭제 (active 거부)
+  title     <chat> <text>            active 세션 라벨링
+  show      <chat> [num|uuidprefix]  세션 메타 + 최근 turn
+  active    <chat>                   active uuid 출력
+  path      <chat>                   세션 디렉토리 경로
+  dispatch  <chat> [--tg-*]          stdin=user text → stdout=assistant text
+  recap     <chat>                   active 세션 요약
+  help                               이 메시지
+
+dispatch 옵션:
+  --tg-chat-id <id>     TG chat id (S3 streaming 에서 사용)
+  --tg-msg-id <id>      TG message id (S3 streaming 에서 사용)
+  --tg-token-file <f>   bot token 파일
 
 스토리지: $AIRGENOME_TG_SESSIONS (default: ~/.airgenome/tg_sessions)
 EOF
@@ -262,14 +460,16 @@ sub="${1:-help}"
 shift || true
 
 case "$sub" in
-    ls)      cmd_ls      "$@" ;;
-    new)     cmd_new     "$@" ;;
-    switch)  cmd_switch  "$@" ;;
-    del)     cmd_del     "$@" ;;
-    title)   cmd_title   "$@" ;;
-    show)    cmd_show    "$@" ;;
-    active)  cmd_active  "$@" ;;
-    path)    cmd_path    "$@" ;;
+    ls)        cmd_ls       "$@" ;;
+    new)       cmd_new      "$@" ;;
+    switch)    cmd_switch   "$@" ;;
+    del)       cmd_del      "$@" ;;
+    title)     cmd_title    "$@" ;;
+    show)      cmd_show     "$@" ;;
+    active)    cmd_active   "$@" ;;
+    path)      cmd_path     "$@" ;;
+    dispatch)  cmd_dispatch "$@" ;;
+    recap)     cmd_recap    "$@" ;;
     help|-h|--help) cmd_help ;;
     *) die "unknown subcommand: $sub (try: help)" ;;
 esac
