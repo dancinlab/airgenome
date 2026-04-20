@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.auth-heal</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/Dev/airgenome/bin/auth-heal</string>
+    </array>
+
+    <!-- 12시간 주기. Claude Code access_token 은 대개 수 시간~하루 단위 만료.
+         선제 refresh → 원격 .credentials.json stale 방지. -->
+    <key>StartInterval</key>
+    <integer>43200</integer>
+
+    <!-- 부팅/로그인 후 즉시 1회 실행. Mac 재부팅 직후에도 원격 토큰 fresh. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- stdout/stderr 전부 로그로. airgenome-auth-heal.log 가 SSOT. -->
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/Library/Logs/airgenome-auth-heal.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/Library/Logs/airgenome-auth-heal.log</string>
+
+    <!-- PATH 에 ~/.hx/bin (nexus/airgenome 등), homebrew, 표준 경로.
+         claude binary 경로 resolve 필수. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/ghost/.hx/bin:/Users/ghost/Dev/airgenome/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+    </dict>
+
+    <!-- low-priority CPU — keychain refresh 는 무거운 작업 아님 -->
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <!-- exit 실패 시 재시도 — 60초 후 -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <!-- 2026-04-20 Mac 자원 승인제 (원천 봉쇄): panic 3회 (04-16/18/20) 후
+         사용자 "원천적 봉쇄" 지시. ~/.airgenome/mac_allow 에 label 명시 + 수동
+         plutil -replace Disabled -bool false + launchctl bootstrap 전엔 fire 금지. -->
+    <key>Disabled</key>
+    <true/>
+</dict>
+</plist>

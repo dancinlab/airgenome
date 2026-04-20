@@ -166,3 +166,11 @@
 @rollback: bin/cx 의 [cx-ignore-settings] 관련 diff 5곳 (usage, whitelist, arg parse, apply block, snapshot 복원) 역적용. 완전 additive — 제거해도 default 경로 무손상.
 
 @__raw__
+2026-04-20 03:26:02 auth-heal OK=0 FAIL=0 SKIP=3 tail=...GWC0AAA
+2026-04-20 03:27:09 auth-heal OK=2 FAIL=0 SKIP=1 tail=...GWC0AAA
+2026-04-20 03:27:39 auth-heal OK=2 FAIL=0 SKIP=1 tail=...GWC0AAA
+2026-04-20 03:29:04 auth-heal OK=4 FAIL=0 SKIP=2 tail=...GWC0AAA
+2026-04-20 03:42:17 auth-heal OK=4 FAIL=0 SKIP=2 tail=...GWC0AAA
+2026-04-20 09:48:28 auth-heal OK=4 FAIL=0 SKIP=2 tail=...bjkrAAA
+2026-04-20 10:14:42 auth-heal OK=4 FAIL=0 SKIP=2 tail=...bjkrAAA
+2026-04-20 10:25:03 mac-compute-lockdown Mac LaunchAgent 18개 전부 Disabled=true + bootout. ~/.airgenome/mac_allow 빈 allow list SSOT 생성. 재enable 은 사용자 명시 승인 (allow list 편집 + plutil + bootstrap). panic 3회 (04-16 WindowServer 156s / 04-18 WindowServer 121s / 04-20 watchdogd 91s) 근본 조치.
