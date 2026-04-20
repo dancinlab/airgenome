@@ -174,21 +174,18 @@ if [ "$level" = "CRITICAL" ] && [ -n "$top_pid" ] && [ "$top_rss_gb" -gt 3 ] && 
     esac
 fi
 
-# --- [5.5] Emergency KILL — post-throttle last-resort 분기 ---
-# Mac panic 재발 방지 (2026-04-18 16:49 런어웨이 → kernel panic).
-# 조건 (AND): free_mb < 500 AND rss_mb > 5120 AND name !~ claude AND name !in system list.
-# renice/cpulimit 로 막을 수 없는 runaway (free 500MB 밑으로 떨어진 상태) 에서만 SIGKILL.
-# 기존 renice/cpulimit 경로는 그대로 두고, 이 블록은 post-throttle 단계 마지막에 순수 추가.
+# --- [5.5] Emergency KILL — whitelist 기반 (2026-04-20 WebKit 오킬 후 반전) ---
+# Mac panic 재발 방지 + 사용자 앱 오킬 방지. 완화: free_mb 500→300, rss 5120→6144MB.
+# 조건 (AND): free_mb < 300 AND rss_mb > 6144 AND name ∈ KILL_WHITELIST (hexa/cargo/rustc/clang).
+# renice/cpulimit 로 막을 수 없는 runaway 에서만 SIGKILL — 그리고 우리 toolchain 만.
 emergency_kill="no"
 emergency_detail=""
-if [ -n "$top_pid" ] && [ "$free_mb" -lt 500 ]; then
-    # rss_mb 재계산 (top_rss_kb 는 이미 위에서 구함)
+if [ -n "$top_pid" ] && [ "$free_mb" -lt 300 ]; then
     em_rss_mb=$(( top_rss_kb / 1024 ))
-    if [ "$em_rss_mb" -gt 5120 ]; then
-        # 프로세스 name 재조회 (top_comm 이 비어 있을 수 있어서 방어적 재확인)
+    if [ "$em_rss_mb" -gt 6144 ]; then
         em_comm="$(ps -o comm= -p "$top_pid" 2>/dev/null || true)"
         em_name="${em_comm##*/}"
-        # claude 절대 보호 — 이름에 claude 포함되면 skip
+        # claude 절대 보호
         case "$em_name" in
             *claude*|claude)
                 emergency_kill="skip_claude_protected"
@@ -200,61 +197,98 @@ if [ -n "$top_pid" ] && [ "$free_mb" -lt 500 ]; then
                 emergency_detail="pid=$top_pid name=$em_name"
                 ;;
             "")
-                # 이미 사라진 프로세스
                 emergency_kill="skip_vanished"
                 emergency_detail="pid=$top_pid"
                 ;;
-            *)
-                # AND 4조건 전부 만족 — SIGKILL
+            # whitelist: 오직 우리 toolchain runaway 만 kill
+            hexa_stage0|hexa_stage0.real|hexa_stage0.unsigned|hexa_stage1|hexa_v2|hexa_v2.real|hexa_cc|cargo|rustc|clang|clang-1[6-9]|lld|ld64.lld|cc1|cc1plus|ld)
                 kill -KILL "$top_pid" 2>/dev/null
                 kill_rc=$?
                 emergency_kill="killed"
                 emergency_detail="pid=$top_pid rss_mb=$em_rss_mb free_mb=$free_mb name=$em_name rc=$kill_rc"
-                # stderr 로그 (launchd 가 캡처)
                 printf 'EMERGENCY KILL pid=%s rss_mb=%s free_mb=%s name=%s rc=%s\n' \
                     "$top_pid" "$em_rss_mb" "$free_mb" "$em_name" "$kill_rc" >&2
-                # jsonl type=emergency_kill 이벤트 (SSOT 로그)
                 printf '{"ts":"%s","type":"emergency_kill","pid":"%s","rss_mb":%s,"free_mb":%s,"name":"%s","rc":%s}\n' \
                     "$NOW_ISO" "$top_pid" "$em_rss_mb" "$free_mb" "$em_name" "$kill_rc" \
                     >> "$JSONL"
+                ;;
+            *)
+                # whitelist 밖 — Safari/Chrome/브라우저 탭 등 사용자 앱은 건드리지 않음.
+                # macOS jetsam 이 우선 정리하게 둠.
+                emergency_kill="skip_not_whitelisted"
+                emergency_detail="pid=$top_pid name=$em_name rss_mb=$em_rss_mb"
                 ;;
         esac
     fi
 fi
 
-# --- [5.6] Last-resort KILL — 확장 범위 (MEM + CPU) ---
-# [5.5] 가 처리 못하는 runaway 를 잡는 최후 방어선.
+# --- [5.6] Last-resort KILL — whitelist 기반 (2026-04-20 WebKit/YouTube 오킬 후 반전) ---
+# 이전 로직: "unknown non-protected = kill" (blacklist) — Safari WebContent 같은
+# 일반 브라우저가 RAM 2GB+ 찰 때 오킬됨. 유튜브 영상 끊김 사용자 피드백.
+# 반전: "known-runaway-only = kill" (whitelist). 우리가 일으킨 폭주만 대상.
+#
 # 조건 (OR, 매 tick 1개만):
-#   (a) free_mb < 500 AND top-RSS(>=256MB) non-protected → kill (하드 whitelist 무시)
-#   (b) 어떤 non-protected proc 의 %cpu >= 200 AND etime > 30s → kill (순수 CPU 폭주)
+#   (a) free_mb < 300 AND top-RSS(>=512MB) AND name ∈ KILL_WHITELIST → kill
+#   (b) name ∈ KILL_WHITELIST AND %cpu >= 300 AND etime > 60s → kill
+# 완화: RAM 500→300MB (Safari headroom), RSS 256→512MB (브라우저 탭 보호),
+#       CPU 200%→300%, etime 30s→60s (컴파일 시간 허용).
+#
 # 보호 (AND, 절대 kill 금지):
-#   - uid != $(id -u) (본인 소유 프로세스만)
+#   - uid != $(id -u)
 #   - name 에 claude 포함
-#   - 시스템/셸 프로세스 (WindowServer, kernel_task, launchd, bash, zsh, ssh, tmux, ...)
+#   - 시스템/셸/브라우저/미디어 (WindowServer, Safari, WebKit, Chrome, VLC, ...)
 # [5.5] 가 이미 killed 면 skip.
 MY_UID="$(id -u)"
 last_resort_kill="no"
 last_resort_detail=""
 if [ "$emergency_kill" != "killed" ]; then
-    # ps: uid pid %cpu rss etime comm  — 보호 필터 적용
+    # ps: uid pid %cpu rss etime comm  — 보호 필터 적용 + kill-whitelist 매칭
+    # KILL_WHITELIST: 우리 toolchain 런어웨이 후보 — hexa_stage0/stage1/v2 family,
+    #                 cargo/rustc/clang/cc/lld (빌드 도구), node/bun (스크립트 서버).
     procs="$(ps -Ao uid=,pid=,%cpu=,rss=,etime=,comm= 2>/dev/null | awk -v myuid="$MY_UID" '
         {
             uid=$1; pid=$2; cpu=$3+0; rss=$4+0; et=$5;
             comm=$6; for(i=7;i<=NF;i++) comm=comm" "$i
             n=split(comm,a,"/"); name=a[n]
             if (uid+0 != myuid+0) next
+            # 보호 regex — 절대 kill 금지
             if (name ~ /claude/) next
             if (name ~ /^(WindowServer|Finder|kernel_task|launchd|loginwindow|coreaudiod|UserEventAgent|cfprefsd|distnoted|Dock|SystemUIServer|assistantd|sharingd|bluetoothd|trustd|tccd|opendirectoryd|syslogd|notifyd|powerd|hidd)$/) next
             if (name ~ /^(mds|mdworker)/) next
-            if (name ~ /^(bash|zsh|sh|fish|tmux|ssh|sshd|screen|login|tty|Terminal|iTerm2)$/) next
+            if (name ~ /^(bash|zsh|sh|fish|tmux|ssh|sshd|screen|login|tty|Terminal|iTerm2|Ghostty|wezterm|alacritty|kitty)$/) next
+            # 브라우저/WebKit — 유튜브 영상 등 일반 사용자 컨텐츠
+            if (name ~ /^com\.apple\.WebKit/) next
+            if (name ~ /^(Safari|SafariBookmarksSyncAgent|SafariHistoryServiceAgent)$/) next
+            if (name ~ /Google Chrome/) next
+            if (name ~ /Chrome Helper/) next
+            if (name ~ /^(firefox|plugin-container|Brave Browser|Arc)$/) next
+            if (name ~ /(Brave|Arc|Firefox|Chromium) (Helper|Renderer|GPU|Network)/) next
+            # 미디어/커뮤니케이션
+            if (name ~ /^(Music|TV|Podcasts|Spotify|VLC|IINA|mpv|QuickTime Player)$/) next
+            if (name ~ /^(Spotify Helper|SpotifyHelper)$/) next
+            if (name ~ /^(zoom\.us|Zoom|Slack|Discord|Telegram|WhatsApp|Messages)$/) next
+            if (name ~ /^(Slack Helper|Discord Helper)/) next
+            # 에디터/개발 도구
+            if (name ~ /^(Code|Cursor|Electron|Visual Studio Code)$/) next
+            if (name ~ /^(Code Helper|Cursor Helper)/) next
+            # 시스템 도구
+            if (name ~ /^(Preview|QuickLook|Photos|Mail|Calendar|Contacts|Notes|Reminders|Maps|FaceTime)$/) next
+            # whitelist 매칭 — 오직 이것만 kill 후보
+            is_runaway = 0
+            if (name ~ /^hexa_stage[01](\.real|\.unsigned)?$/) is_runaway = 1
+            else if (name ~ /^hexa_v2(\.real)?$/) is_runaway = 1
+            else if (name ~ /^hexa_cc$/) is_runaway = 1
+            else if (name == "cargo" || name == "rustc" || name == "clang" || name == "clang-16" || name == "clang-17" || name == "clang-18" || name == "lld" || name == "ld64.lld") is_runaway = 1
+            else if (name == "cc1" || name == "cc1plus" || name == "ld") is_runaway = 1
+            if (!is_runaway) next
             print pid, cpu, rss, et, name
         }')"
 
     lr_trigger=""; lr_pid=""; lr_cpu="0"; lr_rss_kb="0"; lr_name=""
 
-    # (a) RAM 경로
-    if [ "$free_mb" -lt 500 ]; then
-        ram_line="$(printf '%s\n' "$procs" | awk 'NF && $3+0 >= 262144' | sort -k3 -n -r | head -1)"
+    # (a) RAM 경로 — 완화: free_mb < 300 (was 500), RSS ≥ 512MB (was 256MB)
+    if [ "$free_mb" -lt 300 ]; then
+        ram_line="$(printf '%s\n' "$procs" | awk 'NF && $3+0 >= 524288' | sort -k3 -n -r | head -1)"
         if [ -n "$ram_line" ]; then
             lr_trigger="ram"
             lr_pid="$(awk '{print $1}' <<<"$ram_line")"
@@ -264,13 +298,13 @@ if [ "$emergency_kill" != "killed" ]; then
         fi
     fi
 
-    # (b) CPU 경로 (RAM 경로에서 후보 없을 때만)
+    # (b) CPU 경로 — 완화: %cpu ≥ 300 (was 200), etime > 60s (was 30s)
     if [ -z "$lr_trigger" ]; then
-        cpu_line="$(printf '%s\n' "$procs" | awk 'NF && $2+0 >= 200' | sort -k2 -n -r | head -1)"
+        cpu_line="$(printf '%s\n' "$procs" | awk 'NF && $2+0 >= 300' | sort -k2 -n -r | head -1)"
         if [ -n "$cpu_line" ]; then
             cpu_et="$(awk '{print $4}' <<<"$cpu_line")"
             cpu_et_sec="$(etime_to_sec "$cpu_et")"
-            if [ "$cpu_et_sec" -gt 30 ]; then
+            if [ "$cpu_et_sec" -gt 60 ]; then
                 lr_trigger="cpu"
                 lr_pid="$(awk '{print $1}' <<<"$cpu_line")"
                 lr_cpu="$(awk '{print $2}' <<<"$cpu_line")"
@@ -282,7 +316,7 @@ if [ "$emergency_kill" != "killed" ]; then
 
     if [ -n "$lr_trigger" ] && [ -n "$lr_pid" ]; then
         lr_rss_mb=$(( lr_rss_kb / 1024 ))
-        # race 방지 — 최종 재확인
+        # race 방지 — 최종 재확인. whitelist 재검증도 포함 (TOCTOU 중 이름 바뀜 방지).
         lr_verify="$(ps -o comm= -p "$lr_pid" 2>/dev/null || true)"
         lr_vname="${lr_verify##*/}"
         case "$lr_vname" in
@@ -290,7 +324,7 @@ if [ "$emergency_kill" != "killed" ]; then
                 last_resort_kill="skip_recheck_protected"
                 last_resort_detail="pid=$lr_pid comm=$lr_verify"
                 ;;
-            *)
+            hexa_stage0|hexa_stage0.real|hexa_stage0.unsigned|hexa_stage1|hexa_v2|hexa_v2.real|hexa_cc|cargo|rustc|clang|clang-1[6-9]|lld|ld64.lld|cc1|cc1plus|ld)
                 kill -KILL "$lr_pid" 2>/dev/null
                 lr_rc=$?
                 last_resort_kill="killed"
@@ -300,6 +334,11 @@ if [ "$emergency_kill" != "killed" ]; then
                 printf '{"ts":"%s","type":"last_resort_kill","trigger":"%s","pid":"%s","cpu":"%s","rss_mb":%s,"free_mb":%s,"name":"%s","rc":%s}\n' \
                     "$NOW_ISO" "$lr_trigger" "$lr_pid" "$lr_cpu" "$lr_rss_mb" "$free_mb" "$lr_name" "$lr_rc" \
                     >> "$JSONL"
+                ;;
+            *)
+                # recheck 가 whitelist 아니면 skip (TOCTOU 중 이름 바뀜)
+                last_resort_kill="skip_recheck_not_whitelisted"
+                last_resort_detail="pid=$lr_pid comm=$lr_verify"
                 ;;
         esac
     fi
