@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# pkill-audit — live-stream pkill-caused SIGKILL events into ~/.airgenome/pkill-audit.log
+#
+# 문제: claude/airgenome 서비스가 pkill[<pid>] 에 의해 산발적으로 SIGKILL 당함.
+#       호출자를 정적 grep 으로 찾지 못함 (manual invocation 가능성).
+#
+# 방식: macOS launchd 의 "exited due to SIGKILL | sent by pkill[N]" 로그를
+#       실시간 스트리밍해서 캡처. 각 이벤트마다 즉시 ps 로 pkill 의 parent chain
+#       을 덤프 (pkill 은 순식간에 종료되므로 race — 그래도 대부분 chain 재구성 가능).
+#
+# Run foreground:
+#   bin/pkill-audit
+# Run detached:
+#   nohup bin/pkill-audit > /dev/null 2>&1 &
+# Tail audit:
+#   tail -F ~/.airgenome/pkill-audit.log
+
+set -u
+
+LOG="$HOME/.airgenome/pkill-audit.log"
+mkdir -p "$(dirname "$LOG")"
+
+ts() { date '+%Y-%m-%dT%H:%M:%S'; }
+note() { printf '[%s] %s\n' "$(ts)" "$*" | tee -a "$LOG" >&2; }
+
+note "pkill-audit start — watching for 'sent by pkill[N]' events"
+
+/usr/bin/log stream --predicate 'eventMessage CONTAINS "sent by pkill["' --style compact 2>/dev/null | \
+while IFS= read -r line; do
+    # extract pkill pid via sed (bash regex not robust on macOS)
+    pkill_pid=$(printf '%s' "$line" | sed -nE 's/.*sent by pkill\[([0-9]+)\].*/\1/p')
+    victim=$(printf '%s' "$line" | sed -nE 's|.*gui/[0-9]+/([^]]+) \[[0-9]+\]:\] exited.*|\1|p')
+    # try to reconstruct pkill parent chain (may be stale — pkill is short-lived)
+    chain=""
+    if [ -n "$pkill_pid" ]; then
+        p=$(ps -o ppid= -p "$pkill_pid" 2>/dev/null | tr -d ' ')
+        if [ -n "$p" ] && [ "$p" != "0" ]; then
+            depth=0
+            while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ] && [ "$depth" -lt 10 ]; do
+                row=$(ps -o pid=,comm=,command= -p "$p" 2>/dev/null | head -1 | cut -c1-180)
+                [ -z "$row" ] && break
+                chain="$chain $row |"
+                p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+                depth=$((depth + 1))
+            done
+        fi
+    fi
+    printf '[%s] pkill=%s victim=%s chain=%s raw=%s\n' \
+        "$(ts)" "${pkill_pid:-?}" "${victim:-?}" "${chain:-<lost>}" "$line" >> "$LOG"
+done
