@@ -1,5 +1,5 @@
 // L0 CORE — 수정 금지 (nexus/shared/L0.json 등록). 변경 시 PR + L0 갱신.
-// @convergence: interceptor-401-auth-kind-split
+// @convergence: interceptor-401-auth-kind-split, interceptor-title-lock-tty-guard
 // claudx interceptor — M13 + M13c (경제) + M13d (v1/hive 이식)
 // Loaded via NODE_OPTIONS="--require .../interceptor.js"
 //

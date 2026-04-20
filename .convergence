@@ -458,6 +458,44 @@
 @l0: interceptor.js 변경 → nexus/shared/L0.json 갱신 PR 필요.
 @rollback: revert b2e5954d. 단 "401 → markExhausted" 로 되돌리면 refresh-expired 재실행 시 재발 — 수렴 취소 신중.
 
+[interceptor-title-lock-tty-guard]
+@state: converged
+@date: 2026-04-21
+@commit: de1ce212
+@scope: shared/claudx/interceptor.js (L0 CORE) TITLE_LOCK 블록 진입 조건
+@problem: interceptor.js 의 TITLE_LOCK 이 stdout 에 OSC 0;cwdName\x07 을 무조건 prepend. stdout 이 pipe/file 로 redirect 되는 경로(airgenome-auth doctor 가 node -e 로 probe-all 결과를 JSON.parse)에서 첫 바이트로 escape sequence 가 섞여 "]0;airgen"... 파싱 실패 → doctor: merge 실패. `node -e 'console.log("ok")' | od -c` 로 재현.
+@decision: TUI 전용 기능이므로 TTY 에서만 활성화. 진입 조건에 process.stdout.isTTY 가드 한 줄 추가 — pipe/file 소비자 경로에서는 title escape 자체가 주입되지 않음.
+@changes: shared/claudx/interceptor.js:248 `if (TITLE_LOCK && process.stdout && process.stdout.isTTY && typeof process.stdout.write === 'function')`.
+@why: filter(stdout.write 몽키패치) 는 유지되어 TUI 도중 claude 가 title 덮어쓰는 것 차단 효과도 동일. 추가된 escape 주입만 TTY 로 제한. 최소 변경. Bun 도 process.stdout.isTTY 를 동일 의미로 지원.
+@verified: `node -e 'console.log("ok")' | od -c` → `o k \n` 만 출력 (escape 사라짐). airgenome-auth doctor → 12계정 매트릭스 정상 출력. auth-plane suite 45/0 ALL GREEN. self-test PASS.
+@l0: interceptor.js (L0 등록됨) 변경 → nexus/shared/L0.json 갱신 PR 필요 — 단 b2e5954d 와 같은 L0 후속 묶어서 PR 권장.
+@rollback: revert de1ce212 의 interceptor.js 부분. 되돌리면 non-TTY 소비자 재파손.
+
+[health-stats-oauth-column]
+@state: converged
+@date: 2026-04-21
+@commit: de1ce212
+@scope: bin/airgenome-auth cmd_health_stats 집계 로직
+@problem: oauth-monitor 가 token-health.jsonl 에 event=oauth_request 로 기록하지만 health-stats 의 jq 집계가 refresh/rotate/revoke/drift 4 카테고리만 세고 있어 Phase 2-A 관측이 커맨드로 드러나지 않음.
+@decision: jq map 에 oauth: (map(select(.event=="oauth_request")) | length) 추가 + 헤더/포맷에 oauth 컬럼 추가. 기타 변경 없음.
+@changes: bin/airgenome-auth:355-374 — printf 포맷 `%-12s %-8s ×5`, jq map 에 oauth 항목, 출력 루프에 oa 변수. 역방향 호환 (기존 컬럼은 그대로).
+@why: rotation 실증은 oauth_request 이벤트 수 추적이 핵심 지표. "어느 계정이 몇 번 refresh 시도했나" 를 health-stats 한 줄로 봐야 재발 조사 시 상관관계 분석 가능.
+@verified: `airgenome-auth health-stats 7` → 6컬럼 출력, 현재 oauth=0 (실 cl 세션 아직 없음). 기존 refresh/rotate/revoke/drift 값 동일.
+@followup: 수일 실 cl 사용 후 oauth 컬럼 값 발생 확인. 0 으로 유지되면 oauth-monitor 미로드 의심 (bin/claudx 의 --require 체인 미주입 경로 점검).
+@rollback: revert de1ce212 의 bin/airgenome-auth 부분.
+
+[test-runner-env-isolation]
+@state: converged
+@date: 2026-04-21
+@commit: de1ce212
+@scope: tests/auth-plane/run-all.sh 시작부 env 처리
+@problem: 호출 shell 이 이미 `NODE_OPTIONS=--require interceptor.js --require oauth-monitor.js` 상태일 때 run-all.sh 가 테스트 파일을 `node test-*.js` 로 실행. Node 는 테스트 모듈의 `process.env.CLAUDX_STATE=TMP` **이전에** preload 를 먼저 실행 → oauth-monitor 가 production ~/.airgenome/claudx 경로를 LOG_PATH 로 캐시 → 테스트가 TMP 에서 파일 읽으려다 ENOENT. `_logEvent appends to token-health.jsonl → ENOENT` + self-test 연쇄 FAIL 로 재현.
+@decision: run-all.sh 가 자식 node/bash 프로세스를 띄우기 전에 `unset NODE_OPTIONS BUN_OPTIONS`. 테스트는 preload 없이 깨끗한 env 에서 실행.
+@changes: tests/auth-plane/run-all.sh:6 — `unset NODE_OPTIONS BUN_OPTIONS` 한 줄 + 주석으로 사유 명시.
+@why: 테스트가 production preload 에 결합되면 claudx interceptor 의 부수효과(module cache, fetch patch)가 테스트 결과에 누출. 재현성이 실행 컨텍스트에 좌우됨. 테스트는 production preload 에서 독립해야 한다.
+@verified: bash run-all.sh → 45/0 ALL GREEN. airgenome-auth self-test → PASS (suite 포함). 수정 전 동일 명령 → 43/2 FAIL (oauth-monitor ENOENT + self-test 연쇄).
+@rollback: revert de1ce212 의 run-all.sh 부분. 단 claudx preload 가 shell 에 주입된 상태로 테스트 돌리면 재발 — 사용자가 직접 env -u NODE_OPTIONS 로 감싸야 함.
+
 @__raw__
 2026-04-20 03:26:02 auth-heal OK=0 FAIL=0 SKIP=3 tail=...GWC0AAA
 2026-04-20 03:27:09 auth-heal OK=2 FAIL=0 SKIP=1 tail=...GWC0AAA
@@ -507,3 +545,4 @@
 2026-04-21 02:08:15 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
 2026-04-21 02:13:36 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
 2026-04-21 02:38:52 airgenome-auth sync local_ok=13 remote_ok=26 remote_fail=0 remote_skip=26
+2026-04-21 03:09:31 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13

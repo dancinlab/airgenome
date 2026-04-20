@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/airgenome-auth — airgenome 의 auth plane 통제자. 12 계정 headless sync.
-# @convergence: auth-plane-phase1-refresh-defense, auth-plane-observability-ubu2-recovery, auth-plane-test-suite-36-45
+# @convergence: auth-plane-phase1-refresh-defense, auth-plane-observability-ubu2-recovery, auth-plane-test-suite-36-45, health-stats-oauth-column
 #
 # 핵심: Mac keychain 의 path-hashed credentials entries (SHA256(path)[0:8])
 # 전수 추출 → Mac 내 모든 CLAUDE_CONFIG_DIR (.claude + .claude-claude1..N) 에
