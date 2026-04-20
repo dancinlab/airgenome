@@ -1576,6 +1576,33 @@ fn main() -> void {
         let _ = run_bin_sh("airgenome-auth", argv_tail(a, 3))
         return
     }
+    if sub == "mac-exec" || sub == "mac_exec" {
+        // airgenome mac-exec "CMD" — Linux VM 에서 Mac host 명령 실행 (file bridge)
+        // 원격 exit code 를 호출자에게 전달하기 위해 run_module_args 대신 인라인 실행.
+        let path = ag_root() + "/modules/mac_exec.hexa"
+        let mut me_joined = ""
+        let mut me_i = 3
+        while me_i < len(a) {
+            if me_joined != "" { me_joined = me_joined + " " }
+            me_joined = me_joined + "'" + a[me_i] + "'"
+            me_i = me_i + 1
+        }
+        let rc_file = "/tmp/airgenome_macexec_rc_" + exec("echo $$").trim()
+        let full = hexa_bin() + " run '" + path + "' " + me_joined + "; printf '%s' \"$?\" > '" + rc_file + "'"
+        let out = exec(full + " 2>&1")
+        print(out)
+        let mut rc = 0
+        if file_exists(rc_file) {
+            rc = to_int(read_file(rc_file).trim())
+            delete_file(rc_file)
+        }
+        exit(rc)
+    }
+    if sub == "mac-bridge-worker" {
+        // Mac 측 launchd 가 호출. 사람이 직접 부를 일은 보통 없음.
+        let _ = run_module_args("mac_bridge_worker", argv_tail(a, 3))
+        return
+    }
     println("airgenome: unknown subcommand '" + sub + "'. try 'airgenome help'.")
 }
 

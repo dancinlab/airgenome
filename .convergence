@@ -1,6 +1,28 @@
 # airgenome .convergence — 수렴 attr 기록
 # format: single-file, 엔트리 단위로 @state 로 트래킹. JSON/JSONL/xattr 금지.
 
+[mac-bridge-hexa-only]
+@state: converged
+@date: 2026-04-20
+@scope: modules/mac_exec.hexa + modules/mac_bridge_worker.hexa + bin/mac_bridge_worker (shim) + Library/LaunchAgents/com.airgenome.mac-bridge.plist + run.hexa (mac-exec dispatch)
+@problem: Claude Code runs inside a Linux VM; the Mac host is unreachable via SSH/network. Mac-only actions (launchctl, git push with stored credentials, brew, launch-agent reloads) were not executable from the VM, forcing the user to copy-paste commands into their terminal each time.
+@decision: File-based bridge. Linux VM writes a request file under /mac_home/.claude_mac_bridge/req/<uuid>.cmd; a launchd agent on Mac (com.airgenome.mac-bridge, WatchPaths=~/.claude_mac_bridge/req) wakes and runs it; results land in rsp/<uuid>.{out,err,rc,done}. Client polls the .done marker, streams stdout/stderr, forwards exit code.
+@why: No network needed — the /mac_home mount already provides a shared, low-latency transport. Launchd WatchPaths is idle-cheap (fires only on directory change) and auto-restarts across reboots. 5-minute per-command timeout (SIGTERM→SIGKILL) prevents runaway commands from pinning the watchdog slot.
+@hexa-only: Original 2026-04-20 version was two shell scripts (bin/mac_exec, bin/mac_bridge_worker). Per user directive "hexa-lang only — 문서 말고 코드로", language logic was rewritten as .hexa modules. bin/mac_bridge_worker remains as a ~3-line bash shim (launchd ProgramArguments still references a bin/ path in the existing bootstrap; the shim execs the real Mac hexa at /Users/ghost/Dev/hexa-lang/hexa). Updated plist points to the hexa binary directly, so after a one-time launchctl reload the shim is bypassed and only .hexa carries logic.
+@pitfalls:
+  - /opt/homebrew/bin/hexa is a DIFFERENT binary ("HEXA-LANG — Perfect Number Language", a math REPL). The correct compiler is /Users/ghost/Dev/hexa-lang/hexa (Mach-O arm64). Do not route launchd or shims through /opt/homebrew/bin/hexa.
+  - Linux VM's hexa (/usr/local/bin/hexa) is wrapped by safe_hexa_launchd.sh which calls macOS `launchctl` and fails on Linux. Set HEXA_NO_LAUNCHD=1 to bypass the wrapper when running .hexa modules from the VM.
+  - macOS `ps` does not need `uid` to match the Mac uid value; the hexa client uses `env("HOME")` on Mac-side and the mount path on Linux-side.
+@files:
+  - modules/mac_exec.hexa — Linux VM → Mac client (atomic write_file → mv, .done polling with 200ms interval, stdout via read_file+print, stderr via shell fd2, rc via exit())
+  - modules/mac_bridge_worker.hexa — Mac launchd worker (atomic mv claim, bash '<running-file>' with 5-min watchdog, writes rsp files, jsonl audit log)
+  - bin/mac_bridge_worker — 3-line launchd shim (exec /Users/ghost/Dev/hexa-lang/hexa run modules/mac_bridge_worker.hexa)
+  - Library/LaunchAgents/com.airgenome.mac-bridge.plist — WatchPaths + KeepAlive off + ThrottleInterval 1s; ProgramArguments points directly at hexa+module (shim becomes vestigial after plist reload)
+  - run.hexa:1577-1600 — airgenome mac-exec dispatch with rc forwarding via /tmp/airgenome_macexec_rc_$$ file
+@audit: ~/.claude_mac_bridge/log.jsonl appends {ts,id,rc,cmd_head} per request.
+@client-usage: `HEXA_NO_LAUNCHD=1 hexa run modules/mac_exec.hexa "shell command"` (from VM). Exit code of the remote command is forwarded.
+@rollback: revert commit; prior state was an equivalent pair of shell scripts bin/mac_exec + bin/mac_bridge_worker with the plist ProgramArguments pointing to the shell worker.
+
 [cl-fresh-default]
 @state: converged
 @date: 2026-04-20
@@ -283,3 +305,12 @@
 2026-04-20 14:18:16 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 14:48:49 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-20 15:19:23 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 15:53:28 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 16:08:25 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 16:38:58 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 17:09:34 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 17:40:08 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 18:10:40 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 18:30:15 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 19:00:46 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
+2026-04-20 19:31:16 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0

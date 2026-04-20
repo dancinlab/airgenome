@@ -1,0 +1,76 @@
+// modules/mac_bridge_worker.hexa — Mac 측 launchd 트리거 worker.
+//
+// launchd (com.airgenome.mac-bridge, WatchPaths=~/.claude_mac_bridge/req) 가
+// req 디렉토리 변경을 감지할 때마다 본 모듈이 호출됨.
+// Linux VM 이 mac_exec 로 보낸 req/<id>.cmd 를 실행하고 rsp/<id>.{out,err,rc,done}
+// 에 결과를 기록.
+//
+// 프로토콜:
+//   req/<id>.cmd  →  req/<id>.running  (atomic claim via mv)  →  bash 실행
+//   stdout → rsp/<id>.out,  stderr → rsp/<id>.err
+//   rsp/<id>.rc  (exit code)  →  rsp/<id>.done  (마커, 마지막에 touch)
+//   감사 로그: ~/.claude_mac_bridge/log.jsonl append.
+//
+// 실행 제한: 명령당 5분 하드 타임아웃 (SIGTERM → SIGKILL).
+//
+// 신뢰 경계: req/ 에 쓸 수 있는 주체 = Mac 본인 + 마운트된 Linux VM.
+// 즉, VM 이 읽기/쓰기 가능한 마운트 공유 수준과 동일. 추가 검증 없음.
+//
+// 제약: hexa-only. try/catch 미사용. shell 호출은 exec() 로만.
+
+fn bridge_dir() -> str {
+    return env("HOME") + "/.claude_mac_bridge"
+}
+
+fn iso_utc() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn process_one(req_file: str) -> void {
+    let dir = bridge_dir()
+    let rsp = dir + "/rsp"
+    let log_f = dir + "/log.jsonl"
+
+    let base = exec("basename '" + req_file + "' .cmd").trim()
+    let running = dir + "/req/" + base + ".running"
+
+    // atomic claim — 동시 트리거 대비
+    let claim = exec("mv '" + req_file + "' '" + running + "' 2>/dev/null && echo y || echo n").trim()
+    if claim != "y" { return }
+
+    let out_f = rsp + "/" + base + ".out"
+    let err_f = rsp + "/" + base + ".err"
+    let rc_f = rsp + "/" + base + ".rc"
+    let done_f = rsp + "/" + base + ".done"
+
+    // bash 로 running 파일 실행. 5분 타임아웃 watchdog 백그라운드, 원본 exit 코드 캡처.
+    let runner = "bash '" + running + "' > '" + out_f + "' 2> '" + err_f + "' & pid=$!; ( sleep 300; kill -TERM $pid 2>/dev/null; sleep 2; kill -KILL $pid 2>/dev/null ) & wd=$!; wait $pid; rc=$?; kill $wd 2>/dev/null; wait $wd 2>/dev/null; printf '%s\\n' \"$rc\" > '" + rc_f + "'; : > '" + done_f + "'"
+    let _x = exec(runner)
+
+    // 감사 로그 — req 내용 첫 300자를 한 줄 JSON 으로 기록
+    let mut rc_str = "1"
+    if file_exists(rc_f) { rc_str = read_file(rc_f).trim() }
+    let head = exec("head -c 300 '" + running + "' 2>/dev/null | tr '\\n\"' '  '").trim()
+    let line = "{\"ts\":\"" + iso_utc() + "\",\"id\":\"" + base + "\",\"rc\":" + rc_str + ",\"cmd_head\":\"" + head + "\"}"
+    append_file(log_f, line + "\n")
+
+    let _rm = exec("rm -f '" + running + "'")
+}
+
+fn main() -> void {
+    let dir = bridge_dir()
+    let _mk = exec("mkdir -p '" + dir + "/req' '" + dir + "/rsp'")
+
+    let list = exec("ls '" + dir + "/req'/*.cmd 2>/dev/null").trim()
+    if list == "" { return }
+
+    let files = list.split("\n")
+    let mut i = 0
+    while i < len(files) {
+        let f = files[i].trim()
+        if f != "" { process_one(f) }
+        i = i + 1
+    }
+}
+
+main()

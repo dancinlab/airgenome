@@ -1,0 +1,106 @@
+// modules/mac_exec.hexa — Linux VM → Mac host 명령 브릿지 (클라이언트).
+//
+// 사용:   airgenome mac-exec "command ..."
+//        hexa run modules/mac_exec.hexa "cmd"
+//
+// Mac 측 worker (modules/mac_bridge_worker.hexa, launchd WatchPaths 트리거)가
+// req/<id>.cmd 를 감지해 실행한 뒤 rsp/<id>.{out,err,rc,done} 에 결과를 기록.
+// 본 클라이언트는 .done 출현까지 폴링, stdout/stderr 스트리밍, 원격 exit 코드 전달.
+//
+// 환경변수:
+//   MAC_BRIDGE_DIR   — 브릿지 루트 (default /mac_home/.claude_mac_bridge)
+//   MAC_EXEC_TIMEOUT — 폴링 timeout sec (default 120)
+//
+// 제약: hexa-only. try/catch 미사용. 언어 코드는 .hexa 만.
+
+fn bridge_dir() -> str {
+    let e = env("MAC_BRIDGE_DIR")
+    if e != "" { return e }
+    return "/mac_home/.claude_mac_bridge"
+}
+
+fn timeout_s() -> int {
+    let e = env("MAC_EXEC_TIMEOUT")
+    if e == "" { return 120 }
+    let n = to_int(e)
+    if n < 1 { return 120 }
+    return n
+}
+
+fn gen_uuid() -> str {
+    let ts = exec("date -u +%Y%m%dT%H%M%SZ").trim()
+    let rnd = exec("awk 'BEGIN{srand(); printf \"%06d\", int(rand()*1000000)}'").trim()
+    let pid = exec("echo $$").trim()
+    return ts + "-" + pid + "-" + rnd
+}
+
+fn run_bridge(cmd: str) -> int {
+    let dir = bridge_dir()
+    let req = dir + "/req"
+    let rsp = dir + "/rsp"
+    let _m = exec("mkdir -p '" + req + "' '" + rsp + "'")
+
+    let id = gen_uuid()
+    let req_tmp = req + "/" + id + ".cmd.tmp"
+    let req_fin = req + "/" + id + ".cmd"
+    let done_f = rsp + "/" + id + ".done"
+    let out_f = rsp + "/" + id + ".out"
+    let err_f = rsp + "/" + id + ".err"
+    let rc_f = rsp + "/" + id + ".rc"
+
+    // atomic publish — write_file 후 mv 로 rename (partial read 방지).
+    write_file(req_tmp, cmd)
+    let _mv = exec("mv '" + req_tmp + "' '" + req_fin + "'")
+
+    // poll .done — 200ms 간격, timeout 까지.
+    let tout = timeout_s()
+    let deadline = to_int(exec("date +%s").trim()) + tout
+    let mut got = false
+    while true {
+        if file_exists(done_f) { got = true; break }
+        let now = to_int(exec("date +%s").trim())
+        if now >= deadline { break }
+        let _s = exec("sleep 0.2")
+    }
+
+    if !got {
+        eprintln("mac_exec: timeout " + to_string(tout) + "s id=" + id + " (worker not running?)")
+        return 124
+    }
+
+    // stdout — read_file + print (원본 바이트 보존). stderr — shell 로 직접 fd2 로.
+    if file_exists(out_f) {
+        let s = read_file(out_f)
+        print(s)
+    }
+    let _e = exec("[ -s '" + err_f + "' ] && cat '" + err_f + "' >&2 ; true")
+    let mut rc_str = "1"
+    if file_exists(rc_f) { rc_str = read_file(rc_f).trim() }
+    let rc = to_int(rc_str)
+
+    // cleanup
+    if file_exists(out_f) { delete_file(out_f) }
+    if file_exists(err_f) { delete_file(err_f) }
+    if file_exists(rc_f) { delete_file(rc_f) }
+    if file_exists(done_f) { delete_file(done_f) }
+    return rc
+}
+
+fn main() -> void {
+    let a = args()
+    let mut cmd = ""
+    let mut i = 2
+    while i < len(a) {
+        if cmd != "" { cmd = cmd + " " }
+        cmd = cmd + a[i]
+        i = i + 1
+    }
+    if cmd == "" {
+        eprintln("usage: airgenome mac-exec \"command ...\"")
+        exit(2)
+    }
+    let rc = run_bridge(cmd)
+    exit(rc)
+}
+
+main()
