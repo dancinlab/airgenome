@@ -1146,6 +1146,7 @@ fn print_help() -> void {
     println("  worker <sub>             분산 Claude 워커 (run|spawn|list|stop|status|dispatch)")
     println("  throttle                 Mac 자가보호 — predictive_throttle (AG6)")
     println("  session-snapshot <sub>   명령 레벨 snapshot/resume (list|save|tick|end|resume)")
+    println("  session-defaults <sub>   .session_defaults SSOT 진단/강제 (show|status|doctor|verify|sync)")
     println("")
     println("OBSERVABILITY")
     println("  status [--json]          3-host 통합 상태 (uptime/load/docker/runaway/dispatch)")
@@ -1381,6 +1382,24 @@ fn print_help_sub(sub: str) -> void {
         println("airgenome help [sub] — 도움말. sub 생략시 전체 트리.")
         return
     }
+    if sub == "session-defaults" || sub == "session_defaults" || sub == "sd" {
+        println("airgenome session-defaults — .session_defaults SSOT 진단 + 강제")
+        println("  source: bin/airgenome-session-defaults")
+        println("  SSOT:   $AIRGENOME/.session_defaults (단일 파일)")
+        println("  subs:")
+        println("    show            파일 내용")
+        println("    status          1줄 요약 (hash/lines/shim_first/AIRGENOME)")
+        println("    doctor          전수 점검 (파일/shim/PATH/env/Dockerfile)")
+        println("    doctor --remote 위 + 원격 호스트 (ubu1/ubu2/htz) hash drift")
+        println("    verify          실제 주입 재현 테스트 (PASS/FAIL)")
+        println("    sync            원격 호스트로 .session_defaults 전파")
+        println("  주입 누락 탐지 포인트:")
+        println("    · AIRGENOME_CLAUDE_SHIM env 누출 (삭제된 env guard regression)")
+        println("    · PATH[first claude] != shim")
+        println("    · Dockerfile COPY/ENV/fence 누락")
+        println("    · 원격 호스트 hash drift")
+        return
+    }
     println("airgenome help: unknown subcommand '" + sub + "'")
     println("try 'airgenome help' for the full list.")
 }
@@ -1541,6 +1560,11 @@ fn main() -> void {
     if sub == "netlat" {
         // airgenome netlat [probe|tail|stats|watch|alert-check] [args]
         let _ = run_bin_sh("airgenome-netlat", argv_tail(a, 3))
+        return
+    }
+    if sub == "session-defaults" || sub == "session_defaults" || sub == "sd" {
+        // airgenome session-defaults [show|status|doctor|verify|sync]
+        let _ = run_bin_sh("airgenome-session-defaults", argv_tail(a, 3))
         return
     }
     println("airgenome: unknown subcommand '" + sub + "'. try 'airgenome help'.")

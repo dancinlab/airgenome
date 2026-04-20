@@ -10,7 +10,9 @@
 # engine_anima.hexa 의 exec("claude -p ...") 등) 이 자동으로 session_defaults
 # 주입 받음. claudx 는 inject 제거 — shim 이 SSOT.
 #
-# 재귀 방지: AIRGENOME_CLAUDE_SHIM=1 env 로 중복 실행 감지.
+# 재귀 방지: path-based self-resolve (아래). env-based guard 는 제거됨 (2026-04-20) —
+#   자식 claude 프로세스로 env 가 누출되어 서브프로세스가 모두 inject 를 skip 하던
+#   근본 버그. path-based 가드만으로 shim→shim 재귀는 이미 차단됨.
 # 우회: NEXUS_SESSION_LAX=1 또는 args 에 --append-system-prompt 이미 있을 때.
 
 set -euo pipefail
@@ -34,23 +36,30 @@ if [ -z "$real" ]; then
     exit 127
 fi
 
-# --- 재귀 가드: 이미 shim 거쳤으면 바로 real 에 위임 ---
-if [ "${AIRGENOME_CLAUDE_SHIM:-}" = "1" ]; then
-    exec "$real" "$@"
-fi
-export AIRGENOME_CLAUDE_SHIM=1
-
 # --- inject 판정 ---
-SD="${AIRGENOME:-$HOME/Dev/airgenome}/.session_defaults"
+AGROOT="${AIRGENOME:-$HOME/Dev/airgenome}"
+SD="$AGROOT/.session_defaults"
 inject=1
 [ "${NEXUS_SESSION_LAX:-0}" = "1" ] && inject=0
-[ ! -f "$SD" ] && inject=0
 for a in "$@"; do
     if [ "$a" = "--append-system-prompt" ] || [ "$a" = "--system-prompt" ] || [ "$a" = "--bare" ]; then
         inject=0
         break
     fi
 done
+
+# 코드-수준 강제: AGROOT 가 airgenome 레포 (project.hexa 존재) 인데 .session_defaults
+# 가 없으면 fail-fast. 기존엔 silent skip → 주입 누락 탐지 불가능했던 원인.
+# 우회: NEXUS_SESSION_LAX=1 (의도적 clean 모드) 또는 --append-system-prompt 지정.
+if [ "$inject" = "1" ] && [ ! -f "$SD" ]; then
+    if [ -f "$AGROOT/project.hexa" ]; then
+        echo "claude(shim): FATAL .session_defaults missing at $SD (airgenome repo detected)" >&2
+        echo "claude(shim):  fix: restore file, or NEXUS_SESSION_LAX=1 for clean mode" >&2
+        exit 2
+    fi
+    # non-airgenome 컨텍스트 — 조용히 skip
+    inject=0
+fi
 
 if [ "$inject" = "1" ]; then
     exec "$real" --append-system-prompt "$(cat "$SD")" "$@"

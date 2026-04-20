@@ -1,0 +1,231 @@
+#!/usr/bin/env bash
+# airgenome session-defaults — .session_defaults SSOT 진단 + 강제.
+#
+# subs:
+#   show                 파일 내용 출력
+#   status               한줄 요약 (hash, line count, shim path)
+#   doctor [--remote]    전수 점검: 파일/shim/PATH/env/Dockerfile/원격호스트
+#   verify               실제 claude 호출 시뮬 → inject 여부 증명
+#   sync                 원격 호스트(ubu1/ubu2/htz) 에 .session_defaults 전파
+#
+# 주입 누락 root-cause 자동 탐지:
+#   - AIRGENOME_CLAUDE_SHIM env 누출 (삭제된 env guard, regression detect)
+#   - shim 이 PATH[0] 가 아님
+#   - $AIRGENOME/.session_defaults 부재 또는 drift
+#   - Dockerfile 의 COPY 누락
+#   - 원격 호스트 shim/파일 drift
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AG_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SD="$AG_ROOT/.session_defaults"
+SHIM="$AG_ROOT/bin/claude"
+DOCKERFILE="$AG_ROOT/docker/Dockerfile"
+
+# ── helpers ──────────────────────────────────────────────────────
+_hash() { shasum -a 256 "$1" 2>/dev/null | awk '{print substr($1,1,12)}'; }
+_pass() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+_fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; RC=1; }
+_warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+
+# ── subs ─────────────────────────────────────────────────────────
+cmd_show() {
+    [ -f "$SD" ] || { echo "FATAL: $SD missing" >&2; exit 1; }
+    cat "$SD"
+}
+
+cmd_status() {
+    local h lines shim_first
+    if [ ! -f "$SD" ]; then
+        echo "status: MISSING $SD"
+        return 1
+    fi
+    h=$(_hash "$SD")
+    lines=$(wc -l < "$SD" | tr -d ' ')
+    # PATH 순회 — 첫 claude 가 shim 인지
+    shim_first="?"
+    IFS=':' read -ra paths <<< "$PATH"
+    for p in "${paths[@]}"; do
+        if [ -x "$p/claude" ]; then
+            local r
+            r=$(readlink -f "$p/claude" 2>/dev/null || realpath "$p/claude" 2>/dev/null || echo "$p/claude")
+            local s
+            s=$(readlink -f "$SHIM" 2>/dev/null || realpath "$SHIM" 2>/dev/null || echo "$SHIM")
+            if [ "$r" = "$s" ]; then shim_first=yes; else shim_first="no ($p/claude)"; fi
+            break
+        fi
+    done
+    printf 'session_defaults: lines=%s hash=%s shim_first=%s AIRGENOME=%s\n' \
+        "$lines" "$h" "$shim_first" "${AIRGENOME:-unset}"
+}
+
+cmd_doctor() {
+    local RC=0
+    local include_remote=0
+    [ "${1:-}" = "--remote" ] && include_remote=1
+
+    echo "=== session_defaults doctor ==="
+
+    # 1. SSOT file
+    if [ -f "$SD" ] && [ -s "$SD" ]; then
+        _pass "$SD (hash=$(_hash "$SD"), $(wc -l < "$SD" | tr -d ' ') lines)"
+    else
+        _fail "$SD missing or empty"
+    fi
+
+    # 2. shim executable
+    if [ -x "$SHIM" ]; then
+        _pass "shim at $SHIM"
+    else
+        _fail "shim missing or not executable: $SHIM"
+    fi
+
+    # 3. PATH 첫 claude = shim
+    local found=""
+    IFS=':' read -ra paths <<< "$PATH"
+    for p in "${paths[@]}"; do
+        if [ -x "$p/claude" ]; then found="$p/claude"; break; fi
+    done
+    if [ -z "$found" ]; then
+        _fail "no claude in PATH"
+    else
+        local r s
+        r=$(readlink -f "$found" 2>/dev/null || realpath "$found" 2>/dev/null || echo "$found")
+        s=$(readlink -f "$SHIM" 2>/dev/null || realpath "$SHIM" 2>/dev/null || echo "$SHIM")
+        if [ "$r" = "$s" ]; then
+            _pass "PATH[first claude] = shim ($found)"
+        else
+            _fail "PATH[first claude] = $found (expected $SHIM) — shim bypassed"
+        fi
+    fi
+
+    # 4. env leak check
+    if [ -n "${AIRGENOME_CLAUDE_SHIM:-}" ]; then
+        _fail "AIRGENOME_CLAUDE_SHIM=$AIRGENOME_CLAUDE_SHIM leaked (regression — env guard removed)"
+    else
+        _pass "AIRGENOME_CLAUDE_SHIM unset (no leak)"
+    fi
+    if [ "${NEXUS_SESSION_LAX:-0}" = "1" ]; then
+        _warn "NEXUS_SESSION_LAX=1 — injection intentionally OFF"
+    else
+        _pass "NEXUS_SESSION_LAX unset (injection ON)"
+    fi
+
+    # 5. real claude resolvable
+    local real=""
+    for p in "${paths[@]}"; do
+        if [ -x "$p/claude" ]; then
+            local r s
+            r=$(readlink -f "$p/claude" 2>/dev/null || realpath "$p/claude" 2>/dev/null || echo "$p/claude")
+            s=$(readlink -f "$SHIM" 2>/dev/null || realpath "$SHIM" 2>/dev/null || echo "$SHIM")
+            if [ "$r" != "$s" ]; then real="$p/claude"; break; fi
+        fi
+    done
+    if [ -n "$real" ]; then
+        _pass "real claude = $real"
+    else
+        _fail "real claude not found — shim will exit 127"
+    fi
+
+    # 6. Dockerfile 강제
+    if [ -f "$DOCKERFILE" ]; then
+        if grep -q 'COPY .session_defaults' "$DOCKERFILE" && grep -q 'ENV AIRGENOME=/opt/airgenome' "$DOCKERFILE"; then
+            _pass "Dockerfile: COPY .session_defaults + ENV AIRGENOME 강제"
+        else
+            _fail "Dockerfile: COPY .session_defaults 또는 ENV AIRGENOME 누락"
+        fi
+        if grep -q 'test -s /opt/airgenome/.session_defaults' "$DOCKERFILE"; then
+            _pass "Dockerfile: 빌드-타임 fence 존재"
+        else
+            _warn "Dockerfile: 빌드-타임 fence 누락 (test -s ...)"
+        fi
+    else
+        _warn "Dockerfile 부재 ($DOCKERFILE)"
+    fi
+
+    # 7. 원격 호스트 (opt)
+    if [ "$include_remote" = "1" ]; then
+        for host in ubu1 ubu2 htz; do
+            local out rhash
+            out=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" \
+                'test -f ~/Dev/airgenome/.session_defaults && shasum -a 256 ~/Dev/airgenome/.session_defaults | awk "{print substr(\$1,1,12)}"' \
+                2>/dev/null) || { _warn "$host: 연결 실패 or 파일 부재"; continue; }
+            rhash="$out"
+            if [ -n "$rhash" ]; then
+                if [ "$rhash" = "$(_hash "$SD")" ]; then
+                    _pass "$host: hash=$rhash (match)"
+                else
+                    _fail "$host: hash=$rhash (DRIFT vs local $(_hash "$SD"))"
+                fi
+            fi
+        done
+    fi
+
+    echo ""
+    if [ $RC -eq 0 ]; then
+        echo "result: PASS"
+    else
+        echo "result: FAIL"
+    fi
+    return $RC
+}
+
+cmd_verify() {
+    # 실제 shim 이 --append-system-prompt 로 주입하는지 argv dump 으로 증명.
+    # real claude 를 /bin/echo 로 바꿔치기 한 임시 PATH shim 으로 shim 동작만 관찰.
+    local tmp
+    tmp=$(mktemp -d)
+    # shim 이 자기 아닌 첫 claude 로 exec 하므로, 임시 dir 에 fake claude 놓고
+    # PATH 앞에 shim, 그 뒤에 fake 배치.
+    cat > "$tmp/claude" <<'EOF'
+#!/bin/bash
+echo "VERIFY: args=$#"
+for a in "$@"; do
+    echo "  ARG: $a"
+done | head -5
+EOF
+    chmod +x "$tmp/claude"
+    # PATH 에 /bin /usr/bin 포함 — shim 의 `#!/usr/bin/env bash` 가 bash 를 찾아야 함.
+    local out
+    out=$(PATH="$AG_ROOT/bin:$tmp:/bin:/usr/bin" AIRGENOME="$AG_ROOT" \
+          NEXUS_SESSION_LAX= AIRGENOME_CLAUDE_SHIM= \
+          "$AG_ROOT/bin/claude" --dummy-flag 2>&1)
+    rm -rf "$tmp"
+    echo "$out"
+    echo "$out" | grep -q 'append-system-prompt' && { echo "verify: PASS (inject observed)"; return 0; }
+    echo "verify: FAIL (no inject)"
+    return 1
+}
+
+cmd_sync() {
+    [ -f "$SD" ] || { echo "FATAL: $SD missing" >&2; exit 1; }
+    for host in ubu1 ubu2 htz; do
+        printf '→ %s ... ' "$host"
+        if scp -o ConnectTimeout=5 -o BatchMode=yes -q "$SD" "$host:Dev/airgenome/.session_defaults" 2>/dev/null; then
+            echo "OK"
+        else
+            echo "SKIP (unreachable)"
+        fi
+    done
+    echo "docker image rebuild 필요시: nx reinstall airgenome  또는  airgenome deploy"
+}
+
+# ── dispatch ─────────────────────────────────────────────────────
+sub="${1:-status}"
+shift || true
+case "$sub" in
+    show)    cmd_show ;;
+    status)  cmd_status ;;
+    doctor)  cmd_doctor "$@" ;;
+    verify)  cmd_verify ;;
+    sync)    cmd_sync ;;
+    -h|--help|help)
+        sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        echo "airgenome-session-defaults: unknown sub '$sub'" >&2
+        echo "try: airgenome session-defaults help" >&2
+        exit 2
+        ;;
+esac

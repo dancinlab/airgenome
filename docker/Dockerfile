@@ -76,6 +76,14 @@ FROM claude AS dev
 COPY bin/       /opt/airgenome/bin/
 COPY shared/    /opt/airgenome/shared/
 COPY core/      /opt/airgenome/core/
+# .session_defaults — shim 이 --append-system-prompt 로 주입할 SSOT.
+# AIRGENOME env 를 /opt/airgenome 으로 고정하지 않으면 shim 은 $HOME/Dev/airgenome
+# 기본값을 찾다 실패 → inject=0 (주입 누락 주원인, 2026-04-20 M14_fix).
+COPY .session_defaults /opt/airgenome/.session_defaults
+ENV AIRGENOME=/opt/airgenome
+# 빌드-타임 강제: 파일이 빠졌거나 비어있으면 이미지 build 실패. COPY 누락 drift 방지.
+RUN test -s /opt/airgenome/.session_defaults \
+    || (echo 'FATAL: /opt/airgenome/.session_defaults missing or empty' >&2; exit 1)
 # forge/ 는 데이터 적재용 — bind mount 로만 연결 (이미지에 포함 X)
 
 # entrypoint: tini 로 PID 1 문제 해결 + signal 전파.
