@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # tests/auth-plane/run-all.sh
+# @convergence: auth-plane-test-suite-36-45
 # 전 테스트 러너. node + bash 파일 자동 실행, PASS/FAIL 집계.
 set -uo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"

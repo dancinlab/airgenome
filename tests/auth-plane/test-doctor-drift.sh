@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # tests/auth-plane/test-doctor-drift.sh
+# @convergence: auth-plane-test-suite-36-45
 # 실 계정 읽기만, 쓰기 없음. JSON 스키마 필드 존재 검증.
 set -uo pipefail
 AG=/Users/ghost/Dev/airgenome/bin/airgenome-auth

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # tests/auth-plane/test-refresh-safe.sh
+# @convergence: auth-plane-test-suite-36-45
 # refresh-safe 의 lock + event 분류 검증. fake claude 를 AIRGENOME_CLAUDE_CMD 로 주입.
 set -uo pipefail
 AG=/Users/ghost/Dev/airgenome/bin/airgenome-auth

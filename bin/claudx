@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # L0 CORE — 수정 금지 (nexus/shared/L0.json 등록). 변경 시 PR + L0 갱신.
+# @convergence: auth-plane-phase2-oauth-monitor
 # bin/claudx — limit-resilient unified Claude launcher (airgenome M13, 2026-04-19)
 #
 # 책임:

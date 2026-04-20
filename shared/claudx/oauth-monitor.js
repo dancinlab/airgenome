@@ -1,4 +1,5 @@
 // shared/claudx/oauth-monitor.js — Phase 2-A 관측 hook.
+// @convergence: auth-plane-phase2-oauth-monitor
 //
 // 책임: Node/Bun http(s).request 를 monkey-patch 해 Anthropic OAuth
 // /oauth/token endpoint 호출을 관찰, token-health.jsonl 에 이벤트 기록.

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // tests/auth-plane/test-token-core.js
+// @convergence: auth-plane-test-suite-36-45
 // 순수 판정 함수 단위 테스트. temp dir 로 격리, 실 계정/KC 미접근.
 'use strict';
 const fs = require('fs');

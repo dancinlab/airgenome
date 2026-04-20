@@ -1,4 +1,5 @@
 // shared/claudx/token-core.js — pure token health judgements.
+// @convergence: auth-plane-phase1-refresh-defense
 //
 // pool.js 에서 oauth 판정 로직을 뽑아낸 순수 모듈. fs 호출은 여기서 수행하되
 // 정책/판정 분기는 pure 함수 조합으로만. pool.js 는 이 턴에 수정하지 않는다 (L0 보호).

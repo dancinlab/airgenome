@@ -1,4 +1,5 @@
 // shared/claudx/token-health.js — append-only audit log for token lifecycle events.
+// @convergence: auth-plane-phase1-refresh-defense
 //
 // 저장 경로: $CLAUDX_STATE/token-health.jsonl (default ~/.airgenome/claudx/)
 // 스키마: {ts, acct, event, old_rt_sha8, new_rt_sha8, old_at_sha8, new_at_sha8,

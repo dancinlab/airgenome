@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // tests/auth-plane/test-oauth-monitor.js
+// @convergence: auth-plane-test-suite-36-45, auth-plane-phase2-oauth-monitor
 // oauth-monitor 의 순수 판정 함수 단위 테스트 + 이벤트 기록 확인.
 'use strict';
 const fs = require('fs');

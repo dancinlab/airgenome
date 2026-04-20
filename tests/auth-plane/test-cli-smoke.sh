@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # tests/auth-plane/test-cli-smoke.sh
+# @convergence: auth-plane-test-suite-36-45
 # 비-destructive CLI smoke. 모든 서브커맨드 help/status/자가진단 수준 호출.
 set -uo pipefail
 AG=/Users/ghost/Dev/airgenome/bin/airgenome-auth
