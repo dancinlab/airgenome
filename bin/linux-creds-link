@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# bin/linux-creds-link — Linux 호스트의 .credentials.json 을 Mac mirror symlink 로 교체
+#                        (Step B Phase 3, 2026-04-21)
+#
+# 전제:
+#   - Mac: ~/.airgenome/creds_mirror/claudeN.json 이 creds-mirror daemon 으로 항상 fresh
+#   - 원격 Linux: /mac_home 에 Mac $HOME 이 sshfs(rw, allow_other) 로 마운트됨
+#
+# 동작:
+#   각 계정의 ~/.claude-claudeN/.credentials.json 을
+#   → symlink → /mac_home/.airgenome/creds_mirror/claudeN.json
+#
+# 효과:
+#   - Linux claude CLI 가 read 하면 Mac keychain 의 최신 OAuth
+#   - Linux claude CLI 가 write (refresh) 해도 symlink 경유 Mac 파일 업데이트 →
+#     creds-mirror daemon 다음 tick 에서 keychain write-back → 전체 호스트 일관
+#   - token rotation 충돌 제거: SSOT 는 Mac keychain 뿐
+#
+# 사용:
+#   linux-creds-link --host=ubu2-d                   # 단일 호스트 apply
+#   linux-creds-link --host=all                      # enabled remote 전체
+#   linux-creds-link --host=ubu2-d --revert          # symlink → regular file 로 복구
+#   linux-creds-link --host=ubu2-d --dry-run         # 변경 없이 예정 동작 출력
+#   linux-creds-link --status --host=ubu2-d          # 현재 링크 상태 매트릭스
+#
+# 안전:
+#   - 기존 파일은 .credentials.json.bak 으로 백업 (첫 실행에만; bak 있으면 skip)
+#   - --revert 시 bak 이 있으면 복원, 없으면 Mac mirror 파일 내용 copy
+#   - mount 가 끊긴 호스트에선 --status 만 가능, apply 는 거부
+
+set -uo pipefail
+
+ROOT="${AIRGENOME_ROOT:-$HOME/Dev/airgenome}"
+ACCOUNTS="${ACCOUNTS:-/Users/ghost/Dev/nexus/shared/.runtime/accounts/accounts.json}"
+MAC_MIRROR="/mac_home/.airgenome/creds_mirror"
+
+ts()   { date '+%Y-%m-%dT%H:%M:%S'; }
+log()  { printf '[linux-creds-link %s] %s\n' "$(ts)" "$*" >&2; }
+
+_usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ── args ─────────────────────────────────────────────────────────
+target_host=""
+do_revert=false
+dry_run=false
+do_status=false
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --host=*)     target_host="${1#--host=}"; shift ;;
+        --host)       target_host="$2"; shift 2 ;;
+        --revert)     do_revert=true; shift ;;
+        --dry-run)    dry_run=true; shift ;;
+        --status)     do_status=true; shift ;;
+        -h|--help)    _usage; exit 0 ;;
+        *)            echo "linux-creds-link: unknown '$1'" >&2; exit 2 ;;
+    esac
+done
+
+[ -z "$target_host" ] && { echo "--host=<alias|all> 필요" >&2; exit 2; }
+
+# ── host list 확장 ────────────────────────────────────────────────
+hosts=()
+if [ "$target_host" = "all" ]; then
+    # enabled remote 전체. host_list 있으면 사용, 아니면 안전 fallback
+    _hl="$ROOT/bin/host_list"
+    if [ -x "$_hl" ]; then
+        while IFS= read -r h; do [ -n "$h" ] && hosts+=("$h"); done < <("$_hl" --ssh 2>/dev/null)
+    fi
+    [ ${#hosts[@]} -eq 0 ] && hosts=(ubu2-d htz-d hetzner)
+else
+    hosts=("$target_host")
+fi
+
+# ── 계정 이름 목록 (natural sort) ─────────────────────────────────
+names=()
+if [ -f "$ACCOUNTS" ]; then
+    while IFS= read -r n; do names+=("$n"); done < <(jq -r '.accounts[].name' "$ACCOUNTS" | sort -V)
+fi
+[ ${#names[@]} -eq 0 ] && names=(claude1 claude2 claude3 claude4 claude5 claude6 claude7 claude8 claude9 claude10 claude11 claude12)
+
+# ── 원격에서 실행될 스크립트 body 생성기 ──────────────────────────
+_remote_apply_script() {
+    local revert=$1 dry=$2
+    cat <<REMOTE_EOF
+set -uo pipefail
+MIRROR_DIR="$MAC_MIRROR"
+REVERT=$revert
+DRY=$dry
+
+# mount 활성 확인
+if ! mountpoint -q /mac_home 2>/dev/null && ! ls "\$MIRROR_DIR" >/dev/null 2>&1; then
+    echo "ERR: /mac_home sshfs mount 없음 — symlink 대상 접근 불가"
+    exit 3
+fi
+
+ok=0; fail=0; skip=0
+for n in $(printf '%s ' "${names[@]}"); do
+    tgt="\$MIRROR_DIR/\$n.json"
+    link="\$HOME/.claude-\$n/.credentials.json"
+
+    if [ "\$REVERT" = "true" ]; then
+        # symlink → regular file 복구
+        if [ -L "\$link" ]; then
+            if [ -f "\$link.bak" ]; then
+                rm -f "\$link"; mv "\$link.bak" "\$link"
+                echo "\$n: REVERTED (from .bak)"; ok=\$((ok+1))
+            elif [ -r "\$tgt" ]; then
+                rm -f "\$link"
+                cp "\$tgt" "\$link"
+                chmod 600 "\$link"
+                echo "\$n: REVERTED (from mirror copy)"; ok=\$((ok+1))
+            else
+                echo "\$n: REVERT FAIL — bak 도 mirror 도 없음"; fail=\$((fail+1))
+            fi
+        else
+            skip=\$((skip+1))
+        fi
+        continue
+    fi
+
+    # apply
+    if [ ! -r "\$tgt" ]; then
+        echo "\$n: SKIP — mirror 파일 없음 (\$tgt)"; skip=\$((skip+1)); continue
+    fi
+    if [ -L "\$link" ]; then
+        current=\$(readlink "\$link" 2>/dev/null)
+        if [ "\$current" = "\$tgt" ]; then
+            skip=\$((skip+1)); continue
+        fi
+        [ "\$DRY" = "true" ] && { echo "\$n: DRY replace symlink → \$tgt"; continue; }
+        rm -f "\$link"
+    elif [ -e "\$link" ]; then
+        # regular file — backup 후 symlink
+        [ "\$DRY" = "true" ] && { echo "\$n: DRY backup + symlink → \$tgt"; continue; }
+        [ ! -e "\$link.bak" ] && cp "\$link" "\$link.bak"
+        rm -f "\$link"
+    else
+        [ "\$DRY" = "true" ] && { echo "\$n: DRY create symlink → \$tgt"; continue; }
+        mkdir -p "\$(dirname "\$link")"
+    fi
+    ln -s "\$tgt" "\$link"
+    echo "\$n: LINKED → \$tgt"; ok=\$((ok+1))
+done
+echo "summary: ok=\$ok skip=\$skip fail=\$fail"
+REMOTE_EOF
+}
+
+# ── 원격 status 함수 ──────────────────────────────────────────────
+_remote_status_script() {
+    cat <<REMOTE_EOF
+set -uo pipefail
+MIRROR_DIR="$MAC_MIRROR"
+printf '%-10s %s\n' "account" "state"
+for n in $(printf '%s ' "${names[@]}"); do
+    link="\$HOME/.claude-\$n/.credentials.json"
+    tgt="\$MIRROR_DIR/\$n.json"
+    if [ -L "\$link" ]; then
+        cur=\$(readlink "\$link")
+        if [ "\$cur" = "\$tgt" ]; then
+            if [ -r "\$cur" ]; then
+                printf '%-10s %s\n' "\$n" "SYMLINK_OK → mirror"
+            else
+                printf '%-10s %s\n' "\$n" "SYMLINK_BROKEN (target unreadable)"
+            fi
+        else
+            printf '%-10s %s\n' "\$n" "SYMLINK_OTHER → \$cur"
+        fi
+    elif [ -f "\$link" ]; then
+        printf '%-10s %s\n' "\$n" "REGULAR_FILE"
+    else
+        printf '%-10s %s\n' "\$n" "MISSING"
+    fi
+done
+REMOTE_EOF
+}
+
+# ── execute ──────────────────────────────────────────────────────
+SSH_OPTS=(-o ConnectTimeout=8 -o BatchMode=yes -o ServerAliveInterval=10)
+for host in "${hosts[@]}"; do
+    log "=== $host ==="
+    if [ "$do_status" = "true" ]; then
+        ssh "${SSH_OPTS[@]}" "$host" "$(_remote_status_script)" 2>&1 || log "$host: status 실패"
+        continue
+    fi
+    script=$(_remote_apply_script "$do_revert" "$dry_run")
+    if [ "$dry_run" = "true" ]; then
+        log "(dry-run)"
+    fi
+    ssh "${SSH_OPTS[@]}" "$host" "$script" 2>&1 || log "$host: apply 실패"
+done
