@@ -22804,3 +22804,16 @@ cx: docker-ssh → ubu-d (host sshd bypass)
 {"ts":"2026-04-20T19:02:43Z","host":"mac","duration_s":11,"exit":0,"rtt_ms":0}
 {"ts":"2026-04-20T19:02:47Z","host":"mac","duration_s":8,"exit":0,"rtt_ms":0}
 {"ts":"2026-04-20T19:02:48Z","host":"mac","duration_s":22,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:18:16Z","host":"ubu2","duration_s":4240,"exit":255,"rtt_ms":275}
+{"ts":"2026-04-20T19:23:19Z","host":"mac","duration_s":300,"exit":137,"rtt_ms":0}
+{"ts":"2026-04-20T19:23:19Z","host":"mac","duration_s":1366,"exit":137,"rtt_ms":0}
+{"ts":"2026-04-20T19:23:19Z","host":"mac","duration_s":4460,"exit":137,"rtt_ms":282}
+{"ts":"2026-04-20T19:23:19Z","host":"mac","duration_s":6825,"exit":137,"rtt_ms":0}
+{"ts":"2026-04-20T19:24:08Z","host":"mac","duration_s":7,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:24:41Z","host":"mac","duration_s":7,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:24:47Z","host":"mac","duration_s":21,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:25:10Z","host":"mac","duration_s":17,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:25:15Z","host":"mac","duration_s":6,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:25:21Z","host":"mac","duration_s":20,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:26:08Z","host":"mac","duration_s":7,"exit":0,"rtt_ms":0}
+{"ts":"2026-04-20T19:26:22Z","host":"mac","duration_s":12,"exit":0,"rtt_ms":0}
