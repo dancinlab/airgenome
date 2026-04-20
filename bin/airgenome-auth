@@ -17,6 +17,8 @@
 #   refresh-expired         keychain.expiresAt < now 계정만 골라 refresh (Step B Phase 1)
 #   refresh-safe <name>     flock + rotation capture + token-health 기록 (Phase 2 단일호스트)
 #   guard                   expiresAt < now+600s 계정 선제 refresh-safe (launchd 주기용)
+#   health-stats [days=7]   token-health.jsonl 이벤트 집계 (관측 증거)
+#   cross-drift [host=ubu2] mac vs 원격 expiresAt 비교 (cross-host 관측)
 #   drift [--json]          12계정 × file vs KC refresh_token 해시 비교 (읽기만)
 #   doctor [--json]         12계정 × (source, alive, has_refresh, drift, session_pct, exhausted) 매트릭스
 #   list                    /Users/ghost/.claude-* 디렉토리 발견된 계정 나열
@@ -342,6 +344,75 @@ cmd_guard() {
     return 0
 }
 
+# ── cmd: health-stats — token-health.jsonl 이벤트 집계 ───────────
+# Phase 2 관측 증거 수집: N일간 refresh/rotate/revoke/drift 카운트 per acct.
+cmd_health_stats() {
+    local days="${1:-7}"
+    local logfile="${CLAUDX_STATE:-$HOME/.airgenome/claudx}/token-health.jsonl"
+    if [ ! -f "$logfile" ]; then
+        echo "no token-health.jsonl — run refresh-safe first"
+        return 0
+    fi
+    local cutoff; cutoff=$(($(date +%s) - days * 86400))
+    printf '%-12s %-8s %-8s %-8s %-8s\n' "acct" "refresh" "rotate" "revoke" "drift"
+    jq -rs --argjson cutoff "$cutoff" '
+      [ .[] | select(((.ts // "1970-01-01T00:00:00Z") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $cutoff) ]
+      | group_by(.acct // "<none>")
+      | map({
+          acct: (.[0].acct // "<none>"),
+          refresh: (map(select(.event=="refresh")) | length),
+          rotate:  (map(select(.event=="rotate"))  | length),
+          revoke:  (map(select(.event=="revoke"))  | length),
+          drift:   (map(select(.event=="drift"))   | length)
+        })
+      | sort_by(.acct)
+      | .[] | "\(.acct)\t\(.refresh)\t\(.rotate)\t\(.revoke)\t\(.drift)"
+    ' "$logfile" 2>/dev/null | while IFS=$'\t' read -r a r o v d; do
+        printf '%-12s %-8s %-8s %-8s %-8s\n' "$a" "$r" "$o" "$v" "$d"
+    done
+    return 0
+}
+
+# ── cmd: cross-drift — 원격 host 의 expiresAt 과 mac 비교 ──────────
+# Phase 2 관측: mac 과 원격의 .credentials.json expiresAt mismatch 검출.
+cmd_cross_drift() {
+    local host="${1:-ubu2}"
+    local remote_raw
+    remote_raw=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" '
+        for f in ~/mac_home/.claude-*/.credentials.json; do
+            [ -f "$f" ] || continue
+            name=$(basename $(dirname "$f") | sed "s/^\\.claude-//")
+            exp=$(jq -r ".claudeAiOauth.expiresAt // 0" "$f" 2>/dev/null)
+            echo "$name $exp"
+        done
+    ' 2>/dev/null)
+    if [ -z "$remote_raw" ]; then
+        echo "cross-drift: $host 에서 결과 없음 (unreachable | no creds)" >&2
+        return 1
+    fi
+    echo "cross-drift: mac vs $host"
+    printf '%-12s %-18s %-18s %-12s\n' "acct" "mac_exp_ms" "remote_exp_ms" "status"
+    local accts; accts=$(_list_accounts)
+    while IFS= read -r name; do
+        [ -z "$name" ] || [ "$name" = "default" ] && continue
+        local mac_exp remote_exp status
+        mac_exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$HOME/.claude-$name/.credentials.json" 2>/dev/null || echo 0)
+        remote_exp=$(echo "$remote_raw" | awk -v n="$name" '$1==n {print $2; exit}')
+        [ -z "$remote_exp" ] && remote_exp=0
+        if [ "$remote_exp" = "0" ]; then
+            status="remote_missing"
+        elif [ "$mac_exp" = "$remote_exp" ]; then
+            status="sync"
+        elif [ "$mac_exp" -gt "$remote_exp" ] 2>/dev/null; then
+            status="remote_stale"
+        else
+            status="mac_stale"
+        fi
+        printf '%-12s %-18s %-18s %-12s\n' "$name" "$mac_exp" "$remote_exp" "$status"
+    done <<< "$accts"
+    return 0
+}
+
 # ── cmd: refresh-safe — flock + rotation capture + audit ─────────
 # 계정별 단일 refresh 보장 (mkdir atomic lock). 전/후 refresh_token 해시 비교
 # 로 rotation 감지, 결과 token-health.jsonl 에 기록.
@@ -525,6 +596,8 @@ case "$sub" in
     refresh-expired)   cmd_refresh_expired; exit $? ;;
     refresh-safe)      cmd_refresh_safe "$@"; exit $? ;;
     guard)             cmd_guard "$@"; exit $? ;;
+    health-stats)      cmd_health_stats "$@"; exit $? ;;
+    cross-drift)       cmd_cross_drift "$@"; exit $? ;;
     drift)             cmd_drift "$@"; exit $? ;;
     doctor)            cmd_doctor "$@"; exit $? ;;
     *)                 echo "airgenome-auth: unknown '$sub'" >&2; exit 2 ;;
