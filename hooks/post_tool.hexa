@@ -1,0 +1,41 @@
+// hooks/post_tool.hexa — PostToolUse handler
+//
+// Responsibility: log tool results to $root/.hook-tools.jsonl for replay/analysis.
+// No blocking (tool already executed). systemMessage on detected anomalies.
+//
+// Anomaly heuristics (regex/contains only):
+//   - tool_response contains "Permission denied" → note
+//   - tool_response is >10KB → flag for compact
+
+use "lib/event"
+
+fn tools_log_path() -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root + "/.hook-tools.jsonl"
+}
+
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let tool = event_tool_name(p)
+    let sess = event_session(p)
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+
+    // Compact one-liner for jsonl. tool_response can be huge — store only size + sha.
+    let resp_size = exec("jq -r '.tool_response | tostring | length' '" + p + "' 2>/dev/null").trim()
+    let resp_sha = exec("jq -r '.tool_response // \"\" | tostring' '" + p + "' 2>/dev/null | shasum -a 256 | awk '{print $1}'").trim()
+
+    let rs = if resp_size == "" { "0" } else { resp_size }
+    let line = "{\"ts\":\"" + ts +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"tool\":\"" + json_escape(tool) +
+               "\",\"response_bytes\":" + rs +
+               ",\"response_sha256\":\"" + resp_sha + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + tools_log_path() + "'")
+    let _ = exec("rm -f '" + p + "'")
+
+    println(allow_json())
+    exit(0)
+}

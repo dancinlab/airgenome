@@ -1,0 +1,1 @@
+{"hook_event_name":"PostToolUse","session_id":"test-session-005","transcript_path":"/tmp/fake.jsonl","cwd":"/tmp","tool_name":"Read","tool_input":{"file_path":"/tmp/x"},"tool_response":"file contents here"}

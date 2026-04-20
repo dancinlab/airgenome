@@ -1,0 +1,57 @@
+// hooks/lib/manifest.hexa — manifest loader + phase resolver
+//
+// Loads hooks/manifest.hook.json and emits ordered phase list for a given event.
+// Ordering rule:
+//   1. wildcard "*" phases come FIRST  (audit-everything)
+//   2. event-specific phases follow    (business logic)
+// Deterministic: phases are emitted in the JSON array order.
+//
+// Output format (TSV lines, each line = one phase):
+//   PHASE_NAME \t HANDLER \t TIMEOUT
+
+fn manifest_path() -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root + "/hooks/manifest.hook.json"
+}
+
+// Resolve phases for an event name. Returns TSV string (may be multi-line).
+// Empty string = no phases configured.
+fn resolve_phases(event_name: str) -> str {
+    let p = manifest_path()
+    if file_exists(p) == false { return "" }
+    // jq program: concat wildcard phases + event phases, each as TSV row.
+    let jq_prog = "def row($e): [$e.name, $e.handler, ($e.timeout // 5)] | @tsv; (.hooks[\"*\"].phases // []) + (.hooks[$ev].phases // []) | .[] | row(.)"
+    let cmd = "jq -r --arg ev '" + event_name + "' '" + jq_prog + "' '" + p + "' 2>/dev/null"
+    return exec(cmd)
+}
+
+// Parse a single TSV phase line → (name, handler, timeout).
+// Returns via three separate helpers to keep types simple (hexa tuple quirk).
+fn phase_name(line: str) -> str {
+    let cols = line.split("\t")
+    if cols.len() < 1 { return "" }
+    return cols[0]
+}
+
+fn phase_handler(line: str) -> str {
+    let cols = line.split("\t")
+    if cols.len() < 2 { return "" }
+    return cols[1]
+}
+
+fn phase_timeout(line: str) -> int {
+    let cols = line.split("\t")
+    if cols.len() < 3 { return 5 }
+    return to_int(cols[2])
+}
+
+// Resolve handler path to absolute under AIRGENOME_HOOK_ROOT.
+fn handler_abspath(handler: str) -> str {
+    if handler.starts_with("/") { return handler }
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root + "/" + handler
+}

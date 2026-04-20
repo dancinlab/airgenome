@@ -1,0 +1,67 @@
+// hooks/hook_cli.hexa — admin CLI for the hook bus
+//
+// Usage:
+//   hexa hook_cli.hexa audit verify
+//   hexa hook_cli.hexa audit tail [N]
+//   hexa hook_cli.hexa manifest dump
+//   hexa hook_cli.hexa events list
+
+use "lib/audit"
+use "lib/manifest"
+
+fn cmd_audit_verify() -> int {
+    let r = audit_verify()
+    println(r)
+    if r == "OK" { return 0 }
+    return 1
+}
+
+fn cmd_audit_tail(n: int) -> int {
+    let p = audit_path()
+    if file_exists(p) == false {
+        println("no audit log at " + p)
+        return 1
+    }
+    let _ = exec("tail -n " + to_string(n) + " '" + p + "' | column -t -s $'\\t'")
+    return 0
+}
+
+fn cmd_manifest_dump() -> int {
+    let p = manifest_path()
+    if file_exists(p) == false {
+        println("no manifest at " + p)
+        return 1
+    }
+    println(exec("jq . '" + p + "'"))
+    return 0
+}
+
+fn cmd_events_list() -> int {
+    let p = manifest_path()
+    if file_exists(p) == false {
+        println("no manifest at " + p)
+        return 1
+    }
+    println(exec("jq -r '.hooks | keys[]' '" + p + "'"))
+    return 0
+}
+
+fn main() -> void {
+    let argv = args()
+    if argv.len() < 4 {
+        println("usage: hook_cli.hexa <audit|manifest|events> <subcmd> [args]")
+        exit(2)
+    }
+    let ns = argv[2]
+    let sub = argv[3]
+    if ns == "audit" && sub == "verify"   { exit(cmd_audit_verify()) }
+    if ns == "audit" && sub == "tail"     {
+        let mut n = 20
+        if argv.len() >= 5 { n = to_int(argv[4]) }
+        exit(cmd_audit_tail(n))
+    }
+    if ns == "manifest" && sub == "dump"  { exit(cmd_manifest_dump()) }
+    if ns == "events"   && sub == "list"  { exit(cmd_events_list()) }
+    println("unknown command: " + ns + " " + sub)
+    exit(2)
+}

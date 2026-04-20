@@ -1,0 +1,54 @@
+// hooks/stop_capture.hexa — Stop handler (assistant response capture)
+//
+// Responsibility:
+//   - On Stop event, tail the transcript JSONL (~/.claude/projects/.../N.jsonl)
+//     and extract the most recent "assistant" message text.
+//   - Append to $root/.hook-history.jsonl with session + timestamp.
+//   - Deterministic path: Claude Code guarantees transcript_path in the Stop event.
+//
+// No LLM, no network, O(tail-1) read.
+
+use "lib/event"
+
+fn history_path() -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root + "/.hook-history.jsonl"
+}
+
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let sess = event_session(p)
+    let tpath = event_transcript(p)
+    let _ = exec("rm -f '" + p + "'")
+
+    if tpath == "" {
+        println(allow_json())
+        exit(0)
+    }
+    if file_exists(tpath) == false {
+        println(allow_json())
+        exit(0)
+    }
+
+    // Extract last assistant message text via jq streaming tail.
+    // Claude transcript JSONL schema: each line has role + message.content (array of blocks).
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let extract = "tail -n 200 '" + tpath + "' | jq -rs '[.[] | select(.type==\"assistant\" or .role==\"assistant\")] | last | (.message.content // .content) | if type==\"array\" then (map(select(.type==\"text\") | .text) | join(\"\\n\")) else (.|tostring) end' 2>/dev/null"
+    let text = exec(extract)
+    let text_sha = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | shasum -a 256 | awk '{print $1}'").trim()
+    let text_len = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | wc -c | tr -d ' '").trim()
+
+    let line = "{\"ts\":\"" + ts +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"transcript\":\"" + json_escape(tpath) +
+               "\",\"response_bytes\":" + text_len +
+               ",\"response_sha256\":\"" + text_sha +
+               "\",\"response_text\":\"" + json_escape(text) + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + history_path() + "'")
+
+    println(allow_json())
+    exit(0)
+}

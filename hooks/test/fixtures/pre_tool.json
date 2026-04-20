@@ -1,0 +1,1 @@
+{"hook_event_name":"PreToolUse","session_id":"test-session-003","transcript_path":"/tmp/fake.jsonl","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls -la"}}
