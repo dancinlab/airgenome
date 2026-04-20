@@ -1291,18 +1291,25 @@ else
                     ;;
             esac
         fi
-        # [AG-Q14] Docker 컨테이너용 system prompt 자동 주입.
-        # SSOT: shared/config/docker_session_prompt.txt (Mac path, sshfs/htz 무관하게 로컬 cat).
+        # [AG-Q14 / 2026-04-20] Docker 컨테이너용 system prompt 자동 주입.
+        # SSOT (Mac local cat — 원격 sync 없음, 매 호출 시 최신 Mac 본 참조):
+        #   1) .session_defaults             — airgenome 행동규칙 (cl shim 과 동일 SSOT)
+        #   2) docker_session_prompt.txt     — docker 컨테이너 환경 context (추가)
         # user 가 이미 --append-system-prompt 을 args 에 넣었거나 CX_DOCKER_NO_PROMPT=1 이면 skip.
         docker_prompt_args=""
-        _cx_prompt_file="${CX_DOCKER_PROMPT_FILE:-$(dirname "$0")/../shared/config/docker_session_prompt.txt}"
+        _cx_sd_file="${AIRGENOME:-$HOME/Dev/airgenome}/.session_defaults"
+        _cx_dctx_file="${CX_DOCKER_PROMPT_FILE:-$(dirname "$0")/../shared/config/docker_session_prompt.txt}"
         _cx_user_set_asp=0
         for _a in "${fwd[@]:-}"; do
             case "$_a" in --append-system-prompt|--system-prompt|--bare) _cx_user_set_asp=1; break ;; esac
         done
-        if [ "${CX_DOCKER_NO_PROMPT:-0}" != "1" ] && [ "$_cx_user_set_asp" = "0" ] && [ -r "$_cx_prompt_file" ]; then
-            _cx_prompt_content=$(cat "$_cx_prompt_file")
-            docker_prompt_args="--append-system-prompt $(printf '%q' "$_cx_prompt_content")"
+        if [ "${CX_DOCKER_NO_PROMPT:-0}" != "1" ] && [ "$_cx_user_set_asp" = "0" ]; then
+            _cx_prompt_content=""
+            [ -r "$_cx_sd_file" ]   && _cx_prompt_content="$(cat "$_cx_sd_file")"
+            [ -r "$_cx_dctx_file" ] && _cx_prompt_content="${_cx_prompt_content:+$_cx_prompt_content$'\n\n'}$(cat "$_cx_dctx_file")"
+            if [ -n "$_cx_prompt_content" ]; then
+                docker_prompt_args="--append-system-prompt $(printf '%q' "$_cx_prompt_content")"
+            fi
         fi
         docker_cmd="sudo -n docker exec $docker_tty_flags $docker_workdir $docker_env_args $container_name "$(printf '%q ' claude)"$docker_prompt_args "$(printf '%q ' ${fwd[@]+"${fwd[@]}"})
         # fallback 안전망: native inner_cmd 도 미리 조립
