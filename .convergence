@@ -384,3 +384,6 @@
 2026-04-21 00:05:59 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-21 00:20:13 airgenome-auth sync local_ok=13 remote_ok=40 remote_fail=12 remote_skip=0
 2026-04-21 00:36:43 airgenome-auth sync local_ok=13 remote_ok=26 remote_fail=0 remote_skip=26
+2026-04-21 01:07:13 airgenome-auth sync local_ok=13 remote_ok=27 remote_fail=12 remote_skip=13
+2026-04-21 01:10 auth-plane Step B 완료 — creds-mirror (launchd pid 91776) + /mac_home sshfs + linux-creds-link symlink + remote-creds-guard fallback cache + htz-tunnel (launchd pid 28218 via 13522 reverse). htz-d 12/12 symlink + cache populated. ubu2-d 재부팅으로 container 소실 + root@ubu2 key 미등록으로 airgenome-init 실패 → guard 설치 보류.
+2026-04-21 01:10 claudx rotation root-fix — zshrc cl 훅 `claudx --clear-exhausted` 가 활성 limit (until>now) 까지 삭제해 claude5/6/3 limit 상태가 매 cl 호출마다 wipe → pickBest 재선택 → API limit → 재마킹 루프. pool.js clearExhausted() 를 "만료된 것만 제거" 로 수정 (commit 41788a96). 부가 원인: penalty.json 4계정 전부 delta=200 포화 (cooling 차별 못함).
