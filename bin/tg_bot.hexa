@@ -405,8 +405,8 @@ fn strip_dispatch_noise(s: str) -> str {
     while i < len(lines) {
         let ln = lines[i]
         let t = ln.trim()
-        let drop = t.starts_with("claudx:") || t.starts_with("cx:") || t.starts_with("cx →")
-        if !drop {
+        let skip = t.starts_with("claudx:") || t.starts_with("cx:") || t.starts_with("cx →")
+        if !skip {
             if out == "" { out = ln } else { out = out + "\n" + ln }
         }
         i = i + 1
