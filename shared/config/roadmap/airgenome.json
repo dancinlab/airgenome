@@ -27,8 +27,18 @@
     "roadmap.json 의 milestones 에 없는 코드는 작성 금지",
     ".session_defaults (plain text dotfile) 이 매 세션 룰 SSOT — claudx 가 cat → --append-system-prompt 로 자동 주입. 파일 == prompt, 변환 0 (NEXUS_SESSION_LAX=1 우회)"
   ],
-  "status_vocab": ["todo", "active", "blocked", "done"],
-  "priority_vocab": ["P0", "P1", "P2", "P3"],
+  "status_vocab": [
+    "todo",
+    "active",
+    "blocked",
+    "done"
+  ],
+  "priority_vocab": [
+    "P0",
+    "P1",
+    "P2",
+    "P3"
+  ],
   "milestones": [
     {
       "id": "M0_archive_split",
@@ -58,7 +68,9 @@
       "status": "done",
       "started": "2026-04-13",
       "completed": "2026-04-13",
-      "deps": ["M0_archive_split"],
+      "deps": [
+        "M0_archive_split"
+      ],
       "target_repo": "nexus",
       "exit_criteria": [
         "nexus/shared/harness/l0_guard.hexa 에 section 4 (parse 가능성) 추가",
@@ -78,7 +90,10 @@
       "status": "done",
       "started": "2026-04-13",
       "completed": "2026-04-14",
-      "deps": ["M0_archive_split", "M1_l0_strict"],
+      "deps": [
+        "M0_archive_split",
+        "M1_l0_strict"
+      ],
       "exit_criteria": [
         "modules/probe.hexa 작성 — core sample() 활용",
         "Mac + ubu + htz 3호스트 vitals → nexus/shared/infra_state.json",
@@ -101,7 +116,9 @@
       "status": "done",
       "started": "2026-04-13",
       "completed": "2026-04-14",
-      "deps": ["M2_probe"],
+      "deps": [
+        "M2_probe"
+      ],
       "exit_criteria": [
         "modules/dispatch.hexa — task type → best host",
         "AG6 Mac compute zero 준수 (원격 가용 시 mac 차단)",
@@ -121,7 +138,9 @@
       "status": "done",
       "started": "2026-04-13",
       "completed": "2026-04-14",
-      "deps": ["M2_probe"],
+      "deps": [
+        "M2_probe"
+      ],
       "exit_criteria": [
         "modules/harvest.hexa — core AdaptiveThrottle 로 self-guard",
         "ring buffer (forge/genomes.ring) 단일 파일",
@@ -143,7 +162,9 @@
       "status": "done",
       "started": "2026-04-13",
       "completed": "2026-04-14",
-      "deps": ["M4_harvest"],
+      "deps": [
+        "M4_harvest"
+      ],
       "exit_criteria": [
         "modules/label.hexa — rule-based classifier",
         "label_rules.jsonl SSOT (하드코딩 금지)",
@@ -164,7 +185,9 @@
       "status": "done",
       "started": "2026-04-14",
       "completed": "2026-04-14",
-      "deps": ["M4_harvest"],
+      "deps": [
+        "M4_harvest"
+      ],
       "exit_criteria": [
         "modules/forecast.hexa",
         "MAE < 15% on held-out"
@@ -184,7 +207,11 @@
       "status": "done",
       "started": "2026-04-14",
       "completed": "2026-04-14",
-      "deps": ["M2_probe", "M3_dispatch", "M6_predict"],
+      "deps": [
+        "M2_probe",
+        "M3_dispatch",
+        "M6_predict"
+      ],
       "exit_criteria": [
         "MAC_SAFE_AGENTS (run.hexa): ring-sync, predictive-throttle, probe, dispatch, menubar 5개만 Mac LaunchAgent 로 정식 운영",
         "remote-heavy (harvest, label, forecast) 는 Mac 에서 launchctl 금지 — M11b systemd timer 로 ubu/htz 배포 및 검증",
@@ -207,7 +234,9 @@
       "status": "active",
       "started": "2026-04-14",
       "eta_complete": "2026-04-15",
-      "deps": ["M7_launchctl_load"],
+      "deps": [
+        "M7_launchctl_load"
+      ],
       "exit_criteria": [
         "probe → dispatch → harvest → label → forecast 5단 파이프 실가동 24h",
         "각 단계 출력 산출물 (infra_state, dispatch_state, genomes.ring, labeled_anomaly, forecast) 동시 신선",
@@ -223,7 +252,10 @@
         "first_samples": "19:56:56 seed + 19:57:19 RunAtLoad — 모든 stage fresh, stderr.total=0, anom_last=2, anom_sum_1h=100",
         "expected_samples_24h": "48 (sampler 30min × 48)",
         "eval_2026-04-19": "samples=56 > 48 충족. stderr_clean PASS (0건), anomaly_fired PASS (1h_sum=458). FAIL 6건: probe/dispatch/harvest/label/forecast freshness + duration_24h. 차단요인: (1) e2e_eval.sh 가 BSD date -j 사용 → Linux 호스트에서 span 계산 0.00h (2) harvest/label/forecast 스테이지 약 2일 미갱신 (Mac LaunchAgent 중단 의심).",
-        "blockers_outstanding": ["evaluator_linux_portability (date -j → date -d)", "mac_launchd_harvest_label_forecast_restart"],
+        "blockers_outstanding": [
+          "evaluator_linux_portability (date -j → date -d)",
+          "mac_launchd_harvest_label_forecast_restart"
+        ],
         "completion_path": "evaluator portable 재작성 + Mac LaunchAgent 복구 후 재평가. 현재는 active 유지."
       }
     },
@@ -234,7 +266,9 @@
       "status": "done",
       "started": "2026-04-14",
       "completed": "2026-04-14",
-      "deps": ["M4_harvest"],
+      "deps": [
+        "M4_harvest"
+      ],
       "exit_criteria": [
         "Mac per-process gpu_util — Metal/IOReport API 또는 powermetrics CSV 파싱",
         "Mac per-process io — proc_pid_rusage / iostat per-pid 대안",
@@ -265,7 +299,10 @@
       "title": "forecast 실측 평가 — 7d 누적 후 held-out MAE",
       "priority": "P2",
       "status": "todo",
-      "deps": ["M7_launchctl_load", "M8_e2e_chain"],
+      "deps": [
+        "M7_launchctl_load",
+        "M8_e2e_chain"
+      ],
       "exit_criteria": [
         "forge/genomes.ring 7d 누적 (>= 10000 lines)",
         "modules/forecast_eval.hexa — train/holdout split (마지막 1h 보류)",
@@ -281,7 +318,9 @@
       "status": "done",
       "started": "2026-04-14",
       "completed": "2026-04-14",
-      "deps": ["M4_harvest"],
+      "deps": [
+        "M4_harvest"
+      ],
       "exit_criteria": [
         "ubu + hetzner 에 hexa_v2 transpiler Linux native 빌드 완료",
         "core.hexa → Linux ELF (CORE_SELF_TEST=1 PASS)",
@@ -326,7 +365,9 @@
       "priority": "P2",
       "status": "active",
       "started": "2026-04-14",
-      "deps": ["M11a_native_mirror"],
+      "deps": [
+        "M11a_native_mirror"
+      ],
       "exit_criteria": [
         "ubu/htz 에 systemd timer — harvest_ag 60s 주기 실행",
         "각 호스트별 forge/genomes.ring 파일 갱신 확인",
@@ -351,7 +392,9 @@
       "status": "done",
       "started": "2026-04-14",
       "completed": "2026-04-14",
-      "deps": ["M11b_ring_sync"],
+      "deps": [
+        "M11b_ring_sync"
+      ],
       "exit_criteria": [
         "modules/genome_merge.hexa 신설",
         "입력: genomes.{mac,ubu,htz}.ring 3개",
@@ -374,7 +417,9 @@
       "status": "done",
       "started": "2026-04-14",
       "completed": "2026-04-14",
-      "deps": ["M11c_genome_merge"],
+      "deps": [
+        "M11c_genome_merge"
+      ],
       "exit_criteria": [
         "core/core.hexa — airgenome_root() / forge_dir() / ring_path() helper 추가",
         "AIRGENOME_ROOT 환경변수로 root override 지원 (미설정 시 $AIRGENOME 폴백)",
@@ -399,7 +444,10 @@
       "status": "done",
       "started": "2026-04-14",
       "completed": "2026-04-14",
-      "deps": ["M11c_genome_merge", "M11_hygiene_paths"],
+      "deps": [
+        "M11c_genome_merge",
+        "M11_hygiene_paths"
+      ],
       "exit_criteria": [
         "label.hexa — unified ring 읽기 + host 필드 포함 라벨링",
         "shared/config/label_rules.jsonl — host 조건 (예: host=ubu AND cpu>90) 지원",
@@ -423,7 +471,11 @@
       "priority": "P2",
       "status": "active",
       "started": "2026-04-17",
-      "deps": ["M2_probe", "M3_dispatch", "M11a_native_mirror"],
+      "deps": [
+        "M2_probe",
+        "M3_dispatch",
+        "M11a_native_mirror"
+      ],
       "exit_criteria": [
         "ubu + ubu2 에 Node 20 + @anthropic-ai/claude-code 설치 (/usr/local)",
         "modules/claude_route.hexa — use \"../core/core\" 만, select / record / self-test 서브커맨드, self-test PASS",
@@ -453,7 +505,9 @@
       "title": "사람용 관찰 대시보드 (menubar + web)",
       "priority": "P3",
       "status": "todo",
-      "deps": ["M8_e2e_chain"],
+      "deps": [
+        "M8_e2e_chain"
+      ],
       "exit_criteria": [
         "modules/dashboard.hexa — 단일 정적 HTML 생성 (JSONL → 표/차트)",
         "최근 anomaly Top 10 (label + score + 시각)",
@@ -469,7 +523,9 @@
       "priority": "P0",
       "status": "active",
       "started": "2026-04-19",
-      "deps": ["M11e_claude_route"],
+      "deps": [
+        "M11e_claude_route"
+      ],
       "problem": "Claude Code CLI 가 rate limit / session cap / weekly cap / token 만료로 막히면 TUI 가 죽거나 사용자 개입 필요. 자율 야간모드가 풀림.",
       "approach": "claude 가 순수 node cli.js → NODE_OPTIONS --require 로 globalThis.fetch monkey-patch. 429/rate_limit_error 감지 시 .credentials.json access_token 을 pool 내 next 계정 토큰으로 swap 후 동일 request 재송출. TUI 는 성공 응답만 봄. 세션 100% 보존.",
       "exit_criteria": [
@@ -486,7 +542,9 @@
       "title": "claudx fan-out — 12계정 동시 shard 발사 (병렬성 극대화)",
       "priority": "P1",
       "status": "todo",
-      "deps": ["M13_claudx"],
+      "deps": [
+        "M13_claudx"
+      ],
       "exit_criteria": [
         "bin/claudx-fan <tasks.jsonl> — 각 task 를 가용 계정 slot 에 동시 dispatch",
         "hive bus (sqlite WAL) 또는 JSONL append 로 결과 수렴",
@@ -499,7 +557,9 @@
       "priority": "P0",
       "status": "active",
       "started": "2026-04-19",
-      "deps": ["M13_claudx"],
+      "deps": [
+        "M13_claudx"
+      ],
       "problem": "자율모드 돌리면 비용이 블랙박스 — /status 는 지연되고 예산 cap 없음. 반복 프롬프트 재과금. 429 맞고 나서 rotation.",
       "approach": "interceptor.js 에 6 훅 추가: (1) 매 응답 usage 파싱 → cost.jsonl (2) 진입부 budget_remaining 체크 (3) 응답 헤더 remaining 읽어 선제 swap (4) request body hash → cache lookup/store (5) usage-cache.json 헤더 기반 즉시 refresh (6) 응답 body Bearer/api-key/password/SSN 정규식 redact.",
       "exit_criteria": [
@@ -519,7 +579,9 @@
       "priority": "P1",
       "status": "active",
       "started": "2026-04-19",
-      "deps": ["M13_claudx"],
+      "deps": [
+        "M13_claudx"
+      ],
       "problem": "매 rotation 이 Anthropic prompt cache 파괴 → 비용↑. 시스템 부하 폭주 시 자율모드가 claude 퓨리 발사. redact 필요.",
       "approach": "hive forge/sticky 이식 — session_id ↔ preferred_acct 매핑. v1 sampler EMA 간소화 → claudx 앞단 loadgate 스크립트. v1 gate.hexa json_escape → interceptor redact (M13c 에 통합).",
       "exit_criteria": [
@@ -536,7 +598,10 @@
       "priority": "P1",
       "status": "active",
       "started": "2026-04-19",
-      "deps": ["M13_claudx", "M13c_claudx_economy"],
+      "deps": [
+        "M13_claudx",
+        "M13c_claudx_economy"
+      ],
       "approach": "interceptor + claudx + claudx-loop 에 경량 훅 추가. node 프로세스 in-process 이므로 stdout/request/response 세 레이어 가로챔.",
       "exit_criteria": [
         "interceptor.js: expandSlashAlias (request body mutation — /s,/f,/g,/t,/k → smash,free,go,todo,keep)",
@@ -554,7 +619,10 @@
       "priority": "P1",
       "status": "active",
       "started": "2026-04-19",
-      "deps": ["M13_claudx", "M13c_claudx_economy"],
+      "deps": [
+        "M13_claudx",
+        "M13c_claudx_economy"
+      ],
       "problem": "자율모드 돌 때 claude 가 network hang / 좀비 / 무응답 상태가 되어도 claudx-loop 는 exit 만 감지 — 진행 중처럼 보이지만 실제 stall 인 경우 포착 못 함.",
       "approach": "cost.jsonl 과 rotations.jsonl 의 마지막 ts 를 heartbeat 로 사용. 30s 간격 체크, 임계치(default 180s) 초과 silence 시 STALL 이벤트 emit. --auto 모드에선 claude 자식 SIGTERM 후 claudx-loop 가 재기동. --tty 는 알림.",
       "exit_criteria": [
@@ -573,7 +641,9 @@
       "priority": "P0",
       "status": "active",
       "started": "2026-04-19",
-      "deps": ["M13_claudx"],
+      "deps": [
+        "M13_claudx"
+      ],
       "problem": "TaskCreate 필수 / Agent bg 위임 / 채팅 블로킹 금지 / 병렬 N≥8 / 세션 재진입 catchup — 5조 룰을 매 세션 사용자가 일일이 알릴 필요 없이 Claude 가 첫 토큰부터 인지해야 함. CLAUDE.md 는 폐기 예정이라 다른 주입 표면 필요.",
       "approach": "루트 .session_defaults (plain text dotfile, no extension) — 파일 자체가 inject 텍스트. claudx 가 cat → --append-system-prompt 로 system prompt 끝에 무손실 주입. 변환·파싱 0 단계. 외부 의존 0. NEXUS_SESSION_LAX=1 우회.",
       "exit_criteria": [
@@ -590,7 +660,9 @@
       "priority": "P0",
       "status": "active",
       "started": "2026-04-19",
-      "deps": ["M13_claudx"],
+      "deps": [
+        "M13_claudx"
+      ],
       "problem": "autonomous 키워드 (smash/free) 를 사용자가 밤새 수동 연타해야 하는 문제. 12계정 가용 용량이 남았는데도 사람 개입 필요.",
       "approach": "best-pick 매 iter 호출 → 자연 rotation + --continue 로 context 누적. 응답 peek 으로 stop 시그니처 감지. 풀 고갈시 자동 종료.",
       "exit_criteria": [
@@ -601,6 +673,43 @@
         "burn 로그: ~/.airgenome/claudx/burn.<ts>.jsonl (fire/done/early_stop/pool_exhausted)",
         "bootstrap Tier 4 idempotent migration — 기존 설치도 claudx 전환 + claude() 함수 주입"
       ]
+    },
+    {
+      "id": "M11f_tg_stateful_chat",
+      "title": "텔레그램 봇 stateful multi-turn — airgenome-chat SSOT + claudx pool rotation 활용",
+      "priority": "P1",
+      "status": "active",
+      "started": "2026-04-20",
+      "deps": [
+        "M11e_claude_route"
+      ],
+      "problem": "tg_bot 이 매 메시지마다 독립 단발 호출 → 컨텍스트 0. claudx pool rotation 으로 계정 바뀌면 외부 ~/.claude-XXX/projects/ 의 session 파일에 의존 시 분실. 자체 history 부재 + 사용자가 세션 통제 (목록/포크/삭제) 불가.",
+      "approach": "bin/airgenome-chat = bash CLI 가 conversation history 를 ~/.airgenome/tg_sessions/<chat>/<uuid>.jsonl 로 SSOT 보유. claudx pool rotation 그대로 활용 (계정 핀 X) — 매 turn 다른 계정 가능. 1s throttle 로 stream-json delta 를 TG editMessage 실시간 갱신 (websocket 느낌). 한 TG 채팅 안에서 슬래시 명령으로 멀티세션 통제.",
+      "exit_criteria": [
+        "bin/airgenome-chat — ls/new/switch/del/title/show/active/path/dispatch/recap/cost/export/fork/compact",
+        "history 영속화: ~/.airgenome/tg_sessions/<chat>/{index.json, <uuid>.jsonl, <uuid>.archive.jsonl}",
+        "dispatch <chat> [--tg-chat-id N --tg-msg-id M --tg-token T] — stream_event content_block_delta 1s throttle editMessage",
+        "tg_bot.hexa route_command 라우팅 — /sessions /new /switch /del /title /show /recap /cost /export /fork /compact /clear",
+        "compaction: tokens > 50K OR turns > 30 자동 압축 (head N → summary 1, archive 백업)",
+        "multi-turn 검증: 4-turn 컨텍스트 회상 PASS",
+        "pool rotation 활용 검증: accounts_used 4계정 분산",
+        "TG 실 사용 PASS: dispatch streaming 응답 가시 + 슬래시 명령 동작"
+      ],
+      "evidence": {
+        "commits": [
+          "5c639217 — S1 scaffold airgenome-chat (메타 명령)",
+          "69328876 — S2 dispatch + recap (multi-turn 컨텍스트 PASS)",
+          "ec46e326 — S3 streaming editMessage 1s throttle",
+          "6327433c — S4 tg_bot.hexa 통합 + 슬래시 라우팅",
+          "17468bda — S5 cost/export/fork/compact"
+        ],
+        "verification": {
+          "multi_turn": "4-turn 시퀀스 (BANANA-42 / cobalt-blue) 회상 PASS",
+          "pool_rotation": "accounts_used = claude3,4,5,6 (분산 사용 확인)",
+          "cost_calc": "35in/1700out USD 0.1280 (Opus pricing)",
+          "tg_bot_self_test": "PASS (route_command + dispatch_chat)"
+        }
+      }
     }
   ],
   "items": [],
