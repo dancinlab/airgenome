@@ -1148,6 +1148,7 @@ fn print_help() -> void {
     println("  session-snapshot <sub>   명령 레벨 snapshot/resume (list|save|tick|end|resume)")
     println("  session-defaults <sub>   .session_defaults SSOT 진단/강제 (show|status|doctor|verify|sync)")
     println("  auth <sub>               auth plane — 12 계정 keychain → 원격 per-account sync (sync|status|login|refresh|list)")
+    println("  heal [check|run]         infra_state + exhausted + daemon 자가치유 (launchd 주기 호출)")
     println("")
     println("OBSERVABILITY")
     println("  status [--json]          3-host 통합 상태 (uptime/load/docker/runaway/dispatch)")
@@ -1574,6 +1575,11 @@ fn main() -> void {
     if sub == "auth" {
         // airgenome auth [sync|status|login|refresh|list|self-test]
         let _ = run_bin_sh("airgenome-auth", argv_tail(a, 3))
+        return
+    }
+    if sub == "heal" {
+        // airgenome heal [check|run] — infra_state + exhausted + daemon 자가치유
+        let _ = run_bin_sh("airgenome-heal", argv_tail(a, 3))
         return
     }
     if sub == "mac-exec" || sub == "mac_exec" {

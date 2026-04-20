@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# bin/airgenome-heal — self-healing periodic watchdog.
+# @convergence: health-watcher-daemon
+#
+# 책임: infra_state freshness + claudx pool 상태 주기 점검 + 자동 복구.
+#   1. infra_state.json age > INFRA_STALE_SEC (default 600s) → airgenome probe 재실행
+#   2. exhausted.json 에서 expired 된(until < now) 엔트리 자동 정리
+#   3. exhausted.json 등록 계정 수 > EXH_LIMIT (default 6) 면 전체 비움 (preempt 버그 대비)
+#   4. launchd 가 probe/menubar daemon 살아있는지 확인, 죽어있으면 kickstart
+#
+# launchd plist (com.airgenome.heal) 에서 5분 주기 호출 전제.
+# 단발 수동 실행도 지원: `airgenome-heal check` (진단만) / `airgenome-heal run` (복구까지).
+
+set -uo pipefail
+
+INFRA_STATE="${INFRA_STATE:-$HOME/Dev/nexus/shared/infra_state.json}"
+EXHAUSTED="${CLAUDX_STATE:-$HOME/.airgenome/claudx}/exhausted.json"
+LOG="$HOME/.airgenome/health-watcher.log"
+INFRA_STALE_SEC="${INFRA_STALE_SEC:-600}"
+EXH_LIMIT="${EXH_LIMIT:-6}"
+
+mkdir -p "$(dirname "$LOG")"
+
+ts() { date '+%Y-%m-%dT%H:%M:%S'; }
+log() { printf '[%s] %s\n' "$(ts)" "$*" | tee -a "$LOG"; }
+
+# ── 1) infra_state 신선도 ────────────────────────────────────────
+check_infra() {
+    if [ ! -f "$INFRA_STATE" ]; then
+        echo "infra_state: MISSING"
+        return 1
+    fi
+    local mtime age
+    mtime=$(stat -f %m "$INFRA_STATE" 2>/dev/null || echo 0)
+    age=$(( $(date +%s) - mtime ))
+    echo "infra_state: age=${age}s"
+    [ "$age" -le "$INFRA_STALE_SEC" ]
+}
+
+heal_infra() {
+    log "infra_state stale/missing — triggering airgenome probe"
+    if command -v airgenome >/dev/null 2>&1; then
+        airgenome probe >/dev/null 2>&1 &
+        log "  airgenome probe fired (bg pid=$!)"
+    else
+        log "  airgenome not in PATH — attempting launchctl kickstart com.airgenome.probe"
+        launchctl kickstart -k gui/$(id -u)/com.airgenome.probe 2>/dev/null || true
+    fi
+}
+
+# ── 2) exhausted.json 정리 ───────────────────────────────────────
+check_exhausted() {
+    [ -f "$EXHAUSTED" ] || { echo "exhausted: empty"; return 0; }
+    local now count expired
+    now=$(date +%s)
+    count=$(jq 'length' "$EXHAUSTED" 2>/dev/null || echo 0)
+    expired=$(jq --argjson now "$now" '[to_entries[] | select(.value.until < $now)] | length' "$EXHAUSTED" 2>/dev/null || echo 0)
+    echo "exhausted: count=$count expired=$expired"
+    # 복구가 필요한 케이스: expired > 0 OR count > EXH_LIMIT
+    [ "$expired" -eq 0 ] && [ "$count" -le "$EXH_LIMIT" ]
+}
+
+heal_exhausted() {
+    [ -f "$EXHAUSTED" ] || return 0
+    local now count
+    now=$(date +%s)
+    count=$(jq 'length' "$EXHAUSTED" 2>/dev/null || echo 0)
+    if [ "$count" -gt "$EXH_LIMIT" ]; then
+        log "exhausted count=$count > limit=$EXH_LIMIT — wiping (likely preempt_hard bug)"
+        echo '{}' > "$EXHAUSTED"
+        return 0
+    fi
+    # expired 엔트리 제거 (atomic write)
+    local tmp
+    tmp="$EXHAUSTED.tmp.$$"
+    jq --argjson now "$now" 'with_entries(select(.value.until >= $now))' "$EXHAUSTED" > "$tmp" 2>/dev/null && mv "$tmp" "$EXHAUSTED"
+    local after
+    after=$(jq 'length' "$EXHAUSTED" 2>/dev/null || echo 0)
+    log "exhausted: pruned expired (before=$count after=$after)"
+}
+
+# ── 3) daemon 생존 체크 ──────────────────────────────────────────
+check_daemons() {
+    local missing=0
+    for label in com.airgenome.probe com.airgenome.menubar com.airgenome.auth-guard; do
+        if ! launchctl list 2>/dev/null | awk '{print $3}' | grep -qx "$label"; then
+            echo "daemon: MISSING $label"
+            missing=1
+        fi
+    done
+    [ "$missing" -eq 0 ] && echo "daemons: ok"
+    return "$missing"
+}
+
+heal_daemons() {
+    for label in com.airgenome.probe com.airgenome.menubar com.airgenome.auth-guard; do
+        if ! launchctl list 2>/dev/null | awk '{print $3}' | grep -qx "$label"; then
+            local plist="$HOME/Library/LaunchAgents/${label}.plist"
+            if [ -f "$plist" ]; then
+                launchctl load -w "$plist" 2>/dev/null && log "daemon reloaded: $label" || log "daemon reload FAIL: $label"
+            else
+                log "daemon missing + plist not found: $label"
+            fi
+        fi
+    done
+}
+
+# ── entry points ─────────────────────────────────────────────────
+cmd_check() {
+    echo "=== airgenome-heal check $(ts) ==="
+    check_infra; local a=$?
+    check_exhausted; local b=$?
+    check_daemons; local c=$?
+    if [ $a -eq 0 ] && [ $b -eq 0 ] && [ $c -eq 0 ]; then
+        echo "status: HEALTHY"
+        return 0
+    fi
+    echo "status: DRIFT (infra=$a exh=$b daemons=$c)"
+    return 1
+}
+
+cmd_run() {
+    log "=== heal run begin ==="
+    if ! check_infra >/dev/null; then heal_infra; fi
+    if ! check_exhausted >/dev/null; then heal_exhausted; fi
+    if ! check_daemons >/dev/null; then heal_daemons; fi
+    log "=== heal run end ==="
+}
+
+case "${1:-run}" in
+    check) cmd_check; exit $? ;;
+    run)   cmd_run; exit 0 ;;
+    *)     echo "usage: airgenome-heal {check|run}" >&2; exit 2 ;;
+esac
