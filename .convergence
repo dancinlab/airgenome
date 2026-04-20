@@ -165,6 +165,41 @@
   - 실제 claude 기동 end-to-end 는 TUI interactive → 이 turn 에서 수동 재현 불가 (V5 명시).
 @rollback: bin/cx 의 [cx-ignore-settings] 관련 diff 5곳 (usage, whitelist, arg parse, apply block, snapshot 복원) 역적용. 완전 additive — 제거해도 default 경로 무손상.
 
+
+[tg-bot-edit-in-place]
+@state: converged
+@date: 2026-04-20
+@scope: bin/tg_bot.hexa :: handle_update freeform 분기, strip_dispatch_noise, +{strip_ansi, send_message_id, edit_message}
+@goal:
+  (a) `\e]0;airgenome \a` 등 ANSI/OSC escape 가 최종 body 에 섞여 텔레그램에 " ]0;airgenome …" 형태로 노출되는 현상 제거 (user: "여전히 텔레그램 사용에 노이즈").
+  (b) "⏳ 디스패치 중…" 을 새 메시지로 이어 보내지 않고 editMessageText 로 in-place 교체 (user: "새메시지가 아니라 · 완료시 자기자신 메시지를 수정").
+@attempt-2026-04-20T10:30:
+  - strip_ansi() 추가 — write_file → `perl -pe 's/\e\][^\a]*\a//g; s/\e\[[0-9;?]*[a-zA-Z]//g' tmp` 로 OSC/CSI 제거. strip_dispatch_noise 가 선두에서 호출하도록 수정.
+  - send_message_id() 추가 — sendMessage 호출을 `curl … | jq -r '.result.message_id // empty'` 로 파이프, int 반환 (0=실패).
+  - edit_message() 추가 — editMessageText POST, `--data-urlencode message_id + text@tmp`. `"ok":true` substring 검사.
+  - handle_update freeform 분기: send_message_id("⏳ 디스패치 중…") → dispatch → len(body)<=CHUNK_SIZE 면 edit_message, 초과 시 first chunk edit + 나머지 send_chunks, wait_id==0 이면 send_chunks fallback.
+@initial-misdiagnosis:
+  - 10:36 test "응답 자체가 없음" 을 처음엔 내 edit 의 regression 으로 기록 (state: regression).
+  - 실제 원인 확인: **[mac-compute-lockdown] 10:25:03 이 com.airgenome.tg-bot 포함 18개 LaunchAgent 를 Disabled=true + bootout**. `/Users/ghost/.airgenome/mac_allow` SSOT 는 빈 allow list (기본 deny).
+  - 증거:
+    * `/Users/ghost/Library/LaunchAgents/com.airgenome.tg-bot.plist` → `<Disabled>true</Disabled>` (10:25 이후).
+    * `/Users/ghost/.airgenome/tg_bot.log` 마지막 entry 2026-04-20T01:21:01Z ("replied uid=298916303 len=85" — 10:20 test 응답). 이후 heartbeat 전무.
+    * `/Users/ghost/.airgenome/tg_leader.lock/heartbeat` mtime 10:22:45 고착 (이후 touch 없음).
+    * launchd KeepAlive 는 Disabled 일 때 respawn 하지 않음 → 10:36 test 때는 process 부재.
+  - 즉 10:36 silence 는 내 파일 수정과 무관. bot 은 10:22 쯤 이미 lockdown 으로 죽은 뒤였고 내 edit 은 아예 load 조차 되지 않았다.
+@verified-2026-04-20T10:49 (lockdown 해제 + bootstrap 후):
+  - allow list 사용자 승인 → `~/.airgenome/mac_allow` 에 `com.airgenome.tg-bot` 1줄 append, plist Disabled false 로 수정, Mac 본체에서 `launchctl enable + bootstrap + kickstart` 실행 (이 container 에서 launchctl 미도달).
+  - 기동 직후 buffered update (uid=298916304) 자동 처리 → `replied uid=298916304 len=28 edit_id=50` (이전 노이즈 포함 len=85 → 28 로 축소). `edit_id=50` 필드는 이번 패치 추가 로그 → 신규 경로 실행 확인.
+  - 사용자 10:49:38 응답 캡처: 단일 버블에 "네, 응답 가능합니다. / 테스트 확인. 무엇을 도와드릴까요?" — `]0;airgenome` 잔존 0 + "⏳ 디스패치 중…" 이 새 메시지로 이어지지 않고 **동일 버블로 edit** 된 것을 육안 확인.
+@effect:
+  - freeform dispatch 응답이 디스패치-중 말풍선 그대로 덮어쓰여 텔레그램 스크롤 깨끗.
+  - claude/claudx 가 tty 오판해 흘리는 OSC/CSI escape 전부 body 진입 전 strip.
+  - `edit_id` 로그 필드로 edit 경로 진입 여부 추적 가능 (0 = fallback send_chunks, >0 = edit 성공).
+@rollback:
+  - 3 블록 역적용: strip_ansi 삭제 + strip_dispatch_noise 에서 cleaned 참조 제거, send_message_id/edit_message 삭제, handle_update 를 `let _ = send_message(⏳) / send_chunks(body)` 원복.
+  - 복구 순서는 handle_update 먼저 (호출부 없애야 미정의 함수 참조 안 남음) → 나머지 3 fn 삭제.
+@file: bin/tg_bot.hexa:374-407 (send_message_id, edit_message), :436-445 (strip_ansi), :1071-1089 (handle_update freeform)
+
 @__raw__
 2026-04-20 03:26:02 auth-heal OK=0 FAIL=0 SKIP=3 tail=...GWC0AAA
 2026-04-20 03:27:09 auth-heal OK=2 FAIL=0 SKIP=1 tail=...GWC0AAA
