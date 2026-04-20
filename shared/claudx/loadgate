@@ -64,12 +64,31 @@ wi=$((warn * 100))
 di=$((danger * 100))
 ci=$((critical * 100))
 
+# 부팅 transient grace: Mac/Linux 모두 부팅 직후 launchd/systemd 가
+# 일제 spawn 하면 1분 loadavg 가 ncpu×6 이상 스파이크하는 게 정상.
+# uptime < 240s 면 critical→danger 로 강등 (60s hold 만, abort 안 함).
+_uptime_sec() {
+    if [ -r /proc/uptime ]; then
+        awk '{printf "%d", $1}' /proc/uptime
+    else
+        local boot now
+        boot=$(sysctl -n kern.boottime 2>/dev/null | awk -F'[ ,]' '{print $4}')
+        now=$(date +%s)
+        [ -n "$boot" ] && echo $((now - boot)) || echo 99999
+    fi
+}
+
 # critical 직전 재시도: Mac 에서는 phantom stage0 wrapper 누적이 원인일 때가 많다.
 # 정리 후 2s 대기 후 재측정. 여전히 critical 이면 진짜 critical.
 if [ "$li" -ge "$ci" ]; then
     _mac_phantom_clean
     sleep 2
     li=$(_read_load_x100)
+fi
+
+# 부팅 grace 적용 (재측정 후에도 critical 이면 강등)
+if [ "$li" -ge "$ci" ] && [ "$(_uptime_sec)" -lt 240 ]; then
+    echo "danger"; exit 2
 fi
 
 if [ "$li" -ge "$ci" ]; then echo "critical"; exit 3
