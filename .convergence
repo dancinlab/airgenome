@@ -514,7 +514,7 @@
 [probe-bash-replace-hexa]
 @state: converged
 @date: 2026-04-21
-@commit: (this turn)
+@commit: 9d6e6e57
 @scope: bin/airgenome-probe (신규) + bin/airgenome-heal heal_infra() + ~/Library/LaunchAgents/com.airgenome.probe.plist ProgramArguments
 @problem: modules/probe.hexa 가 hexa stage0 전역 락(/tmp/hexa_stage0.lock.d)을 획득해야 실행. nexus 내 다른 agent worktree (pid=47456, atlas_cluster.hexa) 가 88분째 락 점유 → probe daemon 이 300s shim timeout 후 SIGKILL(-9). 어제부터 infra_state.json 갱신 정지 → menubar 자원 표시 최저 고정. airgenome-heal 의 `airgenome probe` 복구 경로도 동일 lock 에 재걸림.
 @decision: probe 를 hexa 의존 제거해 bash 단일 파일(bin/airgenome-probe)로 재작성. stage0 락 자체를 우회. probe.plist 의 ProgramArguments 를 hexa run → airgenome-probe 로 교체. heal_infra 도 `airgenome probe`(= hexa 경유) 대신 bin/airgenome-probe 직접 호출.
