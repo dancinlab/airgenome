@@ -22,6 +22,7 @@ pub fn drill_dispatch(prompt: str, keywords: [str], matched_kw: str, transcript_
     lc_advice_render()
     lc_ui_title_update()
     let suggest = "nexus drill '" + seed.replace("'", "'\\''") + "'"
+    lc_cmd_autorun(chain, "drill", suggest)
     let tail = lc_tail("match", "drill", "seed=\"" + seed + "\"")
     let extras = "\"seed\":\"" + lc_json_escape(seed) + "\"" +
                  ",\"suggest\":\"" + lc_json_escape(suggest) + "\"" +
