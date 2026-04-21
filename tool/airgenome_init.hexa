@@ -270,6 +270,45 @@ fn ensure_workspace_commands() -> void {
     println(out.trim())
 }
 
+// Register airgenome's status-line renderer in .claude/settings.json so
+// Claude Code runs it every turn and shows the active-command summary
+// just under the input box. Idempotent: skips when `statusLine` is
+// already set (any value) so the user's own customization wins — if they
+// explicitly remove the field, airgenome-init restores the default on
+// the next run.
+fn ensure_statusline() -> void {
+    let root_p = root()
+    let p = root_p + "/.claude/settings.json"
+    if file_exists(p) == false {
+        println("[airgenome-init] .claude/settings.json not found — skipping statusLine")
+        return
+    }
+    let tmp = exec("mktemp -t agi_sl.XXXXXX").trim()
+    let _ = exec("cp '" + p + "' '" + tmp + "'")
+    let has = exec("jq -r '.statusLine // \"__absent__\"' '" + tmp + "'").trim()
+    if has != "__absent__" && has != "null" {
+        println("[airgenome-init] statusLine already set — skipping")
+        let _ = exec("rm -f '" + tmp + "'")
+        return
+    }
+    let cmd_value = "AIRGENOME_ROOT=" + root_p + " " + root_p + "/bin/airgenome status-line"
+    let jq_prog = "jq --arg c " + cmd_value.replace("'", "'\\''") + " '.statusLine = {type:\"command\",command:$c,padding:0}' '" + tmp + "'"
+    // Note: --arg takes an unquoted value through argv, shell handles quoting.
+    // We inline the value with single-quote wrap below for safety.
+    let jq_safe = "jq --arg c '" + cmd_value.replace("'", "'\\''") +
+                  "' '.statusLine = {type:\"command\",command:$c,padding:0}' '" + tmp + "'"
+    let out = exec(jq_safe)
+    let _ = exec("rm -f '" + tmp + "'")
+    if out.trim() == "" {
+        println("[airgenome-init] WARN: statusLine merge produced empty output")
+        return
+    }
+    let new_tmp = p + ".tmp"
+    write_file(new_tmp, out)
+    let _ = exec("mv -f '" + new_tmp + "' '" + p + "'")
+    println("[airgenome-init] statusLine registered: airgenome status-line")
+}
+
 fn main() -> void {
     println("[airgenome-init] root: " + root())
     println("[airgenome-init] slug: " + slug_from_root())
@@ -279,4 +318,5 @@ fn main() -> void {
     let mcp_bin = ensure_mcp_binary()
     ensure_mcp_json(mcp_bin)
     ensure_workspace_commands()
+    ensure_statusline()
 }
