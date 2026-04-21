@@ -1,0 +1,67 @@
+{
+  "version": "0.1.0",
+  "description": "airgenome hook guide — which MCP tool to use when, and why. The MCP server exposes this as `airgenome://hooks/guide` (markdown) and the `hooks_list` tool (JSON). Intent: Claude Code should consult this at every non-trivial decision point instead of relying on probabilistic recall.",
+  "hooks": [
+    {
+      "name": "drill_status",
+      "mcp_tool": "drill_status",
+      "kind": "read",
+      "purpose": "Check which progression-window lens(es) are currently active. If the stack is non-empty, every subsequent decision this turn should be framed under the top seed.",
+      "when": [
+        "Session start — before answering the first substantive question",
+        "Before any non-trivial tool use (Bash / Edit / Write / Read of a new area)",
+        "When the user's prompt is ambiguous about scope",
+        "Before emitting the final answer of a turn"
+      ],
+      "example": "mcp__airgenome__drill_status() → {\"stack\": [{\"chain\":\"abc12345\",\"command\":\"drill\",\"seed\":\"7대 난제\",\"turns\":3}]}"
+    },
+    {
+      "name": "drill_touch",
+      "mcp_tool": "drill_touch",
+      "kind": "write",
+      "purpose": "Record a finding / edit / tool-use / note against the active chain's trail. The accumulated findings.jsonl becomes the raw material for .convergence later, so anything you'd want to remember about this drill goes here.",
+      "when": [
+        "You identify a root cause or pattern relevant to the active seed",
+        "You run a Bash/Grep/Read that produces a meaningful datapoint (non-zero match, significant file, surprising output)",
+        "You make an Edit whose rationale ties to the seed",
+        "You disprove or confirm a hypothesis that was implicit in the drill"
+      ],
+      "example": "mcp__airgenome__drill_touch(chain=\"abc12345\", kind=\"finding\", payload=\"hard problem #3 = lock contention in semaphore 2-slot path\")"
+    },
+    {
+      "name": "drill_release",
+      "mcp_tool": "drill_release",
+      "kind": "write",
+      "purpose": "Explicitly end a lens when it's genuinely resolved or superseded. Leaving stale entries on the stack dilutes advice.md and makes the UI title misleading.",
+      "when": [
+        "The work under this drill is committed / merged / deployed",
+        "The user signals closure (e.g. '끝', 'done', 'ok that one is resolved')",
+        "Topic has fully shifted and the old seed no longer applies to current work",
+        "A sub-drill supersedes the parent (record the parent's chain before releasing)"
+      ],
+      "example": "mcp__airgenome__drill_release(chain=\"abc12345\", reason=\"resolved — commit abc1234\")"
+    }
+  ],
+  "guidance": [
+    {
+      "pattern": "probabilistic drift — same question, different answers across turns",
+      "recommend": "Call drill_status first. If any lens is active, constrain the answer under its seed. The seed provides deterministic scope that replaces free recall."
+    },
+    {
+      "pattern": "stuck — repeating the same suggestion, no progress",
+      "recommend": "drill_touch with kind=\"note\" payload=\"stuck at <what>, tried <list>\" so the stall is auditable, then either widen the seed (activate a parent drill) or release and re-scope."
+    },
+    {
+      "pattern": "design decision or trade-off about to be made",
+      "recommend": "If a `record` lens is active, drill_touch it with kind=\"finding\" payload=\"decided X over Y because Z\". If none is active, prefer responding with a 'record <topic>' dispatch so .convergence has a chain to hang off of."
+    },
+    {
+      "pattern": "user ends a thread with '끝' / 'done' / 'ship it'",
+      "recommend": "drill_release the top chain with reason capturing what landed. Don't leave resolved work decaying on the stack."
+    },
+    {
+      "pattern": "new session opens with a non-empty stack (cross-session carry-over)",
+      "recommend": "drill_status at turn 1. If turns are low and the seed still matters, continue under it. If the seed feels stale, drill_release with reason=\"stale — new session topic\"."
+    }
+  ]
+}
