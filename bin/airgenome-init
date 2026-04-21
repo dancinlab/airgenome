@@ -1,0 +1,10 @@
+#!/bin/bash
+# airgenome-init — thin launcher. Delegates all logic to tool/airgenome_init.hexa.
+# raw#9 hexa-only: this wrapper is the minimum a shell-convention expects
+# (executable path named without extension, chmod +x); all work is done in
+# pure hexa below.
+set -eu
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export AIRGENOME_HOOK_ROOT="$ROOT"
+exec "$HOME/.hx/bin/hexa" run "$ROOT/tool/airgenome_init.hexa"
