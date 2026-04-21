@@ -29,3 +29,25 @@
 @rollback: (1) `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.airgenome.hook-watch.plist`. (2) `rm ~/Library/LaunchAgents/com.airgenome.hook-watch.plist`. (3) `rm -rf .hook-cursor.json .hook-observe.jsonl .hook-tools.jsonl .hook-audit .hook-watch.*.log`. (4) git revert of airgenome 8e381933 (+ subsequent bin/airgenome-init native rebuild) / hexa-lang 93c3c4d3 / nexus 3d9dcd3d.
 @commits: airgenome 8e381933 (transcript-watcher hook bus), hexa-lang 93c3c4d3 (stage0 re-entrance + flatten fallback), nexus 3d9dcd3d (harness env allowlist + fast tail + cat-fallback).
 @follow-ups: (A) 관측-only 한계로 실시간 pre_tool 차단 불가 — 장기적으로 Claude Code MCP 서버 prepend 또는 LSP intercept 연구. (B) assistant 순수 텍스트 → stop_capture_entry 매핑 현재 누락 (v2 TODO). (C) 24시간 실사용 후 observe/tools JSONL 크기·회전 전략 결정.
+
+[hook-drill-command-module]
+@state: converged
+@date: 2026-04-21
+@scope: hooks/hook_main.hexa (workspace keyword dispatch + freeform position) + hooks/commands/drill.hexa (new, ~100 lines) + .gitignore (.hook-dispatch.jsonl) + transcript_path forwarding through translate_line/process_line
+@problem: [hook-bus-transcript-watcher] 완료 후 사용자 요구 3건 추가: (1) ~/core/.workspace.lock [keywords] 섹션을 실제 hook 에서 사용해 "drill" / "드릴" / "drilL" 등 매칭 시 nexus drill '<seed>' 제안 기록. (2) 키워드 위치 자유 — 프롬프트 앞/중간/뒤 어디든 매치 허용. 기존 prefix-only 규칙은 자연 대화체에 너무 엄격. (3) hook_main.hexa 에 command 로직 인라인 금지 — 복잡도 관리. 커맨드 전용 .hexa 파일로 분리해 airgenome hook 에 연결. (4) 키워드-only 프롬프트 (예: "드릴") 에도 의미 있는 seed — transcript 의 최근 user turn 3개 borrow.
+@decision: 커맨드별 전용 .hexa 모듈 (hooks/commands/<cmd>.hexa) 을 도입하고 main() 없는 library 모듈로 `use "commands/<cmd>"` import. hook_main 은 얇은 dispatcher 로만 존재 — workspace.lock 파싱 + word-boundary 매치 + run_command() 라우팅. 키워드 매치는 위치 무관 word-boundary (POSIX [[:alnum:]_]). seed 추출은 command 모듈 책임.
+@changes:
+  - hooks/commands/drill.hexa (NEW): pub fn drill_dispatch(prompt, keywords, matched_kw, transcript_path) + drill_strip_keywords + drill_recent_user_context + drill_build_seed. 키워드-only 프롬프트면 transcript 의 마지막 3 user turn 을 seed 로, 그 외엔 키워드 제거한 프롬프트를 seed 로.
+  - hooks/hook_main.hexa: workspace_keyword_table() + word_boundary_match() + strip_keyword() (#51) 추가, 이후 (#52) 에서 run_command() 로 라우팅 + translate_line/process_line 이 transcript_path 를 payload 에 주입해 command 모듈이 prior-turn context 접근 가능.
+  - .gitignore: .hook-dispatch.jsonl 추가.
+@why: (1) 모듈 분리 = 새 command 추가 비용이 "새 파일 + run_command 의 if 분기 1줄" 로 제한됨 → 복잡도 선형. (2) 키워드 위치 자유 = 사용자가 대화 중 자연스럽게 "drill 로 돌파!" / "아 이거 drill 해줘" 같이 표현할 수 있음. (3) Context borrow = 키워드만 툭 던져도 직전 대화 주제로 자동 채움 → "드릴" 한 글자로 호출 가능. (4) PR #50 의 관측-only 원칙 유지 — dispatch 는 `.hook-dispatch.jsonl` 로그에만 쓰고, 실행은 사용자가 copy-paste.
+@verified: 6 케이스 synthetic 라인 주입 + `build/hook watch` 실행:
+  - prefix "드릴 7대 난제" → seed="7대 난제" ✓
+  - middle "아 그래서 이거 drill 7대 난제 해줘" → seed="아 그래서 이거 7대 난제 해줘" ✓
+  - suffix "7대 난제 drill" → seed="7대 난제" ✓
+  - keyword-only "드릴" → seed=최근 3 user turn join ✓
+  - particle "drill 로 돌파!" → seed="로 돌파!" (키워드만 strip, 조사 유지) ✓
+  - near-miss "drilling machine" → no match (word boundary) ✓
+@rollback: git revert of e7c4c4d5 (#52) + ae3e76d5 (#51). bin/airgenome-init 재실행으로 LaunchAgent 재부트 불필요 — build/hook 바이너리만 교체되면 그대로 작동.
+@commits: airgenome ae3e76d5 (#51 workspace dispatch) + e7c4c4d5 (#52 drill module).
+@follow-ups: (A) "drill 로 돌파!" → seed="로 돌파!" 의 조사 잔여 — drill_strip_keywords 에 두 번째 sed pass (한글 조사 drop) 추가 여부 결정. (B) 두 번째 command 등록 시 (예: "bench", "build") hooks/commands/<cmd>.hexa + hook_main run_command() 에 분기 1줄 추가만 필요 — 자동화 불필요.
