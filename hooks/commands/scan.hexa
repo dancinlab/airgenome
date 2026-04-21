@@ -1,0 +1,23 @@
+// hooks/commands/scan.hexa — scan command dispatch.
+//
+// Same shape as drill.hexa — lifecycle library does all the heavy lifting.
+// Per-command surface is: command name, suggest line template, tail msg.
+// Keywords for this command live in ~/core/.workspace [keywords] section
+// (e.g. `kw scan scan, 스캔`). Adding new keywords needs no code change.
+
+use "commands/_lifecycle"
+
+pub fn scan_dispatch(prompt: str, keywords: [str], matched_kw: str, transcript_path: str, session: str) -> str {
+    let seed = lc_build_seed(prompt, keywords, transcript_path, 3, 3)
+    let chain = lc_chain_id(session, "scan", seed)
+    lc_cmd_activate(session, "scan", matched_kw, seed, chain)
+    lc_advice_render()
+    lc_ui_title_update()
+    let suggest = "nexus scan '" + seed.replace("'", "'\\''") + "'"
+    lc_cmd_autorun(chain, "scan", suggest)
+    let tail = lc_tail("match", "scan", "seed=\"" + seed + "\"")
+    let extras = "\"seed\":\"" + lc_json_escape(seed) + "\"" +
+                 ",\"suggest\":\"" + lc_json_escape(suggest) + "\"" +
+                 ",\"tail\":\"" + lc_json_escape(tail) + "\""
+    return lc_payload("scan", "match", matched_kw, chain, extras)
+}

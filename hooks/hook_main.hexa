@@ -47,6 +47,8 @@ use "lib/event"
 use "lib/audit"
 use "lib/manifest"
 use "commands/drill"
+use "commands/scan"
+use "commands/record"
 
 // ─────────────────────────────────────────────────────────────── handlers ──
 
@@ -81,6 +83,11 @@ fn universal_audit_entry(p: str) -> str {
 // log row suggests `nexus <cmd> '<seed>'` so the user can copy-paste.
 
 fn workspace_lock_path() -> str {
+    // Allow tests / non-default deployments to point at a different lock
+    // file via env. Default is the canonical ~/core/.workspace.lock so
+    // existing installs are unaffected.
+    let override_p = env("AIRGENOME_WORKSPACE_LOCK")
+    if override_p != "" { return override_p }
     return env("HOME") + "/core/.workspace.lock"
 }
 
@@ -143,6 +150,12 @@ fn log_dispatch_raw(inner: str, sess: str) -> void {
 fn run_command(cmd: str, matched_kw: str, prompt: str, keywords: [str], transcript_path: str, session: str) -> str {
     if cmd == "drill" {
         return drill_dispatch(prompt, keywords, matched_kw, transcript_path, session)
+    }
+    if cmd == "scan" {
+        return scan_dispatch(prompt, keywords, matched_kw, transcript_path, session)
+    }
+    if cmd == "record" {
+        return record_dispatch(prompt, keywords, matched_kw, transcript_path, session)
     }
     return ""
 }
