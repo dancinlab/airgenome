@@ -75,10 +75,25 @@ fn handle_initialize(id: str) -> str {
 }
 
 fn handle_tools_list(id: str) -> str {
-    let tool = "{\"name\":\"drill_status\"" +
-               ",\"description\":\"Return airgenome's current active-command stack as JSON (drill + any future scan/record/trace). Each entry: {chain, command, session, keyword, seed, started_at, turns}. Use this at the start of any turn to see which progression-window lens(es) are live.\"" +
-               ",\"inputSchema\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}}"
-    return mcp_result(id, "{\"tools\":[" + tool + "]}")
+    let t1 = "{\"name\":\"drill_status\"" +
+             ",\"description\":\"Return airgenome's current active-command stack as JSON (drill + any scan/record/trace). Each entry: {chain, command, session, keyword, seed, started_at, turns}. Call at the start of any turn to see which progression-window lens(es) are live.\"" +
+             ",\"inputSchema\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}}"
+    let t2 = "{\"name\":\"drill_touch\"" +
+             ",\"description\":\"Append a finding/edit/tool/note event to an active command's trail (.hook-commands/<chain>/findings.jsonl). Use when you discover something relevant to an active drill so it accumulates in the chain's record for later retrospective.\"" +
+             ",\"inputSchema\":{\"type\":\"object\"" +
+             ",\"properties\":{\"chain\":{\"type\":\"string\",\"description\":\"8-char chain id from drill_status\"}" +
+             ",\"kind\":{\"type\":\"string\",\"description\":\"event kind: finding, edit, tool, note\"}" +
+             ",\"payload\":{\"type\":\"string\",\"description\":\"free-form single-line note (will be json-escaped)\"}}" +
+             ",\"required\":[\"chain\",\"kind\",\"payload\"]" +
+             ",\"additionalProperties\":false}}"
+    let t3 = "{\"name\":\"drill_release\"" +
+             ",\"description\":\"Release an active command from the stack with a reason (resolved/abandoned/superseded/...). Removes from active.json + appends to resolved.jsonl + re-renders advice.md and ui-title.sh.\"" +
+             ",\"inputSchema\":{\"type\":\"object\"" +
+             ",\"properties\":{\"chain\":{\"type\":\"string\",\"description\":\"8-char chain id from drill_status\"}" +
+             ",\"reason\":{\"type\":\"string\",\"description\":\"free-form release reason\"}}" +
+             ",\"required\":[\"chain\",\"reason\"]" +
+             ",\"additionalProperties\":false}}"
+    return mcp_result(id, "{\"tools\":[" + t1 + "," + t2 + "," + t3 + "]}")
 }
 
 fn handle_resources_list(id: str) -> str {
@@ -93,19 +108,42 @@ fn handle_prompts_list(id: str) -> str {
     return mcp_result(id, "{\"prompts\":[]}")
 }
 
+fn mcp_text_result(id: str, text: str) -> str {
+    let content = "{\"type\":\"text\",\"text\":\"" + lc_json_escape(text) + "\"}"
+    return mcp_result(id, "{\"content\":[" + content + "],\"isError\":false}")
+}
+
 fn handle_tools_call(id: str, raw: str) -> str {
     let name = mcp_jq_str(raw, ".params.name")
-    if name != "drill_status" {
-        return mcp_error(id, -32601, "unknown tool: " + name)
+    if name == "drill_status" {
+        let mut body = "{\"stack\":[]}"
+        let p = lc_active_path()
+        if file_exists(p) {
+            let s = read_file(p).trim()
+            if s != "" { body = s }
+        }
+        return mcp_text_result(id, body)
     }
-    let mut body = "{\"stack\":[]}"
-    let p = lc_active_path()
-    if file_exists(p) {
-        let s = read_file(p).trim()
-        if s != "" { body = s }
+    if name == "drill_touch" {
+        let chain = mcp_jq_str(raw, ".params.arguments.chain")
+        let kind = mcp_jq_str(raw, ".params.arguments.kind")
+        let payload = mcp_jq_str(raw, ".params.arguments.payload")
+        if chain == "" { return mcp_error(id, -32602, "drill_touch: chain is required") }
+        if kind == "" { return mcp_error(id, -32602, "drill_touch: kind is required") }
+        lc_cmd_touch(chain, kind, payload)
+        return mcp_text_result(id, "ok: touched chain=" + chain + " kind=" + kind)
     }
-    let content = "{\"type\":\"text\",\"text\":\"" + lc_json_escape(body) + "\"}"
-    return mcp_result(id, "{\"content\":[" + content + "],\"isError\":false}")
+    if name == "drill_release" {
+        let chain = mcp_jq_str(raw, ".params.arguments.chain")
+        let reason = mcp_jq_str(raw, ".params.arguments.reason")
+        if chain == "" { return mcp_error(id, -32602, "drill_release: chain is required") }
+        if reason == "" { return mcp_error(id, -32602, "drill_release: reason is required") }
+        lc_cmd_release(chain, reason)
+        lc_advice_render()
+        lc_ui_title_update()
+        return mcp_text_result(id, "ok: released chain=" + chain + " reason=" + reason)
+    }
+    return mcp_error(id, -32601, "unknown tool: " + name)
 }
 
 fn handle_resources_read(id: str, raw: str) -> str {
