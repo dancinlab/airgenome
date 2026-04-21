@@ -11,6 +11,9 @@
 //      invokes `build/hook watch` every N seconds (default 5).
 //   3. launchctl bootstrap the LaunchAgent (starts it immediately).
 //   4. Verify first watch pass populated .hook-cursor.json and .hook-observe.jsonl.
+//   5. Build build/mcp native binary (the airgenome MCP server).
+//   6. Write .mcp.json so Claude Code picks up the server with host-specific
+//      absolute paths — no manual editing required on a new machine.
 //
 // What it does NOT do:
 //   - Touch ~/.claude/settings.json or any .claude/ file.
@@ -133,10 +136,59 @@ fn verify_setup(bin: str) -> void {
     println("[airgenome-init] done — LaunchAgent will pick up new lines every watch cycle")
 }
 
+fn ensure_mcp_binary() -> str {
+    let root_p = root()
+    let bin = root_p + "/build/mcp"
+    let src = root_p + "/hooks/mcp_server.hexa"
+    let needs = exec("[ -x '" + bin + "' ] && [ '" + bin + "' -nt '" + src + "' ] && echo n || echo y").trim()
+    if needs == "n" { return bin }
+    let _ = exec("mkdir -p '" + root_p + "/build'")
+    let cmd = "cd '" + root_p + "' && HEXA_VAL_ARENA=0 HEXA_MAC_BUILD_OK=1 " + env("HOME") + "/.hx/bin/hexa build hooks/mcp_server.hexa -o build/mcp 2>&1"
+    let out = exec(cmd)
+    if exec("[ -x '" + bin + "' ] && echo y || echo n").trim() != "y" {
+        println("[airgenome-init] ERROR: MCP build failed")
+        println(out)
+        exit(1)
+    }
+    println("[airgenome-init] built " + bin)
+    return bin
+}
+
+// .mcp.json holds host-specific absolute paths (the MCP spec says command
+// is not shell-interpreted — no $HOME expansion). Generating it from
+// airgenome-init keeps a fresh clone working on any machine without manual
+// editing. Idempotent: skips writing when contents match what we'd render.
+fn ensure_mcp_json(mcp_bin: str) -> void {
+    let root_p = root()
+    let p = root_p + "/.mcp.json"
+    let body = "{\n" +
+               "  \"mcpServers\": {\n" +
+               "    \"airgenome\": {\n" +
+               "      \"command\": \"" + mcp_bin + "\",\n" +
+               "      \"args\": [],\n" +
+               "      \"env\": {\n" +
+               "        \"AIRGENOME_HOOK_ROOT\": \"" + root_p + "\"\n" +
+               "      }\n" +
+               "    }\n" +
+               "  }\n" +
+               "}\n"
+    if file_exists(p) {
+        let cur = read_file(p)
+        if cur == body {
+            println("[airgenome-init] .mcp.json already up to date")
+            return
+        }
+    }
+    write_file(p, body)
+    println("[airgenome-init] wrote .mcp.json (airgenome → " + mcp_bin + ")")
+}
+
 fn main() -> void {
     println("[airgenome-init] root: " + root())
     println("[airgenome-init] slug: " + slug_from_root())
     let bin = ensure_binary()
     install_launchagent(bin)
     verify_setup(bin)
+    let mcp_bin = ensure_mcp_binary()
+    ensure_mcp_json(mcp_bin)
 }
