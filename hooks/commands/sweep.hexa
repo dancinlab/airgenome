@@ -1,0 +1,77 @@
+// hooks/commands/sweep.hexa — sweep command dispatch.
+//
+// Shape parallels roadmap.hexa / verify.hexa. Triggered by the `/sweep`
+// family (keywords: sweep, 스윕, rollup, 정리, 컨티뉴이티). Picks one of
+// four sub-intents encoded in the user's prompt:
+//
+//   /sweep micro    → ss_tier_micro  (note-only, session-local)
+//   /sweep daily    → ss_tier_daily  (rollup, child kept)
+//   /sweep weekly   → ss_tier_weekly (rollup + child release)
+//   /sweep phase    → ss_tier_phase  (phase-boundary hard release)
+//   /sweep          → default: layered micro+daily+weekly dry-run
+//
+// Execution mode (--execute vs dry-run) is read from the prompt suffix
+// (" execute") or env AIRGENOME_SWEEP_EXECUTE=1. Dry-run is the default
+// everywhere — slash invocation never mutates state without an explicit
+// opt-in, matching the raw#10 proof-carrying symmetry stance.
+//
+// Dependency tool lib/stale_sweep.hexa lives alongside this module. If
+// the `airgenome` CLI binary is absent we still go through the motions
+// but every tier emits `[sweep-plan] cli=missing` and returns 0.
+
+use "commands/_lifecycle"
+use "lib/stale_sweep"
+
+fn sweep_pick_tier(prompt: str) -> str {
+    let p = prompt.to_lower()
+    if p.contains("phase")    { return "phase" }
+    if p.contains("weekly")   { return "weekly" }
+    if p.contains("daily")    { return "daily" }
+    if p.contains("micro")    { return "micro" }
+    if p.contains("전환")     { return "phase" }
+    if p.contains("주간")     { return "weekly" }
+    if p.contains("일간")     { return "daily" }
+    if p.contains("세션")     { return "micro" }
+    return "layered"
+}
+
+fn sweep_pick_execute(prompt: str) -> bool {
+    if env("AIRGENOME_SWEEP_EXECUTE") == "1" { return true }
+    let p = prompt.to_lower()
+    if p.contains("--execute") { return true }
+    if p.contains(" execute")  { return true }
+    if p.contains("실행")      { return true }
+    return false
+}
+
+fn sweep_suggest(tier: str, execute: bool) -> str {
+    let engine = "$HOME/core/airgenome/hooks/lib/stale_sweep.hexa"
+    let flag = if tier == "phase" { "--phase" } else { "--layered" }
+    let ex   = if execute { " --execute" } else { "" }
+    let cli  = flag + ex
+    return "{ if [ -f '" + engine + "' ]; then hexa '" + engine +
+           "' " + cli + "; else echo '[sweep] warn: stale_sweep.hexa missing at " +
+           engine + " — skip'; fi; }"
+}
+
+pub fn sweep_dispatch(prompt: str, keywords: [str], matched_kw: str, transcript_path: str, session: str) -> str {
+    let tier = sweep_pick_tier(prompt)
+    let execute = sweep_pick_execute(prompt)
+    let mode_tag = if execute { "execute" } else { "dry" }
+    let mode_tag_tail = if execute { "execute" } else { "dry-run" }
+    let exec_json = if execute { "true" } else { "false" }
+    let seed = "stale-sweep tier=" + tier + " " + mode_tag
+    let chain = lc_chain_id(session, "sweep", seed)
+    lc_cmd_activate(session, "sweep", matched_kw, seed, chain)
+    lc_advice_render()
+    lc_ui_title_update()
+    let suggest = sweep_suggest(tier, execute)
+    lc_cmd_autorun(chain, "sweep", suggest)
+    let tail = lc_tail("match", "sweep", "tier=" + tier + " " + mode_tag_tail)
+    let extras = "\"seed\":\"" + lc_json_escape(seed) + "\"" +
+                 ",\"tier\":\"" + lc_json_escape(tier) + "\"" +
+                 ",\"execute\":" + exec_json +
+                 ",\"suggest\":\"" + lc_json_escape(suggest) + "\"" +
+                 ",\"tail\":\"" + lc_json_escape(tail) + "\""
+    return lc_payload("sweep", "match", matched_kw, chain, extras)
+}
