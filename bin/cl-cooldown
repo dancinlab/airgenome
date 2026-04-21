@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# L0 CORE — chflags uchg 후 수정 금지. 변경 시 `chflags nouchg`.
+# bin/cl-cooldown — mark an account dir as cooling down for N hours.
+#
+# Contract:
+#   cl-cooldown                     mark $CLAUDE_CONFIG_DIR cooling 5h.
+#   cl-cooldown <dir>               mark <dir> cooling 5h.
+#   cl-cooldown <dir> <hours>       mark <dir> cooling N hours (integer).
+#   cl-cooldown --clear <dir>       remove cooldown marker on <dir>.
+#   cl-cooldown self-test           verify marker file logic.
+#
+# Marker: <dir>/.cooldown-until — single line, epoch seconds (expires after).
+# Default hours: 5 (Claude.ai subscription reset window).
+#
+# Dependencies: bash. State: per-dir marker. Network: none.
+
+set -euo pipefail
+
+: "${CL_COOLDOWN_HOURS:=5}"
+
+_mark() {
+    local dir="$1" hours="${2:-$CL_COOLDOWN_HOURS}"
+    if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+        echo "cl-cooldown: invalid dir: '$dir'" >&2; return 64
+    fi
+    if ! [[ "$hours" =~ ^[0-9]+$ ]]; then
+        echo "cl-cooldown: invalid hours: '$hours'" >&2; return 64
+    fi
+    local until
+    until=$(( $(date +%s) + hours * 3600 ))
+    echo "$until" > "$dir/.cooldown-until"
+    echo "marked: $dir cooling until $(date -r "$until" '+%Y-%m-%d %H:%M:%S')"
+}
+
+_clear() {
+    local dir="$1"
+    [ -d "$dir" ] || { echo "cl-cooldown: invalid dir: '$dir'" >&2; return 64; }
+    rm -f "$dir/.cooldown-until"
+    echo "cleared: $dir"
+}
+
+_self_test() {
+    local tmp
+    tmp=$(mktemp -d -t cl-cooldown.XXXXXX)
+    local rc=0
+    CL_COOLDOWN_HOURS=5 _mark "$tmp" >/dev/null
+    if [ -f "$tmp/.cooldown-until" ]; then
+        echo "  ✓ mark creates marker"
+    else
+        echo "  ✗ mark missing" >&2; rc=1
+    fi
+    local until
+    until=$(cat "$tmp/.cooldown-until")
+    local now
+    now=$(date +%s)
+    local delta=$(( until - now ))
+    if [ "$delta" -gt 17900 ] && [ "$delta" -lt 18100 ]; then
+        echo "  ✓ mark ~5h in future ($delta s)"
+    else
+        echo "  ✗ mark delta off: $delta s" >&2; rc=1
+    fi
+    _clear "$tmp" >/dev/null
+    if [ ! -f "$tmp/.cooldown-until" ]; then
+        echo "  ✓ clear removes marker"
+    else
+        echo "  ✗ clear failed" >&2; rc=1
+    fi
+    rm -rf "$tmp"
+    [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
+    return $rc
+}
+
+case "${1:-}" in
+    self-test) _self_test; exit $? ;;
+    -h|--help) sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --clear)
+        shift
+        _clear "${1:-${CLAUDE_CONFIG_DIR:-}}" ;;
+    "")
+        _mark "${CLAUDE_CONFIG_DIR:-}" ;;
+    *)
+        _mark "$@" ;;
+esac
