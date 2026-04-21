@@ -1,0 +1,113 @@
+// hooks/test/run_command_dispatch.hexa — selftest for 4 new command
+// dispatchers (safelanding / verify / advance / roadmap) added on top
+// of the existing drill/scan/record chain.
+//
+// Strategy: invoke hook_main.hexa in `test UserPromptSubmit` mode with
+// a mock payload, then verify the side effects the command dispatch is
+// supposed to produce:
+//
+//   1. .hook-dispatch.jsonl gains a row whose `.command` equals the
+//      expected command name and whose `.keyword` equals the matched
+//      trigger word.
+//   2. .hook-commands/<chain>/intent.sh exists and is executable (the
+//      suggest one-liner the command module wrote).
+//
+// A sandboxed AIRGENOME_HOOK_ROOT under /tmp keeps the real project
+// dirs untouched, and AIRGENOME_AUTORUN=dry prevents the intent from
+// actually executing during the test.
+
+fn sandbox_root() -> str {
+    let r = exec("mktemp -d -t airg_cmd_test.XXXXXX").trim()
+    // Seed a fake .workspace.lock with no [keywords] section so the
+    // built-in keyword table is the only source (deterministic).
+    write_file(r + "/.workspace.lock", "[workspace]\nname core-bundle\n")
+    // hook_main.hexa's test-mode (legacy path) looks up phases in
+    // <root>/hooks/manifest.hook.json. Synthesize a minimal manifest
+    // that routes UserPromptSubmit to "user_prompt" so dispatch_entry
+    // (handler.contains("user_prompt")) lands on user_prompt_entry.
+    let _ = exec("mkdir -p '" + r + "/hooks'")
+    write_file(r + "/hooks/manifest.hook.json",
+               "{\"hooks\":{\"UserPromptSubmit\":{\"phases\":[{\"name\":\"keyword-match\",\"handler\":\"hooks/user_prompt.hexa\",\"timeout\":5}]}}}")
+    return r
+}
+
+fn run_mock(root: str, payload: str) -> int {
+    let fx = root + "/prompt.json"
+    write_file(fx, payload)
+    let main_p = exec("cd '" + root + "/../..' 2>/dev/null; pwd").trim()
+    // Locate hook_main.hexa via this script's location (hooks/test/..).
+    let self_dir = exec("dirname '" + args()[1] + "'").trim()
+    let hook_main = exec("cd '" + self_dir + "/..' && pwd").trim() + "/hook_main.hexa"
+    let cmd = "AIRGENOME_HOOK_ROOT='" + root + "'" +
+              " AIRGENOME_WORKSPACE_LOCK='" + root + "/.workspace.lock'" +
+              " AIRGENOME_AUTORUN=dry" +
+              " $HOME/.hx/bin/hexa run '" + hook_main + "' test UserPromptSubmit < '" + fx + "' > /tmp/cmddisp_out.$$ 2>/tmp/cmddisp_err.$$; echo $?"
+    let rc_str = exec(cmd).trim()
+    let _ = exec("rm -f /tmp/cmddisp_out.$$ /tmp/cmddisp_err.$$")
+    return to_int(rc_str)
+}
+
+fn dispatch_has(root: str, expected_cmd: str, expected_kw: str) -> bool {
+    let log_p = root + "/.hook-dispatch.jsonl"
+    if file_exists(log_p) == false { return false }
+    let cmd = "jq -r --arg c " + "'" + expected_cmd + "'" +
+              " --arg k " + "'" + expected_kw + "'" +
+              " 'select(.command == $c and .keyword == $k) | .chain' '" + log_p + "'"
+    let chain = exec(cmd).trim()
+    return chain != ""
+}
+
+fn dispatch_chain(root: str, expected_cmd: str) -> str {
+    let log_p = root + "/.hook-dispatch.jsonl"
+    if file_exists(log_p) == false { return "" }
+    let cmd = "jq -r --arg c '" + expected_cmd + "' 'select(.command == $c) | .chain' '" + log_p + "' | tail -n 1"
+    return exec(cmd).trim()
+}
+
+fn intent_exists(root: str, chain: str) -> bool {
+    if chain == "" { return false }
+    let p = root + "/.hook-commands/" + chain + "/intent.sh"
+    return file_exists(p)
+}
+
+fn case(name: str, prompt: str, expected_cmd: str, expected_kw: str) -> int {
+    let root = sandbox_root()
+    let payload = "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"test-" + expected_cmd +
+                  "\",\"transcript_path\":\"\",\"cwd\":\"" + root +
+                  "\",\"prompt\":\"" + prompt + "\"}"
+    let _ = run_mock(root, payload)
+    let hit = dispatch_has(root, expected_cmd, expected_kw)
+    let chain = dispatch_chain(root, expected_cmd)
+    let has_intent = intent_exists(root, chain)
+    let ok = hit && has_intent
+    let mark = if ok { "PASS" } else { "FAIL" }
+    println(mark + "  " + name + "  command=" + expected_cmd + "  keyword=\"" + expected_kw + "\"  chain=" + chain + "  intent.sh=" + to_string(has_intent))
+    if ok == false {
+        // Dump first dispatch row for debugging.
+        let dbg = exec("cat '" + root + "/.hook-dispatch.jsonl' 2>/dev/null | tail -n 3")
+        if dbg != "" { println("     dispatch-log:\n" + dbg) }
+    }
+    let _ = exec("rm -rf '" + root + "'")
+    if ok { return 0 }
+    return 1
+}
+
+fn main() -> void {
+    println("# command dispatch selftest (safelanding / verify / advance / roadmap)")
+    let mut fails = 0
+    fails = fails + case("safelanding_en", "safe landing 해줘",       "safelanding", "safe landing")
+    fails = fails + case("safelanding_ko", "rollback 지금 바로",       "safelanding", "rollback")
+    fails = fails + case("verify_en",      "verify 진행",              "verify",      "verify")
+    fails = fails + case("verify_ko",      "검증 부탁",                "verify",      "검증")
+    fails = fails + case("advance_en",     "advance id 42 please",     "advance",     "advance")
+    fails = fails + case("advance_ko",     "승급 12 부탁",             "advance",     "승급")
+    fails = fails + case("roadmap_en",     "roadmap 지금",             "roadmap",     "roadmap")
+    fails = fails + case("roadmap_ko",     "로드맵 보여줘",            "roadmap",     "로드맵")
+
+    if fails == 0 {
+        println("# ALL GREEN (8/8)")
+        exit(0)
+    }
+    println("# " + to_string(fails) + " FAILURE(S)")
+    exit(1)
+}

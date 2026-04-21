@@ -1,0 +1,55 @@
+// hooks/commands/advance.hexa — advance command dispatch.
+//
+// Shape parallels drill.hexa / scan.hexa / record.hexa. Runs the
+// roadmap_engine's `--advance` pass against the anima repo for a
+// specific roadmap entry id. The id is extracted from the user prompt
+// (first integer-like token); if none is found the chain still
+// activates but the intent emits a warn line so the user can edit
+// intent.sh and re-run.
+//
+// Keyword triggers (registered under `command advance` in
+// ~/core/.workspace [keywords] section): advance, 승급, flip.
+//
+// Seed encodes the extracted id ("advance anima <id>") so multiple
+// advance requests within one session don't collide on the same chain.
+
+use "commands/_lifecycle"
+
+// Extract the first integer-like token from the prompt (e.g. "flip #42"
+// → "42", "승급 12 부탁" → "12"). Returns "" if none found. Uses grep -oE
+// which is available on macOS's BSD grep.
+fn extract_id(prompt: str) -> str {
+    let tmp = exec("mktemp -t adv_id.XXXXXX").trim()
+    write_file(tmp, prompt)
+    let cmd = "grep -oE '[0-9]+' '" + tmp + "' | head -n 1"
+    let out = exec(cmd).trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    return out
+}
+
+fn advance_suggest(id: str) -> str {
+    let engine = "$HOME/core/hexa-lang/tool/roadmap_engine.hexa"
+    if id == "" {
+        return "echo '[advance] warn: no numeric id in prompt — edit intent.sh and re-run with: hexa " + engine + " --advance anima <id>'"
+    }
+    return "{ if [ -f '" + engine + "' ]; then hexa '" + engine +
+           "' --advance anima " + id + "; else echo '[advance] warn: roadmap_engine.hexa missing at " + engine +
+           " — skip advance'; fi; }"
+}
+
+pub fn advance_dispatch(prompt: str, keywords: [str], matched_kw: str, transcript_path: str, session: str) -> str {
+    let id = extract_id(prompt)
+    let seed = if id == "" { "advance anima (id missing)" } else { "advance anima " + id }
+    let chain = lc_chain_id(session, "advance", seed)
+    lc_cmd_activate(session, "advance", matched_kw, seed, chain)
+    lc_advice_render()
+    lc_ui_title_update()
+    let suggest = advance_suggest(id)
+    lc_cmd_autorun(chain, "advance", suggest)
+    let tail = lc_tail("match", "advance", "seed=\"" + seed + "\"")
+    let extras = "\"seed\":\"" + lc_json_escape(seed) + "\"" +
+                 ",\"suggest\":\"" + lc_json_escape(suggest) + "\"" +
+                 ",\"tail\":\"" + lc_json_escape(tail) + "\"" +
+                 ",\"id\":\"" + lc_json_escape(id) + "\""
+    return lc_payload("advance", "match", matched_kw, chain, extras)
+}
