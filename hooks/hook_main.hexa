@@ -1,0 +1,532 @@
+// hooks/hook_main.hexa — native-compiled, transcript-driven hook engine.
+//
+// WE DO NOT INTEGRATE WITH CLAUDE CODE'S settings.json HOOK PROTOCOL.
+// Instead, airgenome watches Claude Code's session transcript JSONL files
+// under ~/.claude/projects/<project-slug>/*.jsonl and dispatches events as
+// the transcript grows. This means:
+//
+//   + zero touch to Claude Code config (no .claude/settings.json file)
+//   + zero Claude Code hook protocol dependency (no schema churn)
+//   + airgenome owns its own "hook spec" (.hook.json in project root)
+//   - observation only — we cannot block tool use pre-emptively; the tool
+//     has already run by the time we see its line. Block rules are logged
+//     as warnings instead of enforced.
+//
+// Entry points:
+//   build/hook watch           — single scan pass over all transcript files
+//                                for this project slug, resuming from the
+//                                last byte offset stored in .hook-cursor.json.
+//                                Re-invoked by launchd LaunchAgent on FSEvents
+//                                or a short timer (5s). Emits one observe row
+//                                per new JSONL line + dispatches to the right
+//                                type-specific entry fn.
+//   build/hook test <Event>    — legacy: reads a Claude-Code-schema payload
+//                                on stdin and runs the matching phase chain.
+//                                Used by hooks/test fixtures and manual CI.
+//                                Preserves the earlier "hook_entry" semantics.
+//   build/hook (no arg)        — prints "{}" and exits 0 (safe default).
+//
+// Transcript → event mapping (watch mode):
+//   {"type":"user", "message":{"content":[{"type":"text","text":P}]}}
+//       → synthesize UserPromptSubmit payload → user_prompt_entry
+//   {"type":"assistant", "message":{"content":[{"type":"tool_use", "name":N, "input":I, ...}]}}
+//       → synthesize PostToolUse payload (observation after the fact)
+//       → post_tool_entry
+//   {"type":"assistant", "message":{"content":[{"type":"text", "text":T}, ...]}}
+//       → stop_capture_entry (final text capture)
+//   every line → universal_audit_entry (wildcard observability)
+//
+// Cursor file:  $AIRGENOME_HOOK_ROOT/.hook-cursor.json
+//   { "<abs-jsonl-path>": <byte-offset>, ... }
+// Updated atomically at the end of each `watch` pass via mv.
+//
+// Determinism: no LLM, no random, no time-based branching. Same transcript
+// contents + same cursor → same set of dispatched events.
+
+use "lib/event"
+use "lib/audit"
+use "lib/manifest"
+
+// ─────────────────────────────────────────────────────────────── handlers ──
+
+// * wildcard — observability. Always allow.
+fn universal_audit_entry(p: str) -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    let log_p = root + "/.hook-observe.jsonl"
+
+    let name = event_name(p)
+    let sess = event_session(p)
+    let cwd_ = event_cwd(p)
+    let tool = event_tool_name(p)
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let line = "{\"ts\":\"" + ts +
+               "\",\"event\":\"" + json_escape(name) +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"cwd\":\"" + json_escape(cwd_) +
+               "\",\"tool\":\"" + json_escape(tool) + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + log_p + "'")
+    return allow_json()
+}
+
+// UserPromptSubmit — risk keyword warn/hint.
+fn user_prompt_entry(p: str) -> str {
+    let prompt = event_prompt(p).to_lower()
+    if prompt.contains("rm -rf /") {
+        return system_message_json("[warn] irreversible filesystem delete detected in prompt — double-check target path")
+    }
+    if prompt.contains("force push") {
+        return system_message_json("[warn] force-push requested — confirm branch is not shared and history rewrite is intended")
+    }
+    if prompt.contains("secrets") {
+        return system_message_json("[hint] prompt mentions secrets — prefer env vars / secret manager over inline values")
+    }
+    return allow_json()
+}
+
+fn jq_tool_input(path: str, expr: str) -> str {
+    let cmd = "jq -r '.tool_input." + expr + " // \"\"' '" + path + "' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+// PreToolUse — permission gate.
+fn pre_tool_entry(p: str) -> str {
+    let tool = event_tool_name(p)
+    if tool == "Bash" {
+        let bashcmd = jq_tool_input(p, "command").to_lower()
+        if bashcmd.contains("rm -rf ~") || bashcmd.contains("rm -rf /") {
+            return decision_json("block", "destructive rm -rf on home or root denied by pre_tool gate")
+        }
+        if bashcmd.contains("git push") && (bashcmd.contains("--force") || bashcmd.contains(" -f")) {
+            return decision_json("block", "force-push denied by pre_tool gate")
+        }
+    }
+    if tool == "Write" || tool == "Edit" {
+        let fpath = jq_tool_input(p, "file_path")
+        if fpath.contains("/.env") || fpath.ends_with(".env") {
+            return decision_json("block", "writing to .env file denied — secrets must live outside repo")
+        }
+    }
+    return allow_json()
+}
+
+// PostToolUse — record size+sha of tool_response.
+fn post_tool_entry(p: str) -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    let log_p = root + "/.hook-tools.jsonl"
+
+    let tool = event_tool_name(p)
+    let sess = event_session(p)
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let resp_size = exec("jq -r '.tool_response | tostring | length' '" + p + "' 2>/dev/null").trim()
+    let resp_sha = exec("jq -r '.tool_response // \"\" | tostring' '" + p + "' 2>/dev/null | shasum -a 256 | awk '{print $1}'").trim()
+    let rs = if resp_size == "" { "0" } else { resp_size }
+    let line = "{\"ts\":\"" + ts +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"tool\":\"" + json_escape(tool) +
+               "\",\"response_bytes\":" + rs +
+               ",\"response_sha256\":\"" + resp_sha + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + log_p + "'")
+    return allow_json()
+}
+
+// SessionStart — init audit genesis + record session start.
+fn session_start_entry(p: str) -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    let log_p = root + "/.hook-sessions.jsonl"
+
+    let sess = event_session(p)
+    let src = event_source(p)
+    let cwd_ = event_cwd(p)
+    let _ = audit_ensure_genesis()
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let line = "{\"ts\":\"" + ts +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"source\":\"" + json_escape(src) +
+               "\",\"cwd\":\"" + json_escape(cwd_) + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + log_p + "'")
+    return allow_json()
+}
+
+// SubagentStop — capture subagent final response sha.
+fn subagent_stop_entry(p: str) -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    let log_p = root + "/.hook-subagents.jsonl"
+
+    let sess = event_session(p)
+    let tpath = event_transcript(p)
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let mut text_sha = "-"
+    let mut text_len = "0"
+    if tpath != "" && file_exists(tpath) {
+        let extract = "tail -n 200 '" + tpath + "' | jq -rs '[.[] | select(.type==\"assistant\" or .role==\"assistant\")] | last | (.message.content // .content) | if type==\"array\" then (map(select(.type==\"text\") | .text) | join(\"\\n\")) else (.|tostring) end' 2>/dev/null"
+        let text = exec(extract)
+        text_sha = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | shasum -a 256 | awk '{print $1}'").trim()
+        text_len = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | wc -c | tr -d ' '").trim()
+    }
+    let line = "{\"ts\":\"" + ts +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"transcript\":\"" + json_escape(tpath) +
+               "\",\"response_bytes\":" + text_len +
+               ",\"response_sha256\":\"" + text_sha + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + log_p + "'")
+    return allow_json()
+}
+
+// Stop — capture final assistant response text + sha.
+fn stop_capture_entry(p: str) -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    let log_p = root + "/.hook-history.jsonl"
+
+    let sess = event_session(p)
+    let tpath = event_transcript(p)
+    if tpath == "" { return allow_json() }
+    if file_exists(tpath) == false { return allow_json() }
+
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let extract = "tail -n 200 '" + tpath + "' | jq -rs '[.[] | select(.type==\"assistant\" or .role==\"assistant\")] | last | (.message.content // .content) | if type==\"array\" then (map(select(.type==\"text\") | .text) | join(\"\\n\")) else (.|tostring) end' 2>/dev/null"
+    let text = exec(extract)
+    let text_sha = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | shasum -a 256 | awk '{print $1}'").trim()
+    let text_len = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | wc -c | tr -d ' '").trim()
+    let line = "{\"ts\":\"" + ts +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"transcript\":\"" + json_escape(tpath) +
+               "\",\"response_bytes\":" + text_len +
+               ",\"response_sha256\":\"" + text_sha +
+               "\",\"response_text\":\"" + json_escape(text) + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + log_p + "'")
+    return allow_json()
+}
+
+// ──────────────────────────────────────────────────────────── dispatcher ──
+
+fn dispatch_entry(handler: str, p: str) -> str {
+    if handler.contains("universal_audit") { return universal_audit_entry(p) }
+    if handler.contains("user_prompt")     { return user_prompt_entry(p) }
+    if handler.contains("pre_tool")        { return pre_tool_entry(p) }
+    if handler.contains("post_tool")       { return post_tool_entry(p) }
+    if handler.contains("session_start")   { return session_start_entry(p) }
+    if handler.contains("subagent_stop")   { return subagent_stop_entry(p) }
+    if handler.contains("stop_capture")    { return stop_capture_entry(p) }
+    return ""
+}
+
+fn extract_decision_field(out: str) -> str {
+    if out == "" { return "" }
+    let tmp = exec("mktemp -t hook_out.XXXXXX").trim()
+    write_file(tmp, out)
+    let d = exec("jq -r '.decision // \"\"' '" + tmp + "' 2>/dev/null").trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    return d
+}
+
+fn extract_message_field(out: str) -> str {
+    if out == "" { return "" }
+    let tmp = exec("mktemp -t hook_out.XXXXXX").trim()
+    write_file(tmp, out)
+    let m = exec("jq -r '.message // .systemMessage // \"\"' '" + tmp + "' 2>/dev/null").trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    return m
+}
+
+// ─────────────────────────────────────────────────────────── watch mode ──
+
+fn resolve_root() -> str {
+    let mut r = env("AIRGENOME_HOOK_ROOT")
+    if r == "" { r = env("CLAUDE_PROJECT_DIR") }
+    if r == "" { r = exec("pwd").trim() }
+    return r
+}
+
+// Derive transcript dir for this project from AIRGENOME_HOOK_ROOT.
+// Claude Code encodes the project path as ~/.claude/projects/<slug>/ where
+// slug = abs path with '/' replaced by '-'. e.g. /Users/ghost/core/airgenome
+// → ~/.claude/projects/-Users-ghost-core-airgenome/.
+fn transcripts_dir() -> str {
+    let root = resolve_root()
+    let slug = root.replace("/", "-")
+    return env("HOME") + "/.claude/projects/" + slug
+}
+
+fn cursor_path() -> str {
+    return resolve_root() + "/.hook-cursor.json"
+}
+
+// Load cursor JSON into a raw string. Empty "{}" if missing.
+fn cursor_load() -> str {
+    let p = cursor_path()
+    if file_exists(p) == false { return "{}" }
+    let s = read_file(p)
+    if s.trim() == "" { return "{}" }
+    return s
+}
+
+// Write cursor JSON atomically.
+fn cursor_save(s: str) -> void {
+    let p = cursor_path()
+    let tmp = p + ".tmp"
+    write_file(tmp, s)
+    let _ = exec("mv -f '" + tmp + "' '" + p + "'")
+}
+
+// Lookup offset for a file path from cursor JSON (via jq).
+fn cursor_get(cur: str, fpath: str) -> int {
+    let tmp = exec("mktemp -t hook_cur.XXXXXX").trim()
+    write_file(tmp, cur)
+    let v = exec("jq -r --arg p '" + fpath + "' '.[$p] // 0' '" + tmp + "' 2>/dev/null").trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    if v == "" { return 0 }
+    return to_int(v)
+}
+
+// Set offset for a file path, returning new cursor JSON.
+fn cursor_set(cur: str, fpath: str, off: int) -> str {
+    let tmp = exec("mktemp -t hook_cur.XXXXXX").trim()
+    write_file(tmp, cur)
+    let v = exec("jq --arg p '" + fpath + "' --argjson o " + to_string(off) + " '.[$p] = $o' '" + tmp + "' 2>/dev/null")
+    let _ = exec("rm -f '" + tmp + "'")
+    return v
+}
+
+// File size in bytes (0 if missing).
+fn file_size(fpath: str) -> int {
+    let v = exec("wc -c < '" + fpath + "' 2>/dev/null | tr -d ' \\n'").trim()
+    if v == "" { return 0 }
+    return to_int(v)
+}
+
+// Read bytes [off, eof) from file into a string.
+fn read_from(fpath: str, off: int) -> str {
+    // tail -c +N yields from byte N onwards (1-indexed).
+    return exec("tail -c +" + to_string(off + 1) + " '" + fpath + "' 2>/dev/null")
+}
+
+// Translate a transcript JSONL line into a Claude-Code-style hook payload
+// + event name, written to tmp file `out_p`. Returns event name, or "" if
+// the line should be skipped (non-actionable type).
+fn translate_line(line: str, out_p: str) -> str {
+    // Write line for jq introspection.
+    let line_p = exec("mktemp -t hook_trans.XXXXXX").trim()
+    write_file(line_p, line)
+    let kind = exec("jq -r '.type // \"\"' '" + line_p + "' 2>/dev/null").trim()
+
+    let mut ev = ""
+    let mut payload = ""
+    if kind == "user" {
+        let prompt = exec("jq -r '(.message.content // \"\") | if type==\"array\" then (map(select(.type==\"text\") | .text) | join(\"\\n\")) else (.|tostring) end' '" + line_p + "' 2>/dev/null")
+        let sess = exec("jq -r '.sessionId // .session_id // \"\"' '" + line_p + "' 2>/dev/null").trim()
+        ev = "UserPromptSubmit"
+        payload = "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"" + json_escape(sess) +
+                  "\",\"cwd\":\"" + json_escape(resolve_root()) +
+                  "\",\"prompt\":\"" + json_escape(prompt.trim()) + "\"}"
+    } else {
+        // assistant / tool_use detection: look for tool_use block in content array
+        let tu_name = exec("jq -r '[(.message.content // [])[] | select(.type==\"tool_use\")][0].name // \"\"' '" + line_p + "' 2>/dev/null").trim()
+        if tu_name != "" {
+            let tu_input = exec("jq -c '[(.message.content // [])[] | select(.type==\"tool_use\")][0].input // {}' '" + line_p + "' 2>/dev/null").trim()
+            let sess = exec("jq -r '.sessionId // .session_id // \"\"' '" + line_p + "' 2>/dev/null").trim()
+            ev = "PostToolUse"
+            payload = "{\"hook_event_name\":\"PostToolUse\",\"session_id\":\"" + json_escape(sess) +
+                      "\",\"cwd\":\"" + json_escape(resolve_root()) +
+                      "\",\"tool_name\":\"" + json_escape(tu_name) +
+                      "\",\"tool_input\":" + tu_input +
+                      ",\"tool_response\":\"\"}"
+        }
+    }
+    let _ = exec("rm -f '" + line_p + "'")
+    if ev == "" { return "" }
+    write_file(out_p, payload)
+    return ev
+}
+
+// Synthesize a wildcard-audit payload from any transcript line so
+// universal_audit_entry always gets a well-formed hook schema.
+fn wildcard_payload(line: str, out_p: str) -> void {
+    let line_p = exec("mktemp -t hook_wild.XXXXXX").trim()
+    write_file(line_p, line)
+    let kind = exec("jq -r '.type // \"\"' '" + line_p + "' 2>/dev/null").trim()
+    let sess = exec("jq -r '.sessionId // .session_id // \"\"' '" + line_p + "' 2>/dev/null").trim()
+    let _ = exec("rm -f '" + line_p + "'")
+    let payload = "{\"hook_event_name\":\"" + json_escape(kind) +
+                  "\",\"session_id\":\"" + json_escape(sess) +
+                  "\",\"cwd\":\"" + json_escape(resolve_root()) +
+                  "\",\"tool_name\":\"\"}"
+    write_file(out_p, payload)
+}
+
+fn process_line(line: str) -> void {
+    if line.trim() == "" { return }
+    // Always run wildcard audit.
+    let wp = exec("mktemp -t hook_wp.XXXXXX").trim()
+    wildcard_payload(line, wp)
+    let _ = universal_audit_entry(wp)
+    let _ = exec("rm -f '" + wp + "'")
+
+    // Try translate to event-specific payload.
+    let tp = exec("mktemp -t hook_tp.XXXXXX").trim()
+    let ev = translate_line(line, tp)
+    if ev == "UserPromptSubmit" {
+        let _ = user_prompt_entry(tp)
+    }
+    if ev == "PostToolUse" {
+        let _ = post_tool_entry(tp)
+    }
+    let _ = exec("rm -f '" + tp + "'")
+}
+
+// First-run bootstrap: mark every existing transcript's cursor at EOF so
+// the watcher only picks up lines written AFTER seed. Prevents a cold scan
+// from replaying thousands of historical lines (expensive: each line = jq
+// fork, ~10ms). Idempotent — re-running seed just re-writes the same EOFs.
+fn seed_pass() -> void {
+    let tdir = transcripts_dir()
+    if file_exists(tdir) == false {
+        println("[seed] no transcripts dir: " + tdir)
+        return
+    }
+    let listing = exec("ls '" + tdir + "'/*.jsonl 2>/dev/null")
+    let files = listing.split("\n")
+    let mut cur = cursor_load()
+    let mut count = 0
+    let mut i = 0
+    while i < files.len() {
+        let f = files[i].trim()
+        i = i + 1
+        if f == "" { continue }
+        if file_exists(f) == false { continue }
+        let sz = file_size(f)
+        cur = cursor_set(cur, f, sz)
+        count = count + 1
+    }
+    cursor_save(cur)
+    println("[seed] cursored " + to_string(count) + " transcript(s) to EOF")
+}
+
+fn watch_pass() -> void {
+    let tdir = transcripts_dir()
+    if file_exists(tdir) == false { return }
+    let listing = exec("ls -t '" + tdir + "'/*.jsonl 2>/dev/null")
+    let files = listing.split("\n")
+
+    let mut cur = cursor_load()
+    let mut i = 0
+    while i < files.len() {
+        let f = files[i].trim()
+        i = i + 1
+        if f == "" { continue }
+        if file_exists(f) == false { continue }
+        let off = cursor_get(cur, f)
+        let sz = file_size(f)
+        if sz <= off { continue }
+        let chunk = read_from(f, off)
+        let lines = chunk.split("\n")
+        let mut j = 0
+        while j < lines.len() {
+            let line = lines[j]
+            j = j + 1
+            process_line(line)
+        }
+        cur = cursor_set(cur, f, sz)
+    }
+    cursor_save(cur)
+}
+
+// ───────────────────────────────────────────── legacy Claude-Code test mode ──
+
+fn test_mode(ev_name: str) -> void {
+    let raw = read_stdin()
+    let p = dump_json(raw)
+
+    let tsv = resolve_phases(ev_name)
+    if tsv == "" {
+        let _ = audit_append(ev_name, "no-op", "-", "NO_PHASES")
+        let _ = exec("rm -f '" + p + "'")
+        println(allow_json())
+        exit(0)
+    }
+
+    let lines = tsv.split("\n")
+    let mut i = 0
+    let mut blocked = false
+    let mut block_msg = ""
+    let mut forward_out = ""
+    while i < lines.len() {
+        let line = lines[i].trim()
+        i = i + 1
+        if line == "" { continue }
+        let pname = phase_name(line)
+        let phndl = phase_handler(line)
+
+        let out = dispatch_entry(phndl, p)
+        let status = if out == "" { "NO_ENTRY" } else { "OK" }
+        let _ = audit_append(ev_name, pname, phndl, status)
+
+        if out == "" { continue }
+
+        let decision = extract_decision_field(out)
+        if decision == "block" {
+            blocked = true
+            block_msg = extract_message_field(out)
+            break
+        }
+        let trimmed = out.trim()
+        if trimmed != "" && trimmed != "{}" {
+            forward_out = trimmed
+        }
+    }
+
+    let _ = exec("rm -f '" + p + "'")
+
+    if blocked {
+        println(decision_json("block", block_msg))
+        exit(2)
+    }
+    if forward_out != "" {
+        println(forward_out)
+    } else {
+        println(allow_json())
+    }
+    exit(0)
+}
+
+fn main() -> void {
+    let argv = args()
+    // Native argv indexing: [bin, bin, realArg0, realArg1, ...].
+    // (stage0 inherits this convention; native output is identical.)
+    let mut mode = ""
+    let mut arg = ""
+    if argv.len() >= 3 {
+        mode = argv[2]
+        if argv.len() >= 4 { arg = argv[3] }
+    }
+
+    if mode == "seed" {
+        seed_pass()
+        exit(0)
+    }
+    if mode == "watch" {
+        watch_pass()
+        exit(0)
+    }
+    if mode == "test" {
+        if arg == "" {
+            println("{}")
+            exit(0)
+        }
+        test_mode(arg)
+        // test_mode exits itself
+        exit(0)
+    }
+    // No args → no-op pass-through.
+    println("{}")
+    exit(0)
+}

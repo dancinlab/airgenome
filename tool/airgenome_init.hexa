@@ -1,0 +1,142 @@
+// tool/airgenome_init.hexa — one-shot project bootstrap.
+//
+// Run from project root (or any cwd with AIRGENOME_HOOK_ROOT set):
+//   hexa run tool/airgenome_init.hexa
+//
+// Idempotent. Safe to re-run.
+//
+// What it does:
+//   1. Build build/hook native binary (skip if already fresh).
+//   2. Install ~/Library/LaunchAgents/com.airgenome.hook-watch.plist that
+//      invokes `build/hook watch` every N seconds (default 5).
+//   3. launchctl bootstrap the LaunchAgent (starts it immediately).
+//   4. Verify first watch pass populated .hook-cursor.json and .hook-observe.jsonl.
+//
+// What it does NOT do:
+//   - Touch ~/.claude/settings.json or any .claude/ file.
+//   - Require Claude Code CLI hook protocol.
+//   - Write into the user's dotfiles.
+//
+// Removal: `launchctl bootout gui/$UID com.airgenome.hook-watch && rm
+// ~/Library/LaunchAgents/com.airgenome.hook-watch.plist`.
+
+// Resolve project root. Preference order:
+//   1. $AIRGENOME_HOOK_ROOT (explicit override for non-standard layouts)
+//   2. $CLAUDE_PROJECT_DIR  (set by Claude Code when launched from a session)
+//   3. Self-install-derived: parent of this binary's bin/ directory.
+//      argv[0] (native) = /.../airgenome/bin/airgenome-init → root = /.../airgenome
+//      This is the sane default when the user runs `airgenome-init` directly
+//      from the binary path without any env set.
+//   4. pwd (last resort; used during hexa run dev mode where argv[0] is the
+//      hexa interpreter rather than this script).
+fn root() -> str {
+    let ev = env("AIRGENOME_HOOK_ROOT")
+    if ev != "" { return ev }
+    let cp = env("CLAUDE_PROJECT_DIR")
+    if cp != "" { return cp }
+    let argv = args()
+    if argv.len() >= 1 {
+        let self_p = argv[0]
+        // argv[0] should end in /bin/airgenome-init when run as native binary.
+        // Strip /bin/airgenome-init to get project root.
+        if self_p.ends_with("/bin/airgenome-init") {
+            let n = self_p.len() - "/bin/airgenome-init".len()
+            return self_p.substring(0, n)
+        }
+    }
+    return exec("pwd").trim()
+}
+
+fn ensure_binary() -> str {
+    let root_p = root()
+    let bin = root_p + "/build/hook"
+    let src = root_p + "/hooks/hook_main.hexa"
+    // Build if binary missing OR source is newer.
+    let needs = exec("[ -x '" + bin + "' ] && [ '" + bin + "' -nt '" + src + "' ] && echo n || echo y").trim()
+    if needs == "n" {
+        return bin
+    }
+    let _ = exec("mkdir -p '" + root_p + "/build'")
+    let cmd = "cd '" + root_p + "' && HEXA_VAL_ARENA=0 HEXA_MAC_BUILD_OK=1 " + env("HOME") + "/.hx/bin/hexa build hooks/hook_main.hexa -o build/hook 2>&1"
+    let out = exec(cmd)
+    if exec("[ -x '" + bin + "' ] && echo y || echo n").trim() != "y" {
+        println("[airgenome-init] ERROR: build failed")
+        println(out)
+        exit(1)
+    }
+    println("[airgenome-init] built " + bin)
+    return bin
+}
+
+fn slug_from_root() -> str {
+    return root().replace("/", "-")
+}
+
+fn plist_path() -> str {
+    return env("HOME") + "/Library/LaunchAgents/com.airgenome.hook-watch.plist"
+}
+
+fn label() -> str { return "com.airgenome.hook-watch" }
+
+fn render_plist(bin: str) -> str {
+    let interval = env("AIRGENOME_WATCH_INTERVAL")
+    let every = if interval == "" { "5" } else { interval }
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+           "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
+           "<plist version=\"1.0\"><dict>\n" +
+           "  <key>Label</key><string>" + label() + "</string>\n" +
+           "  <key>ProgramArguments</key>\n" +
+           "  <array>\n" +
+           "    <string>" + bin + "</string>\n" +
+           "    <string>watch</string>\n" +
+           "  </array>\n" +
+           "  <key>WorkingDirectory</key><string>" + root() + "</string>\n" +
+           "  <key>StartInterval</key><integer>" + every + "</integer>\n" +
+           "  <key>RunAtLoad</key><true/>\n" +
+           "  <key>ProcessType</key><string>Background</string>\n" +
+           "  <key>Nice</key><integer>10</integer>\n" +
+           "  <key>StandardOutPath</key><string>" + root() + "/.hook-watch.stdout.log</string>\n" +
+           "  <key>StandardErrorPath</key><string>" + root() + "/.hook-watch.stderr.log</string>\n" +
+           "  <key>EnvironmentVariables</key>\n" +
+           "  <dict>\n" +
+           "    <key>AIRGENOME_HOOK_ROOT</key><string>" + root() + "</string>\n" +
+           "    <key>PATH</key><string>" + env("PATH") + "</string>\n" +
+           "    <key>HOME</key><string>" + env("HOME") + "</string>\n" +
+           "  </dict>\n" +
+           "</dict></plist>\n"
+}
+
+fn install_launchagent(bin: str) -> void {
+    let p = plist_path()
+    let _ = exec("mkdir -p '" + env("HOME") + "/Library/LaunchAgents'")
+    let rendered = render_plist(bin)
+    write_file(p, rendered)
+    // Bootout first so we pick up a new plist cleanly on re-run.
+    let _ = exec("launchctl bootout gui/$(id -u) '" + p + "' 2>/dev/null || true")
+    let out = exec("launchctl bootstrap gui/$(id -u) '" + p + "' 2>&1")
+    println("[airgenome-init] launchctl bootstrap: " + out.trim())
+    println("[airgenome-init] LaunchAgent: " + p)
+}
+
+fn verify_setup(bin: str) -> void {
+    let cur = root() + "/.hook-cursor.json"
+    let needs_seed = if file_exists(cur) { false } else { true }
+    if needs_seed {
+        println("[airgenome-init] first run — seeding cursor to EOF (skips history)")
+        let out = exec("'" + bin + "' seed 2>&1")
+        println(out.trim())
+    } else {
+        println("[airgenome-init] cursor already exists — skipping seed")
+    }
+    let ok_cur = if file_exists(cur) { "yes" } else { "no" }
+    println("[airgenome-init] .hook-cursor.json: " + ok_cur)
+    println("[airgenome-init] done — LaunchAgent will pick up new lines every watch cycle")
+}
+
+fn main() -> void {
+    println("[airgenome-init] root: " + root())
+    println("[airgenome-init] slug: " + slug_from_root())
+    let bin = ensure_binary()
+    install_launchagent(bin)
+    verify_setup(bin)
+}

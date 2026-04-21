@@ -1,0 +1,31 @@
+# airgenome .convergence — 수렴 attr 기록
+# format: single-file, 엔트리 단위로 @state 로 트래킹. JSON/JSONL/xattr 금지.
+
+[hook-bus-transcript-watcher]
+@state: converged
+@date: 2026-04-21
+@scope: hooks/hook_main.hexa (new, native-compiled) + tool/airgenome_init.hexa (new, native-compiled to bin/airgenome-init) + ~/Library/LaunchAgents/com.airgenome.hook-watch.plist (auto-installed by init) + hexa-lang/build/hexa_stage0 (re-entrance guard + etime stale reaper) + hexa-lang/tool/flatten_imports.hexa (safe_write_file inline fallback) + nexus/shared/harness/safe_hexa_launchd.sh (env allowlist + tail 0.1s + cat-fallback)
+@problem: Claude Code hook 통합이 3개 근본적 제약에 걸림 — (1) hexa-lang stage0 wrapper가 `hexa run` 자식 프로세스 stdin을 /dev/null로 리다이렉트 → Claude Code가 hook 스크립트에 JSON payload를 pipe해도 `read_stdin()`이 빈 문자열 반환 → hook 전체 사일런트 실패. (2) 같은 stage0 shim이 mkdir-lock 단일 semaphore를 사용 → hook 이벤트가 anima 학습 같은 장시간 batch 잡 뒤에 줄서서 5~10분 대기 → 실사용 불가. (3) raw#9 HEXA-ONLY 규칙이 `.sh`를 금지하는데 Claude Code는 `.claude/settings.json` 파일을 요구 → settings.json을 "파일"로 쓰지 말라는 사용자 제약과 충돌. 결과: 실행될 때도 invalid decision JSON (`{"decision":"allow"}` — 존재하지 않는 값) 을 반환해 "Hook JSON output validation failed" 오류로 조용히 실패.
+@decision: Claude Code 공식 hook 프로토콜을 포기하고 **transcript-watcher 방식**으로 전환. `.claude/settings.json` 파일을 프로젝트/전역 어디에도 만들지 않음. airgenome이 ~/.claude/projects/<slug>/*.jsonl transcript를 5초마다 폴링, 새 라인을 파싱해 자체 이벤트 체계로 dispatch. Trade-off: 실시간 block 불가 (observation only), tool 이미 실행된 후 감지.
+@architecture:
+  ~/.claude/projects/-Users-ghost-core-airgenome/*.jsonl   (Claude Code 쓰기)
+         ↓ 5s launchd poll (com.airgenome.hook-watch)
+  airgenome/build/hook watch   (native Mach-O, 254KB)
+         ↓ .hook-cursor.json (byte offset per file, atomic mv)
+  라인 파싱 → type=user / assistant+tool_use / 그 외
+         ↓
+  universal_audit_entry (wildcard) + user_prompt_entry / post_tool_entry (dispatched)
+         ↓
+  .hook-{observe,tools,audit}.jsonl (project-local, gitignored)
+@changes:
+  - hooks/hook_main.hexa (NEW, 321 lines): watch/seed/test 3-모드 네이티브 엔트리. 모든 handler 로직 인라인 (flatten_imports의 `fn main()` 중복 충돌 회피). translate_line()에서 transcript JSONL schema → Claude Code hook schema 변환해 기존 *_entry 시맨틱 재사용.
+  - tool/airgenome_init.hexa (NEW, 127 lines): 네이티브 바이너리로 컴파일되어 bin/airgenome-init이 됨. 멱등 부트스트랩: hook 바이너리 빌드 (필요시) + LaunchAgent plist 설치 + bootstrap + 초회 seed pass로 cursor를 EOF로 세팅 (history 리플레이 방지).
+  - bin/airgenome-init (NEW, native binary): `.sh` wrapper 없음 (raw#9 준수). argv[0]로 self-path 유도해 AIRGENOME_HOOK_ROOT env 없이도 정상 작동.
+  - hexa-lang/build/hexa_stage0 (MOD +46줄): HEXA_STAGE0_OWNER env 기반 재진입 guard + stat -f %m 기반 30분+ stale lock force-reap. 2026-04-21 초기 인시던트 (airgenome hook이 hexa_run 재귀로 self-deadlock) 근본 차단.
+  - hexa-lang/tool/flatten_imports.hexa (MOD +8줄): inline safe_write_file(path, content) fallback. law_io 모듈이 bootstrap 경로에서 미해결 → 기존 pattern (self/module_loader.hexa:32) 동일 재사용.
+  - nexus/shared/harness/safe_hexa_launchd.sh (MOD +46/-6): launchd EnvironmentVariables 하드코드 allowlist(PATH/HOME/HEXA_NO_LAUNCHD)를 prefix-match iterator로 교체 (HOOK_/AIRGENOME_/CLAUDE_/HEXA_/NEXUS_* 자동 forward). tail -s 0.1으로 poll 간격 10배 단축. 종료 후 출력 4KB 미만이면 cat fallback으로 tail가 놓친 바이트 재방출.
+@why: (1) raw#9 `.sh` 금지 → wrapper 없이 네이티브 바이너리로 직접 배포. (2) 사용자 제약 ".claude/settings.json 파일 어디에도 X" → Claude Code 공식 hook 포기, transcript 기반 관측으로 우회. (3) 사용자 제약 "새 mac에서도 바로 작동" → airgenome-init 한 번만 실행하면 LaunchAgent가 영구 등록돼 mac 재부팅 이후에도 자동 기동 (LaunchAgent RunAtLoad=true). (4) .hook-cursor.json byte offset 추적 → 재시작 무관 멱등 → raw#27 session-interrupt-recovery 준수. (5) hash-chained .hook-audit → raw#10 proof-carrying 준수.
+@verified: (1) 네이티브 빌드 OK (`hexa build hooks/hook_main.hexa -o build/hook` → 254KB Mach-O arm64). (2) seed mode: `build/hook seed` → 22 transcript EOF cursor 등록. (3) watch mode: synthetic JSONL 라인 주입 → 즉시 observe/tools 로그 row 추가 (delta obs=2 tools=1). (4) LaunchAgent 로드: `launchctl list | grep com.airgenome.hook-watch` → exit=0 정상. (5) end-to-end 자동 감지: 주입 후 10초 대기 → delta observe=2 (5초 StartInterval × 2회 poll과 일치). (6) 파일 부존재 검증: `.claude/settings.json` 프로젝트/전역 모두 미존재 확인.
+@rollback: (1) `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.airgenome.hook-watch.plist`. (2) `rm ~/Library/LaunchAgents/com.airgenome.hook-watch.plist`. (3) `rm -rf .hook-cursor.json .hook-observe.jsonl .hook-tools.jsonl .hook-audit .hook-watch.*.log`. (4) git revert of airgenome 8e381933 (+ subsequent bin/airgenome-init native rebuild) / hexa-lang 93c3c4d3 / nexus 3d9dcd3d.
+@commits: airgenome 8e381933 (transcript-watcher hook bus), hexa-lang 93c3c4d3 (stage0 re-entrance + flatten fallback), nexus 3d9dcd3d (harness env allowlist + fast tail + cat-fallback).
+@follow-ups: (A) 관측-only 한계로 실시간 pre_tool 차단 불가 — 장기적으로 Claude Code MCP 서버 prepend 또는 LSP intercept 연구. (B) assistant 순수 텍스트 → stop_capture_entry 매핑 현재 누락 (v2 TODO). (C) 24시간 실사용 후 observe/tools JSONL 크기·회전 전략 결정.

@@ -47,3 +47,15 @@ nexus/shared/bin/hexa.real
 
 # hexa-lang transpiler 산출물 + app bundle (harness build 산출)
 build/
+
+# airgenome hook bus runtime (transcript-watcher mode, no Claude Code hook protocol)
+.hook-audit
+.hook-cursor.json
+.hook-observe.jsonl
+.hook-tools.jsonl
+.hook-sessions.jsonl
+.hook-subagents.jsonl
+.hook-history.jsonl
+.hook-watch.stdout.log
+.hook-watch.stderr.log
+hooks/.hook-audit

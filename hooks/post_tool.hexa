@@ -32,6 +32,22 @@ pub fn post_tool_entry(p: str) -> str {
                "\",\"response_bytes\":" + rs +
                ",\"response_sha256\":\"" + resp_sha + "\"}"
     let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + tools_log_path() + "'")
+
+    // ─── raw 32 / own 4 — LLM self-verification queue ──────────────
+    // queue-only append (no stage0 invocation here; batch scan via
+    // hexa-lang tool/llm_verdict_watcher.hexa under L2 launchd).
+    // Preview only (≤4KB) to bound storage; full response is gone at exit.
+    let resp_preview = exec("jq -r '.tool_response // \"\" | tostring | .[0:4000]' '" + p + "' 2>/dev/null").trim()
+    if resp_preview != "" {
+        let qpath = tools_log_path().replace("/.hook-tools.jsonl", "/.hook-verdict-queue.jsonl")
+        let qline = "{\"ts\":\"" + ts +
+                    "\",\"session\":\"" + json_escape(sess) +
+                    "\",\"tool\":\"" + json_escape(tool) +
+                    "\",\"response_sha256\":\"" + resp_sha +
+                    "\",\"response_preview\":\"" + json_escape(resp_preview) + "\"}"
+        let _ = exec("printf '%s\\n' '" + qline.replace("'", "'\\''") + "' >> '" + qpath + "'")
+    }
+
     return allow_json()
 }
 
