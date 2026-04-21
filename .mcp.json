@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "airgenome": {
+      "command": "/Users/ghost/core/airgenome/build/mcp",
+      "args": [],
+      "env": {
+        "AIRGENOME_HOOK_ROOT": "/Users/ghost/core/airgenome"
+      }
+    }
+  }
+}
