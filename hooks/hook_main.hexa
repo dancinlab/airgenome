@@ -46,6 +46,7 @@
 use "lib/event"
 use "lib/audit"
 use "lib/manifest"
+use "commands/drill"
 
 // ─────────────────────────────────────────────────────────────── handlers ──
 
@@ -124,15 +125,24 @@ fn dispatch_log_path() -> str {
     return r + "/.hook-dispatch.jsonl"
 }
 
-fn log_dispatch(cmd: str, keyword: str, seed: str, sess: str) -> void {
+// Append a pre-built command payload (from a command module) with timestamp
+// + session wrapper. The command module owns all command-specific fields.
+fn log_dispatch_raw(inner: str, sess: str) -> void {
     let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
     let line = "{\"ts\":\"" + ts +
                "\",\"session\":\"" + json_escape(sess) +
-               "\",\"command\":\"" + json_escape(cmd) +
-               "\",\"keyword\":\"" + json_escape(keyword) +
-               "\",\"seed\":\"" + json_escape(seed) +
-               "\",\"suggest\":\"nexus " + json_escape(cmd) + " '" + json_escape(seed) + "'\"}"
+               "\"," + inner + "}"
     let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + dispatch_log_path() + "'")
+}
+
+// Route the matched command+keyword to the right command module. Returns
+// the command's dispatch JSON (no ts/session wrapper), or "" if the
+// command has no registered handler (logged as a warning row).
+fn run_command(cmd: str, matched_kw: str, prompt: str, keywords: [str], transcript_path: str) -> str {
+    if cmd == "drill" {
+        return drill_dispatch(prompt, keywords, matched_kw, transcript_path)
+    }
+    return ""
 }
 
 // UserPromptSubmit — risk keyword warn/hint + workspace keyword dispatch.
@@ -153,8 +163,15 @@ fn user_prompt_entry(p: str) -> str {
     }
 
     // (B) ~/core/.workspace keyword dispatch.
+    //
+    // Keyword position is FREE — prefix/middle/suffix all trigger. The
+    // command module (e.g. commands/drill.hexa) decides how to derive the
+    // seed (freeform, context-aware). We just find the first matching
+    // keyword and hand the full prompt + keyword list off.
     let tbl = workspace_keyword_table()
     if tbl == "" { return allow_json() }
+    let tpath = event_transcript(p)
+
     let rows = tbl.split("\n")
     let mut ri = 0
     while ri < rows.len() {
@@ -164,17 +181,31 @@ fn user_prompt_entry(p: str) -> str {
         let cols = row.split("\t")
         if cols.len() < 2 { continue }
         let cmd = cols[0]
+        // Collect all keywords for this command into an array.
+        let mut kws: [str] = []
         let mut ki = 1
         while ki < cols.len() {
             let kw = cols[ki].trim()
             ki = ki + 1
-            if kw == "" { continue }
+            if kw != "" { kws.push(kw) }
+        }
+        // Find first matching keyword (word-boundary, anywhere in prompt).
+        let mut matched_kw = ""
+        let mut mi = 0
+        while mi < kws.len() {
+            let kw = kws[mi]
+            mi = mi + 1
             if word_boundary_match(prompt_raw, kw) == "1" {
-                let seed = strip_keyword(prompt_raw, kw)
-                log_dispatch(cmd, kw, seed, sess)
-                return allow_json()
+                matched_kw = kw
+                break
             }
         }
+        if matched_kw == "" { continue }
+        let payload = run_command(cmd, matched_kw, prompt_raw, kws, tpath)
+        if payload != "" {
+            log_dispatch_raw(payload, sess)
+        }
+        return allow_json()
     }
     return allow_json()
 }
@@ -407,8 +438,7 @@ fn read_from(fpath: str, off: int) -> str {
 // Translate a transcript JSONL line into a Claude-Code-style hook payload
 // + event name, written to tmp file `out_p`. Returns event name, or "" if
 // the line should be skipped (non-actionable type).
-fn translate_line(line: str, out_p: str) -> str {
-    // Write line for jq introspection.
+fn translate_line(line: str, out_p: str, transcript_path: str) -> str {
     let line_p = exec("mktemp -t hook_trans.XXXXXX").trim()
     write_file(line_p, line)
     let kind = exec("jq -r '.type // \"\"' '" + line_p + "' 2>/dev/null").trim()
@@ -420,16 +450,17 @@ fn translate_line(line: str, out_p: str) -> str {
         let sess = exec("jq -r '.sessionId // .session_id // \"\"' '" + line_p + "' 2>/dev/null").trim()
         ev = "UserPromptSubmit"
         payload = "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"" + json_escape(sess) +
+                  "\",\"transcript_path\":\"" + json_escape(transcript_path) +
                   "\",\"cwd\":\"" + json_escape(resolve_root()) +
                   "\",\"prompt\":\"" + json_escape(prompt.trim()) + "\"}"
     } else {
-        // assistant / tool_use detection: look for tool_use block in content array
         let tu_name = exec("jq -r '[(.message.content // [])[] | select(.type==\"tool_use\")][0].name // \"\"' '" + line_p + "' 2>/dev/null").trim()
         if tu_name != "" {
             let tu_input = exec("jq -c '[(.message.content // [])[] | select(.type==\"tool_use\")][0].input // {}' '" + line_p + "' 2>/dev/null").trim()
             let sess = exec("jq -r '.sessionId // .session_id // \"\"' '" + line_p + "' 2>/dev/null").trim()
             ev = "PostToolUse"
             payload = "{\"hook_event_name\":\"PostToolUse\",\"session_id\":\"" + json_escape(sess) +
+                      "\",\"transcript_path\":\"" + json_escape(transcript_path) +
                       "\",\"cwd\":\"" + json_escape(resolve_root()) +
                       "\",\"tool_name\":\"" + json_escape(tu_name) +
                       "\",\"tool_input\":" + tu_input +
@@ -457,17 +488,15 @@ fn wildcard_payload(line: str, out_p: str) -> void {
     write_file(out_p, payload)
 }
 
-fn process_line(line: str) -> void {
+fn process_line(line: str, transcript_path: str) -> void {
     if line.trim() == "" { return }
-    // Always run wildcard audit.
     let wp = exec("mktemp -t hook_wp.XXXXXX").trim()
     wildcard_payload(line, wp)
     let _ = universal_audit_entry(wp)
     let _ = exec("rm -f '" + wp + "'")
 
-    // Try translate to event-specific payload.
     let tp = exec("mktemp -t hook_tp.XXXXXX").trim()
-    let ev = translate_line(line, tp)
+    let ev = translate_line(line, tp, transcript_path)
     if ev == "UserPromptSubmit" {
         let _ = user_prompt_entry(tp)
     }
@@ -527,7 +556,7 @@ fn watch_pass() -> void {
         while j < lines.len() {
             let line = lines[j]
             j = j + 1
-            process_line(line)
+            process_line(line, f)
         }
         cur = cursor_set(cur, f, sz)
     }
