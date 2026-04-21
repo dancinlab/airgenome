@@ -6,7 +6,7 @@
 //   3. 1-step (60s) ahead pred_cpu / pred_ram 계산
 //   4. 임계 초과 예상 시 발화:
 //        - forge/predictive_throttle_state.json 갱신 (level/until/reason)
-//        - shared/config/protected_agents.txt 의 화이트리스트 외
+//        - config/protected_agents.txt 의 화이트리스트 외
 //          launchctl print 후 com.airgenome.* 비핵심 일시 bootout (gentle)
 //        - dispatch (AG7) 가 본 state 를 읽어 mac=blocked 처리하도록
 //
@@ -25,7 +25,7 @@ use "../core/core"
 
 let HISTORY = ring_path("throttle_history.jsonl")
 let STATE   = ring_path("predictive_throttle_state.json")
-let WHITELIST = airgenome_root() + "/shared/config/protected_agents.txt"
+let WHITELIST = airgenome_root() + "/config/protected_agents.txt"
 let MAX_HISTORY = 30           // 마지막 30 sample (~ 30분 if 60s 주기)
 let HORIZON_STEPS = 1          // 1-step ahead = 60s ahead
 let CPU_PRED_CRIT = 80         // pred_cpu > 80 → throttle

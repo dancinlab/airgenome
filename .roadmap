@@ -1,6 +1,6 @@
 # airgenome /.roadmap — hybrid main + cell/lora sub (SSOT 최종화)
 # Session landing: 2026-04-21
-# Declarative roadmap registry — mirror: shared/config/roadmap/airgenome.json (M0-M25 milestones)
+# Declarative roadmap registry — mirror: config/roadmap/airgenome.json (M0-M25 milestones)
 
 # ═══════════════════════════════════════════════════════════════════════
 # HYBRID TRACK STRUCTURE (user-확정 SSOT, 2026-04-21)
@@ -65,7 +65,7 @@
 # ─── airgenome context (MAIN = ops pipeline) ───
 # airgenome 는 hybrid MAIN 의 ops infrastructure (probe/dispatch/harvest/label/forecast) 를
 # 공급하며, MAIN 학습/승급 run 의 관찰·제어 substrate.
-# operational milestones M7-M12 (현재 shared/config/roadmap/airgenome.json) +
+# operational milestones M7-M12 (현재 config/roadmap/airgenome.json) +
 # 연장 M13-M25 가 hybrid P1-P3 에 mapping 된다.
 # anima = framework home, hexa-lang = language substrate.
 # ═══════════════════════════════════════════════════════════════════════
@@ -110,7 +110,7 @@ roadmap 1 done "M0 v1 동결 + core 분리"
   completed      2026-04-13
   why            phantom L0 파일 다수 발견 → v1 전체 archive/v1/ 로 동결, core/core.hexa 신설 + self-contained 원칙 확립
   exit_criteria  archive/v1/ 이동 완료 + core/core.hexa + core/test/core_test.hexa + L0 19 PASS
-  mirror         shared/config/roadmap/airgenome.json#M0_archive_split
+  mirror         config/roadmap/airgenome.json#M0_archive_split
   proof          core/core.hexa
 
 roadmap 2 done "M1 L0 guard parse-check 추가 — phantom 차단"
@@ -120,7 +120,7 @@ roadmap 2 done "M1 L0 guard parse-check 추가 — phantom 차단"
   completed      2026-04-13
   why            phantom L0 재발 방지 — nexus/shared/lockdown/l0_guard.hexa 에 parse 가능성 section 추가
   exit_criteria  l0_guard section 4 + 21 PASS / 0 FAIL + nexus self-verify 9 phantom 발견
-  mirror         shared/config/roadmap/airgenome.json#M1_l0_strict
+  mirror         config/roadmap/airgenome.json#M1_l0_strict
   depends-on     1
 
 roadmap 3 done "M2 probe — Mac/원격 vitals 수집"
@@ -130,7 +130,7 @@ roadmap 3 done "M2 probe — Mac/원격 vitals 수집"
   completed      2026-04-14
   why            3호스트 (Mac/ubu/htz) vitals → infra_state.json, 60s launchd 주기 수집
   exit_criteria  modules/probe.hexa + launchd plist 60s + 3 host active + L0 등록
-  mirror         shared/config/roadmap/airgenome.json#M2_probe
+  mirror         config/roadmap/airgenome.json#M2_probe
   proof          modules/probe.hexa
   depends-on     1,2
   reaches        CP1
@@ -142,7 +142,7 @@ roadmap 4 done "M3 dispatch — infra_state 기반 호스트 선택"
   completed      2026-04-15
   why            AG6/AG7 호스트 선택 규칙 구현 — infra_state.json consume, genome ring 분배
   exit_criteria  modules/dispatch.hexa + AG6/AG7 규칙 + ring 분배 동작
-  mirror         shared/config/roadmap/airgenome.json#M3_dispatch
+  mirror         config/roadmap/airgenome.json#M3_dispatch
   proof          modules/dispatch.hexa
   depends-on     3
 
@@ -153,7 +153,7 @@ roadmap 5 done "M4 harvest — 60-byte hexagon per process (T7-T14 재구현)"
   completed      2026-04-17
   why            T7-T14 재구현 — per-process 60-byte hexagon, forge/genomes.*.ring 축적
   exit_criteria  modules/harvest.hexa + 60-byte schema + forge ring 저장 + per-host ring
-  mirror         shared/config/roadmap/airgenome.json#M4_harvest
+  mirror         config/roadmap/airgenome.json#M4_harvest
   proof          modules/harvest.hexa
 
 roadmap 6 done "M5 label — T15 semantic labeling (anomaly → behavior)"
@@ -163,7 +163,7 @@ roadmap 6 done "M5 label — T15 semantic labeling (anomaly → behavior)"
   completed      2026-04-18
   why            anomaly → behavior 라벨 (nexus/shared/label_rules.jsonl consumer)
   exit_criteria  modules/label.hexa + label_rules.jsonl + labeled_anomaly.jsonl 산출
-  mirror         shared/config/roadmap/airgenome.json#M5_label
+  mirror         config/roadmap/airgenome.json#M5_label
   proof          modules/label.hexa
   depends-on     5
 
@@ -174,7 +174,7 @@ roadmap 7 done "M6 forecasting v3.0 — 7d genome 추세 → 1h 예측"
   completed      2026-04-19
   why            7d cumulative genome 로 1h-ahead 예측, throttle_history.jsonl 기록
   exit_criteria  modules/forecast.hexa + 7d rolling window + 1h predict + predictive_throttle_state.json
-  mirror         shared/config/roadmap/airgenome.json#M6_predict
+  mirror         config/roadmap/airgenome.json#M6_predict
   proof          modules/forecast.hexa
   depends-on     5
 
@@ -186,7 +186,7 @@ roadmap 8 active "M7 launchctl bootstrap — 5 plist 자동화 실가동"
   eta            2026-04-25
   why            probe/dispatch/harvest/label/forecast 5 plist launchctl load — 자동화 실가동, MAIN P1 관찰 infra 전제
   exit_criteria  5 plist launchctl load + `launchctl list | grep airgenome` 5줄 + 24h 지속 run
-  mirror         shared/config/roadmap/airgenome.json#M7_launchctl_load
+  mirror         config/roadmap/airgenome.json#M7_launchctl_load
   depends-on     3,4,5,6,7
   reaches        CP1
   feeds-main     P1
@@ -197,7 +197,7 @@ roadmap 9 active "M8 end-to-end chain 실데이터 검증"
   eta            2026-04-27
   why            probe → dispatch → harvest → label → forecast 체인 실데이터 flow 검증 — MAIN 학습 관찰 가능성 증명
   exit_criteria  e2e trace 1 cycle PASS + 실데이터 (mock 아님) + forecast output → next probe loop confirm
-  mirror         shared/config/roadmap/airgenome.json#M8_e2e_chain
+  mirror         config/roadmap/airgenome.json#M8_e2e_chain
   depends-on     8
   reaches        CP1
   feeds-main     P1
@@ -208,7 +208,7 @@ roadmap 10 planned "M9 per-process axes 실측 (gpu/npu/power/io placeholder 0 �
   eta            2026-05-10
   why            현재 placeholder 0 인 gpu/npu/power/io 축 실측 — MAIN 학습 cost 측정 기반
   exit_criteria  4축 실값 기록 + schema 업데이트 + 1-week retrospective 검증
-  mirror         shared/config/roadmap/airgenome.json#M9_perprocess_axes
+  mirror         config/roadmap/airgenome.json#M9_perprocess_axes
   depends-on     9
   reaches        CP2
   feeds-main     P2
@@ -219,7 +219,7 @@ roadmap 11 planned "M10 forecast real eval — 7d 누적 후 held-out MAE"
   eta            2026-05-20
   why            7d 누적 data 로 held-out MAE 평가 — forecast live 승격 전제
   exit_criteria  7d cumulative + held-out split + MAE < target + evaluation jsonl 기록
-  mirror         shared/config/roadmap/airgenome.json#M10_forecast_real_eval
+  mirror         config/roadmap/airgenome.json#M10_forecast_real_eval
   depends-on     10
   reaches        CP2
   feeds-main     P2
@@ -230,7 +230,7 @@ roadmap 12 planned "M11 cross-host genome 합성 (호스트별 ring → 통합 v
   eta            2026-05-25
   why            Mac/ubu/htz 3 host ring → 통합 genome view, cross-substrate 일관성 확보
   exit_criteria  unified.ring 산출 + cross-host consistency metric + delta 분석 jsonl
-  mirror         shared/config/roadmap/airgenome.json#M11_cross_host_genome
+  mirror         config/roadmap/airgenome.json#M11_cross_host_genome
   depends-on     10
   reaches        FINAL
   feeds-main     P2
@@ -241,7 +241,7 @@ roadmap 13 planned "M12 dashboard — menubar + web 관찰"
   eta            2026-06-10
   why            사람용 관찰 대시보드 — MAIN P3 AGI 판정 시 외부 관찰자 시점 제공
   exit_criteria  menubar app + web view + genome real-time + anomaly highlight
-  mirror         shared/config/roadmap/airgenome.json#M12_dashboard
+  mirror         config/roadmap/airgenome.json#M12_dashboard
   depends-on     12
   reaches        FINAL
   feeds-main     P3
