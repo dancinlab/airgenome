@@ -1,0 +1,57 @@
+// install.hexa — hx build hook for airgenome.
+//
+// Invoked by `hx install airgenome` (hexa-lang package manager) right
+// after the GitHub checkout lands in $HX_PKG_DIR. hx passes these env:
+//   HX_PKG_DIR   — absolute path to the checked-out package root
+//   HX_BIN_DIR   — ~/.hx/bin, where hx drops shims
+//   HX_PKG_NAME  — package name ("airgenome")
+// All paths below are derived from HX_PKG_DIR so cwd-independence is
+// guaranteed (hx doesn't chdir into the package before running the hook).
+//
+// Responsibilities (each step idempotent):
+//   1. Build bin/airgenome-init from tool/airgenome_init.hexa.
+//   2. Run bin/airgenome-init, which in turn:
+//        - builds build/hook + build/mcp native binaries
+//        - installs ~/Library/LaunchAgents/com.airgenome.hook-watch.plist
+//        - writes .mcp.json with host-specific absolute paths
+//        - appends `command scan` / `command record` blocks to
+//          ~/core/.workspace (idempotent grep-then-append)
+//        - regenerates ~/core/.workspace.lock via workspace_sync
+//
+// After this hook returns, hx generates the $HX_BIN_DIR/airgenome shim
+// from run.hexa (already the registry entry), so `airgenome <cmd>` works
+// immediately. The hook watcher is live on a 5s launchd interval and the
+// MCP server is available for Claude Code via .mcp.json.
+
+fn main() -> void {
+    let mut root = env("HX_PKG_DIR")
+    if root == "" { root = exec("pwd").trim() }
+    println("[airgenome/install] HX_PKG_DIR=" + root)
+
+    let hexa = env("HOME") + "/.hx/bin/hexa"
+    let init_src = root + "/tool/airgenome_init.hexa"
+    let init_bin = root + "/bin/airgenome-init"
+
+    if file_exists(init_src) == false {
+        println("[airgenome/install] ERROR: " + init_src + " not found")
+        exit(1)
+    }
+
+    let _ = exec("mkdir -p '" + root + "/bin'")
+    let build_cmd = "cd '" + root + "' && HEXA_VAL_ARENA=0 HEXA_MAC_BUILD_OK=1 '" +
+                    hexa + "' build tool/airgenome_init.hexa -o bin/airgenome-init 2>&1"
+    println("[airgenome/install] building bin/airgenome-init ...")
+    let build_out = exec(build_cmd)
+    println(build_out.trim())
+
+    if file_exists(init_bin) == false {
+        println("[airgenome/install] ERROR: bin/airgenome-init not produced — aborting")
+        exit(1)
+    }
+
+    println("[airgenome/install] running airgenome-init bootstrap ...")
+    let init_out = exec("AIRGENOME_HOOK_ROOT='" + root + "' '" + init_bin + "' 2>&1")
+    println(init_out.trim())
+
+    println("[airgenome/install] done — hook watcher + MCP server + workspace ready")
+}
