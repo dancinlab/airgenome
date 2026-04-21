@@ -20,11 +20,31 @@
 // Removal: `launchctl bootout gui/$UID com.airgenome.hook-watch && rm
 // ~/Library/LaunchAgents/com.airgenome.hook-watch.plist`.
 
+// Resolve project root. Preference order:
+//   1. $AIRGENOME_HOOK_ROOT (explicit override for non-standard layouts)
+//   2. $CLAUDE_PROJECT_DIR  (set by Claude Code when launched from a session)
+//   3. Self-install-derived: parent of this binary's bin/ directory.
+//      argv[0] (native) = /.../airgenome/bin/airgenome-init → root = /.../airgenome
+//      This is the sane default when the user runs `airgenome-init` directly
+//      from the binary path without any env set.
+//   4. pwd (last resort; used during hexa run dev mode where argv[0] is the
+//      hexa interpreter rather than this script).
 fn root() -> str {
-    let mut r = env("AIRGENOME_HOOK_ROOT")
-    if r == "" { r = env("CLAUDE_PROJECT_DIR") }
-    if r == "" { r = exec("pwd").trim() }
-    return r
+    let ev = env("AIRGENOME_HOOK_ROOT")
+    if ev != "" { return ev }
+    let cp = env("CLAUDE_PROJECT_DIR")
+    if cp != "" { return cp }
+    let argv = args()
+    if argv.len() >= 1 {
+        let self_p = argv[0]
+        // argv[0] should end in /bin/airgenome-init when run as native binary.
+        // Strip /bin/airgenome-init to get project root.
+        if self_p.ends_with("/bin/airgenome-init") {
+            let n = self_p.len() - "/bin/airgenome-init".len()
+            return self_p.substring(0, n)
+        }
+    }
+    return exec("pwd").trim()
 }
 
 fn ensure_binary() -> str {
