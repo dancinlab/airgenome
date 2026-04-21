@@ -282,6 +282,26 @@ pub fn lc_cmd_bump_turns_all() -> void {
     lc_active_save(out)
 }
 
+// Migrate every active entry to the current session id. The chain id is
+// derived from (session, command, seed) so a naive new-session would
+// orphan stack entries from any chain id derived under the old session;
+// we migrate the session field on every UserPromptSubmit instead. The
+// chain stays stable (it's already been computed and recorded), so
+// downstream tools (resolved.jsonl, MCP tools/call references) still
+// resolve correctly across session restarts.
+pub fn lc_cmd_resession(new_session: str) -> void {
+    if new_session == "" { return }
+    let cur = lc_active_load()
+    let tmp = exec("mktemp -t lc_resess.XXXXXX").trim()
+    write_file(tmp, cur)
+    let cmd = "jq --arg s " + lc_shell_quote(new_session) +
+              " '.stack = ((.stack // []) | map(.session = $s))' '" + tmp + "'"
+    let out = exec(cmd)
+    let _ = exec("rm -f '" + tmp + "'")
+    if out.trim() == "" { return }
+    lc_active_save(out)
+}
+
 // Release any active entry past `max_turns` or `max_age_s` (seconds since
 // started_at). Reason is "turns" or "timeout" and lands in the resolved
 // jsonl so downstream tooling can correlate back to the chain.
