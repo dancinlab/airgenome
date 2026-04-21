@@ -14,6 +14,11 @@
 //   5. Build build/mcp native binary (the airgenome MCP server).
 //   6. Write .mcp.json so Claude Code picks up the server with host-specific
 //      absolute paths — no manual editing required on a new machine.
+//   7. Append `command scan` / `command record` blocks to ~/core/.workspace
+//      if missing (idempotent grep-then-append), then regenerate
+//      ~/core/.workspace.lock via ~/core/hexa-lang/tool/workspace_sync.hexa.
+//      drill is already registered upstream by nexus; scan + record are
+//      airgenome-driven keywords so the dispatcher picks them up.
 //
 // What it does NOT do:
 //   - Touch ~/.claude/settings.json or any .claude/ file.
@@ -183,6 +188,55 @@ fn ensure_mcp_json(mcp_bin: str) -> void {
     println("[airgenome-init] wrote .mcp.json (airgenome → " + mcp_bin + ")")
 }
 
+// Idempotent: append a `command <name> "<desc>"` block to ~/core/.workspace
+// only if `^command <name> ` is not already present. Returns 1 if appended,
+// 0 if already there. Keeps the canonical (indent-based) shape the rest of
+// the file uses so workspace_sync.hexa parses it without surprises.
+fn ensure_cmd_block(src: str, name: str, desc: str, entry: str, keywords: str) -> int {
+    let check = "grep -qE '^command " + name + " ' '" + src + "' && echo y || echo n"
+    if exec(check).trim() == "y" { return 0 }
+    let block = "\ncommand " + name + " \"" + desc + "\"\n" +
+                "  owner    nexus\n" +
+                "  bin      nexus\n" +
+                "  entry    " + entry + "\n" +
+                "  source   cli/run.hexa\n" +
+                "  keywords " + keywords + "\n"
+    let quoted = block.replace("'", "'\\''")
+    let _ = exec("printf '%s' '" + quoted + "' >> '" + src + "'")
+    println("[airgenome-init] added command block: " + name)
+    return 1
+}
+
+// Register airgenome-owned keywords (scan, record) in ~/core/.workspace and
+// regenerate the lock so the transcript watcher's keyword table picks them
+// up. drill is already registered upstream by nexus — we don't touch it.
+fn ensure_workspace_commands() -> void {
+    let src = env("HOME") + "/core/.workspace"
+    if file_exists(src) == false {
+        println("[airgenome-init] ~/core/.workspace not found — skipping keyword registration")
+        return
+    }
+    let mut added = 0
+    added = added + ensure_cmd_block(src, "scan",   "code / config pattern scan",   "scan",   "scan, 스캔")
+    added = added + ensure_cmd_block(src, "record", "convergence entry recorder",   "record", "record, 기록, 수렴")
+    if added == 0 {
+        println("[airgenome-init] scan/record command blocks already present")
+        return
+    }
+    let syncer_dir = env("HOME") + "/core/hexa-lang"
+    let syncer = syncer_dir + "/tool/workspace_sync.hexa"
+    if file_exists(syncer) == false {
+        println("[airgenome-init] WARN: workspace_sync.hexa not found at " + syncer)
+        println("[airgenome-init]       run it manually to regenerate ~/core/.workspace.lock")
+        return
+    }
+    let cmd = "cd '" + syncer_dir + "' && '" + env("HOME") +
+              "/.hx/bin/hexa' run tool/workspace_sync.hexa 2>&1"
+    let out = exec(cmd)
+    println("[airgenome-init] workspace_sync:")
+    println(out.trim())
+}
+
 fn main() -> void {
     println("[airgenome-init] root: " + root())
     println("[airgenome-init] slug: " + slug_from_root())
@@ -191,4 +245,5 @@ fn main() -> void {
     verify_setup(bin)
     let mcp_bin = ensure_mcp_binary()
     ensure_mcp_json(mcp_bin)
+    ensure_workspace_commands()
 }
