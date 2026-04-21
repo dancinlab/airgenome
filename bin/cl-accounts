@@ -7,10 +7,17 @@
 #   cl-accounts self-test    exit 0 if at least 1 valid account found
 #
 # Valid account = directory matching ~/.claude-claude* with
-# .credentials.json containing non-empty claudeAiOauth.refreshToken.
+# .credentials.json containing non-empty claudeAiOauth.refreshToken
+# AND non-empty claudeAiOauth.accessToken, AND NO .revoked marker file.
+#
+# To mark an account as needing manual re-auth (so auto-rotation skips it
+# and doesn't stall on an interactive browser prompt):
+#     touch ~/.claude-claudeN/.revoked
+# To restore:
+#     rm ~/.claude-claudeN/.revoked
 #
 # Dependencies: bash, jq.
-# State: none. Network: none.
+# State: reads .revoked marker per dir. Network: none.
 
 set -euo pipefail
 
@@ -21,9 +28,11 @@ _list() {
     for d in "$HOME"/.claude-claude*; do
         [ -d "$d" ] || continue
         [ -f "$d/.credentials.json" ] || continue
-        local rtok
+        [ -f "$d/.revoked" ] && continue
+        local rtok atok
         rtok=$(jq -r '.claudeAiOauth.refreshToken // empty' "$d/.credentials.json" 2>/dev/null || true)
-        [ -n "$rtok" ] || continue
+        atok=$(jq -r '.claudeAiOauth.accessToken // empty'  "$d/.credentials.json" 2>/dev/null || true)
+        [ -n "$rtok" ] && [ -n "$atok" ] || continue
         echo "$d"
     done | sort
 }

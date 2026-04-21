@@ -43,11 +43,14 @@
     "additionalDirectories": [
       "/Users/ghost",
       "/Users/ghost/Dev/nexus"
-    ],
-    "defaultMode": "bypassPermissions"
+    ]
   },
-  "skipDangerousModePermissionPrompt": true,
   "env": {
     "DISABLE_AUTOUPDATER": "1"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "AIRGENOME_ROOT=/Users/ghost/core/airgenome /Users/ghost/core/airgenome/bin/airgenome status-line",
+    "padding": 0
   }
 }
