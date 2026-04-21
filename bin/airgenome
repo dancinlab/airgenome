@@ -300,8 +300,8 @@ cmd_status() {
     echo "=== 산출물 freshness ==="
     local f
     for f in \
-        "$HOME/Dev/nexus/shared/infra_state.json" \
-        "$HOME/Dev/nexus/shared/dispatch_state.json" \
+        "$HOME/Dev/nexus/infra_state.json" \
+        "$HOME/Dev/nexus/dispatch_state.json" \
         "$AIRGENOME_ROOT/forge/genomes.ring" \
         "$AIRGENOME_ROOT/forge/forecast.jsonl"
     do
@@ -322,6 +322,23 @@ cmd_arm() {
 cmd_disarm() {
     rm -f "$ARMED_FLAG"
     log "guard disarmed (dry-run)"
+}
+
+# airgenome hook <sub> [args]  — state-mutating CLI (MCP tools CLI mirror).
+#   status                                 — cat active.json (current stack)
+#   activate <chain> <seed> [<command>]    — lc_cmd_activate (command=roadmap default)
+#   touch <chain> <kind> <payload>         — lc_cmd_touch
+#   release <chain> <reason>               — lc_cmd_release
+#   is-active <chain>                      — prints 1 or 0
+# State root: AIRGENOME_HOOK_ROOT > CLAUDE_PROJECT_DIR > pwd (raw#15).
+cmd_hook() {
+    [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
+    local shim="$AIRGENOME_ROOT/hooks/hook_cli_state.hexa"
+    if [ ! -f "$shim" ]; then
+        echo "hook_cli_state.hexa missing: $shim" >&2
+        return 1
+    fi
+    "$HEXA" run "$shim" "$@"
 }
 
 # airgenome hooks {list|show <name>|guide}
@@ -504,6 +521,7 @@ main() {
         arm)           cmd_arm ;;
         disarm)        cmd_disarm ;;
         logs)          cmd_logs "${1:-list}" ;;
+        hook)          cmd_hook "$@" ;;
         hooks)         cmd_hooks "$@" ;;
         run)           cmd_run ;;
         last-session)  cmd_last_session ;;
@@ -520,6 +538,7 @@ usage: airgenome <command>
   arm          runtime-guard live-kill on
   disarm       runtime-guard dry-run
   logs [m]       tail: guard|probe|dispatch|harvest|label|forecast|super|list
+  hook <sub>     chain state CLI: status | activate | touch | release | is-active  (MCP tools CLI mirror)
   hooks <sub>    hook guide: list | show <name> | guide  (same SSOT as MCP airgenome://hooks/guide)
   run            supervisor loop (launchd 가 호출)
   last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
