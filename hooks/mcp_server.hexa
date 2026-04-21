@@ -96,7 +96,23 @@ fn handle_tools_list(id: str) -> str {
     let t4 = "{\"name\":\"hooks_list\"" +
              ",\"description\":\"Return the airgenome hook guide as JSON: which MCP tool to use when and why, plus guidance patterns for common probabilistic failure modes (drift / stuck / decision / end-of-thread / cross-session). Consult when uncertain which hook applies.\"" +
              ",\"inputSchema\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}}"
-    return mcp_result(id, "{\"tools\":[" + t1 + "," + t2 + "," + t3 + "," + t4 + "]}")
+    let t5 = "{\"name\":\"roadmap_ready\"" +
+             ",\"description\":\"Return the cross-repo roadmap ready-set as JSON via hexa-lang's roadmap_engine: {ready:[...], blocked:[...]}. Ready items have all depends-on satisfied and Phase Gates clean; blocked items name their unmet predecessors. Read-only; consult before picking the next task.\"" +
+             ",\"inputSchema\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}}"
+    let t6 = "{\"name\":\"roadmap_gate_preview\"" +
+             ",\"description\":\"Dry-run the roadmap-engine status flip for a given <repo>/<id> without writing. Returns what would flip and which Phase Gates pass/fail. Read-only; use to preview before committing to --advance.\"" +
+             ",\"inputSchema\":{\"type\":\"object\"" +
+             ",\"properties\":{\"repo\":{\"type\":\"string\",\"description\":\"repo name / path carrying the .roadmap file\"}" +
+             ",\"id\":{\"type\":\"string\",\"description\":\"roadmap entry id to preview advancing\"}}" +
+             ",\"required\":[\"repo\",\"id\"]" +
+             ",\"additionalProperties\":false}}"
+    let t7 = "{\"name\":\"rollback_to_last_green\"" +
+             ",\"description\":\"Revert the given repo's .roadmap working tree to the last known-green sha via os_rollback_cli --to-last-green. Write op; returns {ok, rolled_back_to, findings_logged}. Currently scoped to anima.\"" +
+             ",\"inputSchema\":{\"type\":\"object\"" +
+             ",\"properties\":{\"repo\":{\"type\":\"string\",\"description\":\"repo name (currently: anima)\"}}" +
+             ",\"required\":[\"repo\"]" +
+             ",\"additionalProperties\":false}}"
+    return mcp_result(id, "{\"tools\":[" + t1 + "," + t2 + "," + t3 + "," + t4 + "," + t5 + "," + t6 + "," + t7 + "]}")
 }
 
 fn handle_resources_list(id: str) -> str {
@@ -148,6 +164,60 @@ fn mcp_text_result(id: str, text: str) -> str {
     return mcp_result(id, "{\"content\":[" + content + "],\"isError\":false}")
 }
 
+// ──────────────────────────────── dependency paths (graceful if missing) ──
+//
+// All three new tools shell out to sibling hexa CLIs. If the underlying
+// dependency isn't installed we return JSON-RPC -32000 (server error) so
+// the client sees a clean failure instead of a crash. Paths resolve $HOME
+// via env; we do not bake an absolute path (raw#11 determinism: the env
+// lookup is the one non-local input and is explicit here).
+
+fn mcp_home() -> str {
+    let h = env("HOME")
+    if h != "" { return h }
+    return exec("printf '%s' \"$HOME\"").trim()
+}
+
+fn mcp_roadmap_engine_path() -> str {
+    return mcp_home() + "/core/hexa-lang/tool/roadmap_engine.hexa"
+}
+
+fn mcp_rollback_cli_path() -> str {
+    // rollback_to_last_green is anima-scoped per spec; the underlying
+    // CLI is hexa-lang/tool/os_rollback_cli.hexa (shared tool). If that
+    // binary or the --to-last-green subcommand is missing we fail graceful.
+    return mcp_home() + "/core/hexa-lang/tool/os_rollback_cli.hexa"
+}
+
+// Run a shell command capturing stdout + exit status. We cannot use
+// exec_with_status here (mcp_server.hexa uses only plain exec()), so we
+// tee stdout through a tmp file and append `;printf RC=$?` to pull the
+// status back. Returns [stdout_str, rc_str] (2-element array — we parse
+// rc at the call site to avoid leaking int<->str conversions past the
+// boundary). Determinism: all inputs are explicit args.
+fn mcp_exec_rc(cmd: str) -> array {
+    let tmp = exec("mktemp -t mcp_rc.XXXXXX").trim()
+    let full = "( " + cmd + " ) > '" + tmp + "' 2>&1; printf 'RC=%d' \"$?\""
+    let tail = exec(full).trim()
+    let out = read_file(tmp)
+    let _ = exec("rm -f '" + tmp + "'")
+    let mut rc_str = "1"
+    if tail.starts_with("RC=") {
+        rc_str = tail.substring(3, tail.len()).trim()
+    }
+    let mut result = []
+    result.push(out)
+    result.push(rc_str)
+    return result
+}
+
+// Is a given repo name on the allow-list for the rollback tool?
+// Spec says scope to anima only while the dependency isn't generalized.
+fn mcp_rollback_allowed(repo: str) -> bool {
+    if repo == "anima" { return true }
+    return false
+}
+
 fn handle_tools_call(id: str, raw: str) -> str {
     let name = mcp_jq_str(raw, ".params.name")
     if name == "drill_status" {
@@ -185,6 +255,77 @@ fn handle_tools_call(id: str, raw: str) -> str {
             let s = read_file(p).trim()
             if s != "" { body = s }
         }
+        return mcp_text_result(id, body)
+    }
+    if name == "roadmap_ready" {
+        let tool = mcp_roadmap_engine_path()
+        if file_exists(tool) == false {
+            return mcp_error(id, -32000, "roadmap_ready: dependency missing: " + tool)
+        }
+        let cmd = "hexa '" + tool + "' ready --json 2>/dev/null"
+        let r = mcp_exec_rc(cmd)
+        let rc = to_int(r[1])
+        if rc != 0 {
+            return mcp_error(id, -32000, "roadmap_ready: engine exit=" + r[1])
+        }
+        let mut body = r[0].trim()
+        if body == "" { body = "{\"ready\":[],\"blocked\":[]}" }
+        return mcp_text_result(id, body)
+    }
+    if name == "roadmap_gate_preview" {
+        let repo = mcp_jq_str(raw, ".params.arguments.repo")
+        let rid = mcp_jq_str(raw, ".params.arguments.id")
+        if repo == "" { return mcp_error(id, -32602, "roadmap_gate_preview: repo is required") }
+        if rid == "" { return mcp_error(id, -32602, "roadmap_gate_preview: id is required") }
+        let tool = mcp_roadmap_engine_path()
+        if file_exists(tool) == false {
+            return mcp_error(id, -32000, "roadmap_gate_preview: dependency missing: " + tool)
+        }
+        let cmd = "hexa '" + tool + "' --advance '" + repo.replace("'", "'\\''") +
+                  "' '" + rid.replace("'", "'\\''") + "' --dry-run 2>/dev/null"
+        let r = mcp_exec_rc(cmd)
+        let rc = to_int(r[1])
+        if rc != 0 {
+            return mcp_error(id, -32000, "roadmap_gate_preview: engine exit=" + r[1] + " out=" + r[0].trim())
+        }
+        let body = "{\"repo\":\"" + lc_json_escape(repo) + "\"" +
+                   ",\"id\":\"" + lc_json_escape(rid) + "\"" +
+                   ",\"dry_run\":true" +
+                   ",\"output\":\"" + lc_json_escape(r[0]) + "\"}"
+        return mcp_text_result(id, body)
+    }
+    if name == "rollback_to_last_green" {
+        let repo = mcp_jq_str(raw, ".params.arguments.repo")
+        if repo == "" { return mcp_error(id, -32602, "rollback_to_last_green: repo is required") }
+        if mcp_rollback_allowed(repo) == false {
+            return mcp_error(id, -32000, "rollback_to_last_green: repo out of scope (anima only): " + repo)
+        }
+        let tool = mcp_rollback_cli_path()
+        if file_exists(tool) == false {
+            return mcp_error(id, -32000, "rollback_to_last_green: dependency missing: " + tool)
+        }
+        // Probe whether --to-last-green is recognized by the rollback CLI.
+        // We re-scan the file (small; cached by FS) instead of running the
+        // CLI blindly so we stay graceful on unsupported versions.
+        let probe = exec("grep -c -- '--to-last-green' '" + tool + "' 2>/dev/null").trim()
+        if probe == "" || probe == "0" {
+            return mcp_error(id, -32000, "rollback_to_last_green: --to-last-green subcommand not implemented in " + tool)
+        }
+        let cmd = "hexa '" + tool + "' --to-last-green 2>&1"
+        let r = mcp_exec_rc(cmd)
+        let rc = to_int(r[1])
+        let mut ok_bool = "false"
+        if rc == 0 { ok_bool = "true" }
+        // Best-effort sha extraction: last 7-40 hex token in stdout.
+        let sha_cmd = "printf '%s' '" + r[0].replace("'", "'\\''") +
+                      "' | grep -oE '[0-9a-f]{7,40}' | tail -n 1"
+        let sha = exec(sha_cmd).trim()
+        let body = "{\"ok\":" + ok_bool +
+                   ",\"repo\":\"" + lc_json_escape(repo) + "\"" +
+                   ",\"rolled_back_to\":\"" + lc_json_escape(sha) + "\"" +
+                   ",\"findings_logged\":true" +
+                   ",\"exit\":" + r[1] +
+                   ",\"output\":\"" + lc_json_escape(r[0]) + "\"}"
         return mcp_text_result(id, body)
     }
     return mcp_error(id, -32601, "unknown tool: " + name)
