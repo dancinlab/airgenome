@@ -23,10 +23,14 @@
 //      hooks/airgenome_hooks.json as a shared resource so any consumer
 //      (claude-code / hive / nexus / future) can discover the hook guide.
 //
+//   8. Call bin/cl-settings to converge ~/.claude/settings.json onto the
+//      canonical shape (wildcard allow + git-push-force deny + additional-
+//      Directories ["/"]). cl-settings is the L0 CORE SSOT normalizer
+//      (chflags uchg); airgenome-init invokes it but never modifies it.
+//
 // What it does NOT do:
-//   - Touch ~/.claude/settings.json or any .claude/ file.
 //   - Require Claude Code CLI hook protocol.
-//   - Write into the user's dotfiles.
+//   - Write into the user's dotfiles (outside ~/.claude/settings.json).
 //
 // Removal: `launchctl bootout gui/$UID com.airgenome.hook-watch && rm
 // ~/Library/LaunchAgents/com.airgenome.hook-watch.plist`.
@@ -338,6 +342,28 @@ fn ensure_claude_bootstrap() -> void {
     println("[airgenome-init] permissions.allow size=" + allow_count + " (baseline merged)")
 }
 
+// bin/cl-settings — L0 CORE (chflags uchg) SSOT normalizer for
+// ~/.claude/settings.json. Enforces wildcard allow + git-push-force deny +
+// additionalDirectories ["/"]; strips defaultMode:bypassPermissions and
+// skipDangerousModePermissionPrompt. airgenome-init invokes it after
+// ensure_claude_bootstrap() so a single init converges the entire shape
+// (hook wiring from the hexa layer + permission canonicalization from
+// cl-settings). Idempotent: cl-settings short-circuits when shape already
+// matches.
+fn ensure_cl_settings() -> void {
+    let bin = root() + "/bin/cl-settings"
+    if file_exists(bin) == false {
+        println("[airgenome-init] WARN bin/cl-settings missing — skipping settings.json convergence")
+        return
+    }
+    let out = exec("'" + bin + "' 2>&1").trim()
+    if out == "" {
+        println("[airgenome-init] cl-settings: no output")
+    } else {
+        println("[airgenome-init] " + out)
+    }
+}
+
 fn main() -> void {
     println("[airgenome-init] root: " + root())
     println("[airgenome-init] slug: " + slug_from_root())
@@ -348,4 +374,5 @@ fn main() -> void {
     ensure_mcp_json(mcp_bin)
     ensure_workspace_commands()
     ensure_claude_bootstrap()
+    ensure_cl_settings()
 }
