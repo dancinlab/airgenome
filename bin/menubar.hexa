@@ -45,8 +45,8 @@ fn nsstr(s: str) -> *Void { return msg1(cls("NSString"), sel("stringWithUTF8Stri
 let HOME = env_var("HOME")
 let THROTTLE_STATE = HOME + "/Dev/airgenome/forge/predictive_throttle_state.json"
 let THROTTLE_HIST  = HOME + "/Dev/airgenome/forge/throttle_history.jsonl"
-let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
-let INFRA_STATE    = HOME + "/Dev/nexus/shared/infra_state.json"
+let DISPATCH_STATE = HOME + "/Dev/nexus/dispatch_state.json"
+let INFRA_STATE    = HOME + "/Dev/nexus/infra_state.json"
 let FORGE          = HOME + "/Dev/airgenome/forge"
 let CONFIG_DIR     = HOME + "/.airgenome"
 let CONFIG_PATH    = HOME + "/.airgenome/menubar_config.json"

@@ -1,7 +1,7 @@
 // modules/dispatch.hexa — infra_state 기반 호스트 선택기 (AG6 + AG7)
 //
 // 책임:
-//   1. nexus/shared/infra_state.json 을 jq 로 파싱 (Mac compute zero — I/O 만)
+//   1. nexus/infra_state.json 을 jq 로 파싱 (Mac compute zero — I/O 만)
 //   2. AG7 score = host health (cpu_free*w_cpu + ram_free*w_ram - load_penalty)
 //   3. AG6 gate: ubu OR htz active 이면 mac 은 compute/gpu/heavy 후보 제외
 //   4. task_type 별 best_host 계산 → dispatch_state.json 원자적 기록
@@ -18,8 +18,8 @@
 use "../core/core"
 
 let HOME = env("HOME")
-let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
-let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
+let INFRA_STATE = HOME + "/Dev/nexus/infra_state.json"
+let DISPATCH_STATE = HOME + "/Dev/nexus/dispatch_state.json"
 
 // 공백 안전 jq 추출 — 누락 필드는 빈 문자열 반환
 fn jqx(expr: str, path: str) -> str {

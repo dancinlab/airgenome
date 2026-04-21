@@ -2,7 +2,7 @@
 # bin/lb_monitor.sh — lb 분산 상태 관측 (one-shot + watch).
 #
 # 집계: ~/.airgenome/lb.jsonl 의 최근 N 엔트리 → host 별 (count, share, avg_ms, fail%)
-# 현재: ~/Dev/nexus/shared/lb_state.json scores + chosen + host snapshot
+# 현재: ~/Dev/nexus/lb_state.json scores + chosen + host snapshot
 #
 # 편향 지표:
 #   max_share : 최고 점유 호스트 비율 (0.00 ~ 1.00).
@@ -17,7 +17,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="${LB_LOG:-$HOME/.airgenome/lb.jsonl}"
-STATE="${LB_STATE:-$HOME/Dev/nexus/shared/lb_state.json}"
+STATE="${LB_STATE:-$HOME/Dev/nexus/lb_state.json}"
 REG="${HOSTS_REGISTRY:-$ROOT/shared/config/hosts.json}"
 
 candidates() {
