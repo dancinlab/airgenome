@@ -2,7 +2,7 @@
 # bin/executor.sh — dispatch.selection 을 실제 SSH exec 으로 연결하는 MVP.
 #
 # 책임:
-#   1. ~/Dev/nexus/shared/dispatch_state.json 에서 .selection.<kind> 읽기
+#   1. ~/Dev/nexus/dispatch_state.json 에서 .selection.<kind> 읽기
 #   2. shared/config/hosts.json 에서 해당 호스트의 ssh_alias 조회
 #   3. local(mac) 또는 ssh <alias> 실행 → stdout/stderr 통과 + exit code 전파
 #   4. ~/.airgenome/executor.jsonl 에 1-line 로그
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DISP="${DISPATCH_STATE:-$HOME/Dev/nexus/shared/dispatch_state.json}"
+DISP="${DISPATCH_STATE:-$HOME/Dev/nexus/dispatch_state.json}"
 REG="${HOSTS_REGISTRY:-$ROOT/shared/config/hosts.json}"
 LOG="${EXECUTOR_LOG:-$HOME/.airgenome/executor.jsonl}"
 mkdir -p "$(dirname "$LOG")"
