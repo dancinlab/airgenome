@@ -335,10 +335,10 @@ harness (훅 시스템 대체, 2026-04-14~) — H-NOHOOK 강제:
 
 ref:
   roadmap   config/roadmap/airgenome.json        rebuild v2 SSOT
-  rules     $NEXUS/shared/rules/common.json        R0~R32
-  project   $NEXUS/shared/rules/airgenome.json     AG1~AG9
-  lock      $NEXUS/shared/lockdown/lockdown.json   L0/L1/L2
-  cdo       $NEXUS/shared/rules/convergence_ops.json  CDO 수렴
+  rules     $NEXUS/rules/common.json        R0~R32
+  project   $NEXUS/rules/airgenome.json     AG1~AG9
+  lock      $NEXUS/lockdown/lockdown.json   L0/L1/L2
+  cdo       $NEXUS/config/convergence_ops.json  CDO 수렴
   conv      nexus/shared/airgenome_convergence_*.jsonl
   gates     nexus/shared/gate_config.jsonl              HEXA-GATE 동적
-  api       $NEXUS/shared/CLAUDE.md
+  api       $NEXUS/CLAUDE.md
