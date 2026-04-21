@@ -6,6 +6,19 @@
 // Anomaly heuristics (regex/contains only):
 //   - tool_response contains "Permission denied" → note
 //   - tool_response is >10KB → flag for compact
+//
+// Integrity auto-trigger (non-blocking):
+//   When tool_name ∈ {Edit, Write, Bash, MultiEdit} spawn a bg run of
+//     $HOME/core/anima/tool/roadmap_integrity_guard.hexa --json
+//   → /tmp/integrity_<pid>.json. post_tool itself never waits.
+//   Previous runs' results are swept into $root/.hook-observe.jsonl (ALERT
+//   line) when any check_X carries WARN/FAIL. Graceful skip when the
+//   integrity guard binary is absent.
+//
+// Active command chain touch (lens): when .hook-commands/active.json has a
+// top-stack entry we append a findings.jsonl row (post_tool:<tool>:<file>).
+//
+// raw#9 hexa-only · raw#11 snake_case · raw#15 no-hardcode (AIRGENOME_HOOK_ROOT)
 
 use "lib/event"
 
@@ -14,6 +27,133 @@ fn tools_log_path() -> str {
     if root == "" { root = env("CLAUDE_PROJECT_DIR") }
     if root == "" { root = exec("pwd").trim() }
     return root + "/.hook-tools.jsonl"
+}
+
+fn hook_root() -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root
+}
+
+fn observe_path_pt() -> str {
+    return hook_root() + "/.hook-observe.jsonl"
+}
+
+// Integrity guard entry point (env override allowed).
+fn integrity_guard_path() -> str {
+    let ovr = env("AIRGENOME_INTEGRITY_GUARD")
+    if ovr != "" { return ovr }
+    return env("HOME") + "/core/anima/tool/roadmap_integrity_guard.hexa"
+}
+
+// Does this event represent a mutation of on-disk content the integrity
+// guard cares about? We keep the set small and explicit.
+fn is_mutating_tool(tool: str) -> bool {
+    if tool == "Edit" { return true }
+    if tool == "Write" { return true }
+    if tool == "Bash" { return true }
+    if tool == "MultiEdit" { return true }
+    return false
+}
+
+// Best-effort file_path extraction from tool_input. Bash → "" (command).
+fn jq_tool_input_field(path: str, expr: str) -> str {
+    let cmd = "jq -r '.tool_input." + expr + " // \"\"' '" + path + "' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn extract_target(tool: str, p: str) -> str {
+    if tool == "Bash" {
+        let bc = jq_tool_input_field(p, "command")
+        if bc.len() > 120 { return bc.substring(0, 120) + "..." }
+        return bc
+    }
+    if tool == "Write" || tool == "Edit" || tool == "MultiEdit" {
+        return jq_tool_input_field(p, "file_path")
+    }
+    return ""
+}
+
+// Spawn integrity_guard in background. Never blocks, never reads result.
+// Graceful skip if guard tool missing.
+fn spawn_integrity_guard() -> str {
+    let guard = integrity_guard_path()
+    let check = exec("[ -f '" + guard + "' ] && echo y || echo n").trim()
+    if check != "y" { return "" }
+    // Unique result path per PostToolUse invocation (mktemp, not $$ which is
+    // the shell's pid — exec subshells would collide).
+    let out_path = exec("mktemp -t integrity_XXXXXX.json").trim()
+    if out_path == "" { return "" }
+    // Prefer ~/.hx/bin/hexa; fall back to PATH.
+    let hb = env("HOME") + "/.hx/bin/hexa"
+    let hb_ok = exec("[ -x '" + hb + "' ] && echo y || echo n").trim()
+    let hexa_bin = if hb_ok == "y" { hb } else { "hexa" }
+    // Fully detached: nohup + stdin </dev/null + stdout→file + stderr→file
+    // + setsid-less & (hexa exec() doesn't hold the child past return).
+    let cmd = "nohup " + hexa_bin + " run '" + guard +
+              "' --json </dev/null >'" + out_path + "' 2>>'" +
+              hook_root() + "/.hook-integrity.err' &"
+    let _ = exec(cmd)
+    return out_path
+}
+
+// Sweep ANY previous /tmp/integrity_*.json files older than ~5s into the
+// observability stream as ALERT rows on first WARN/FAIL. Successfully
+// processed files are removed (atomic consume).
+fn sweep_integrity_results() -> int {
+    // List candidates (last 24h, older than 3s to let bg run finish),
+    // robust to zero matches.
+    let list = exec("find /tmp -maxdepth 1 -name 'integrity_*.json' -type f -mmin +0 2>/dev/null | sort").trim()
+    if list == "" { return 0 }
+    let files = list.split("\n")
+    let mut alerted = 0
+    let mut i = 0
+    while i < files.len() {
+        let fp = files[i].trim()
+        i = i + 1
+        if fp == "" { continue }
+        // Skip if still being written (mtime within 2s).
+        let young = exec("perl -e '$t=(stat(\"" + fp + "\"))[9]||0; print((time - $t) < 2 ? \"y\" : \"n\")'").trim()
+        if young == "y" { continue }
+        // Parse verdicts. Missing jq or malformed JSON → just unlink.
+        let bad = exec("jq -r '[.checks[]? | select(.verdict==\"FAIL\" or .verdict==\"WARN\") | (.check + \":\" + .verdict)] | join(\",\")' '" + fp + "' 2>/dev/null").trim()
+        if bad != "" {
+            let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+            let line = "{\"ts\":\"" + ts +
+                       "\",\"kind\":\"ALERT\"" +
+                       ",\"source\":\"roadmap_integrity_guard\"" +
+                       ",\"file\":\"" + json_escape(fp) + "\"" +
+                       ",\"drift\":\"" + json_escape(bad) + "\"}"
+            let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") +
+                         "' >> '" + observe_path_pt() + "'")
+            alerted = alerted + 1
+        }
+        let _ = exec("rm -f '" + fp + "'")
+    }
+    return alerted
+}
+
+// If an active command chain exists, append a findings.jsonl line via the
+// airgenome CLI. Safe no-op when the CLI shim is missing (current tree).
+fn touch_active_chain(tool: str, target: str) -> void {
+    let active = hook_root() + "/.hook-commands/active.json"
+    let exists = exec("[ -f '" + active + "' ] && echo y || echo n").trim()
+    if exists != "y" { return }
+    let top = exec("jq -r '(.stack // [])[0].chain // \"\"' '" + active + "' 2>/dev/null").trim()
+    if top == "" { return }
+    // Direct findings.jsonl append (avoid cross-repo CLI coupling). This
+    // mirrors lc_cmd_touch exactly so `airgenome hook touch-count` picks
+    // it up without CLI shim dependency.
+    let dir = hook_root() + "/.hook-commands/" + top
+    let _ = exec("mkdir -p '" + dir + "'")
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let payload = tool + ":" + target
+    let line = "{\"ts\":\"" + ts +
+               "\",\"kind\":\"post_tool\"" +
+               ",\"payload\":\"" + json_escape(payload) + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") +
+                 "' >> '" + dir + "/findings.jsonl'")
 }
 
 // In-process entry for hook_main dispatcher.
@@ -46,6 +186,18 @@ pub fn post_tool_entry(p: str) -> str {
                     "\",\"response_sha256\":\"" + resp_sha +
                     "\",\"response_preview\":\"" + json_escape(resp_preview) + "\"}"
         let _ = exec("printf '%s\\n' '" + qline.replace("'", "'\\''") + "' >> '" + qpath + "'")
+    }
+
+    // ─── integrity auto-trigger (Edit/Write/Bash/MultiEdit) ────────
+    if is_mutating_tool(tool) {
+        // 1) Sweep older bg results into .hook-observe as ALERT lines.
+        //    (Non-blocking — we just read files that already exist.)
+        let _ = sweep_integrity_results()
+        // 2) Fire a fresh bg run for this mutation. Never wait.
+        let _ = spawn_integrity_guard()
+        // 3) If an active command chain is up, leave a finding breadcrumb.
+        let target = extract_target(tool, p)
+        touch_active_chain(tool, target)
     }
 
     return allow_json()
