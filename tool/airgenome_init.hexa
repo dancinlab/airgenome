@@ -14,11 +14,14 @@
 //   5. Build build/mcp native binary (the airgenome MCP server).
 //   6. Write .mcp.json so Claude Code picks up the server with host-specific
 //      absolute paths — no manual editing required on a new machine.
-//   7. Append `command scan` / `command record` blocks to ~/core/.workspace
-//      if missing (idempotent grep-then-append), then regenerate
-//      ~/core/.workspace.lock via ~/core/hexa-lang/tool/workspace_sync.hexa.
-//      drill is already registered upstream by nexus; scan + record are
-//      airgenome-driven keywords so the dispatcher picks them up.
+//   7. Append `command scan` / `command record` + `resource airgenome.hooks`
+//      blocks to ~/core/.workspace if missing (idempotent grep-then-append),
+//      then regenerate ~/core/.workspace.lock via
+//      ~/core/hexa-lang/tool/workspace_sync.hexa. drill is already
+//      registered upstream by nexus; scan + record are airgenome-driven
+//      keywords so the dispatcher picks them up. airgenome.hooks exposes
+//      hooks/airgenome_hooks.json as a shared resource so any consumer
+//      (claude-code / hive / nexus / future) can discover the hook guide.
 //
 // What it does NOT do:
 //   - Touch ~/.claude/settings.json or any .claude/ file.
@@ -207,9 +210,30 @@ fn ensure_cmd_block(src: str, name: str, desc: str, entry: str, keywords: str) -
     return 1
 }
 
-// Register airgenome-owned keywords (scan, record) in ~/core/.workspace and
-// regenerate the lock so the transcript watcher's keyword table picks them
-// up. drill is already registered upstream by nexus — we don't touch it.
+// Idempotent: append a `resource <name>` block with the canonical 4-field
+// indent-based shape workspace_sync.hexa expects. sha256/bytes are written
+// as the literal string `auto` so workspace_sync backfills them from the
+// source file on the next run. Returns 1 if appended, 0 if already present.
+fn ensure_resource_block(src: str, name: str, source_path: str, consumers: str) -> int {
+    let check = "grep -qE '^resource " + name + "$' '" + src + "' && echo y || echo n"
+    if exec(check).trim() == "y" { return 0 }
+    let block = "\nresource " + name + "\n" +
+                "  sha256  auto\n" +
+                "  bytes   auto\n" +
+                "  source  " + source_path + "\n" +
+                "  consumers " + consumers + "\n"
+    let quoted = block.replace("'", "'\\''")
+    let _ = exec("printf '%s' '" + quoted + "' >> '" + src + "'")
+    println("[airgenome-init] added resource block: " + name)
+    return 1
+}
+
+// Register airgenome-owned entries in ~/core/.workspace and regenerate the
+// lock so consumers pick them up:
+//   - commands scan / record (drill already registered upstream by nexus)
+//   - resource airgenome.hooks pointing at hooks/airgenome_hooks.json
+//     (the MCP-exposed hook guide) so any workspace consumer can discover
+//     which airgenome hooks exist without reading airgenome internals.
 fn ensure_workspace_commands() -> void {
     let src = env("HOME") + "/core/.workspace"
     if file_exists(src) == false {
@@ -219,8 +243,11 @@ fn ensure_workspace_commands() -> void {
     let mut added = 0
     added = added + ensure_cmd_block(src, "scan",   "code / config pattern scan",   "scan",   "scan, 스캔")
     added = added + ensure_cmd_block(src, "record", "convergence entry recorder",   "record", "record, 기록, 수렴")
+    added = added + ensure_resource_block(src, "airgenome.hooks",
+                                          root() + "/hooks/airgenome_hooks.json",
+                                          "claude-code hive nexus")
     if added == 0 {
-        println("[airgenome-init] scan/record command blocks already present")
+        println("[airgenome-init] scan/record + airgenome.hooks already registered")
         return
     }
     let syncer_dir = env("HOME") + "/core/hexa-lang"
