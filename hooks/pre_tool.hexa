@@ -15,34 +15,41 @@ fn jq_tool_input(path: str, expr: str) -> str {
     return exec(cmd).trim()
 }
 
-fn main() -> void {
-    let raw = read_event_json()
-    let p = dump_json(raw)
+// In-process entry for hook_main dispatcher. Block decisions surface through
+// the return value; the dispatcher inspects `.decision` and short-circuits
+// the phase chain when it sees "block".
+pub fn pre_tool_entry(p: str) -> str {
     let tool = event_tool_name(p)
 
     if tool == "Bash" {
         let bashcmd = jq_tool_input(p, "command").to_lower()
         if bashcmd.contains("rm -rf ~") || bashcmd.contains("rm -rf /") {
-            let _ = exec("rm -f '" + p + "'")
-            println(decision_json("block", "destructive rm -rf on home or root denied by pre_tool gate"))
-            exit(2)
+            return decision_json("block", "destructive rm -rf on home or root denied by pre_tool gate")
         }
         if bashcmd.contains("git push") && (bashcmd.contains("--force") || bashcmd.contains(" -f")) {
-            let _ = exec("rm -f '" + p + "'")
-            println(decision_json("block", "force-push denied by pre_tool gate"))
-            exit(2)
+            return decision_json("block", "force-push denied by pre_tool gate")
         }
     }
     if tool == "Write" || tool == "Edit" {
         let fpath = jq_tool_input(p, "file_path")
         if fpath.contains("/.env") || fpath.ends_with(".env") {
-            let _ = exec("rm -f '" + p + "'")
-            println(decision_json("block", "writing to .env file denied — secrets must live outside repo"))
-            exit(2)
+            return decision_json("block", "writing to .env file denied — secrets must live outside repo")
         }
     }
+    return allow_json()
+}
 
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let out = pre_tool_entry(p)
     let _ = exec("rm -f '" + p + "'")
-    println(allow_json())
+    println(out)
+    // Exit 2 for block so stand-alone `hexa run` path keeps legacy semantics.
+    let tmp = exec("mktemp -t pre_tool_decision.XXXXXX").trim()
+    write_file(tmp, out)
+    let d = exec("jq -r '.decision // \"\"' '" + tmp + "' 2>/dev/null").trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    if d == "block" { exit(2) }
     exit(0)
 }

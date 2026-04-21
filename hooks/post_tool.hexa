@@ -16,14 +16,12 @@ fn tools_log_path() -> str {
     return root + "/.hook-tools.jsonl"
 }
 
-fn main() -> void {
-    let raw = read_event_json()
-    let p = dump_json(raw)
+// In-process entry for hook_main dispatcher.
+pub fn post_tool_entry(p: str) -> str {
     let tool = event_tool_name(p)
     let sess = event_session(p)
     let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
 
-    // Compact one-liner for jsonl. tool_response can be huge — store only size + sha.
     let resp_size = exec("jq -r '.tool_response | tostring | length' '" + p + "' 2>/dev/null").trim()
     let resp_sha = exec("jq -r '.tool_response // \"\" | tostring' '" + p + "' 2>/dev/null | shasum -a 256 | awk '{print $1}'").trim()
 
@@ -34,8 +32,14 @@ fn main() -> void {
                "\",\"response_bytes\":" + rs +
                ",\"response_sha256\":\"" + resp_sha + "\"}"
     let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + tools_log_path() + "'")
-    let _ = exec("rm -f '" + p + "'")
+    return allow_json()
+}
 
-    println(allow_json())
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let out = post_tool_entry(p)
+    let _ = exec("rm -f '" + p + "'")
+    println(out)
     exit(0)
 }

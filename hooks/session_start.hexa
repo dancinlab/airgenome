@@ -16,13 +16,11 @@ fn sessions_path() -> str {
     return root + "/.hook-sessions.jsonl"
 }
 
-fn main() -> void {
-    let raw = read_event_json()
-    let p = dump_json(raw)
+// In-process entry for hook_main dispatcher.
+pub fn session_start_entry(p: str) -> str {
     let sess = event_session(p)
     let src = event_source(p)
     let cwd_ = event_cwd(p)
-    let _ = exec("rm -f '" + p + "'")
 
     let _ = audit_ensure_genesis()
 
@@ -32,7 +30,14 @@ fn main() -> void {
                "\",\"source\":\"" + json_escape(src) +
                "\",\"cwd\":\"" + json_escape(cwd_) + "\"}"
     let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + sessions_path() + "'")
+    return allow_json()
+}
 
-    println(allow_json())
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let out = session_start_entry(p)
+    let _ = exec("rm -f '" + p + "'")
+    println(out)
     exit(0)
 }
