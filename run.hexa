@@ -271,7 +271,7 @@ fn cmd_remote(host: str, rest: str) -> void {
     let module_path = module_root + "/modules/" + module_name + ".hexa"
 
     // 원격 hexa resolver (non-interactive ssh shell PATH 없음)
-    let hexa_resolver = "HEXA=\"\"; for c in \\$NEXUS/bin/hexa \\$NEXUS/shared/bin/hexa /tmp/hexa-build/hexa-lang/target/release/hexa /root/Dev/nexus/bin/hexa /root/Dev/nexus/shared/bin/hexa; do [ -x \\\"\\$c\\\" ] && HEXA=\\\"\\$c\\\" && break; done; [ -n \\\"\\$HEXA\\\" ] || { echo 'remote: hexa not found' >&2; exit 1; }; "
+    let hexa_resolver = "HEXA=\"\"; for c in \\$NEXUS/bin/hexa /tmp/hexa-build/hexa-lang/target/release/hexa /root/Dev/nexus/bin/hexa; do [ -x \\\"\\$c\\\" ] && HEXA=\\\"\\$c\\\" && break; done; [ -n \\\"\\$HEXA\\\" ] || { echo 'remote: hexa not found' >&2; exit 1; }; "
     let remote_cmd = "cd " + module_root + " && " + hexa_resolver + " \\$HEXA run " + module_path + mod_args
     println("⬡ remote " + ssh_host + " " + module_name + mod_args)
     println("---")
