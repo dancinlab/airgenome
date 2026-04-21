@@ -272,7 +272,7 @@ fn ensure_workspace_commands() -> void {
 
 // AG10 allowed exceptions — global ~/.claude/settings.json carries two pointers:
 //   - statusLine   → hexa-lang/gate/claude_statusline.hexa (passive UI display)
-//   - UserPromptSubmit hook → hexa-lang/gate/claude_prompt_hook.sh (deterministic
+//   - UserPromptSubmit hook → hexa-lang/gate/claude_prompt_hook.hexa (deterministic
 //     dispatcher — reads stdin JSON .prompt, calls gate/entry.hexa)
 // Idempotent + conservative: statusLine set only if absent (user customization
 // wins); the hook is appended only when our exact command isn't already registered,
@@ -290,7 +290,14 @@ fn ensure_claude_bootstrap() -> void {
     // regardless of the invoking shell's environment.
     let ws_abs = env("HOME") + "/core"
     let sl_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_statusline.hexa"
-    let hk_cmd = "$WS/hexa-lang/gate/claude_prompt_hook.sh"
+    // hexa-native hooks (replaces .sh shims) — read_stdin() + json_parse
+    // are hexa builtins, keeping the gate policy "hexa-only" even at the
+    // Claude Code hook boundary.
+    let hk_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_prompt_hook.hexa"
+    // PreToolUse Bash auto-allow — emits {"hookSpecificOutput":{"permissionDecision":"allow"}}
+    // so Claude Code skips the per-call "허용하기" prompt. Deny list still enforced
+    // (settings.permissions.deny blocks git push --force etc. before the hook runs).
+    let bash_allow_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/bash_allow_hook.hexa"
     // Permissive allow baseline — AG10 moves real enforcement into hexa
     // prompt_scan / pre_tool_guard / lint, so Claude Code's builtin permission
     // prompts become noise. The baseline covers every tool + wildcarded Bash
@@ -303,6 +310,9 @@ fn ensure_claude_bootstrap() -> void {
                   "(.hooks //= {}) | (.hooks.UserPromptSubmit //= []) | " +
                   ".hooks.UserPromptSubmit |= (if any(.[]?.hooks[]?; .command == $hk) " +
                   "then . else . + [{hooks:[{type:\"command\",command:$hk}]}] end) | " +
+                  "(.hooks.PreToolUse //= []) | " +
+                  ".hooks.PreToolUse |= (if any(.[]?; (.matcher // \"\") == \"Bash\" and any(.hooks[]?; .command == $ba)) " +
+                  "then . else . + [{matcher:\"Bash\",hooks:[{type:\"command\",command:$ba}]}] end) | " +
                   "(.permissions //= {}) | (.permissions.allow //= []) | " +
                   ".permissions.allow |= (" +
                   "(. // []) + [\"*\",\"Bash\",\"Bash(*)\",\"Edit\",\"Edit(*)\"," +
@@ -314,7 +324,7 @@ fn ensure_claude_bootstrap() -> void {
                   "(. // []) + [\"Bash(git push -f*)\",\"Bash(git push --force*)\"," +
                   "\"Bash(git push * -f*)\",\"Bash(git push * --force*)\"," +
                   "\"Bash(git push * +*)\"] | unique)"
-    let cmd = "jq --arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "' --arg hk '" + hk_cmd + "' '" + jq_prog +
+    let cmd = "jq --arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "' --arg hk '" + hk_cmd + "' --arg ba '" + bash_allow_cmd + "' '" + jq_prog +
               "' '" + p + "' > '" + p + ".tmp' && mv -f '" + p + ".tmp' '" + p + "'"
     let out = exec(cmd)
     let _ = out
@@ -323,7 +333,7 @@ fn ensure_claude_bootstrap() -> void {
     let allow_count = exec("jq -r '.permissions.allow | length' '" + p + "' 2>/dev/null").trim()
     if sl_check == sl_cmd { println("[airgenome-init] statusLine → hexa-lang/gate/claude_statusline.hexa") }
     else { println("[airgenome-init] statusLine unchanged (custom value preserved): " + sl_check) }
-    if hk_count == "1" { println("[airgenome-init] UserPromptSubmit hook → hexa-lang/gate/claude_prompt_hook.sh") }
+    if hk_count == "1" { println("[airgenome-init] UserPromptSubmit hook → hexa-lang/gate/claude_prompt_hook.hexa") }
     else { println("[airgenome-init] WARN UserPromptSubmit hook not registered (count=" + hk_count + ")") }
     println("[airgenome-init] permissions.allow size=" + allow_count + " (baseline merged)")
 }
