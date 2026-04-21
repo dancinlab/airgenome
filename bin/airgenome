@@ -1,0 +1,500 @@
+#!/bin/bash
+# bin/airgenome — 단일 진입점 (M14) + inline runtime-guard (M13)
+#
+# 책임:
+#   1. 서브커맨드: init / start / stop / status / arm / disarm / logs / run
+#   2. run = supervisor:
+#      - guard_loop() 백그라운드 fork (2s 샘플 CPU/RSS watchdog, bash native)
+#      - probe/dispatch/harvest/label 60s 주기 실행 (hexa)
+#      - forecast 300s 주기 실행 (hexa)
+#   3. LaunchAgent 하나만 (com.airgenome.plist) → launchd 가 'airgenome run' 호출
+#
+# guard 설계 (bash, hexa_stage0 lock 우회):
+#   CPU ≥ 85% × 15s → WARN / × 30s → SIGTERM / × 45s → SIGKILL
+#   RSS ≥ 1.5GB × 30s → SIGTERM / ≥ 3GB 즉시 SIGKILL
+#   exclude: pid 1, kernel_task, WindowServer, loginwindow, launchd, guard 자신
+#   arm: ~/.airgenome/guard_armed 존재 시 실제 kill. 없으면 dry-run.
+#   off: ~/.airgenome/guard_off 존재 시 즉시 종료.
+
+set -eu
+
+AIRGENOME_ROOT="${AIRGENOME_ROOT:-/Users/ghost/Dev/airgenome}"
+HEXA="${HEXA:-/Users/ghost/Dev/hexa-lang/hexa}"
+LOG_DIR="$HOME/.airgenome"
+PLIST_SRC="$AIRGENOME_ROOT/shared/launchagents/com.airgenome.plist"
+PLIST_DST="$HOME/Library/LaunchAgents/com.airgenome.plist"
+LABEL="com.airgenome"
+UID_VAL="$(id -u)"
+
+PID_FILE="$LOG_DIR/supervisor.pid"
+GUARD_PID_FILE="$LOG_DIR/guard.pid"
+SUPER_LOG="$LOG_DIR/supervisor.log"
+GUARD_LOG="$LOG_DIR/runtime-guard.jsonl"
+ARMED_FLAG="$LOG_DIR/guard_armed"
+OFF_FLAG="$LOG_DIR/guard_off"
+CLAUDE_SNAPSHOT_DIR="$LOG_DIR/claude-sessions"
+CLAUDE_LATEST_PTR="$CLAUDE_SNAPSHOT_DIR/latest.txt"
+
+mkdir -p "$LOG_DIR"
+
+log() {
+    printf '[airgenome] %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$SUPER_LOG" >&2
+}
+die() { log "ERROR: $*"; exit 1; }
+
+# ============================================================
+# runtime-guard (bash inline, hexa_stage0 lock 밖에서 실행)
+# ============================================================
+
+# 임계치
+GUARD_CPU_PCT=85
+GUARD_CPU_WARN_SEC=15
+GUARD_CPU_TERM_SEC=30
+GUARD_CPU_KILL_SEC=45
+GUARD_RSS_SOFT_MB=1500
+GUARD_RSS_SOFT_TERM_SEC=30
+GUARD_RSS_HARD_MB=3000
+GUARD_SAMPLE_SEC=2
+GUARD_MAX_ITER=1800   # 1h; supervisor 가 재spawn
+
+_guard_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+_guard_comm_safe() { printf '%s' "$1" | tr -d '"\\'; }
+
+_guard_is_excluded() {
+    local pid="$1" comm="$2" self_pid="$3"
+    [ "$pid" = "$self_pid" ] && return 0
+    [ "$pid" = "1" ] && return 0
+    case "$comm" in
+        kernel_task|WindowServer|loginwindow|launchd) return 0 ;;
+    esac
+    return 1
+}
+
+_guard_lookup() {
+    # args: pid, tracks
+    # stdout: "cpu_since:rss_since" (default "0:0")
+    local pid="$1" tracks="$2"
+    local entry
+    for entry in $tracks; do
+        case "$entry" in
+            "$pid":*) printf '%s' "${entry#*:}"; return ;;
+        esac
+    done
+    printf '0:0'
+}
+
+_guard_emit_start() {
+    local self_pid="$1"
+    local mode="dry-run"
+    [ -e "$ARMED_FLAG" ] && mode="armed"
+    printf '{"ts":"%s","event":"start","pid":%s,"mode":"%s","cpu_pct":%s,"cpu_warn_sec":%s,"cpu_term_sec":%s,"cpu_kill_sec":%s,"rss_soft_mb":%s,"rss_hard_mb":%s,"sample_sec":%s}\n' \
+        "$(_guard_ts)" "$self_pid" "$mode" \
+        "$GUARD_CPU_PCT" "$GUARD_CPU_WARN_SEC" "$GUARD_CPU_TERM_SEC" "$GUARD_CPU_KILL_SEC" \
+        "$GUARD_RSS_SOFT_MB" "$GUARD_RSS_HARD_MB" "$GUARD_SAMPLE_SEC" \
+        >> "$GUARD_LOG"
+}
+
+_guard_emit_stop() {
+    local reason="$1"
+    printf '{"ts":"%s","event":"stop","reason":"%s"}\n' "$(_guard_ts)" "$reason" >> "$GUARD_LOG"
+}
+
+_guard_act_kill() {
+    local pid="$1" sig="$2" reason="$3" comm="$4" armed="$5"
+    local action="dry-run"
+    if [ "$armed" = "1" ]; then
+        action="sent"
+        kill -"$sig" "$pid" 2>/dev/null || true
+    fi
+    printf '{"ts":"%s","action":"%s","sig":"%s","pid":%s,"comm":"%s","reason":"%s"}\n' \
+        "$(_guard_ts)" "$action" "$sig" "$pid" "$(_guard_comm_safe "$comm")" "$reason" \
+        >> "$GUARD_LOG"
+}
+
+_guard_act_warn() {
+    local pid="$1" comm="$2" reason="$3"
+    printf '{"ts":"%s","action":"warn","pid":%s,"comm":"%s","reason":"%s"}\n' \
+        "$(_guard_ts)" "$pid" "$(_guard_comm_safe "$comm")" "$reason" >> "$GUARD_LOG"
+}
+
+_guard_tick() {
+    local self_pid="$1" armed="$2" prior="$3"
+    local now; now=$(date +%s)
+    local new_tracks=""
+    local pid cpu_raw rss_kb comm cpu rss_mb
+    local prior_entry cpu_since rss_since dur
+
+    while IFS= read -r line; do
+        read -r pid cpu_raw rss_kb comm <<< "$line"
+        [ -z "${pid:-}" ] && continue
+        cpu="${cpu_raw%%.*}"
+        [ -z "$cpu" ] && cpu=0
+        rss_mb=$((rss_kb / 1024))
+
+        if _guard_is_excluded "$pid" "$comm" "$self_pid"; then
+            continue
+        fi
+
+        prior_entry="$(_guard_lookup "$pid" "$prior")"
+        cpu_since="${prior_entry%%:*}"
+        rss_since="${prior_entry##*:}"
+
+        # CPU 누적 추적
+        if [ "$cpu" -ge "$GUARD_CPU_PCT" ]; then
+            [ "$cpu_since" = "0" ] && cpu_since=$now
+        else
+            cpu_since=0
+        fi
+        # RSS 누적 추적
+        if [ "$rss_mb" -ge "$GUARD_RSS_SOFT_MB" ]; then
+            [ "$rss_since" = "0" ] && rss_since=$now
+        else
+            rss_since=0
+        fi
+
+        # Action: RSS hard → 즉시 SIGKILL
+        if [ "$rss_mb" -ge "$GUARD_RSS_HARD_MB" ]; then
+            _guard_act_kill "$pid" KILL "rss_hard=${rss_mb}MB" "$comm" "$armed"
+            cpu_since=0; rss_since=0
+        fi
+
+        # Action: CPU 단계
+        if [ "$cpu_since" != "0" ]; then
+            dur=$((now - cpu_since))
+            if [ "$dur" -ge "$GUARD_CPU_KILL_SEC" ]; then
+                _guard_act_kill "$pid" KILL "cpu=${cpu}%_for_${dur}s" "$comm" "$armed"
+                cpu_since=0
+            elif [ "$dur" -ge "$GUARD_CPU_TERM_SEC" ]; then
+                _guard_act_kill "$pid" TERM "cpu=${cpu}%_for_${dur}s" "$comm" "$armed"
+            elif [ "$dur" -ge "$GUARD_CPU_WARN_SEC" ]; then
+                _guard_act_warn "$pid" "$comm" "cpu=${cpu}%_for_${dur}s"
+            fi
+        fi
+
+        # Action: RSS soft → TERM
+        if [ "$rss_since" != "0" ]; then
+            dur=$((now - rss_since))
+            if [ "$dur" -ge "$GUARD_RSS_SOFT_TERM_SEC" ]; then
+                _guard_act_kill "$pid" TERM "rss=${rss_mb}MB_for_${dur}s" "$comm" "$armed"
+                rss_since=0
+            fi
+        fi
+
+        new_tracks="$new_tracks $pid:$cpu_since:$rss_since"
+    done < <(ps -Ao pid=,%cpu=,rss=,comm=)
+
+    printf '%s' "${new_tracks# }"
+}
+
+# interruptible sleep — SIGTERM 즉시 반응 (sleep 를 fg 대신 wait 으로 기다림).
+_isleep() {
+    local secs="$1"
+    sleep "$secs" & local sp=$!
+    wait "$sp" 2>/dev/null || true
+}
+
+guard_loop() {
+    # self_pid: caller 가 _ENVAR 로 주입한 값 우선 (supervisor fork 시 정확).
+    # 없으면 $$ fallback (standalone 실행 시 올바름).
+    local self_pid="${AIRGENOME_GUARD_SELF_PID:-$$}"
+    # caller 가 pid 파일 관리한 경우 덮어쓰지 않음. 관리 안 한 경우만 기록.
+    if [ ! -s "$GUARD_PID_FILE" ]; then
+        echo "$self_pid" > "$GUARD_PID_FILE" 2>/dev/null || true
+    fi
+    trap '_guard_emit_stop "signal"; exit 0' TERM INT
+
+    _guard_emit_start "$self_pid"
+
+    local tracks=""
+    local iter=0
+    local armed
+    while [ "$iter" -lt "$GUARD_MAX_ITER" ]; do
+        if [ -e "$OFF_FLAG" ]; then
+            _guard_emit_stop "guard_off_flag"
+            return 0
+        fi
+        armed=0
+        [ -e "$ARMED_FLAG" ] && armed=1
+        tracks="$(_guard_tick "$self_pid" "$armed" "$tracks")"
+        _isleep "$GUARD_SAMPLE_SEC"
+        iter=$((iter + 1))
+    done
+    _guard_emit_stop "iter_cap"
+}
+
+# ============================================================
+# 서브커맨드
+# ============================================================
+
+cmd_init() {
+    [ -f "$PLIST_SRC" ] || die "plist source missing: $PLIST_SRC"
+    [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
+    cp "$PLIST_SRC" "$PLIST_DST"
+    launchctl bootout "gui/$UID_VAL/$LABEL" 2>/dev/null || true
+    launchctl bootstrap "gui/$UID_VAL" "$PLIST_DST" || die "launchctl bootstrap failed"
+    log "installed + bootstrapped: $LABEL"
+    log "next: airgenome status (확인) → airgenome arm (live kill on) 필요 시"
+}
+
+cmd_stop() {
+    launchctl bootout "gui/$UID_VAL/$LABEL" 2>/dev/null || true
+    local pid
+    if [ -f "$PID_FILE" ]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+        if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid" 2>/dev/null || true
+            log "supervisor signaled: $pid"
+        fi
+        rm -f "$PID_FILE"
+    fi
+    if [ -f "$GUARD_PID_FILE" ]; then
+        pid="$(cat "$GUARD_PID_FILE" 2>/dev/null || true)"
+        if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid" 2>/dev/null || true
+        fi
+        rm -f "$GUARD_PID_FILE"
+    fi
+    log "stopped"
+}
+
+cmd_status() {
+    echo "=== LaunchAgent ==="
+    launchctl print "gui/$UID_VAL/$LABEL" 2>/dev/null | grep -E '^[[:space:]]*(state|pid|last exit code)' | head -5 || echo "  (not loaded)"
+
+    echo "=== Supervisor ==="
+    local pid=""
+    [ -f "$PID_FILE" ] && pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "  PID=$pid RUNNING"
+    else
+        echo "  (not running)"
+    fi
+
+    echo "=== runtime-guard ==="
+    local gpid=""
+    [ -f "$GUARD_PID_FILE" ] && gpid="$(cat "$GUARD_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$gpid" ] && kill -0 "$gpid" 2>/dev/null; then
+        echo "  PID=$gpid RUNNING"
+    else
+        echo "  (not running)"
+    fi
+    if [ -e "$ARMED_FLAG" ]; then echo "  mode: ARMED (live kill)"; else echo "  mode: dry-run"; fi
+    if [ -e "$OFF_FLAG" ]; then echo "  ** OFF flag set"; fi
+
+    echo "=== 최근 guard 이벤트 (last 5) ==="
+    tail -5 "$GUARD_LOG" 2>/dev/null || echo "  (log 없음)"
+
+    echo "=== claude latest session ==="
+    if [ -s "$CLAUDE_LATEST_PTR" ]; then
+        local sp; sp="$(cat "$CLAUDE_LATEST_PTR")"
+        if [ -e "$sp" ]; then
+            stat -f '  %Sm  %N' -t '%Y-%m-%dT%H:%M:%SZ' "$sp" 2>/dev/null
+        else
+            echo "  (pointer stale) $sp"
+        fi
+    else
+        echo "  (no snapshot yet)"
+    fi
+
+    echo "=== 산출물 freshness ==="
+    local f
+    for f in \
+        "$HOME/Dev/nexus/shared/infra_state.json" \
+        "$HOME/Dev/nexus/shared/dispatch_state.json" \
+        "$AIRGENOME_ROOT/forge/genomes.ring" \
+        "$AIRGENOME_ROOT/forge/forecast.jsonl"
+    do
+        if [ -e "$f" ]; then
+            stat -f '  %Sm  %N' -t '%Y-%m-%dT%H:%M:%SZ' "$f" 2>/dev/null
+        else
+            echo "  (missing) $f"
+        fi
+    done
+}
+
+cmd_arm() {
+    touch "$ARMED_FLAG"
+    rm -f "$OFF_FLAG"
+    log "guard ARMED (live kill enabled)"
+}
+
+cmd_disarm() {
+    rm -f "$ARMED_FLAG"
+    log "guard disarmed (dry-run)"
+}
+
+cmd_logs() {
+    local which="${1:-list}"
+    case "$which" in
+        guard)    tail -F "$GUARD_LOG" ;;
+        probe)    tail -F "$LOG_DIR/probe.stderr.log" ;;
+        dispatch) tail -F "$LOG_DIR/dispatch.stderr.log" ;;
+        harvest)  tail -F "$LOG_DIR/harvest.stderr.log" ;;
+        label)    tail -F "$LOG_DIR/label.stderr.log" ;;
+        forecast) tail -F "$LOG_DIR/forecast.stderr.log" ;;
+        super)    tail -F "$SUPER_LOG" ;;
+        list|*)
+            ls -lat "$LOG_DIR"/*.log "$LOG_DIR"/*.jsonl 2>/dev/null | head -15
+            ;;
+    esac
+}
+
+run_hexa_mod() {
+    local mod="$1"
+    local t="${HEXA_MOD_TIMEOUT:-30}"
+    # fg 가 아닌 bg + wait 패턴: SIGTERM 이 supervisor 에 도달 시 wait 이 즉시 interrupt 된다.
+    timeout "$t" "$HEXA" run "$AIRGENOME_ROOT/modules/${mod}.hexa" \
+        >>"$LOG_DIR/${mod}.stdout.log" \
+        2>>"$LOG_DIR/${mod}.stderr.log" &
+    local mpid=$!
+    wait "$mpid" 2>/dev/null
+    local rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -lt 128 ]; then
+        log "module ${mod} exit=$rc (timeout=${t}s)"
+    fi
+}
+
+# ============================================================
+# claude chat memory snapshot (mac 크래시 대비 최소 안전)
+# ============================================================
+# supervisor tick 마다:
+#   1. sync — 모든 파일시스템 버퍼 플러시 (세션 JSONL 포함)
+#   2. 최신 mtime JSONL 경로를 ~/.airgenome/claude-sessions/latest.txt 에 기록
+# 복구: airgenome last-session → 최신 세션 path 출력
+
+claude_snapshot_tick() {
+    mkdir -p "$CLAUDE_SNAPSHOT_DIR" 2>/dev/null || true
+    local latest
+    latest="$(ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1)"
+    if [ -n "$latest" ]; then
+        printf '%s\n' "$latest" > "$CLAUDE_LATEST_PTR" 2>/dev/null || true
+    fi
+    # 파일시스템 버퍼 플러시 — mac 크래시 시 손실 창 최소화
+    sync 2>/dev/null || true
+}
+
+cmd_last_session() {
+    if [ -s "$CLAUDE_LATEST_PTR" ]; then
+        cat "$CLAUDE_LATEST_PTR"
+    else
+        # fallback: 즉시 계산
+        ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1
+    fi
+}
+
+# hexa_stage0 lock 홀더가 살아있으면 true. 모듈 실행 skip 판단용.
+_hexa_lock_busy() {
+    local pidfile="/tmp/hexa_stage0.lock.d/pid"
+    [ -f "$pidfile" ] || return 1
+    local holder
+    holder="$(cat "$pidfile" 2>/dev/null)"
+    [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null
+}
+
+spawn_guard() {
+    # subshell 에서 guard_loop 실행. $! 는 실제 subshell pid.
+    guard_loop >>"$LOG_DIR/runtime-guard.stdout.log" 2>>"$LOG_DIR/runtime-guard.stderr.log" &
+    local pid=$!
+    # caller (supervisor) 가 guard pid 파일 관리. 또한 env 로 주입해 guard_loop 내 self_pid 정확화.
+    echo "$pid" > "$GUARD_PID_FILE"
+    # 환경변수 주입은 fork 이후라 불가 — guard_loop 는 $$ fallback 사용. 대신 start 이벤트 후 pid 파일이 덮어쓰이지 않도록 보호됨.
+    echo "$pid"
+}
+
+cmd_run() {
+    echo $$ > "$PID_FILE"
+    log "supervisor starting PID=$$"
+
+    local guard_pid
+    guard_pid="$(spawn_guard)"
+    log "runtime-guard forked PID=$guard_pid"
+
+    # 시그널 시 guard + 하위 프로세스 전부 TERM, pid 파일 정리.
+    trap '
+        log "supervisor SIGTERM/SIGINT";
+        [ -n "${guard_pid:-}" ] && kill -TERM "$guard_pid" 2>/dev/null || true;
+        pkill -TERM -P $$ 2>/dev/null || true;
+        rm -f "$PID_FILE" "$GUARD_PID_FILE";
+        exit 0
+    ' TERM INT
+
+    local tick=0
+    while true; do
+        if ! kill -0 "$guard_pid" 2>/dev/null; then
+            log "runtime-guard PID=$guard_pid died — respawning"
+            guard_pid="$(spawn_guard)"
+            log "runtime-guard respawned PID=$guard_pid"
+        fi
+
+        if _hexa_lock_busy; then
+            log "hexa_stage0 lock held — tick $tick modules skipped"
+        else
+            run_hexa_mod probe
+            run_hexa_mod dispatch
+            run_hexa_mod harvest
+            run_hexa_mod label
+
+            if [ $((tick % 5)) -eq 0 ] && [ "$tick" -gt 0 ]; then
+                run_hexa_mod forecast
+            fi
+        fi
+
+        # 매 tick: claude 세션 latest pointer + fs sync (크래시 내성)
+        claude_snapshot_tick
+
+        tick=$((tick + 1))
+        _isleep 60
+    done
+}
+
+# ============================================================
+# entry
+# ============================================================
+
+main() {
+    local sub="${1:-help}"
+    shift || true
+    case "$sub" in
+        init|start)    cmd_init ;;
+        stop)          cmd_stop ;;
+        status)        cmd_status ;;
+        arm)           cmd_arm ;;
+        disarm)        cmd_disarm ;;
+        logs)          cmd_logs "${1:-list}" ;;
+        run)           cmd_run ;;
+        last-session)  cmd_last_session ;;
+        guard-loop)    guard_loop ;;   # 독립 디버그용
+        help|-h|--help)
+            cat <<'EOF'
+airgenome — 단일 진입점 (M14) + inline runtime-guard (M13)
+
+usage: airgenome <command>
+
+  init         plist 배치 + launchctl bootstrap (start 과 동일)
+  stop         bootout + supervisor + guard 종료
+  status       supervisor + guard 모드 + 산출물 freshness
+  arm          runtime-guard live-kill on
+  disarm       runtime-guard dry-run
+  logs [m]       tail: guard|probe|dispatch|harvest|label|forecast|super|list
+  run            supervisor loop (launchd 가 호출)
+  last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
+  guard-loop     guard 만 독립 실행 (디버그)
+
+env:
+  AIRGENOME_ROOT=/Users/ghost/Dev/airgenome
+  HEXA=/Users/ghost/Dev/hexa-lang/hexa
+
+flags:
+  ~/.airgenome/guard_armed   — 존재 시 실제 kill
+  ~/.airgenome/guard_off     — 존재 시 guard 즉시 종료
+EOF
+            ;;
+        *)
+            echo "unknown subcommand: $sub" >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
