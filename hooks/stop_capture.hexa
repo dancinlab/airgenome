@@ -3,8 +3,13 @@
 // Responsibilities (never blocks session; rc=0 always):
 //   1. Capture most recent "assistant" message text from the transcript tail
 //      and append to $root/.hook-history.jsonl.
-//   2. Stale-chain sweep: release active chains whose started_at is >= 24h old
-//      via `airgenome hook release <chain> "stale session sweep"`.
+//   2. Layered stale-chain sweep (lib/stale_sweep.ss_run_layered):
+//        tier 1  micro   — turns-budget note only (no release)
+//        tier 2  daily   — 24h rollup touch on parent, child kept
+//        tier 3  weekly  — 7d rollup touch + child release
+//      The legacy behaviour (release at 24h) is preserved as tier-3 when
+//      the daily budget elapses AND the weekly budget hasn't yet — the
+//      upgrade is purely additive for the single-day case.
 //   3. Handover: append every still-active chain to $root/.hook-handover.jsonl
 //      so the next session can resume or pick a rollback point.
 //   4. Landed-at: if integrity_guard has a recent FAIL line for an active
@@ -21,6 +26,7 @@
 // that branch so the harness stays hermetic.
 
 use "lib/event"
+use "lib/stale_sweep"
 
 // ───────────────────────────────────────────────────────── path helpers ──
 
@@ -174,23 +180,37 @@ fn head_sha(root: str) -> str {
 // handover line so the next boot can correlate.
 
 fn session_sweep(root: str, session: str) -> void {
-    let max_age_s = 24 * 3600   // 24h
+    // 1. Layered stale-sweep (tiers: micro note-only / daily rollup /
+    //    weekly rollup+release). Budgets + parent chains are env-driven
+    //    via AIRGENOME_STALE_* knobs — see lib/stale_sweep for the full
+    //    list. `execute=true` so Stop actually mutates; dry-run is the
+    //    default for ad-hoc CLI invocations of stale_sweep.
+    //
+    //    The legacy behaviour (simple 24h release) is retained below as
+    //    a graceful-fallback path: if lib/stale_sweep reports the CLI as
+    //    missing (TSV "0\t0\t0") AND active_stale_chains() still finds
+    //    24h-old entries, we still try the release — matching the old
+    //    contract so existing test fixtures keep passing without a CLI.
+    let tiers_tsv = ss_run_layered(true)
+    let tiers = tiers_tsv.split("\t")
+    let layered_w = if tiers.len() >= 3 { to_int(tiers[2].trim()) } else { 0 }
 
-    // 1. stale release pass — do this FIRST so handover only contains the
-    //    chains we still consider "live".
-    let stale = active_stale_chains(root, max_age_s)
-    if stale != "" {
-        let lines = stale.split("\n")
-        let mut i = 0
-        while i < lines.len() {
-            let ln = lines[i].trim()
-            i = i + 1
-            if ln == "" { continue }
-            let cols = ln.split("\t")
-            if cols.len() < 1 { continue }
-            let chain = cols[0]
-            if chain == "" { continue }
-            airgenome_hook_release(root, chain, "stale session sweep")
+    if layered_w == 0 {
+        let max_age_s = 24 * 3600   // 24h — legacy fallback only
+        let stale = active_stale_chains(root, max_age_s)
+        if stale != "" {
+            let lines = stale.split("\n")
+            let mut i = 0
+            while i < lines.len() {
+                let ln = lines[i].trim()
+                i = i + 1
+                if ln == "" { continue }
+                let cols = ln.split("\t")
+                if cols.len() < 1 { continue }
+                let chain = cols[0]
+                if chain == "" { continue }
+                airgenome_hook_release(root, chain, "stale session sweep (legacy fallback)")
+            }
         }
     }
 
