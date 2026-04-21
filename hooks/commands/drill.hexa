@@ -1,0 +1,100 @@
+// hooks/commands/drill.hexa — drill command dispatch logic.
+//
+// Invoked by hook_main.hexa when any keyword registered under `command drill`
+// in ~/core/.workspace.lock matches a UserPromptSubmit event. This file is
+// the SINGLE source of truth for:
+//   (1) keyword match semantics (position-free: keyword may be anywhere
+//       in the prompt — prefix, middle, suffix, mixed-script)
+//   (2) seed derivation (how we turn the prompt + prior-turn context into
+//       a payload suitable for `nexus drill '<seed>'`)
+//   (3) the final dispatch JSON shape the dispatcher appends to
+//       .hook-dispatch.jsonl
+//
+// This module is a LIBRARY: no fn main(). hook_main.hexa imports it via
+// `use "commands/drill"` and calls drill_dispatch() directly. Adding
+// another command = new hooks/commands/<name>.hexa with pub fn
+// <name>_dispatch() + one extra line in hook_main's command switch.
+//
+// Determinism (raw#11): no LLM, no random, no time-based branching. Pure
+// text transforms via grep/sed/awk/jq, all re-runnable on the same input.
+
+// ─────────────────────────────────────────────────────────────── helpers ──
+
+pub fn drill_shell_quote(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+// JSON string escape (minimal surface).
+pub fn drill_json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\t", "\\t")
+}
+
+// Remove every registered drill keyword from the text and squeeze
+// surrounding whitespace. The keyword list is drawn from
+// ~/core/.workspace.lock so new keywords added there automatically
+// strip from seeds — we stay consistent with the dispatcher.
+pub fn drill_strip_keywords(text: str, keywords: [str]) -> str {
+    let tmp = exec("mktemp -t drill_strip.XXXXXX").trim()
+    write_file(tmp, text)
+    // Build one sed program that drops each keyword with word-boundary
+    // (same POSIX class the dispatcher uses to match).
+    let mut sed_prog = ""
+    let mut i = 0
+    while i < keywords.len() {
+        let kw = keywords[i].trim()
+        i = i + 1
+        if kw == "" { continue }
+        let esc = kw.replace("\\", "\\\\").replace(".", "\\.").replace("*", "\\*").replace("+", "\\+").replace("?", "\\?").replace("[", "\\[").replace("]", "\\]").replace("(", "\\(").replace(")", "\\)").replace("|", "\\|").replace("^", "\\^").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}").replace("/", "\\/")
+        sed_prog = sed_prog + "s/(^|[^[:alnum:]_])" + esc + "([^[:alnum:]_]|$)/\\1\\2/g;"
+    }
+    let cmd = "sed -E " + drill_shell_quote(sed_prog) + " '" + tmp + "' | tr -s ' \\t' ' ' | sed -E 's/^ +| +$//g'"
+    let out = exec(cmd).trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    return out
+}
+
+// Pull the last N user-turn texts from the transcript, newest last.
+// Empty string when the transcript is empty or missing.
+pub fn drill_recent_user_context(transcript_path: str, n: int) -> str {
+    if transcript_path == "" { return "" }
+    if file_exists(transcript_path) == false { return "" }
+    // tail -n 500 bounds jq's work even on long sessions; the last N user
+    // turns will always sit near the end of the JSONL.
+    let cmd = "tail -n 500 '" + transcript_path + "' 2>/dev/null | jq -r 'select(.type==\"user\") | (.message.content // \"\") | if type==\"array\" then (map(select(.type==\"text\") | .text) | join(\" \")) else (.|tostring) end' 2>/dev/null | tail -n " + to_string(n)
+    let raw = exec(cmd)
+    // Join lines with " | " separator so the seed reads like a topic summary.
+    return raw.replace("\n", " | ").trim()
+}
+
+// Decide how much context to fold into the seed. Short, self-contained
+// prompts (e.g. "drill 7대 난제") stand alone; prompts that are themselves
+// only the keyword (e.g. "drill") reach back for the most recent user
+// turns so `nexus drill '<seed>'` has something meaningful to chew on.
+pub fn drill_build_seed(prompt: str, keywords: [str], transcript_path: str) -> str {
+    let base = drill_strip_keywords(prompt, keywords)
+    if base.len() >= 3 {
+        return base
+    }
+    // Prompt was essentially just the keyword — borrow from the transcript.
+    let ctx = drill_recent_user_context(transcript_path, 3)
+    if ctx == "" {
+        // First turn in a session with no usable prior content.
+        return base
+    }
+    // Strip the same keywords out of the borrowed context so we don't
+    // re-introduce them into the seed.
+    return drill_strip_keywords(ctx, keywords)
+}
+
+// ──────────────────────────────────────────────────────────────── entry ──
+
+// Returns a single JSON line (no trailing newline) that the dispatcher
+// appends verbatim to .hook-dispatch.jsonl. The dispatcher adds `ts`
+// and `session` fields around this payload.
+pub fn drill_dispatch(prompt: str, keywords: [str], matched_kw: str, transcript_path: str) -> str {
+    let seed = drill_build_seed(prompt, keywords, transcript_path)
+    return "\"command\":\"drill\"" +
+           ",\"keyword\":\"" + drill_json_escape(matched_kw) + "\"" +
+           ",\"seed\":\"" + drill_json_escape(seed) + "\"" +
+           ",\"suggest\":\"nexus drill '" + drill_json_escape(seed.replace("'", "'\\''")) + "'\""
+}
