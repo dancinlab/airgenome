@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# L0 CORE — chflags uchg 후 수정 금지. 변경 시 `chflags nouchg`.
+# bin/cl-core — compose accounts | fresh | rotate | launch. single entry for `cl`.
+#
+# Pipeline:
+#   cl-accounts | cl-fresh | cl-rotate | xargs -I{} cl-launch {} "$@"
+#
+# Contract:
+#   cl-core [args...]       pick account (round-robin, skip cooling) + exec claude.
+#   cl-core --real [args]   bypass shell function layer, exec real claude directly.
+#                           (picked account still applied via CLAUDE_CONFIG_DIR)
+#   cl-core --dir <d> [a..] force specific account dir.
+#   cl-core self-test       verify all 5 sub-binaries PASS + pipe produces 1 dir.
+#
+# Env:
+#   CL_COOLDOWN_HOURS        default cooldown window (cl-cooldown); 5h.
+#   CL_CORE_REAL_CLAUDE      override real claude path (cl-launch).
+#   CLAUDX_BYPASS            add --dangerously-skip-permissions (cl-launch).
+#
+# Dependencies: bin/cl-accounts, bin/cl-fresh, bin/cl-rotate, bin/cl-launch.
+
+set -uo pipefail
+
+SELF_DIR=$(cd "$(dirname "$0")" && pwd)
+
+_pick_dir() {
+    local d
+    d=$("$SELF_DIR/cl-accounts" | "$SELF_DIR/cl-fresh" | "$SELF_DIR/cl-rotate")
+    if [ -z "$d" ]; then
+        # All cooling — fall back to ignoring cooldown filter (best-effort).
+        d=$("$SELF_DIR/cl-accounts" | "$SELF_DIR/cl-rotate")
+    fi
+    [ -n "$d" ] && echo "$d"
+}
+
+_self_test() {
+    local rc=0
+    for sub in cl-accounts cl-fresh cl-rotate cl-launch cl-cooldown; do
+        if "$SELF_DIR/$sub" self-test >/dev/null 2>&1; then
+            echo "  ✓ $sub self-test"
+        else
+            echo "  ✗ $sub self-test" >&2; rc=1
+        fi
+    done
+    local dir
+    dir=$(_pick_dir)
+    if [ -n "$dir" ] && [ -d "$dir" ]; then
+        echo "  ✓ pipe picks dir: $dir"
+    else
+        echo "  ✗ pipe returned no dir" >&2; rc=1
+    fi
+    [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
+    return $rc
+}
+
+# --- arg parse ---
+real_mode=0
+forced_dir=""
+declare -a fwd=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --real) real_mode=1; shift ;;
+        --dir)  forced_dir="${2:-}"; shift 2 ;;
+        -h|--help|help)
+            sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        self-test) _self_test; exit $? ;;
+        --) shift; fwd+=("$@"); break ;;
+        *) fwd+=("$1"); shift ;;
+    esac
+done
+
+# --- pick account ---
+if [ -n "$forced_dir" ]; then
+    dir="$forced_dir"
+else
+    dir=$(_pick_dir)
+    if [ -z "$dir" ]; then
+        echo "cl-core: no Claude accounts available (~/.claude-claude*/.credentials.json)" >&2
+        exit 69
+    fi
+fi
+
+# --- launch ---
+# real_mode currently has no distinct behavior vs default (cl-launch already
+# resolves past any shim). Flag kept for forward-compat with prior API.
+if [ "${#fwd[@]}" -gt 0 ]; then
+    exec "$SELF_DIR/cl-launch" "$dir" "${fwd[@]}"
+else
+    exec "$SELF_DIR/cl-launch" "$dir"
+fi

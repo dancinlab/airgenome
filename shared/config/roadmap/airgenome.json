@@ -3,7 +3,7 @@
   "kind": "roadmap_sot",
   "version": 2,
   "role": "airgenome rebuild v2 SSOT — core 분리 + roadmap 주도. 에이전트가 jq 로 읽고 다음 액션 자동 결정",
-  "updated": "2026-04-13",
+  "updated": "2026-04-21",
   "principle": "AI-NATIVE / R2 하드코딩 금지 / R5 SSOT / R6 자동 기록. todo 에 없는 것은 만들지 않는다",
   "ssot_refs": [
     "core/core.hexa",
@@ -469,6 +469,49 @@
         "dry-run 1h 실측: false-positive 0건 (정상 프로세스 WARN/TERM 발생하지 않음)",
         "armed 실가동 72h: 하드 리셋 재발 0건"
       ]
+    },
+    {
+      "id": "M16_cl_rotator",
+      "title": "cl-core 계정 round-robin — 12 OAuth 계정 간 자동 순환",
+      "priority": "P1",
+      "status": "active",
+      "started": "2026-04-21",
+      "deps": [],
+      "context": "12 ~/.claude-claudeN OAuth 계정 존재. 현 cl-core 는 ~/.claude 단일 고정 → 거기가 limit 이면 TUI 진입 시점부터 아무것도 못 함. 해결: Unix 조합성 원칙으로 기능별 단일파일 분리. live API probe 는 OAuth access token 이 항상 만료 저장 → 매번 refresh 12번 = 과함. 대신 round-robin + 사용자 cooldown 마킹 전략.",
+      "design": {
+        "files": [
+          "bin/cl-accounts — list ~/.claude-claude*/.credentials.json dirs (stdout newline)",
+          "bin/cl-fresh — stdin dirs, skip <dir>/.cooldown-until > now",
+          "bin/cl-rotate — stdin dirs, round-robin via ~/.claude-accounts/cursor (mkdir lock)",
+          "bin/cl-launch — arg1=dir → exec env CLAUDE_CONFIG_DIR=<dir> claude args...",
+          "bin/cl-cooldown — mark <dir>/.cooldown-until = now + N hours (default 5)",
+          "bin/cl-core — compose: accounts | fresh | rotate | launch"
+        ],
+        "state_dir": "~/.claude-accounts/ (cursor + cursor.lock)",
+        "cooldown_marker": "<account_dir>/.cooldown-until — epoch seconds",
+        "non_goals": [
+          "live Anthropic API probe (too expensive + refresh cost)",
+          "in-TUI auto-swap (needs HTTP interceptor — M17 로 분리)"
+        ]
+      },
+      "exit_criteria": [
+        "6 파일 bin/ 에 존재 + 실행 가능",
+        "각 파일 self-test 서브커맨드 제공, 6/6 PASS",
+        "unit test harness 73/73 PASS (edge cases: 0 accounts, corrupt state, path edge cases, unicode)",
+        "boundary test 19/19 PASS (50-way concurrency, 100 accounts scale, stale lock recovery)",
+        "5× idempotence — flake 0",
+        "cl-cooldown 호출 후 다음 cl → 마킹된 계정 skip 확인",
+        "각 파일 stable 판단 뒤 개별 chflags uchg — L0 lock"
+      ],
+      "evidence": {
+        "test_harness": "/tmp/cl-test.sh (73 tests) + /tmp/cl-limits.sh (19 boundary tests)",
+        "concurrency_validated": "5×50 parallel invocations → cursor exact = 50 (mkdir lock + wall-clock deadline)",
+        "perf": "cl-accounts 55ms / full pipe 75ms / 1000 rotations ~20s",
+        "scale": "100 accounts enumerated + piped in <1s",
+        "race_root_cause": "set -e + stale-steal rmdir failure → script exit before cursor write. fix: set -uo pipefail + stale-steal only after max_wait deadline",
+        "stale_recovery": "lock older than 30s auto-stolen; bounded to ~10-15s wait",
+        "unused_l0_lock": "파일 chflags uchg 는 며칠 실사용 뒤 판단"
+      }
     },
     {
       "id": "M12_dashboard",
