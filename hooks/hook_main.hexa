@@ -137,16 +137,26 @@ fn log_dispatch_raw(inner: str, sess: str) -> void {
 
 // Route the matched command+keyword to the right command module. Returns
 // the command's dispatch JSON (no ts/session wrapper), or "" if the
-// command has no registered handler (logged as a warning row).
-fn run_command(cmd: str, matched_kw: str, prompt: str, keywords: [str], transcript_path: str) -> str {
+// command has no registered handler (logged as a warning row). `session`
+// is threaded through so command modules can derive a stable chain id
+// (session + command + seed) via lc_chain_id.
+fn run_command(cmd: str, matched_kw: str, prompt: str, keywords: [str], transcript_path: str, session: str) -> str {
     if cmd == "drill" {
-        return drill_dispatch(prompt, keywords, matched_kw, transcript_path)
+        return drill_dispatch(prompt, keywords, matched_kw, transcript_path, session)
     }
     return ""
 }
 
 // UserPromptSubmit — risk keyword warn/hint + workspace keyword dispatch.
 fn user_prompt_entry(p: str) -> str {
+    // Progression-window accounting: every user turn bumps the active stack
+    // and refreshes the external surfaces (advice md + terminal title sh).
+    // Runs before keyword dispatch so a fresh drill match shows the bumped
+    // turn count immediately.
+    lc_cmd_bump_turns_all()
+    lc_advice_render()
+    lc_ui_title_update()
+
     let prompt_raw = event_prompt(p)
     let prompt = prompt_raw.to_lower()
     let sess = event_session(p)
@@ -201,7 +211,7 @@ fn user_prompt_entry(p: str) -> str {
             }
         }
         if matched_kw == "" { continue }
-        let payload = run_command(cmd, matched_kw, prompt_raw, kws, tpath)
+        let payload = run_command(cmd, matched_kw, prompt_raw, kws, tpath, sess)
         if payload != "" {
             log_dispatch_raw(payload, sess)
         }
@@ -561,6 +571,12 @@ fn watch_pass() -> void {
         cur = cursor_set(cur, f, sz)
     }
     cursor_save(cur)
+    // Release any active command past its turn budget (20) or wall-clock
+    // timeout (30 min). Defaults are intentionally conservative — release
+    // is cheap to redo (activate on next keyword match), but a stale stack
+    // leaks into every subsequent advice render.
+    lc_cmd_sweep(20, 1800)
+    lc_ui_title_update()
 }
 
 // ───────────────────────────────────────────── legacy Claude-Code test mode ──

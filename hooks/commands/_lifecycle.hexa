@@ -1,0 +1,294 @@
+// hooks/commands/_lifecycle.hexa — shared primitives for every command module.
+//
+// Per-command modules (drill.hexa, and any future scan/trace/record/...) pull
+// seed derivation, dispatch JSON shape, UI tail formatting, chain identity,
+// and the "active command" state-machine from here. Adding a new command
+// stays at "one new file + one if-branch in hook_main's run_command()" —
+// all repeated glue lives in this file.
+//
+// Determinism (raw#11): no LLM, no random, no time-based branching. Text
+// transforms go through grep/sed/awk/jq. Timestamp stamping is the one
+// allowed source of non-determinism and is confined to active-state I/O.
+
+// ───────────────────────────────────────────────────────── text utilities ──
+
+pub fn lc_shell_quote(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+pub fn lc_json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\t", "\\t")
+}
+
+fn lc_kw_regex_escape(kw: str) -> str {
+    return kw.replace("\\", "\\\\").replace(".", "\\.").replace("*", "\\*").replace("+", "\\+").replace("?", "\\?").replace("[", "\\[").replace("]", "\\]").replace("(", "\\(").replace(")", "\\)").replace("|", "\\|").replace("^", "\\^").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}").replace("/", "\\/")
+}
+
+pub fn lc_strip_keywords(text: str, keywords: [str]) -> str {
+    let tmp = exec("mktemp -t lc_strip.XXXXXX").trim()
+    write_file(tmp, text)
+    let mut sed_prog = ""
+    let mut i = 0
+    while i < keywords.len() {
+        let kw = keywords[i].trim()
+        i = i + 1
+        if kw == "" { continue }
+        let esc = lc_kw_regex_escape(kw)
+        sed_prog = sed_prog + "s/(^|[^[:alnum:]_])" + esc + "([^[:alnum:]_]|$)/\\1\\2/g;"
+    }
+    let cmd = "sed -E " + lc_shell_quote(sed_prog) + " '" + tmp + "' | tr -s ' \\t' ' ' | sed -E 's/^ +| +$//g'"
+    let out = exec(cmd).trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    return out
+}
+
+pub fn lc_recent_user_context(transcript_path: str, n: int) -> str {
+    if transcript_path == "" { return "" }
+    if file_exists(transcript_path) == false { return "" }
+    let cmd = "tail -n 500 '" + transcript_path + "' 2>/dev/null | jq -r 'select(.type==\"user\") | (.message.content // \"\") | if type==\"array\" then (map(select(.type==\"text\") | .text) | join(\" \")) else (.|tostring) end' 2>/dev/null | tail -n " + to_string(n)
+    let raw = exec(cmd)
+    return raw.replace("\n", " | ").trim()
+}
+
+pub fn lc_build_seed(prompt: str, keywords: [str], transcript_path: str, min_len: int, ctx_turns: int) -> str {
+    let base = lc_strip_keywords(prompt, keywords)
+    if base.len() >= min_len { return base }
+    let ctx = lc_recent_user_context(transcript_path, ctx_turns)
+    if ctx == "" { return base }
+    return lc_strip_keywords(ctx, keywords)
+}
+
+// ─────────────────────────────────────────────────────── status / UI tail ──
+
+pub fn lc_icon(status: str) -> str {
+    if status == "match"    { return "🔭" }
+    if status == "seed"     { return "🧬" }
+    if status == "dispatch" { return "⏳" }
+    if status == "run"      { return "🧪" }
+    if status == "done"     { return "✅" }
+    if status == "fail"     { return "❌" }
+    if status == "gated"    { return "🚧" }
+    if status == "silent"   { return "🤫" }
+    return "•"
+}
+
+pub fn lc_tail(status: str, command: str, msg: str) -> str {
+    let head = lc_icon(status) + " " + command
+    if msg == "" { return head }
+    return head + " — " + msg
+}
+
+// ──────────────────────────────────────────────────────── dispatch payload ──
+
+pub fn lc_chain_id(session: str, command: str, seed: str) -> str {
+    let src = session + "|" + command + "|" + seed
+    let cmd = "printf '%s' " + lc_shell_quote(src) + " | shasum -a 1 | awk '{print substr($1,1,8)}'"
+    return exec(cmd).trim()
+}
+
+pub fn lc_payload(command: str, status: str, matched_kw: str, chain: str, extras: str) -> str {
+    let base = "\"command\":\"" + lc_json_escape(command) + "\"" +
+               ",\"status\":\"" + lc_json_escape(status) + "\"" +
+               ",\"keyword\":\"" + lc_json_escape(matched_kw) + "\"" +
+               ",\"chain\":\"" + lc_json_escape(chain) + "\""
+    if extras == "" { return base }
+    return base + "," + extras
+}
+
+// ───────────────────────────────────────────── active command state (lens) ──
+//
+// A command activates itself so its seed stays visible for the rest of the
+// progression window (the "drill lens" idea). The stack lives in
+// .hook-commands/active.json; per-chain findings live in
+// .hook-commands/<chain>/findings.jsonl; .hook-advice.md is the primary
+// surface Claude Code is expected to Read mid-session (wire from CLAUDE.md).
+//
+// These helpers are generic — any command (drill/scan/record/trace/...)
+// reuses the same state slot. Release conditions (timeout / turn budget /
+// explicit release) are applied by a separate sweep in watch_pass; the
+// command module only calls activate + touch here.
+
+fn lc_root() -> str {
+    let mut r = env("AIRGENOME_HOOK_ROOT")
+    if r == "" { r = env("CLAUDE_PROJECT_DIR") }
+    if r == "" { r = exec("pwd").trim() }
+    return r
+}
+
+fn lc_state_dir() -> str { return lc_root() + "/.hook-commands" }
+fn lc_active_path() -> str { return lc_state_dir() + "/active.json" }
+fn lc_findings_dir(chain: str) -> str { return lc_state_dir() + "/" + chain }
+
+pub fn lc_advice_path() -> str { return lc_root() + "/.hook-advice.md" }
+
+fn lc_ensure_dir(p: str) -> void {
+    let _ = exec("mkdir -p '" + p + "'")
+}
+
+fn lc_ts() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn lc_active_load() -> str {
+    let p = lc_active_path()
+    if file_exists(p) == false { return "{\"stack\":[]}" }
+    let s = read_file(p)
+    if s.trim() == "" { return "{\"stack\":[]}" }
+    return s
+}
+
+fn lc_active_save(s: str) -> void {
+    lc_ensure_dir(lc_state_dir())
+    let p = lc_active_path()
+    let tmp = p + ".tmp"
+    write_file(tmp, s)
+    let _ = exec("mv -f '" + tmp + "' '" + p + "'")
+}
+
+// Push an active record onto the stack (newest top). Dedupe by chain:
+// if a record with the same chain already exists, it's lifted to top
+// rather than duplicated.
+pub fn lc_cmd_activate(session: str, command: str, matched_kw: str,
+                       seed: str, chain: str) -> void {
+    let cur = lc_active_load()
+    let tmp = exec("mktemp -t lc_act.XXXXXX").trim()
+    write_file(tmp, cur)
+    let rec = "{\"chain\":\"" + lc_json_escape(chain) + "\"" +
+              ",\"command\":\"" + lc_json_escape(command) + "\"" +
+              ",\"session\":\"" + lc_json_escape(session) + "\"" +
+              ",\"keyword\":\"" + lc_json_escape(matched_kw) + "\"" +
+              ",\"seed\":\"" + lc_json_escape(seed) + "\"" +
+              ",\"started_at\":\"" + lc_ts() + "\"" +
+              ",\"turns\":0}"
+    let cmd = "jq --arg c " + lc_shell_quote(chain) +
+              " --argjson r " + lc_shell_quote(rec) +
+              " '.stack = ([$r] + ((.stack // []) | map(select(.chain != $c))))' '" + tmp + "'"
+    let out = exec(cmd)
+    let _ = exec("rm -f '" + tmp + "'")
+    if out.trim() == "" { return }
+    lc_active_save(out)
+    lc_ensure_dir(lc_findings_dir(chain))
+}
+
+// Remove the stack entry + append a retrospective line.
+pub fn lc_cmd_release(chain: str, reason: str) -> void {
+    let cur = lc_active_load()
+    let tmp = exec("mktemp -t lc_rel.XXXXXX").trim()
+    write_file(tmp, cur)
+    let cmd = "jq --arg c " + lc_shell_quote(chain) +
+              " '.stack = ((.stack // []) | map(select(.chain != $c)))' '" + tmp + "'"
+    let out = exec(cmd)
+    let _ = exec("rm -f '" + tmp + "'")
+    if out.trim() != "" { lc_active_save(out) }
+    lc_ensure_dir(lc_state_dir())
+    let line = "{\"ts\":\"" + lc_ts() + "\",\"chain\":\"" + lc_json_escape(chain) +
+               "\",\"reason\":\"" + lc_json_escape(reason) + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") +
+                 "' >> '" + lc_state_dir() + "/resolved.jsonl'")
+}
+
+// Append a finding / edit / tool / note event to this chain's trail.
+pub fn lc_cmd_touch(chain: str, kind: str, payload: str) -> void {
+    lc_ensure_dir(lc_findings_dir(chain))
+    let line = "{\"ts\":\"" + lc_ts() + "\",\"kind\":\"" + lc_json_escape(kind) +
+               "\",\"payload\":\"" + lc_json_escape(payload) + "\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") +
+                 "' >> '" + lc_findings_dir(chain) + "/findings.jsonl'")
+}
+
+pub fn lc_cmd_is_active(chain: str) -> str {
+    let cur = lc_active_load()
+    let tmp = exec("mktemp -t lc_chk.XXXXXX").trim()
+    write_file(tmp, cur)
+    let cmd = "jq -r --arg c " + lc_shell_quote(chain) +
+              " '(((.stack // []) | map(select(.chain == $c)) | length) > 0) | if . then \"1\" else \"0\" end' '" + tmp + "'"
+    let out = exec(cmd).trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    if out == "" { return "0" }
+    return out
+}
+
+// Re-render .hook-advice.md from the active stack (top 5). Stable Markdown
+// so any external consumer (menubar, tail viewer, ...) can read without
+// parsing JSON. Claude Code is intentionally NOT wired to Read this — the
+// design keeps CLAUDE.md dependency at zero; the file is observational.
+pub fn lc_advice_render() -> void {
+    let cur = lc_active_load()
+    let tmp = exec("mktemp -t lc_adv.XXXXXX").trim()
+    write_file(tmp, cur)
+    let prog = "jq -r '(.stack // [])[0:5] | if length == 0 then \"_no active commands_\" else ([ .[] | \"## \\(.command) — \\(.seed)\\n\\n- chain: `\\(.chain)`\\n- keyword: `\\(.keyword)`\\n- started: \\(.started_at)\\n- turns: \\(.turns)\" ] | join(\"\\n\\n\")) end' '" + tmp + "'"
+    let body = exec(prog)
+    let _ = exec("rm -f '" + tmp + "'")
+    let header = "# active commands\n\n_auto-generated by airgenome hooks. do not edit._\n\n"
+    write_file(lc_advice_path(), header + body + "\n")
+}
+
+// ─────────────────────────────────────── progression-window accounting ──
+//
+// "Progression window" has two exits: turn budget and wall-clock timeout.
+// The watcher increments `turns` on every UserPromptSubmit and sweeps the
+// stack on every watch pass. Releases go through lc_cmd_release so the
+// retrospective line is always recorded. `now` / `fromdateiso8601` under
+// jq are allowed here for the same reason hook_main already stamps
+// timestamps (raw#11 permits timestamp-stamping at the event boundary).
+
+pub fn lc_cmd_bump_turns_all() -> void {
+    let cur = lc_active_load()
+    let tmp = exec("mktemp -t lc_bump.XXXXXX").trim()
+    write_file(tmp, cur)
+    let cmd = "jq '.stack = ((.stack // []) | map(.turns = ((.turns // 0) + 1)))' '" + tmp + "'"
+    let out = exec(cmd)
+    let _ = exec("rm -f '" + tmp + "'")
+    if out.trim() == "" { return }
+    lc_active_save(out)
+}
+
+// Release any active entry past `max_turns` or `max_age_s` (seconds since
+// started_at). Reason is "turns" or "timeout" and lands in the resolved
+// jsonl so downstream tooling can correlate back to the chain.
+pub fn lc_cmd_sweep(max_turns: int, max_age_s: int) -> void {
+    let cur = lc_active_load()
+    let tmp = exec("mktemp -t lc_sweep.XXXXXX").trim()
+    write_file(tmp, cur)
+    let pick = "jq -r --argjson mt " + to_string(max_turns) +
+               " --argjson ms " + to_string(max_age_s) +
+               " '(.stack // [])[] | . as $e | ((.turns // 0) >= $mt) as $bt | ((now - (.started_at | fromdateiso8601)) >= $ms) as $bs | select($bt or $bs) | \"\\(.chain)\\t\\(if $bt then \"turns\" else \"timeout\" end)\"' '" + tmp + "'"
+    let hits = exec(pick)
+    let _ = exec("rm -f '" + tmp + "'")
+    if hits.trim() == "" { return }
+    let rows = hits.split("\n")
+    let mut i = 0
+    while i < rows.len() {
+        let row = rows[i].trim()
+        i = i + 1
+        if row == "" { continue }
+        let cols = row.split("\t")
+        if cols.len() < 2 { continue }
+        lc_cmd_release(cols[0], cols[1])
+    }
+    lc_advice_render()
+}
+
+// ─────────────────────────────────────────── terminal-title UI channel ──
+//
+// airgenome doesn't own the user's terminal, so it can't emit OSC 0
+// directly. Instead it writes a tiny shell snippet that ANY tail viewer,
+// shell prompt, or launch wrapper can `. "$file"` to update the title.
+// This keeps the UI channel orthogonal to Claude Code and optional.
+
+pub fn lc_ui_title_path() -> str {
+    return lc_root() + "/.hook-ui-title.sh"
+}
+
+pub fn lc_ui_title_update() -> void {
+    let cur = lc_active_load()
+    let tmp = exec("mktemp -t lc_title.XXXXXX").trim()
+    write_file(tmp, cur)
+    let prog = "jq -r '(.stack // [])[0] | if . == null then \"\" else \"🔭 \\(.command): \\(.seed)\" end' '" + tmp + "'"
+    let title = exec(prog).trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    let esc = title.replace("\\", "\\\\").replace("'", "'\\''")
+    let body = "#!/bin/sh\n# auto-generated by airgenome hooks\nprintf '\\033]0;%s\\007' '" + esc + "'\n"
+    write_file(lc_ui_title_path(), body)
+    let _ = exec("chmod +x '" + lc_ui_title_path() + "'")
+}

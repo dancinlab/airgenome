@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# L0 CORE — 수정 금지 (chflags uchg 후). 변경 시 풀고 PR + L0 갱신.
+# bin/tg_bot-core — Minimal Telegram bot primitive. Poll + dispatch + send.
+#
+# 왜 분리: bin/tg_bot.hexa 는 1100줄 (lock arbitration / ANSI strip / editMessage /
+# chunk split / leader election / claudx 의존 / hexa 의존). 어느 레이어 하나만
+# 깨져도 봇 전체 침묵. tg_bot-core 는 "메시지 받아서 TG_DISPATCH 에 넘기고 응답
+# 보낸다" 만 책임. cx 가 깨져도, claudx 가 깨져도, hexa 가 깨져도 무관.
+#
+# Contract:
+#   tg_bot-core run         무한 폴링 루프
+#   tg_bot-core send <chat_id> <text>   1회 전송 테스트
+#   tg_bot-core self-test   외부 의존 검증 (API 호출 안 함)
+#
+# Env config:
+#   TG_TOKEN          (required) Telegram bot token. 직접 지정 또는
+#   TG_TOKEN_FILE     파일 경로 (예: ~/Dev/secret/tg_bot_token)
+#   TG_CHAT_ALLOW     쉼표구분 chat_id 화이트리스트 (빈값=전부 허용 — 위험)
+#   TG_DISPATCH       메시지 1건당 실행할 명령. stdin=user text, stdout=reply.
+#                     default: "cx-core local -- -p" (cx-core 에 -p 로 pipe)
+#   TG_POLL_TIMEOUT   long-poll 초 (default: 30)
+#   TG_OFFSET_FILE    offset persistence (default: ~/.airgenome/tg_core.offset)
+#   TG_LOG_FILE       log (default: ~/.airgenome/tg_bot-core.log)
+#   TG_API_BASE       override Telegram API host (default: https://api.telegram.org)
+#
+# Deps: bash / curl / jq. 외부도구 3개.
+# State files: offset + log 만. network 는 Telegram API 1 endpoint.
+#
+# Exit codes:
+#   0   정상 종료 (SIGTERM 등)
+#   2   usage / env 에러
+#   3   curl/jq 누락
+#
+# Lock: 단일 인스턴스 flock. $TG_OFFSET_FILE.lock.
+
+set -uo pipefail
+
+_usage() {
+    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+_self_test() {
+    local rc=0
+    echo "  ✓ bash parse"
+    for c in curl jq; do
+        if command -v "$c" >/dev/null 2>&1; then
+            echo "  ✓ $c available"
+        else
+            echo "  ✗ $c missing" >&2
+            rc=3
+        fi
+    done
+    if command -v flock >/dev/null 2>&1; then
+        echo "  ✓ flock available (linux)"
+    else
+        echo "  ! flock missing (mac) — using mkdir fallback"
+    fi
+    [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
+    return $rc
+}
+
+# ── env resolve ─────────────────────────────────────────────────
+_resolve_token() {
+    if [ -n "${TG_TOKEN:-}" ]; then
+        echo "$TG_TOKEN"; return 0
+    fi
+    if [ -n "${TG_TOKEN_FILE:-}" ] && [ -r "$TG_TOKEN_FILE" ]; then
+        tr -d '\n\r' < "$TG_TOKEN_FILE"; return 0
+    fi
+    return 1
+}
+
+# ── api helpers ─────────────────────────────────────────────────
+_api() {
+    local method=$1; shift
+    curl -sS --max-time 15 "${TG_API_BASE:-https://api.telegram.org}/bot${_TG_TOKEN}/${method}" "$@"
+}
+
+_send() {
+    local chat_id=$1 text=$2
+    _api sendMessage \
+        --data-urlencode "chat_id=$chat_id" \
+        --data-urlencode "text=$text" \
+        >/dev/null 2>&1
+}
+
+# sendMessage 후 message_id 반환 (0=실패). edit-in-place 를 위해.
+_send_wait() {
+    local chat_id=$1 text=$2
+    local resp
+    resp=$(_api sendMessage \
+        --data-urlencode "chat_id=$chat_id" \
+        --data-urlencode "text=$text" \
+        2>/dev/null)
+    echo "$resp" | jq -r '.result.message_id // 0' 2>/dev/null
+}
+
+# editMessageText — 기존 메시지 in-place 교체.
+_edit() {
+    local chat_id=$1 mid=$2 text=$3
+    _api editMessageText \
+        --data-urlencode "chat_id=$chat_id" \
+        --data-urlencode "message_id=$mid" \
+        --data-urlencode "text=$text" \
+        >/dev/null 2>&1
+}
+
+# ANSI/OSC 이스케이프 제거. claude/claudx 가 tty 오판 시 흘리는 `\e]0;...\a`
+# OSC 와 `\e[...m` CSI 전부 제거. perl 은 mac/linux 기본 설치.
+_strip_ansi() {
+    perl -pe 's/\e\][^\a]*\a//g; s/\e\[[0-9;?]*[a-zA-Z]//g' 2>/dev/null || cat
+}
+
+_log() {
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '{"ts":"%s","msg":"%s"}\n' "$ts" "${1//\"/\\\"}" >> "$TG_LOG_FILE" 2>/dev/null || true
+}
+
+# ── dispatch ────────────────────────────────────────────────────
+_dispatch() {
+    local text=$1
+    # stdin=text, stdout=reply. TG_DISPATCH 는 arbitrary shell string.
+    printf '%s' "$text" | eval "$TG_DISPATCH" 2>&1
+    return $?
+}
+
+# ── chat allow ──────────────────────────────────────────────────
+_allowed() {
+    local chat=$1
+    [ -z "${TG_CHAT_ALLOW:-}" ] && return 0
+    local IFS=,
+    for c in $TG_CHAT_ALLOW; do
+        [ "$c" = "$chat" ] && return 0
+    done
+    return 1
+}
+
+# ── offset ──────────────────────────────────────────────────────
+_offset()       { cat "$TG_OFFSET_FILE" 2>/dev/null || echo 0; }
+_save_offset()  { printf '%s\n' "$1" > "$TG_OFFSET_FILE.tmp" && mv "$TG_OFFSET_FILE.tmp" "$TG_OFFSET_FILE"; }
+
+# ── main loop ───────────────────────────────────────────────────
+_run_loop() {
+    local off next upd uid chat text reply rc
+    _log "tg_bot-core starting dispatch=$TG_DISPATCH"
+    while true; do
+        off=$(_offset)
+        next=$((off + 1))
+        upd=$(_api "getUpdates" \
+              --data-urlencode "offset=$next" \
+              --data-urlencode "timeout=${TG_POLL_TIMEOUT:-30}" \
+              2>/dev/null)
+        if [ -z "$upd" ]; then
+            sleep 5; continue
+        fi
+        # check ok
+        if ! echo "$upd" | jq -e '.ok == true' >/dev/null 2>&1; then
+            _log "getUpdates not ok: $(echo "$upd" | head -c 200)"
+            sleep 10; continue
+        fi
+        local count
+        count=$(echo "$upd" | jq '.result | length')
+        [ "$count" = "0" ] && continue
+        # process each update
+        echo "$upd" | jq -c '.result[]?' 2>/dev/null | while IFS= read -r u; do
+            uid=$(echo "$u"   | jq -r '.update_id // empty')
+            chat=$(echo "$u"  | jq -r '.message.chat.id // empty')
+            text=$(echo "$u"  | jq -r '.message.text // empty')
+            [ -z "$uid" ] && continue
+            # skip non-text updates but still advance offset
+            if [ -z "$chat" ] || [ -z "$text" ]; then
+                _save_offset "$uid"
+                continue
+            fi
+            if ! _allowed "$chat"; then
+                _log "denied chat=$chat uid=$uid"
+                _save_offset "$uid"
+                continue
+            fi
+            # edit-in-place: "⏳ 디스패치 중…" 먼저 보내고 응답 오면 동일 버블 갱신.
+            wait_id=$(_send_wait "$chat" "⏳ 디스패치 중…")
+            reply=$(_dispatch "$text")
+            rc=$?
+            # ANSI strip + trim trailing whitespace. 빈 응답 가드.
+            reply=$(printf '%s' "$reply" | _strip_ansi)
+            reply="${reply#"${reply%%[![:space:]]*}"}"
+            reply="${reply%"${reply##*[![:space:]]}"}"
+            if [ -z "$reply" ]; then
+                reply="(empty reply rc=$rc)"
+            elif [ "$rc" -ne 0 ]; then
+                reply="❌ dispatch rc=$rc
+${reply}"
+            fi
+            if [ "$wait_id" != "0" ] && [ -n "$wait_id" ]; then
+                _edit "$chat" "$wait_id" "$reply"
+            else
+                _send "$chat" "$reply"
+            fi
+            _log "replied uid=$uid chat=$chat rc=$rc len=${#reply} edit_id=$wait_id"
+            _save_offset "$uid"
+        done
+    done
+}
+
+# ── dispatch ────────────────────────────────────────────────────
+sub="${1:-}"
+case "$sub" in
+    -h|--help|help|"")
+        _usage; exit 0 ;;
+    self-test)
+        _self_test; exit $? ;;
+    run|send) ;;
+    *)
+        echo "tg_bot-core: unknown sub '$sub' (run|send|self-test|--help)" >&2
+        exit 2 ;;
+esac
+
+# env setup for run/send
+_TG_TOKEN=$(_resolve_token) || {
+    echo "tg_bot-core: TG_TOKEN (or TG_TOKEN_FILE) required" >&2
+    exit 2
+}
+: "${TG_DISPATCH:=cx-core local -- -p}"
+: "${TG_POLL_TIMEOUT:=30}"
+: "${TG_OFFSET_FILE:=$HOME/.airgenome/tg_core.offset}"
+: "${TG_LOG_FILE:=$HOME/.airgenome/tg_bot-core.log}"
+mkdir -p "$(dirname "$TG_OFFSET_FILE")" "$(dirname "$TG_LOG_FILE")"
+
+case "$sub" in
+    send)
+        [ $# -ge 3 ] || { echo "usage: tg_bot-core send <chat_id> <text>" >&2; exit 2; }
+        _send "$2" "$3" && echo "sent" || { echo "send failed" >&2; exit 1; }
+        ;;
+    run)
+        # single-instance lock
+        lockdir="$TG_OFFSET_FILE.lock"
+        if ! mkdir "$lockdir" 2>/dev/null; then
+            # stale? check age
+            age=$(( $(date +%s) - $(stat -f %m "$lockdir" 2>/dev/null || stat -c %Y "$lockdir" 2>/dev/null || echo 0) ))
+            if [ "$age" -gt 120 ]; then
+                rm -rf "$lockdir"; mkdir "$lockdir" 2>/dev/null || { echo "lock fail" >&2; exit 1; }
+            else
+                echo "tg_bot-core: another instance running (lock age=${age}s)" >&2
+                exit 1
+            fi
+        fi
+        trap 'rm -rf "$lockdir"; exit 0' TERM INT EXIT
+        _run_loop
+        ;;
+esac

@@ -310,17 +310,17 @@
 
 structure:
   core/             core.hexa + test/core_test.hexa — 외부 의존 0, self-contained 라이브러리
-  shared/config/    roadmap/airgenome.json (rebuild v2 SSOT) — milestones + invariants
+  config/           roadmap/airgenome.json (rebuild v2 SSOT) — milestones + invariants
   archive/v1/       v1 시점 모든 module/script/data — read-only
 
-invariants (shared/config/roadmap/airgenome.json#invariants):
+invariants (config/roadmap/airgenome.json#invariants):
 - core 는 외부 hexa import 안 함
 - 신규 module 은 use "../core/core" 만 허용
 - L0 자격: 파일 존재 + parse 통과 + self-test 통과
 - archive 부활은 PR + roadmap 등록 + L0 갱신
 - roadmap.json 의 milestones 에 없는 코드는 작성 금지
 
-commands: shared/config/commands.json — autonomous 블록으로 Claude Code가 작업 중 smash/free/todo/go/keep 자율 판단·실행
+commands: config/commands.json — autonomous 블록으로 Claude Code가 작업 중 smash/free/todo/go/keep 자율 판단·실행
 rules: $NEXUS/shared/rules/common.json (R0~R32) + $NEXUS/shared/rules/airgenome.json (AG1~AG9)
 L0 Guard: `hexa $NEXUS/shared/harness/l0_guard.hexa <verify|sync|merge|status>`
 loop: 글로벌 `~/.claude/skills/loop` + 엔진 `$NEXUS/shared/harness/loop` — roadmap `$NEXUS/shared/roadmaps/airgenome.json` 3-track×phase×gate 자동
@@ -334,7 +334,7 @@ harness (훅 시스템 대체, 2026-04-14~) — H-NOHOOK 강제:
   우회 금지 token: NEXUS_HOOK_OK=1 (사용자 명시 승인 시만)
 
 ref:
-  roadmap   shared/config/roadmap/airgenome.json        rebuild v2 SSOT
+  roadmap   config/roadmap/airgenome.json        rebuild v2 SSOT
   rules     $NEXUS/shared/rules/common.json        R0~R32
   project   $NEXUS/shared/rules/airgenome.json     AG1~AG9
   lock      $NEXUS/shared/lockdown/lockdown.json   L0/L1/L2
