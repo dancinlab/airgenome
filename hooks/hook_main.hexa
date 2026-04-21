@@ -70,9 +70,78 @@ fn universal_audit_entry(p: str) -> str {
     return allow_json()
 }
 
-// UserPromptSubmit — risk keyword warn/hint.
+// ─────────────────────────────────── ~/core/.workspace keyword dispatch ──
+//
+// Parse the auto-generated [keywords] section of ~/core/.workspace.lock and,
+// on a word-boundary exact match against the user prompt, log a structured
+// dispatch row to .hook-dispatch.jsonl. We do NOT auto-execute the target
+// command (transcript watcher is observation-only; injecting shell commands
+// behind the user's back would defeat airgenome's audit-first stance). The
+// log row suggests `nexus <cmd> '<seed>'` so the user can copy-paste.
+
+fn workspace_lock_path() -> str {
+    return env("HOME") + "/core/.workspace.lock"
+}
+
+// Extract [keywords] section into TSV: one row per command,
+// "<command>\t<kw1>\t<kw2>\t..."
+fn workspace_keyword_table() -> str {
+    let lock_p = workspace_lock_path()
+    if file_exists(lock_p) == false { return "" }
+    let prog = "awk 'BEGIN{insec=0} /^\\[keywords\\]/{insec=1; next} /^\\[/{insec=0; next} insec==1 && /^kw /{sub(/^kw +/, \"\"); cmd=$1; rest=$0; sub(/^[^ ]+ +/, \"\", rest); n=split(rest, arr, /, */); line=cmd; for(i=1;i<=n;i++){ gsub(/^ +| +$/, \"\", arr[i]); if(arr[i] != \"\") line=line \"\\t\" arr[i] } print line }' '" + lock_p + "'"
+    return exec(prog)
+}
+
+// grep -E word-boundary match. Non-alnum-underscore chars flank the keyword.
+// Korean chars aren't [[:alnum:]_] so Korean keywords naturally match when
+// surrounded by spaces/punct/Korean text.
+fn word_boundary_match(text: str, kw: str) -> str {
+    let tmp = exec("mktemp -t kwtext.XXXXXX").trim()
+    write_file(tmp, text)
+    let esc = kw.replace("\\", "\\\\").replace(".", "\\.").replace("*", "\\*").replace("+", "\\+").replace("?", "\\?").replace("[", "\\[").replace("]", "\\]").replace("(", "\\(").replace(")", "\\)").replace("|", "\\|").replace("^", "\\^").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}")
+    let pat = "(^|[^[:alnum:]_])" + esc + "([^[:alnum:]_]|$)"
+    let cmd = "grep -E '" + pat + "' '" + tmp + "' >/dev/null 2>&1 && echo 1 || echo 0"
+    let hit = exec(cmd).trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    return hit
+}
+
+// Strip first word-boundary occurrence of `kw` from text, trim whitespace.
+fn strip_keyword(text: str, kw: str) -> str {
+    let tmp = exec("mktemp -t kwtext.XXXXXX").trim()
+    write_file(tmp, text)
+    let esc = kw.replace("\\", "\\\\").replace(".", "\\.").replace("*", "\\*").replace("+", "\\+").replace("?", "\\?").replace("[", "\\[").replace("]", "\\]").replace("(", "\\(").replace(")", "\\)").replace("|", "\\|").replace("^", "\\^").replace("$", "\\$").replace("{", "\\{").replace("}", "\\}")
+    let cmd = "sed -E 's/(^|[^[:alnum:]_])" + esc + "([^[:alnum:]_]|$)/\\1\\2/' '" + tmp + "' | tr -s ' \\t' ' ' | sed -E 's/^ +| +$//g'"
+    let out = exec(cmd).trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    return out
+}
+
+fn dispatch_log_path() -> str {
+    let mut r = env("AIRGENOME_HOOK_ROOT")
+    if r == "" { r = env("CLAUDE_PROJECT_DIR") }
+    if r == "" { r = exec("pwd").trim() }
+    return r + "/.hook-dispatch.jsonl"
+}
+
+fn log_dispatch(cmd: str, keyword: str, seed: str, sess: str) -> void {
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let line = "{\"ts\":\"" + ts +
+               "\",\"session\":\"" + json_escape(sess) +
+               "\",\"command\":\"" + json_escape(cmd) +
+               "\",\"keyword\":\"" + json_escape(keyword) +
+               "\",\"seed\":\"" + json_escape(seed) +
+               "\",\"suggest\":\"nexus " + json_escape(cmd) + " '" + json_escape(seed) + "'\"}"
+    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + dispatch_log_path() + "'")
+}
+
+// UserPromptSubmit — risk keyword warn/hint + workspace keyword dispatch.
 fn user_prompt_entry(p: str) -> str {
-    let prompt = event_prompt(p).to_lower()
+    let prompt_raw = event_prompt(p)
+    let prompt = prompt_raw.to_lower()
+    let sess = event_session(p)
+
+    // (A) Risk warnings (existing behavior).
     if prompt.contains("rm -rf /") {
         return system_message_json("[warn] irreversible filesystem delete detected in prompt — double-check target path")
     }
@@ -81,6 +150,31 @@ fn user_prompt_entry(p: str) -> str {
     }
     if prompt.contains("secrets") {
         return system_message_json("[hint] prompt mentions secrets — prefer env vars / secret manager over inline values")
+    }
+
+    // (B) ~/core/.workspace keyword dispatch.
+    let tbl = workspace_keyword_table()
+    if tbl == "" { return allow_json() }
+    let rows = tbl.split("\n")
+    let mut ri = 0
+    while ri < rows.len() {
+        let row = rows[ri].trim()
+        ri = ri + 1
+        if row == "" { continue }
+        let cols = row.split("\t")
+        if cols.len() < 2 { continue }
+        let cmd = cols[0]
+        let mut ki = 1
+        while ki < cols.len() {
+            let kw = cols[ki].trim()
+            ki = ki + 1
+            if kw == "" { continue }
+            if word_boundary_match(prompt_raw, kw) == "1" {
+                let seed = strip_keyword(prompt_raw, kw)
+                log_dispatch(cmd, kw, seed, sess)
+                return allow_json()
+            }
+        }
     }
     return allow_json()
 }
