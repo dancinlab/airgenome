@@ -210,18 +210,20 @@ fn ensure_cmd_block(src: str, name: str, desc: str, entry: str, keywords: str) -
     return 1
 }
 
-// Idempotent: append a `resource <name>` block with the canonical 4-field
-// indent-based shape workspace_sync.hexa expects. sha256/bytes are written
-// as the literal string `auto` so workspace_sync backfills them from the
-// source file on the next run. Returns 1 if appended, 0 if already present.
-fn ensure_resource_block(src: str, name: str, source_path: str, consumers: str) -> int {
-    let check = "grep -qE '^resource " + name + "$' '" + src + "' && echo y || echo n"
+// Idempotent: append a `resource <name>` block with the source-file schema
+// workspace_sync.hexa expects (owner / source / kind / install). sha256
+// and bytes are lock-only fields — workspace_sync auto-generates them
+// from the source file; they must NOT appear in the source block.
+// Returns 1 if appended, 0 if already present.
+fn ensure_resource_block(src: str, name: str, desc: str, owner: str,
+                         source_rel: str, kind: str, install: str) -> int {
+    let check = "grep -qE '^resource " + name + " ' '" + src + "' && echo y || echo n"
     if exec(check).trim() == "y" { return 0 }
-    let block = "\nresource " + name + "\n" +
-                "  sha256  auto\n" +
-                "  bytes   auto\n" +
-                "  source  " + source_path + "\n" +
-                "  consumers " + consumers + "\n"
+    let block = "\nresource " + name + " \"" + desc + "\"\n" +
+                "  owner    " + owner + "\n" +
+                "  source   " + source_rel + "\n" +
+                "  kind     " + kind + "\n" +
+                "  install  " + install + "\n"
     let quoted = block.replace("'", "'\\''")
     let _ = exec("printf '%s' '" + quoted + "' >> '" + src + "'")
     println("[airgenome-init] added resource block: " + name)
@@ -229,25 +231,29 @@ fn ensure_resource_block(src: str, name: str, source_path: str, consumers: str) 
 }
 
 // Register airgenome-owned entries in ~/core/.workspace and regenerate the
-// lock so consumers pick them up:
-//   - commands scan / record (drill already registered upstream by nexus)
-//   - resource airgenome.hooks pointing at hooks/airgenome_hooks.json
-//     (the MCP-exposed hook guide) so any workspace consumer can discover
-//     which airgenome hooks exist without reading airgenome internals.
+// lock so consumers pick them up.
+//
+// scope boundary: only the `resource airgenome.hooks` entry belongs to
+// airgenome. Command blocks (drill/scan/record) share `bin nexus` and
+// workspace_sync enforces "1 bin = 1 command" — those are nexus's
+// responsibility to declare. airgenome-init previously tried to register
+// scan/record here and triggered bin-collision validation errors; the
+// responsibility is now correctly scoped to nexus.
 fn ensure_workspace_commands() -> void {
     let src = env("HOME") + "/core/.workspace"
     if file_exists(src) == false {
-        println("[airgenome-init] ~/core/.workspace not found — skipping keyword registration")
+        println("[airgenome-init] ~/core/.workspace not found — skipping resource registration")
         return
     }
-    let mut added = 0
-    added = added + ensure_cmd_block(src, "scan",   "code / config pattern scan",   "scan",   "scan, 스캔")
-    added = added + ensure_cmd_block(src, "record", "convergence entry recorder",   "record", "record, 기록, 수렴")
-    added = added + ensure_resource_block(src, "airgenome.hooks",
-                                          root() + "/hooks/airgenome_hooks.json",
-                                          "claude-code hive nexus")
+    let added = ensure_resource_block(src,
+                                      "airgenome.hooks",
+                                      "airgenome hook guide — MCP-exposed manifest",
+                                      "airgenome",
+                                      "hooks/airgenome_hooks.json",
+                                      "file",
+                                      "path")
     if added == 0 {
-        println("[airgenome-init] scan/record + airgenome.hooks already registered")
+        println("[airgenome-init] resource airgenome.hooks already registered")
         return
     }
     let syncer_dir = env("HOME") + "/core/hexa-lang"
