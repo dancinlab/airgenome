@@ -28,7 +28,7 @@
         "2. 병렬 Agent 발사 (run_in_background: true)",
         "3. 발사 테이블 ASCII 출력",
         "4. 전 Agent 완료 대기",
-        "5. hexa $NEXUS/tool/loop-guard.hexa --fix (정합 수정)",
+        "5. nexus loop-guard --fix (정합 수정)",
         "6. git add -A",
         "7. git commit -m 'go(...): 에이전트 N건 + loop 정합'",
         "8. git push"
@@ -164,7 +164,7 @@
         "8. git push",
         "9. 불일치 0건이면 종료, 아니면 5~8 반복"
       ],
-      "engine": "$NEXUS/tool/loop-guard.hexa",
+      "engine": "nexus loop-guard",
       "layers": {
         "L1": "CLAUDE.md 헤더 카운트 (종/편/개/건) vs 실제 파일 수",
         "L2": "_registry.json _total vs 배열 + 고아/유령 탐지",
@@ -186,12 +186,12 @@
         "list": {
           "keywords": ["list", "목록", "흐름"],
           "description": "현재 프로젝트 루프 흐름도 — 표1(공통 L1~L6) + 표2(프로젝트별 rules) 보여주기만",
-          "action": "hexa $NEXUS/tool/loop-guard.hexa (--fix 없이) → 결과를 표1+표2로 출력. 수정/커밋 안 함."
+          "action": "nexus loop-guard (--fix 없이) → 결과를 표1+표2로 출력. 수정/커밋 안 함."
         },
         "all": {
           "keywords": ["all", "전체"],
           "description": "전 프로젝트 루프 실행 — 각 프로젝트별 스캔→수정→커밋→푸시",
-          "action": "hexa $NEXUS/tool/loop-guard.hexa --all --fix → 각 프로젝트별 git add + commit + push"
+          "action": "nexus loop-guard --all --fix → 각 프로젝트별 git add + commit + push"
         },
         "add": {
           "keywords": ["add", "추가"],
@@ -354,7 +354,7 @@
       },
       "loop": {
         "when": ["go 루프 커밋 직전", "에이전트 다수 파일 생성 후", "레지스트리 불일치 의심 시"],
-        "bash": "hexa $NEXUS/tool/loop-guard.hexa --fix",
+        "bash": "nexus loop-guard --fix",
         "post": ["루프정합 0건 확인 또는 자동 수정 보고"]
       }
     },
