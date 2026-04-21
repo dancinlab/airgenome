@@ -15,9 +15,10 @@ fn observe_path() -> str {
     return root + "/.hook-observe.jsonl"
 }
 
-fn main() -> void {
-    let raw = read_event_json()
-    let p = dump_json(raw)
+// In-process entry called by hook_main dispatcher.
+// `p` = already-dumped event JSON tmp file (caller owns cleanup).
+// Returns the handler's JSON response verbatim (empty string or "{}" = pass).
+pub fn universal_audit_entry(p: str) -> str {
     let name = event_name(p)
     let sess = event_session(p)
     let cwd_ = event_cwd(p)
@@ -29,7 +30,16 @@ fn main() -> void {
                "\",\"cwd\":\"" + json_escape(cwd_) +
                "\",\"tool\":\"" + json_escape(tool) + "\"}"
     let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + observe_path() + "'")
+    return allow_json()
+}
+
+// Standalone: `hexa run universal_audit.hexa` for dev/test. Dispatcher path
+// (native binary) calls universal_audit_entry() directly in-process.
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let out = universal_audit_entry(p)
     let _ = exec("rm -f '" + p + "'")
-    println(allow_json())
+    println(out)
     exit(0)
 }

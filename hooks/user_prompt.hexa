@@ -26,22 +26,26 @@ fn rules() -> [KwRule] {
     ]
 }
 
-fn main() -> void {
-    let raw = read_event_json()
-    let p = dump_json(raw)
+// In-process entry for hook_main dispatcher. See universal_audit.hexa notes.
+pub fn user_prompt_entry(p: str) -> str {
     let prompt = event_prompt(p).to_lower()
-    let _ = exec("rm -f '" + p + "'")
-
     let rs = rules()
     let mut i = 0
     while i < rs.len() {
         let r = rs[i]
         if prompt.contains(r.needle) {
-            println(system_message_json("[" + r.level + "] " + r.advice))
-            exit(0)
+            return system_message_json("[" + r.level + "] " + r.advice)
         }
         i = i + 1
     }
-    println(allow_json())
+    return allow_json()
+}
+
+fn main() -> void {
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let out = user_prompt_entry(p)
+    let _ = exec("rm -f '" + p + "'")
+    println(out)
     exit(0)
 }

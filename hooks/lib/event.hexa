@@ -61,6 +61,11 @@ fn system_message_json(msg: str) -> str {
     return "{\"systemMessage\":\"" + json_escape(msg) + "\"}"
 }
 
+// Pass-through JSON. Claude Code treats `{}` as "continue, no special action".
+// NOTE: `{"decision":"allow"}` is INVALID — `"allow"` is NOT a valid decision
+// value in any hook schema (PreToolUse: approve|block; PostToolUse/Stop/etc:
+// block only). Emitting it triggers "Hook JSON output validation failed —
+// (root): Invalid input" in Claude Code.
 fn allow_json() -> str {
-    return "{\"decision\":\"allow\"}"
+    return "{}"
 }
