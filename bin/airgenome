@@ -332,8 +332,16 @@ cmd_disarm() {
 #   is-active <chain>                      — prints 1 or 0
 # State root: AIRGENOME_HOOK_ROOT > CLAUDE_PROJECT_DIR > pwd (raw#15).
 cmd_hook() {
-    [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
+    # Prefer AOT binary if present and fresher than the .hexa source —
+    # cuts per-hook cost from ~20s (stage0 lock-contended interpreter) to
+    # ~0.1s. Falls back to interpreter if binary is missing or stale.
     local shim="$AIRGENOME_ROOT/hooks/hook_cli_state.hexa"
+    local bin="$AIRGENOME_ROOT/bin/hook_cli_state"
+    if [ -x "$bin" ] && [ "$bin" -nt "$shim" ]; then
+        "$bin" "$@"
+        return $?
+    fi
+    [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
     if [ ! -f "$shim" ]; then
         echo "hook_cli_state.hexa missing: $shim" >&2
         return 1
