@@ -532,6 +532,104 @@ cmd_run() {
 }
 
 # ============================================================
+# list / offload — .workspace 기반 자원 조회 + 원격 dispatch (2026-04-21)
+# ============================================================
+INFRA_STATE="$HOME/core/nexus/infra_state.json"
+WORKSPACE_SRC="$HOME/core/.workspace"
+
+_offload_ssh_host() {
+    case "$1" in
+        ubu1|ubu)     echo "ubu" ;;
+        ubu2)         echo "ubu2" ;;
+        htz|hetzner)  echo "hetzner" ;;
+        *)            echo "" ;;
+    esac
+}
+
+_offload_state_key() {
+    case "$1" in
+        ubu1|ubu)     echo "ubu" ;;
+        ubu2)         echo "ubu2" ;;
+        htz|hetzner)  echo "htz" ;;
+        *)            echo "" ;;
+    esac
+}
+
+cmd_list() {
+    local kind="${1:-hosts}"
+    case "$kind" in
+        hosts|h|"")
+            if [ ! -f "$INFRA_STATE" ]; then
+                echo "[airgenome-list] infra_state.json 부재: $INFRA_STATE" >&2
+                return 1
+            fi
+            printf '%-10s %-10s %-10s %-8s %s\n' HOST STATUS LOAD CPU RAM
+            jq -r '.hosts | to_entries[] | [.key,(.value.status//"?"),((.value.load//((.value.cpu_pct|tostring)+"%"))|tostring),((.value.cpu_threads|tostring)+"T"),((.value.ram_used_mb|tostring)+"/"+(.value.ram_total_mb|tostring)+"MB")] | @tsv' "$INFRA_STATE" 2>/dev/null \
+              | awk -F'\t' '{printf "%-10s %-10s %-10s %-8s %s\n",$1,$2,$3,$4,$5}'
+            local ts
+            ts=$(jq -r '.ts // "?"' "$INFRA_STATE" 2>/dev/null)
+            echo "(probe ts: $ts)"
+            ;;
+        workspace|ws)
+            [ -f "$WORKSPACE_SRC" ] || { echo "[airgenome-list] .workspace 부재: $WORKSPACE_SRC" >&2; return 1; }
+            grep -E '^(resource|command) ' "$WORKSPACE_SRC"
+            ;;
+        projects|p)
+            grep -E '^member ' "$WORKSPACE_SRC" 2>/dev/null || echo "no projects"
+            ;;
+        *)
+            echo "usage: airgenome list [hosts|workspace|projects]" >&2
+            return 2
+            ;;
+    esac
+}
+
+cmd_offload() {
+    local target="${1:-}"
+    shift || true
+    if [ -z "$target" ] || [ $# -eq 0 ]; then
+        cat >&2 <<'HELP'
+usage: airgenome offload <target> <command...>
+
+targets:
+  ubu1 | ubu    — ssh alias: ubu     (12T CPU, GPU)
+  ubu2          — ssh alias: ubu2    (12T CPU)
+  htz | hetzner — ssh alias: hetzner (32T CPU)
+
+env:
+  AIRG_OFFLOAD_TIMEOUT=5   ssh ConnectTimeout seconds
+  AIRG_OFFLOAD_FORCE=1     skip offline-status pre-check
+
+examples:
+  airgenome offload ubu2 'uname -a && free -h'
+  airgenome offload htz  'bash ~/jobs/train.sh'
+  airgenome offload ubu1 'nvidia-smi'
+HELP
+        return 2
+    fi
+    local ssh_host state_key
+    ssh_host=$(_offload_ssh_host "$target")
+    state_key=$(_offload_state_key "$target")
+    if [ -z "$ssh_host" ]; then
+        echo "[airgenome-offload] unknown target: $target (ubu1|ubu2|htz)" >&2
+        return 2
+    fi
+    if [ -z "${AIRG_OFFLOAD_FORCE:-}" ] && [ -f "$INFRA_STATE" ] && command -v jq >/dev/null 2>&1; then
+        local status reason
+        status=$(jq -r ".hosts[\"$state_key\"].status // \"unknown\"" "$INFRA_STATE" 2>/dev/null)
+        if [ "$status" = "offline" ]; then
+            reason=$(jq -r ".hosts[\"$state_key\"].reason // \"\"" "$INFRA_STATE" 2>/dev/null)
+            echo "[airgenome-offload] REFUSE: $target=offline ($reason) — AIRG_OFFLOAD_FORCE=1 로 우회 가능" >&2
+            return 3
+        fi
+    fi
+    local to="${AIRG_OFFLOAD_TIMEOUT:-5}"
+    # Pass args joined with spaces — remote sh parses shell metacharacters naturally.
+    # Callers quote the full command as a single arg (examples in usage).
+    exec ssh -o ConnectTimeout="$to" -o BatchMode=yes "$ssh_host" "$*"
+}
+
+# ============================================================
 # entry
 # ============================================================
 
@@ -550,6 +648,8 @@ main() {
         status-line)   cmd_status_line ;;
         run)           cmd_run ;;
         last-session)  cmd_last_session ;;
+        list|ls)       cmd_list "$@" ;;
+        offload|off)   cmd_offload "$@" ;;
         guard-loop)    guard_loop ;;   # 독립 디버그용
         help|-h|--help)
             cat <<'EOF'
@@ -567,11 +667,15 @@ usage: airgenome <command>
   hooks <sub>    hook guide: list | show <name> | guide  (same SSOT as MCP airgenome://hooks/guide)
   run            supervisor loop (launchd 가 호출)
   last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
+  list [kind]    자원 목록 — hosts (live infra_state) | workspace | projects
+  offload <t> <cmd...>  원격 실행 — t: ubu1|ubu2|htz (ssh alias 경유)
   guard-loop     guard 만 독립 실행 (디버그)
 
 env:
   AIRGENOME_ROOT=/Users/ghost/Dev/airgenome
   HEXA=/Users/ghost/Dev/hexa-lang/hexa
+  AIRG_OFFLOAD_TIMEOUT=5    offload ssh ConnectTimeout
+  AIRG_OFFLOAD_FORCE=1      offload offline pre-check 우회
 
 flags:
   ~/.airgenome/guard_armed   — 존재 시 실제 kill
