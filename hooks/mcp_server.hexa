@@ -93,15 +93,50 @@ fn handle_tools_list(id: str) -> str {
              ",\"reason\":{\"type\":\"string\",\"description\":\"free-form release reason\"}}" +
              ",\"required\":[\"chain\",\"reason\"]" +
              ",\"additionalProperties\":false}}"
-    return mcp_result(id, "{\"tools\":[" + t1 + "," + t2 + "," + t3 + "]}")
+    let t4 = "{\"name\":\"hooks_list\"" +
+             ",\"description\":\"Return the airgenome hook guide as JSON: which MCP tool to use when and why, plus guidance patterns for common probabilistic failure modes (drift / stuck / decision / end-of-thread / cross-session). Consult when uncertain which hook applies.\"" +
+             ",\"inputSchema\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}}"
+    return mcp_result(id, "{\"tools\":[" + t1 + "," + t2 + "," + t3 + "," + t4 + "]}")
 }
 
 fn handle_resources_list(id: str) -> str {
-    let r = "{\"uri\":\"airgenome://drill/advice\"" +
-            ",\"name\":\"drill advice\"" +
-            ",\"description\":\"Markdown summary of up to 5 active commands, re-rendered every user turn by the airgenome transcript watcher.\"" +
-            ",\"mimeType\":\"text/markdown\"}"
-    return mcp_result(id, "{\"resources\":[" + r + "]}")
+    let r1 = "{\"uri\":\"airgenome://drill/advice\"" +
+             ",\"name\":\"drill advice\"" +
+             ",\"description\":\"Markdown summary of up to 5 active commands, re-rendered every user turn by the airgenome transcript watcher.\"" +
+             ",\"mimeType\":\"text/markdown\"}"
+    let r2 = "{\"uri\":\"airgenome://hooks/guide\"" +
+             ",\"name\":\"airgenome hook guide\"" +
+             ",\"description\":\"Which MCP tool to use when and why — the intended replacement for probabilistic recall. Consult at every non-trivial decision point.\"" +
+             ",\"mimeType\":\"text/markdown\"}"
+    return mcp_result(id, "{\"resources\":[" + r1 + "," + r2 + "]}")
+}
+
+fn airgenome_hooks_json_path() -> str {
+    let mut r = env("AIRGENOME_HOOK_ROOT")
+    if r == "" { r = env("CLAUDE_PROJECT_DIR") }
+    if r == "" { r = exec("pwd").trim() }
+    return r + "/hooks/airgenome_hooks.json"
+}
+
+// Render airgenome_hooks.json as a stable markdown guide. jq does the
+// heavy lifting; we just build the pipeline.
+fn render_hooks_guide() -> str {
+    let p = airgenome_hooks_json_path()
+    if file_exists(p) == false {
+        return "# airgenome hook guide\n\n_missing: " + p + "_\n"
+    }
+    let prog = "jq -r '" +
+        "\"# airgenome hook guide\\n\\n\" + .description + \"\\n\\n\" + " +
+        "\"## hooks\\n\\n\" + " +
+        "([.hooks[] | \"### \\(.name)  (`\\(.mcp_tool)`, \\(.kind))\\n\\n\" + " +
+            "\"**purpose:** \\(.purpose)\\n\\n\" + " +
+            "\"**when:**\\n\" + (.when | map(\"- \" + .) | join(\"\\n\")) + \"\\n\\n\" + " +
+            "\"**example:** `\\(.example)`\\n\" " +
+        "] | join(\"\\n\")) + " +
+        "\"\\n## guidance patterns\\n\\n\" + " +
+        "([.guidance[] | \"- **\\(.pattern)** → \\(.recommend)\"] | join(\"\\n\")) + \"\\n\"" +
+        "' '" + p + "' 2>/dev/null"
+    return exec(prog)
 }
 
 fn handle_prompts_list(id: str) -> str {
@@ -143,21 +178,37 @@ fn handle_tools_call(id: str, raw: str) -> str {
         lc_ui_title_update()
         return mcp_text_result(id, "ok: released chain=" + chain + " reason=" + reason)
     }
+    if name == "hooks_list" {
+        let p = airgenome_hooks_json_path()
+        let mut body = "{\"hooks\":[],\"guidance\":[]}"
+        if file_exists(p) {
+            let s = read_file(p).trim()
+            if s != "" { body = s }
+        }
+        return mcp_text_result(id, body)
+    }
     return mcp_error(id, -32601, "unknown tool: " + name)
 }
 
 fn handle_resources_read(id: str, raw: str) -> str {
     let uri = mcp_jq_str(raw, ".params.uri")
-    if uri != "airgenome://drill/advice" {
-        return mcp_error(id, -32602, "unknown resource uri: " + uri)
+    if uri == "airgenome://drill/advice" {
+        let p = lc_advice_path()
+        let mut text = "_no active commands_\n"
+        if file_exists(p) { text = read_file(p) }
+        let entry = "{\"uri\":\"" + lc_json_escape(uri) + "\"" +
+                    ",\"mimeType\":\"text/markdown\"" +
+                    ",\"text\":\"" + lc_json_escape(text) + "\"}"
+        return mcp_result(id, "{\"contents\":[" + entry + "]}")
     }
-    let p = lc_advice_path()
-    let mut text = "_no active commands_\n"
-    if file_exists(p) { text = read_file(p) }
-    let entry = "{\"uri\":\"" + lc_json_escape(uri) + "\"" +
-                ",\"mimeType\":\"text/markdown\"" +
-                ",\"text\":\"" + lc_json_escape(text) + "\"}"
-    return mcp_result(id, "{\"contents\":[" + entry + "]}")
+    if uri == "airgenome://hooks/guide" {
+        let text = render_hooks_guide()
+        let entry = "{\"uri\":\"" + lc_json_escape(uri) + "\"" +
+                    ",\"mimeType\":\"text/markdown\"" +
+                    ",\"text\":\"" + lc_json_escape(text) + "\"}"
+        return mcp_result(id, "{\"contents\":[" + entry + "]}")
+    }
+    return mcp_error(id, -32602, "unknown resource uri: " + uri)
 }
 
 // ─────────────────────────────────────────────────────────── id helper ──

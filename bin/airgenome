@@ -324,6 +324,48 @@ cmd_disarm() {
     log "guard disarmed (dry-run)"
 }
 
+# airgenome hooks {list|show <name>|guide}
+#   list     — one-line-per-hook table (name / kind / purpose)
+#   show N   — full JSON object for a single hook by name
+#   guide    — rendered markdown (same surface as MCP airgenome://hooks/guide)
+cmd_hooks() {
+    local sub="${1:-list}"
+    local f="$AIRGENOME_ROOT/hooks/airgenome_hooks.json"
+    if [ ! -f "$f" ]; then
+        echo "airgenome hook guide missing: $f" >&2
+        return 1
+    fi
+    case "$sub" in
+        list)
+            jq -r '.hooks[] | "\(.name)\t\(.kind)\t\(.purpose)"' "$f" |
+                column -t -s $'\t'
+            ;;
+        show)
+            local name="${2:-}"
+            if [ -z "$name" ]; then
+                echo "usage: airgenome hooks show <name>" >&2
+                return 2
+            fi
+            jq --arg n "$name" '.hooks[] | select(.name == $n)' "$f"
+            ;;
+        guide)
+            jq -r '"# airgenome hook guide\n\n" + .description + "\n\n## hooks\n\n" +
+                   ([.hooks[] |
+                     "### \(.name)  (`\(.mcp_tool)`, \(.kind))\n\n" +
+                     "**purpose:** \(.purpose)\n\n" +
+                     "**when:**\n" + (.when | map("- " + .) | join("\n")) + "\n\n" +
+                     "**example:** `\(.example)`\n"
+                    ] | join("\n")) +
+                   "\n## guidance patterns\n\n" +
+                   ([.guidance[] | "- **\(.pattern)** → \(.recommend)"] | join("\n")) + "\n"' "$f"
+            ;;
+        *)
+            echo "usage: airgenome hooks {list|show <name>|guide}" >&2
+            return 2
+            ;;
+    esac
+}
+
 cmd_logs() {
     local which="${1:-list}"
     case "$which" in
@@ -462,6 +504,7 @@ main() {
         arm)           cmd_arm ;;
         disarm)        cmd_disarm ;;
         logs)          cmd_logs "${1:-list}" ;;
+        hooks)         cmd_hooks "$@" ;;
         run)           cmd_run ;;
         last-session)  cmd_last_session ;;
         guard-loop)    guard_loop ;;   # 독립 디버그용
@@ -477,6 +520,7 @@ usage: airgenome <command>
   arm          runtime-guard live-kill on
   disarm       runtime-guard dry-run
   logs [m]       tail: guard|probe|dispatch|harvest|label|forecast|super|list
+  hooks <sub>    hook guide: list | show <name> | guide  (same SSOT as MCP airgenome://hooks/guide)
   run            supervisor loop (launchd 가 호출)
   last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
   guard-loop     guard 만 독립 실행 (디버그)
