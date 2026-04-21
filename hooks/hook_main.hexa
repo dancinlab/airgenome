@@ -162,17 +162,19 @@ fn run_command(cmd: str, matched_kw: str, prompt: str, keywords: [str], transcri
 
 // UserPromptSubmit — risk keyword warn/hint + workspace keyword dispatch.
 fn user_prompt_entry(p: str) -> str {
-    // Progression-window accounting: every user turn bumps the active stack
-    // and refreshes the external surfaces (advice md + terminal title sh).
-    // Runs before keyword dispatch so a fresh drill match shows the bumped
-    // turn count immediately.
-    lc_cmd_bump_turns_all()
-    lc_advice_render()
-    lc_ui_title_update()
-
     let prompt_raw = event_prompt(p)
     let prompt = prompt_raw.to_lower()
     let sess = event_session(p)
+
+    // Progression-window accounting: every user turn bumps the active stack,
+    // migrates the session field so cross-session carry-over keeps the chain
+    // stable, and refreshes the external surfaces (advice md + terminal
+    // title sh). Runs before keyword dispatch so a fresh match shows the
+    // bumped turn count immediately.
+    lc_cmd_bump_turns_all()
+    lc_cmd_resession(sess)
+    lc_advice_render()
+    lc_ui_title_update()
 
     // (A) Risk warnings (existing behavior).
     if prompt.contains("rm -rf /") {
@@ -585,10 +587,12 @@ fn watch_pass() -> void {
     }
     cursor_save(cur)
     // Release any active command past its turn budget (20) or wall-clock
-    // timeout (30 min). Defaults are intentionally conservative — release
-    // is cheap to redo (activate on next keyword match), but a stale stack
-    // leaks into every subsequent advice render.
-    lc_cmd_sweep(20, 1800)
+    // timeout (24h). The age budget is generous so cross-session carry-
+    // over works overnight: an unresolved drill from a Friday session
+    // is still on the stack when Monday's session opens, with the
+    // session field re-pointed by lc_cmd_resession at the first new
+    // UserPromptSubmit. Anything older than 24h is genuinely stale.
+    lc_cmd_sweep(20, 86400)
     lc_ui_title_update()
 }
 
