@@ -270,9 +270,37 @@ fn ensure_workspace_commands() -> void {
     println(out.trim())
 }
 
-// statusLine registration moved to global pointer (AG10) —
-// ~/.claude/settings.json → $NEXUS/tool/claude_statusline.hexa CWD router.
-// Per-project .claude/settings.json is forbidden; this init no longer writes it.
+// AG10 allowed exceptions — global ~/.claude/settings.json carries two pointers:
+//   - statusLine   → hexa-lang/gate/claude_statusline.hexa (passive UI display)
+//   - UserPromptSubmit hook → hexa-lang/gate/claude_prompt_hook.sh (deterministic
+//     dispatcher — reads stdin JSON .prompt, calls gate/entry.hexa)
+// Idempotent + conservative: statusLine set only if absent (user customization
+// wins); the hook is appended only when our exact command isn't already registered,
+// so any coexisting user hooks are preserved.
+// SSOT: airgenome/rules/airgenome.json#AG10 (statusline_pointer, bootstrap_hook).
+fn ensure_claude_bootstrap() -> void {
+    let p = env("HOME") + "/.claude/settings.json"
+    if file_exists(p) == false {
+        write_file(p, "{\n  \"hooks\": {},\n  \"permissions\": {}\n}\n")
+        println("[airgenome-init] ~/.claude/settings.json created (minimal)")
+    }
+    let sl_cmd  = "/Users/ghost/Dev/hexa-lang/hexa run /Users/ghost/Dev/hexa-lang/gate/claude_statusline.hexa"
+    let hk_cmd  = "/Users/ghost/Dev/hexa-lang/gate/claude_prompt_hook.sh"
+    let jq_prog = ".statusLine //= {type:\"command\",command:$sl,padding:0} | " +
+                  "(.hooks //= {}) | (.hooks.UserPromptSubmit //= []) | " +
+                  ".hooks.UserPromptSubmit |= (if any(.[]?.hooks[]?; .command == $hk) " +
+                  "then . else . + [{hooks:[{type:\"command\",command:$hk}]}] end)"
+    let cmd = "jq --arg sl '" + sl_cmd + "' --arg hk '" + hk_cmd + "' '" + jq_prog +
+              "' '" + p + "' > '" + p + ".tmp' && mv -f '" + p + ".tmp' '" + p + "'"
+    let out = exec(cmd)
+    let _ = out
+    let sl_check = exec("jq -r '.statusLine.command // \"\"' '" + p + "' 2>/dev/null").trim()
+    let hk_count = exec("jq -r '[.hooks.UserPromptSubmit // [] | .[] | .hooks // [] | .[] | select(.command == \"" + hk_cmd + "\")] | length' '" + p + "' 2>/dev/null").trim()
+    if sl_check == sl_cmd { println("[airgenome-init] statusLine → hexa-lang/gate/claude_statusline.hexa") }
+    else { println("[airgenome-init] statusLine unchanged (custom value preserved): " + sl_check) }
+    if hk_count == "1" { println("[airgenome-init] UserPromptSubmit hook → hexa-lang/gate/claude_prompt_hook.sh") }
+    else { println("[airgenome-init] WARN UserPromptSubmit hook not registered (count=" + hk_count + ")") }
+}
 
 fn main() -> void {
     println("[airgenome-init] root: " + root())
@@ -283,4 +311,5 @@ fn main() -> void {
     let mcp_bin = ensure_mcp_binary()
     ensure_mcp_json(mcp_bin)
     ensure_workspace_commands()
+    ensure_claude_bootstrap()
 }
