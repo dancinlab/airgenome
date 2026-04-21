@@ -105,8 +105,9 @@ fn _append_history(event: string) -> void {
     let d = _home() + "/core/airgenome/state"
     _ensure_dir(d)
     let path = d + "/rig_trend_history.jsonl"
-    let line = event + "\n"
-    let _ = exec("printf '%s' \"" + _esc(line) + "\" >> '" + path + "'")
+    // Bug fix (raw#10): _esc replaces \n with space, stripping line terminators.
+    // Pass _esc'd event (no embedded newline) and add the newline via printf.
+    let _ = exec("printf '%s\\n' \"" + _esc(event) + "\" >> '" + path + "'")
 }
 
 fn _render_event(cp: array, ts: string) -> string {
