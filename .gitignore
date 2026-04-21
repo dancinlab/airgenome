@@ -59,4 +59,7 @@ build/
 .hook-dispatch.jsonl
 .hook-watch.stdout.log
 .hook-watch.stderr.log
+.hook-advice.md
+.hook-ui-title.sh
+.hook-commands/
 hooks/.hook-audit
