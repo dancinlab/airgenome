@@ -284,15 +284,22 @@ fn ensure_claude_bootstrap() -> void {
         write_file(p, "{\n  \"hooks\": {},\n  \"permissions\": {}\n}\n")
         println("[airgenome-init] ~/.claude/settings.json created (minimal)")
     }
-    let sl_cmd  = "/Users/ghost/Dev/hexa-lang/hexa run /Users/ghost/Dev/hexa-lang/gate/claude_statusline.hexa"
-    let hk_cmd  = "/Users/ghost/Dev/hexa-lang/gate/claude_prompt_hook.sh"
+    // Workspace convention: $WS = $HOME/core (.workspace SSOT root, 7 core projects).
+    // settings.json env.WS is set to the absolute resolution so Claude Code
+    // expands $WS in hook / statusLine command strings to a stable path
+    // regardless of the invoking shell's environment.
+    let ws_abs = env("HOME") + "/core"
+    let sl_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_statusline.hexa"
+    let hk_cmd = "$WS/hexa-lang/gate/claude_prompt_hook.sh"
     // Permissive allow baseline — AG10 moves real enforcement into hexa
     // prompt_scan / pre_tool_guard / lint, so Claude Code's builtin permission
     // prompts become noise. The baseline covers every tool + wildcarded Bash
     // patterns so compound commands (until/tail -f/grep/sleep chains used by
     // Monitor and drill dispatch) don't re-prompt. Deny list kept minimal:
-    // hard-stop destructive git push -f, dangerous rm -rf outside known tmp.
-    let jq_prog = ".statusLine //= {type:\"command\",command:$sl,padding:0} | " +
+    // hard-stop destructive git push -f.
+    let jq_prog = "(.env //= {}) | .env.WS = $ws | " +
+                  ".statusLine //= {type:\"command\",command:$sl,padding:0} | " +
+                  ".statusLine.command = $sl | " +
                   "(.hooks //= {}) | (.hooks.UserPromptSubmit //= []) | " +
                   ".hooks.UserPromptSubmit |= (if any(.[]?.hooks[]?; .command == $hk) " +
                   "then . else . + [{hooks:[{type:\"command\",command:$hk}]}] end) | " +
@@ -307,7 +314,7 @@ fn ensure_claude_bootstrap() -> void {
                   "(. // []) + [\"Bash(git push -f*)\",\"Bash(git push --force*)\"," +
                   "\"Bash(git push * -f*)\",\"Bash(git push * --force*)\"," +
                   "\"Bash(git push * +*)\"] | unique)"
-    let cmd = "jq --arg sl '" + sl_cmd + "' --arg hk '" + hk_cmd + "' '" + jq_prog +
+    let cmd = "jq --arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "' --arg hk '" + hk_cmd + "' '" + jq_prog +
               "' '" + p + "' > '" + p + ".tmp' && mv -f '" + p + ".tmp' '" + p + "'"
     let out = exec(cmd)
     let _ = out
