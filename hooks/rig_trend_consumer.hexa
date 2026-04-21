@@ -1,0 +1,148 @@
+// hooks/rig_trend_consumer.hexa — rig_trend chain consumer (cp_shift / schedule_shift).
+//
+// PURPOSE
+//   roadmap_critical_path.hexa emits `airgenome hook touch rig_trend cp_shift
+//   <prev/now diff>` on every canonical-path change. This handler reads the
+//   latest rig_trend touches, summarises them into a per-repo advice file
+//   that Claude Code reads on the next prompt turn, and appends to a
+//   centralised trend history for offline analysis.
+//
+// INVOCATION
+//   Called periodically by launchd (dev.hexa-lang.roadmap-rig-trend.plist
+//   @ 300s) or on-demand by `airgenome hook run rig_trend-consumer`.
+//
+// OUTPUT
+//   <repo>/.hook-advice.md                   per-repo nudge (Claude reads)
+//   airgenome/state/rig_trend_history.jsonl  append-only audit
+//
+// CONSTRAINTS
+//   raw#9 hexa-only, raw#10 proof-carrying, raw#11 ai-native deterministic,
+//   raw#33 English-only output, raw#34 no backup files created.
+
+fn _home() -> string {
+    let h = env("HOME")
+    if len(h) > 0 { return h }
+    return to_string(exec("echo $HOME")).trim()
+}
+
+fn _repos() -> array {
+    return ["anima", "hexa-lang", "airgenome"]
+}
+
+fn _esc(s: string) -> string {
+    let mut r = s.replace("\\", "\\\\")
+    r = r.replace("\"", "\\\"")
+    r = r.replace("\n", " ")
+    r = r.replace("\r", "")
+    return r
+}
+
+fn _file_exists(p: string) -> bool {
+    let r = to_string(exec("test -f '" + p + "' && echo y || echo n")).trim()
+    return r == "y"
+}
+
+fn _current_cp() -> array {
+    let p = _home() + "/core/hexa-lang/state/critical_path_prev.json"
+    if !_file_exists(p) { return [] }
+    let txt = to_string(read_file(p))
+    let key = "\"critical_path\""
+    let ki = txt.index_of(key)
+    if ki < 0 { return [] }
+    let after = txt.substring(ki + len(key), len(txt))
+    let lb = after.index_of("[")
+    let rb = after.index_of("]")
+    if lb < 0 || rb < 0 || rb <= lb { return [] }
+    let body = after.substring(lb + 1, rb)
+    let mut out = []
+    let mut i = 0
+    while i < len(body) {
+        let c = body.substring(i, i + 1)
+        if c == "\"" {
+            let mut j = i + 1
+            while j < len(body) && body.substring(j, j + 1) != "\"" { j = j + 1 }
+            if j >= len(body) { break }
+            out.push(body.substring(i + 1, j))
+            i = j + 1
+        } else {
+            i = i + 1
+        }
+    }
+    return out
+}
+
+fn _now_iso() -> string {
+    return to_string(exec("date -u +%Y-%m-%dT%H:%M:%SZ")).trim()
+}
+
+fn _ensure_dir(p: string) -> void {
+    let _ = exec("mkdir -p '" + p + "' 2>/dev/null")
+}
+
+fn _write_advice(repo: string, cp: array, ts: string) -> void {
+    let root = _home() + "/core/" + repo
+    let path = root + "/.hook-advice.md"
+    let mut body = "<!-- airgenome rig_trend consumer nudge — generated "
+    body = body + ts + " -->\n\n"
+    body = body + "# Critical Path (canonical)\n\n"
+    body = body + "The cross-repo roadmap DAG critical path currently runs through these nodes.\n"
+    body = body + "Prioritise work that unblocks the head of this list; siblings in the DAG can run in parallel.\n\n"
+    let mut i = 0
+    while i < len(cp) {
+        body = body + to_string(i + 1) + ". `" + _esc(cp[i]) + "`\n"
+        i = i + 1
+    }
+    body = body + "\n"
+    body = body + "Sources:\n"
+    body = body + "- `hexa tool/roadmap_critical_path.hexa` (Brent/Graham longest path)\n"
+    body = body + "- `hexa tool/roadmap_progress_check.hexa` (raw#10 evidence probe per entry)\n"
+    body = body + "- `hexa tool/roadmap_ready_set.hexa` (Kahn ready-set with deadlock alarm)\n\n"
+    body = body + "_This file is overwritten on every rig_trend tick — do not hand-edit._\n"
+    let _ = write_file(path, body)
+}
+
+fn _append_history(event: string) -> void {
+    let d = _home() + "/core/airgenome/state"
+    _ensure_dir(d)
+    let path = d + "/rig_trend_history.jsonl"
+    let line = event + "\n"
+    let _ = exec("printf '%s' \"" + _esc(line) + "\" >> '" + path + "'")
+}
+
+fn _render_event(cp: array, ts: string) -> string {
+    let mut s = "{\"ts\":\"" + ts + "\""
+    s = s + ",\"chain\":\"rig_trend\""
+    s = s + ",\"kind\":\"cp_observed\""
+    s = s + ",\"critical_path_len\":" + to_string(len(cp))
+    s = s + ",\"head\":\""
+    if len(cp) > 0 { s = s + _esc(cp[0]) }
+    s = s + "\",\"tail\":\""
+    if len(cp) > 0 { s = s + _esc(cp[len(cp) - 1]) }
+    s = s + "\"}"
+    return s
+}
+
+fn main() -> int {
+    let cp = _current_cp()
+    let ts = _now_iso()
+    if len(cp) == 0 {
+        let msg = "{\"schema\":\"airgenome.rig_trend_consumer.v1\",\"ts\":\"" + ts + "\",\"status\":\"no_critical_path_snapshot\"}"
+        println(msg)
+        return 0
+    }
+    for repo in _repos() {
+        _write_advice(repo, cp, ts)
+    }
+    let event = _render_event(cp, ts)
+    _append_history(event)
+    let mut out = "{\"schema\":\"airgenome.rig_trend_consumer.v1\""
+    out = out + ",\"ts\":\"" + ts + "\""
+    out = out + ",\"status\":\"ok\""
+    out = out + ",\"critical_path_len\":" + to_string(len(cp))
+    out = out + ",\"repos_nudged\":" + to_string(len(_repos()))
+    out = out + "}"
+    println(out)
+    return 0
+}
+
+main()
