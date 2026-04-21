@@ -1,0 +1,92 @@
+// hooks/lib/audit.hexa — hash-chained append-only audit log (raw#10 proof-carrying)
+//
+// Format: TSV, append-only.
+//   TS \t EVENT \t PHASE \t HANDLER \t SHA_PREV \t SHA_CURR \t STATUS
+// GENESIS line:
+//   2026-04-21T00:00:00Z \t GENESIS \t - \t - \t - \t 0000...0000 \t INIT
+//
+// Chain rule:
+//   SHA_CURR = sha256( SHA_PREV + "\t" + TS + "\t" + EVENT + "\t" + PHASE + "\t" + HANDLER + "\t" + STATUS )
+// Verifier re-computes and compares with stored SHA_CURR column.
+
+let AUDIT_GENESIS_SHA = "0000000000000000000000000000000000000000000000000000000000000000"
+
+fn audit_path() -> str {
+    // Project-root-relative — resolved at call time via AIRGENOME_HOOK_ROOT or CLAUDE_PROJECT_DIR.
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root + "/.hook-audit"
+}
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+// Initialize audit log with GENESIS line if missing.
+fn audit_ensure_genesis() -> int {
+    let p = audit_path()
+    if file_exists(p) { return 0 }
+    let genesis = "2026-04-21T00:00:00Z\tGENESIS\t-\t-\t-\t" + AUDIT_GENESIS_SHA + "\tINIT"
+    let _ = exec("printf '%s\\n' '" + genesis + "' > '" + p + "'")
+    // Append-only flag (uappnd) — chflags on macOS; chattr +a on Linux.
+    let uname = exec("uname").trim()
+    if uname == "Darwin" {
+        let _ = exec("chflags uappnd '" + p + "' 2>/dev/null || true")
+    } else {
+        let _ = exec("chattr +a '" + p + "' 2>/dev/null || true")
+    }
+    return 0
+}
+
+// Read last SHA_CURR from audit (column 6, 1-based).
+fn audit_last_sha() -> str {
+    let p = audit_path()
+    if file_exists(p) == false { return AUDIT_GENESIS_SHA }
+    let last = exec("tail -n 1 '" + p + "' 2>/dev/null | awk -F'\\t' '{print $6}'").trim()
+    if last == "" { return AUDIT_GENESIS_SHA }
+    return last
+}
+
+// Compute sha256 of a string (portable: shasum -a 256).
+fn sha256_of(s: str) -> str {
+    // Avoid shell injection — write to temp file, hash, delete.
+    let tmp = exec("mktemp -t hx_sha.XXXXXX").trim()
+    let _ = exec("printf '%s' " + shell_quote(s) + " > '" + tmp + "'")
+    let out = exec("shasum -a 256 '" + tmp + "' 2>/dev/null | awk '{print $1}'").trim()
+    let _ = exec("rm -f '" + tmp + "'")
+    if out == "" { return AUDIT_GENESIS_SHA }
+    return out
+}
+
+// Single-quote shell escape.
+fn shell_quote(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+// Append one audit line. Returns the new SHA_CURR.
+fn audit_append(event: str, phase: str, handler: str, status: str) -> str {
+    audit_ensure_genesis()
+    let prev = audit_last_sha()
+    let ts = ts_iso()
+    let payload = prev + "\t" + ts + "\t" + event + "\t" + phase + "\t" + handler + "\t" + status
+    let curr = sha256_of(payload)
+    let line = ts + "\t" + event + "\t" + phase + "\t" + handler + "\t" + prev + "\t" + curr + "\t" + status
+    // uappnd files accept append only — use >> (O_APPEND). Quote safely.
+    let p = audit_path()
+    let _ = exec("printf '%s\\n' " + shell_quote(line) + " >> '" + p + "'")
+    return curr
+}
+
+// Verify chain: re-compute each line's SHA_CURR from stored SHA_PREV + fields.
+// Returns "OK" on success, "FAIL:<line_no>" on mismatch.
+fn audit_verify() -> str {
+    let p = audit_path()
+    if file_exists(p) == false { return "FAIL:0" }
+    // Use awk to walk lines and re-hash via shell. Keep hexa loop simple by
+    // delegating to a one-shot awk+shasum pipeline.
+    // Line-by-line verify using a bash loop — single-line string concatenation
+    // (hexa-lang stage1 doesn't accept multi-line `let = "a" + "b"` expressions).
+    let cmd = "i=0; ok=1; prev=\"" + AUDIT_GENESIS_SHA + "\"; while IFS=$'\\t' read -r ts ev ph hn sp sc st; do i=$((i+1)); if [ \"$ev\" = \"GENESIS\" ]; then prev=\"$sc\"; continue; fi; payload=\"$prev\\t$ts\\t$ev\\t$ph\\t$hn\\t$st\"; calc=$(printf '%s' \"$payload\" | shasum -a 256 | awk '{print $1}'); if [ \"$calc\" != \"$sc\" ]; then echo \"FAIL:$i\"; ok=0; break; fi; prev=\"$sc\"; done < '" + p + "'; [ $ok -eq 1 ] && echo OK"
+    return exec("bash -c " + shell_quote(cmd)).trim()
+}

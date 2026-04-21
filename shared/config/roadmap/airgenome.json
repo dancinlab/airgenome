@@ -415,6 +415,62 @@
       }
     },
     {
+      "id": "M15_claude_mem_safe",
+      "title": "Claude Code 세션 메모리 크래시 내성 — supervisor tick sync + latest pointer",
+      "priority": "P1",
+      "status": "active",
+      "started": "2026-04-21",
+      "deps": ["M14_single_entrypoint"],
+      "context": "2026-04-21 mac hard reset 시 Claude Code 세션 JSONL 이 fs 버퍼에 남아 손실 위험. 사용자 요청: '가장 최신걸로 기억할 수 있게'. supervisor 가 이미 60s tick 돌고 있으므로 추가 daemon 없이 편승.",
+      "exit_criteria": [
+        "bin/airgenome 의 claude_snapshot_tick() — 매 supervisor tick 실행",
+        "최신 mtime JSONL (~/.claude/projects/*/*.jsonl) 를 ~/.airgenome/claude-sessions/latest.txt 에 기록",
+        "sync(8) 호출 — 전체 파일시스템 버퍼 플러시 (크래시 손실창 최대 60s 로 제한)",
+        "서브커맨드 airgenome last-session — 최근 세션 path 출력 (복구 시)",
+        "airgenome status 에 latest session + mtime 표시"
+      ]
+    },
+    {
+      "id": "M14_single_entrypoint",
+      "title": "bin/airgenome — 단일 진입점 + 단일 LaunchAgent supervisor",
+      "priority": "P0",
+      "status": "active",
+      "started": "2026-04-21",
+      "deps": ["M13_runtime_guard"],
+      "context": "기존 5 module 5 plist (M7 계획) 산재 + runtime-guard 별도 plist → 관리 부담. 단일 entry point (bin/airgenome) 로 init/start/stop/status/arm/disarm/logs/run 서브커맨드 제공. 내부적으로 supervisor 가 runtime-guard fork + 5 module 주기 실행. com.airgenome.plist 하나만 launchctl bootstrap.",
+      "exit_criteria": [
+        "bin/airgenome 단일 bash 스크립트 — shellcheck clean",
+        "서브커맨드: init/start/stop/status/arm/disarm/logs/run",
+        "shared/launchagents/com.airgenome.plist — bin/airgenome run 호출, KeepAlive",
+        "runtime-guard.plist 제거 (supervisor 가 fork)",
+        "airgenome init → launchctl bootstrap 1회로 6개 모듈 실가동",
+        "airgenome status → 각 모듈 freshness + guard 최근 이벤트",
+        "airgenome arm/disarm → guard_armed flag 토글 원클릭"
+      ]
+    },
+    {
+      "id": "M13_runtime_guard",
+      "title": "runtime-guard — CPU/RSS runaway 예방 watchdog (bash, M14 supervisor 내 inline)",
+      "priority": "P0",
+      "status": "active",
+      "started": "2026-04-21",
+      "deps": [],
+      "context": "2026-04-21 10:33 hard reset (btn_seq_reset). 직전 hexa_stage0 CPU 93%×96s 자원 제한 위반 → 시스템 freeze → 전원버튼 강제리셋. pkill-audit 은 세션 SIGKILL 발원지 추적용으로 CPU/RAM 폭주는 범위 밖.",
+      "lang_decision": "bash (hexa 아님). 이유: hexa_stage0 shim 은 mkdir-lock 으로 전체 hexa 1-동시 직렬화 (2026-04-18 panic 방어). 장기실행 hexa guard 는 모든 다른 hexa 모듈을 블록. bash 는 lock 밖에서 2s 주기 ps/kill 을 자유롭게 실행.",
+      "exit_criteria": [
+        "bin/airgenome 의 guard_loop() 함수 — 2s 샘플 ps 스냅 + 상태 추적 + 조건부 SIGTERM/SIGKILL",
+        "임계치: CPU ≥85% × 15s→WARN, ×30s→SIGTERM, ×45s→SIGKILL",
+        "임계치: RSS ≥1.5GB × 30s→SIGTERM, ≥3GB 즉시 SIGKILL",
+        "survival exclude: pid 1(launchd) / kernel_task / WindowServer / loginwindow / guard 자신",
+        "arm 게이트: ~/.airgenome/guard_armed 파일 존재 시에만 실제 kill. 없으면 dry-run (로그만)",
+        "off 게이트: ~/.airgenome/guard_off 파일 존재 시 즉시 중단",
+        "audit: ~/.airgenome/runtime-guard.jsonl — start/stop/warn/term/kill 이벤트 JSON 한 줄씩",
+        "M14 supervisor (bin/airgenome run) 가 guard_loop 을 백그라운드 fork + 죽으면 재spawn",
+        "dry-run 1h 실측: false-positive 0건 (정상 프로세스 WARN/TERM 발생하지 않음)",
+        "armed 실가동 72h: 하드 리셋 재발 0건"
+      ]
+    },
+    {
       "id": "M12_dashboard",
       "title": "사람용 관찰 대시보드 (menubar + web)",
       "priority": "P3",
