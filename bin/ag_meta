@@ -14,6 +14,7 @@
 #   cost           Phase 3.9  compute cost proxy (log-lines × 0.1s / genome)
 #   dispatch       Phase 3.3  dispatch handler fire count (dead_handler)
 #   rules          Phase 3.4  rule fire count map (dormant_rule)
+#   motif          Phase 3.10 top-K (comm, rss_bucket) motifs per ring
 #   blockers       Phase 1    aggregated prioritized blocker inventory
 #   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
 #   doctor         aggregate: run all Phase 3 scanners in sequence
@@ -51,6 +52,7 @@ SCANNERS=(
     "compute_cost:tool/ag_compute_cost.hexa"
     "dispatch_coverage:tool/ag_dispatch_coverage.hexa"
     "rule_effect_map:tool/ag_rule_effect_map.hexa"
+    "mutation_motif:tool/ag_mutation_motif.hexa"
 )
 
 # Aggregator scanners — run *after* Phase 3 scanners so they see fresh state/.
@@ -79,6 +81,7 @@ cmd_velocity()   { _hexa "$(_scanner_path evolution_velocity)" "$@"; }
 cmd_cost()       { _hexa "$(_scanner_path compute_cost)" "$@"; }
 cmd_dispatch()   { _hexa "$(_scanner_path dispatch_coverage)" "$@"; }
 cmd_rules()      { _hexa "$(_scanner_path rule_effect_map)" "$@"; }
+cmd_motif()      { _hexa "$(_scanner_path mutation_motif)" "$@"; }
 cmd_blockers()   { _hexa "$(_scanner_path blockers)" "$@"; }
 cmd_roi()        { _hexa "$(_scanner_path roi)" "$@"; }
 
@@ -209,6 +212,7 @@ main() {
         cost)            cmd_cost "$@" ;;
         dispatch)        cmd_dispatch "$@" ;;
         rules)           cmd_rules "$@" ;;
+        motif)           cmd_motif "$@" ;;
         blockers)        cmd_blockers "$@" ;;
         roi)             cmd_roi "$@" ;;
         doctor)          cmd_doctor "$@" ;;

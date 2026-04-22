@@ -50,6 +50,41 @@ hexa run modules/forecast.hexa self-test
 hexa run modules/forecast.hexa
 ```
 
+## Meta-evolution engine
+
+12-tool self-observing scanner suite — design spec:
+[`docs/airgenome_meta_evolution_proposal_20260423.md`](docs/airgenome_meta_evolution_proposal_20260423.md).
+Read-only: ring/forge files are never mutated; outputs land in
+`state/ag_*.json` (gitignored).
+
+```bash
+bin/ag_meta help              # list subcommands
+bin/ag_meta selftest          # --selftest every scanner (fast path)
+bin/ag_meta doctor            # run all scanners + aggregators
+bin/ag_meta health            # 0-100 score from state/ag_*.json
+bin/ag_meta ring              # Phase 3.1  ring JSONL integrity
+bin/ag_meta forge             # Phase 3.2  forge log health
+bin/ag_meta dispatch          # Phase 3.3  handler fire count
+bin/ag_meta rules             # Phase 3.4  rule fire count map
+bin/ag_meta infra             # Phase 3.5  launchd/systemd/docker parity
+bin/ag_meta forecast          # Phase 3.6  forecast vs labeled_anomaly
+bin/ag_meta divergence        # Phase 3.7  3-ring Jaccard (pid/comm)
+bin/ag_meta velocity          # Phase 3.8  genome rate + drift
+bin/ag_meta cost              # Phase 3.9  compute cost proxy
+bin/ag_meta motif             # Phase 3.10 top-K process signatures
+bin/ag_meta blockers          # Phase 1    prioritized inventory
+bin/ag_meta roi               # Phase 2    loss-free cleanup candidates
+bin/ag_meta continuous-scan   # Phase 5    doctor + snapshot state/history/
+```
+
+Schedule continuous-scan every 12h via
+`config/launchd/com.airgenome.meta_continuous_scan.plist`:
+
+```bash
+cp config/launchd/com.airgenome.meta_continuous_scan.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.airgenome.meta_continuous_scan.plist
+```
+
 ## Archive
 
 v1 의 모든 코드는 [`archive/v1/`](archive/v1/) 에 동결. 부활 절차는 [`archive/v1/README.md`](archive/v1/README.md).
