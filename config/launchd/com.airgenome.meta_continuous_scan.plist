@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome meta-evolution Phase 5 continuous scanner.
+
+  Runs bin/ag_meta continuous-scan every 12 hours. The subcommand
+  executes all Phase 3 scanners + Phase 1/2 aggregators in sequence
+  and snapshots state/ag_*.json into state/history/<YYYY-MM-DD>/.
+
+  Install:
+    cp config/launchd/com.airgenome.meta_continuous_scan.plist \
+       ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$UID \
+       ~/Library/LaunchAgents/com.airgenome.meta_continuous_scan.plist
+
+  Remove:
+    launchctl bootout gui/$UID \
+       ~/Library/LaunchAgents/com.airgenome.meta_continuous_scan.plist
+    rm ~/Library/LaunchAgents/com.airgenome.meta_continuous_scan.plist
+
+  Paths assume the project is cloned at /Users/ghost/core/airgenome.
+  Override by editing WorkingDirectory and ProgramArguments[0] below.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.meta_continuous_scan</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/core/airgenome/bin/ag_meta</string>
+        <string>continuous-scan</string>
+    </array>
+
+    <!-- Every 12 hours (43200 seconds). Tunable per 20260423 proposal. -->
+    <key>StartInterval</key>
+    <integer>43200</integer>
+
+    <!-- Run once on load so operator sees initial result immediately. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Don't re-spawn faster than once per 5 min even if scanner crashes. -->
+    <key>ThrottleInterval</key>
+    <integer>300</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/.airgenome/meta_continuous_scan.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/.airgenome/meta_continuous_scan.stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost/core/airgenome</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HEXA_BIN</key>
+        <string>/Users/ghost/core/hexa-lang/hexa</string>
+    </dict>
+</dict>
+</plist>

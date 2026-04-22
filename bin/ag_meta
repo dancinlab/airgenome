@@ -14,6 +14,8 @@
 #   cost           Phase 3.9  compute cost proxy (log-lines × 0.1s / genome)
 #   dispatch       Phase 3.3  dispatch handler fire count (dead_handler)
 #   rules          Phase 3.4  rule fire count map (dormant_rule)
+#   blockers       Phase 1    aggregated prioritized blocker inventory
+#   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
 #   doctor         aggregate: run all Phase 3 scanners in sequence
 #   health         aggregate: print 0-100 score from state/ag_*.json
 #   selftest       run --selftest on every scanner
@@ -51,9 +53,15 @@ SCANNERS=(
     "rule_effect_map:tool/ag_rule_effect_map.hexa"
 )
 
+# Aggregator scanners — run *after* Phase 3 scanners so they see fresh state/.
+AGGREGATORS=(
+    "blockers:tool/ag_blockers.hexa"
+    "roi:tool/ag_roi.hexa"
+)
+
 _scanner_path() {
     local key="$1"
-    for entry in "${SCANNERS[@]}"; do
+    for entry in "${SCANNERS[@]}" "${AGGREGATORS[@]}"; do
         if [[ "${entry%%:*}" == "$key" ]]; then
             echo "${entry#*:}"
             return 0
@@ -71,10 +79,12 @@ cmd_velocity()   { _hexa "$(_scanner_path evolution_velocity)" "$@"; }
 cmd_cost()       { _hexa "$(_scanner_path compute_cost)" "$@"; }
 cmd_dispatch()   { _hexa "$(_scanner_path dispatch_coverage)" "$@"; }
 cmd_rules()      { _hexa "$(_scanner_path rule_effect_map)" "$@"; }
+cmd_blockers()   { _hexa "$(_scanner_path blockers)" "$@"; }
+cmd_roi()        { _hexa "$(_scanner_path roi)" "$@"; }
 
 cmd_doctor() {
     local rc=0
-    for entry in "${SCANNERS[@]}"; do
+    for entry in "${SCANNERS[@]}" "${AGGREGATORS[@]}"; do
         local key="${entry%%:*}"
         local path="${entry#*:}"
         echo "=== $key ==="
@@ -85,14 +95,15 @@ cmd_doctor() {
 
 cmd_selftest() {
     local rc=0
-    for entry in "${SCANNERS[@]}"; do
+    local all=("${SCANNERS[@]}" "${AGGREGATORS[@]}")
+    for entry in "${all[@]}"; do
         local key="${entry%%:*}"
         local path="${entry#*:}"
         echo "--- selftest: $key ---"
         if ! _hexa "$path" --selftest; then rc=$((rc + 1)); fi
     done
     if [[ $rc -eq 0 ]]; then
-        echo "ag_meta: all selftests PASS (${#SCANNERS[@]} scanners)"
+        echo "ag_meta: all selftests PASS (${#all[@]} tools)"
     else
         echo "ag_meta: $rc selftest FAILED" >&2
     fi
@@ -198,6 +209,8 @@ main() {
         cost)            cmd_cost "$@" ;;
         dispatch)        cmd_dispatch "$@" ;;
         rules)           cmd_rules "$@" ;;
+        blockers)        cmd_blockers "$@" ;;
+        roi)             cmd_roi "$@" ;;
         doctor)          cmd_doctor "$@" ;;
         health)          cmd_health "$@" ;;
         selftest)        cmd_selftest ;;
