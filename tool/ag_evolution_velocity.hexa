@@ -1,0 +1,103 @@
+// tool/ag_evolution_velocity.hexa — airgenome meta-evolution Phase 3.8.
+//
+// Measures genome production rate (records / hour) per ring, plus
+// rolling-window drift (7d mean vs last 24h).
+//
+// Input: forge/genomes*.ring (JSONL). Each line has "ts":"ISO8601".
+// We bucket ts by hour and count records/bucket, then:
+//   - recent_24h_total
+//   - recent_24h_rate = total / 24
+//   - last_7d_total   (total records in last 7d)
+//   - last_7d_rate    = total / (7 * 24)
+//   - drift_pct       = 100 * (24h_rate - 7d_rate) / max(7d_rate, 1e-9)
+//
+// A negative drift > 10% ⇒ velocity slowdown (issue).
+//
+// CLI
+//   hexa run tool/ag_evolution_velocity.hexa --selftest
+//   hexa run tool/ag_evolution_velocity.hexa [--dry-run] [--out PATH]
+
+use "tool/ag_common"
+
+// _count_within extracts ts and counts records with ts >= threshold.
+fn _count_within(path: string, threshold_iso: string) -> int {
+    if file_exists(path) == false { return 0 }
+    let cmd = "awk -v t=" + _sh_q(threshold_iso) + " 'match($0,/\"ts\":\"[^\"]+\"/){v=substr($0,RSTART+6,RLENGTH-7); if(v>=t) c++} END{print c+0}' " + _sh_q(path)
+    let out = to_string(exec(cmd)).trim()
+    if len(out) == 0 { return 0 }
+    return to_int(out)
+}
+
+fn _iso_minus_hours(hours: int) -> string {
+    return to_string(exec("date -u -v-" + to_string(hours) + "H +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d '-" + to_string(hours) + " hours' +'%Y-%m-%dT%H:%M:%SZ'")).trim()
+}
+
+fn _fmt_ratio(num: int, denom: int, dec: string) -> string {
+    if denom == 0 { return "0" + dec }
+    return to_string(exec("awk 'BEGIN{printf \"%." + dec + "f\", " + to_string(num) + "/" + to_string(denom) + "}'")).trim()
+}
+
+// _fmt_drift returns drift percentage, can be negative.
+fn _fmt_drift(recent_rate_num: int, recent_rate_denom: int, old_rate_num: int, old_rate_denom: int) -> string {
+    let cmd = "awk 'BEGIN{a=" + to_string(recent_rate_num) + "/" + to_string(recent_rate_denom) + "; b=" + to_string(old_rate_num) + "/" + to_string(old_rate_denom) + "; if(b<1e-9) b=1e-9; printf \"%.2f\", 100*(a-b)/b}'"
+    return to_string(exec(cmd)).trim()
+}
+
+fn _analyze_ring(name: string, path: string) -> string {
+    if file_exists(path) == false {
+        return "{\"name\":\"" + name + "\",\"present\":false}"
+    }
+    let iso_24h = _iso_minus_hours(24)
+    let iso_7d = _iso_minus_hours(168)
+    let c24 = _count_within(path, iso_24h)
+    let c7d = _count_within(path, iso_7d)
+    let rate24 = _fmt_ratio(c24, 24, "2")
+    let rate7d = _fmt_ratio(c7d, 168, "2")
+    let drift = _fmt_drift(c24, 24, c7d, 168)
+    return "{\"name\":\"" + name + "\",\"present\":true,\"count_24h\":" + to_string(c24) + ",\"count_7d\":" + to_string(c7d) + ",\"rate_24h_per_hour\":" + rate24 + ",\"rate_7d_per_hour\":" + rate7d + ",\"drift_pct\":" + drift + "}"
+}
+
+fn _selftest() -> int {
+    let tmpdir = "/tmp/ag_evolution_velocity_selftest"
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
+    let r = tmpdir + "/r.ring"
+    // 3 records with very old ts (>7d) + 2 with recent ts near now
+    let now = _iso_now()
+    let recent = to_string(exec("date -u -v-1H +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d '-1 hour' +'%Y-%m-%dT%H:%M:%SZ'")).trim()
+    let body = "{\"ts\":\"2020-01-01T00:00:00Z\",\"pid\":1}\n{\"ts\":\"2020-01-02T00:00:00Z\",\"pid\":2}\n{\"ts\":\"2020-01-03T00:00:00Z\",\"pid\":3}\n{\"ts\":\"" + recent + "\",\"pid\":4}\n{\"ts\":\"" + now + "\",\"pid\":5}\n"
+    write_file(r, body)
+    let rep = _analyze_ring("test", r)
+    let mut ok = true
+    if rep.contains("\"count_24h\":2") == false {
+        eprintln("ag_evolution_velocity: selftest FAIL — 24h count wrong: " + rep)
+        ok = false
+    }
+    if rep.contains("\"count_7d\":2") == false {
+        eprintln("ag_evolution_velocity: selftest FAIL — 7d count wrong: " + rep)
+        ok = false
+    }
+    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    if ok == false { return 1 }
+    println("ag_evolution_velocity: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+    let dry_run = _arg_flag(args, "--dry-run")
+    let out_path = _arg_value(args, "--out", "state/ag_evolution_velocity.json")
+
+    let rep_mac = _analyze_ring("mac", "forge/genomes.ring")
+    let rep_ubu = _analyze_ring("ubu", "forge/genomes.ubu.ring")
+    let rep_ubu2 = _analyze_ring("ubu2", "forge/genomes.ubu2.ring")
+
+    let body = "{\n  \"schema\": \"airgenome/ag_evolution_velocity/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"rings\": [\n    " + rep_mac + ",\n    " + rep_ubu + ",\n    " + rep_ubu2 + "\n  ]\n}\n"
+    if dry_run { println(body); exit(0) }
+    _ensure_state_dir()
+    try { write_file(out_path, body) } catch e {
+        eprintln("ag_evolution_velocity: write FAIL " + out_path); exit(1)
+    }
+    println("ag_evolution_velocity: wrote " + out_path)
+    exit(0)
+}

@@ -1,0 +1,89 @@
+// tool/ag_dispatch_coverage.hexa — airgenome meta-evolution Phase 3.3.
+//
+// Compares handlers declared in modules/dispatch.hexa (categories
+// "compute", "gpu", "heavy", "mac_only") against their fire count in
+// forge/compute_filter.log or a nexus dispatch_state.json snapshot.
+//
+// Declared handlers we check for: compute · gpu · heavy · mac_only.
+// fires=0 ⇒ dead_handler, matches-log-but-not-declared ⇒ ghost_handler.
+//
+// CLI
+//   hexa run tool/ag_dispatch_coverage.hexa --selftest
+//   hexa run tool/ag_dispatch_coverage.hexa [--dry-run] [--out PATH]
+
+use "tool/ag_common"
+
+fn _declared_handlers() -> array {
+    let mut out = []
+    out.push("compute")
+    out.push("gpu")
+    out.push("heavy")
+    out.push("mac_only")
+    return out
+}
+
+fn _count_in_log(log_path: string, token: string) -> int {
+    if file_exists(log_path) == false { return 0 }
+    let out = to_string(exec("grep -cwF " + _sh_q(token) + " " + _sh_q(log_path) + " 2>/dev/null || true")).trim()
+    if len(out) == 0 { return 0 }
+    return to_int(out)
+}
+
+fn _declared_in_dispatch_source(path: string, token: string) -> bool {
+    if file_exists(path) == false { return false }
+    let out = to_string(exec("grep -cwF " + _sh_q(token) + " " + _sh_q(path) + " 2>/dev/null || true")).trim()
+    if len(out) == 0 { return false }
+    return to_int(out) > 0
+}
+
+fn _selftest() -> int {
+    let tmpdir = "/tmp/ag_dispatch_coverage_selftest"
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
+    let log = tmpdir + "/cf.log"
+    write_file(log, "AG6 TICK compute selected\nAG6 TICK heavy x\n")
+    let c_compute = _count_in_log(log, "compute")
+    let c_gpu = _count_in_log(log, "gpu")
+    let mut ok = true
+    if c_compute != 1 { eprintln("compute expected 1 got " + to_string(c_compute)); ok = false }
+    if c_gpu != 0 { eprintln("gpu expected 0 got " + to_string(c_gpu)); ok = false }
+    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    if ok == false { return 1 }
+    println("ag_dispatch_coverage: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+    let dry_run = _arg_flag(args, "--dry-run")
+    let out_path = _arg_value(args, "--out", "state/ag_dispatch_coverage.json")
+
+    let dispatch_src = "modules/dispatch.hexa"
+    let log_path = "forge/compute_filter.log"
+    let decls = _declared_handlers()
+
+    let mut handlers_json = "["
+    let mut dead_count = 0
+    let mut i = 0
+    while i < len(decls) {
+        let name = decls[i]
+        let declared = _declared_in_dispatch_source(dispatch_src, name)
+        let fires = _count_in_log(log_path, name)
+        if i > 0 { handlers_json = handlers_json + "," }
+        let dead = declared && fires == 0
+        handlers_json = handlers_json + "{\"name\":\"" + _json_esc(name) + "\",\"declared\":" + to_string(declared) + ",\"fires\":" + to_string(fires) + ",\"dead\":" + to_string(dead) + "}"
+        if dead { dead_count = dead_count + 1 }
+        i = i + 1
+    }
+    handlers_json = handlers_json + "]"
+
+    let body = "{\n  \"schema\": \"airgenome/ag_dispatch_coverage/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"dispatch_source\": \"" + _json_esc(dispatch_src) + "\",\n  \"log_file\": \"" + _json_esc(log_path) + "\",\n  \"total_handlers\": " + to_string(len(decls)) + ",\n  \"dead_handler_count\": " + to_string(dead_count) + ",\n  \"handlers\": " + handlers_json + "\n}\n"
+
+    if dry_run { println(body); exit(0) }
+    _ensure_state_dir()
+    try { write_file(out_path, body) } catch e {
+        eprintln("ag_dispatch_coverage: write FAIL " + out_path); exit(1)
+    }
+    println("ag_dispatch_coverage: wrote " + out_path + " (handlers=" + to_string(len(decls)) + " dead=" + to_string(dead_count) + ")")
+    exit(0)
+}

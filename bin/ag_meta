@@ -10,6 +10,10 @@
 #   divergence     Phase 3.7  cross-ring Jaccard (pid/comm set overlap)
 #   forecast       Phase 3.6  forecast.jsonl vs labeled_anomaly.jsonl match rate
 #   infra          Phase 3.5  infra_state.json + launchd/systemd/docker parity
+#   velocity       Phase 3.8  genome production rate (24h vs 7d drift)
+#   cost           Phase 3.9  compute cost proxy (log-lines × 0.1s / genome)
+#   dispatch       Phase 3.3  dispatch handler fire count (dead_handler)
+#   rules          Phase 3.4  rule fire count map (dormant_rule)
 #   doctor         aggregate: run all Phase 3 scanners in sequence
 #   health         aggregate: print 0-100 score from state/ag_*.json
 #   selftest       run --selftest on every scanner
@@ -41,6 +45,10 @@ SCANNERS=(
     "ring_divergence:tool/ag_ring_divergence.hexa"
     "forecast_hit_rate:tool/ag_forecast_hit_rate.hexa"
     "infra_parity:tool/ag_infra_parity.hexa"
+    "evolution_velocity:tool/ag_evolution_velocity.hexa"
+    "compute_cost:tool/ag_compute_cost.hexa"
+    "dispatch_coverage:tool/ag_dispatch_coverage.hexa"
+    "rule_effect_map:tool/ag_rule_effect_map.hexa"
 )
 
 _scanner_path() {
@@ -59,6 +67,10 @@ cmd_forge()      { _hexa "$(_scanner_path forge_health)" "$@"; }
 cmd_divergence() { _hexa "$(_scanner_path ring_divergence)" "$@"; }
 cmd_forecast()   { _hexa "$(_scanner_path forecast_hit_rate)" "$@"; }
 cmd_infra()      { _hexa "$(_scanner_path infra_parity)" "$@"; }
+cmd_velocity()   { _hexa "$(_scanner_path evolution_velocity)" "$@"; }
+cmd_cost()       { _hexa "$(_scanner_path compute_cost)" "$@"; }
+cmd_dispatch()   { _hexa "$(_scanner_path dispatch_coverage)" "$@"; }
+cmd_rules()      { _hexa "$(_scanner_path rule_effect_map)" "$@"; }
 
 cmd_doctor() {
     local rc=0
@@ -111,6 +123,8 @@ cmd_health() {
     local ri="state/ag_ring_integrity.json"
     local fh="state/ag_forge_health.json"
     local rd="state/ag_ring_divergence.json"
+    local dc="state/ag_dispatch_coverage.json"
+    local rm_="state/ag_rule_effect_map.json"
     local parts=()
 
     if [[ -f "$ri" ]]; then
@@ -150,6 +164,22 @@ cmd_health() {
         parts+=("ring_divergence=absent")
     fi
 
+    if [[ -f "$dc" ]]; then
+        local dead
+        dead="$(grep -oE '"dead_handler_count": *[0-9]+' "$dc" | head -1 | grep -oE '[0-9]+')"
+        dead="${dead:-0}"
+        score=$((score - 3 * dead))
+        parts+=("dead_handlers=$dead")
+    fi
+
+    if [[ -f "$rm_" ]]; then
+        local dormant
+        dormant="$(grep -oE '"dormant_count": *[0-9]+' "$rm_" | head -1 | grep -oE '[0-9]+')"
+        dormant="${dormant:-0}"
+        score=$((score - 2 * dormant))
+        parts+=("dormant_rules=$dormant")
+    fi
+
     if [[ $score -lt 0 ]]; then score=0; fi
     printf 'ag_meta health: %d/100  (%s)\n' "$score" "$(IFS=' '; echo "${parts[*]}")"
     return 0
@@ -164,6 +194,10 @@ main() {
         divergence)      cmd_divergence "$@" ;;
         forecast)        cmd_forecast "$@" ;;
         infra)           cmd_infra "$@" ;;
+        velocity)        cmd_velocity "$@" ;;
+        cost)            cmd_cost "$@" ;;
+        dispatch)        cmd_dispatch "$@" ;;
+        rules)           cmd_rules "$@" ;;
         doctor)          cmd_doctor "$@" ;;
         health)          cmd_health "$@" ;;
         selftest)        cmd_selftest ;;

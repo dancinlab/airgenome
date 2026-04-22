@@ -1,0 +1,91 @@
+// tool/ag_rule_effect_map.hexa — airgenome meta-evolution Phase 3.4.
+//
+// Maps rules declared in rules/airgenome.json (IDs AG1, AG2, ...) to
+// their observed fire count in forge/compute_filter.log.
+//
+// A rule with 0 fires in 30d ⇒ dormant_rule (issue).
+//
+// CLI
+//   hexa run tool/ag_rule_effect_map.hexa --selftest
+//   hexa run tool/ag_rule_effect_map.hexa [--dry-run] [--out PATH]
+
+use "tool/ag_common"
+
+// _extract_rule_ids pulls unique "id" field values (pattern AG\d+) from rules file.
+fn _extract_rule_ids(path: string) -> array {
+    let mut out = []
+    if file_exists(path) == false { return out }
+    let raw = to_string(exec("grep -oE '\"id\": *\"AG[0-9]+\"' " + _sh_q(path) + " | grep -oE 'AG[0-9]+' | sort -u")).trim()
+    if len(raw) == 0 { return out }
+    let split = raw.split("\n")
+    let mut i = 0
+    while i < len(split) {
+        let v = split[i].trim()
+        if len(v) > 0 { out.push(v) }
+        i = i + 1
+    }
+    return out
+}
+
+fn _count_in_log(log_path: string, token: string) -> int {
+    if file_exists(log_path) == false { return 0 }
+    let out = to_string(exec("grep -cE '\\b" + token + "\\b' " + _sh_q(log_path) + " 2>/dev/null || true")).trim()
+    if len(out) == 0 { return 0 }
+    return to_int(out)
+}
+
+fn _selftest() -> int {
+    let tmpdir = "/tmp/ag_rule_effect_map_selftest"
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
+    let rules = tmpdir + "/rules.json"
+    write_file(rules, "{\"rules\":[{\"id\":\"AG1\",\"rule\":\"x\"},{\"id\":\"AG2\",\"rule\":\"y\"},{\"id\":\"AG3\",\"rule\":\"z\"}]}")
+    let log = tmpdir + "/cf.log"
+    write_file(log, "line about AG1 happening\nAG1 again\nAG3 fired\n")
+    let ids = _extract_rule_ids(rules)
+    let c1 = _count_in_log(log, "AG1")
+    let c2 = _count_in_log(log, "AG2")
+    let c3 = _count_in_log(log, "AG3")
+    let mut ok = true
+    if len(ids) != 3 { eprintln("ids expected 3 got " + to_string(len(ids))); ok = false }
+    if c1 != 2 { eprintln("AG1 expected 2 got " + to_string(c1)); ok = false }
+    if c2 != 0 { eprintln("AG2 expected 0 got " + to_string(c2)); ok = false }
+    if c3 != 1 { eprintln("AG3 expected 1 got " + to_string(c3)); ok = false }
+    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    if ok == false { return 1 }
+    println("ag_rule_effect_map: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+    let dry_run = _arg_flag(args, "--dry-run")
+    let out_path = _arg_value(args, "--out", "state/ag_rule_effect_map.json")
+
+    let rules_path = "rules/airgenome.json"
+    let log_path = "forge/compute_filter.log"
+    let ids = _extract_rule_ids(rules_path)
+
+    let mut rules_json = "["
+    let mut dormant = 0
+    let mut i = 0
+    while i < len(ids) {
+        let id = ids[i]
+        let fires = _count_in_log(log_path, id)
+        if i > 0 { rules_json = rules_json + "," }
+        rules_json = rules_json + "{\"id\":\"" + _json_esc(id) + "\",\"fires\":" + to_string(fires) + ",\"dormant\":" + to_string(fires == 0) + "}"
+        if fires == 0 { dormant = dormant + 1 }
+        i = i + 1
+    }
+    rules_json = rules_json + "]"
+
+    let body = "{\n  \"schema\": \"airgenome/ag_rule_effect_map/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"rules_file\": \"" + _json_esc(rules_path) + "\",\n  \"log_file\": \"" + _json_esc(log_path) + "\",\n  \"total_rules\": " + to_string(len(ids)) + ",\n  \"dormant_count\": " + to_string(dormant) + ",\n  \"rules\": " + rules_json + "\n}\n"
+
+    if dry_run { println(body); exit(0) }
+    _ensure_state_dir()
+    try { write_file(out_path, body) } catch e {
+        eprintln("ag_rule_effect_map: write FAIL " + out_path); exit(1)
+    }
+    println("ag_rule_effect_map: wrote " + out_path + " (rules=" + to_string(len(ids)) + " dormant=" + to_string(dormant) + ")")
+    exit(0)
+}
