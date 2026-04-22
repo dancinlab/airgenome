@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-22T15:52:11Z",
+  "updated_ts": "2026-04-22T15:54:31Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -108,6 +108,15 @@
       "user_status": "pending",
       "score_priority": 70,
       "submitted_ts": "2026-04-22T15:52:11Z"
+    },
+    {
+      "id": "agm-20260422-012",
+      "kind": "advisory",
+      "title": "10-repo proposal_inbox 확장 완료 (2026-04-23): hexa-os / papers / secret / contact 4 repo 신규 합류. .workspace member 에도 등록. sister_repos 매핑 전체 갱신.",
+      "from_repo": "hexa-lang",
+      "user_status": "pending",
+      "score_priority": 70,
+      "submitted_ts": "2026-04-22T15:54:31Z"
     }
   ],
   "proposals": [],
@@ -133,6 +142,22 @@
       "void": {
         "prefix": "vd",
         "inventory_path": "/Users/ghost/core/void/state/proposals/inventory.json"
+      },
+      "hexa-os": {
+        "prefix": "hxo",
+        "inventory_path": "/Users/ghost/core/hexa-os/state/proposals/inventory.json"
+      },
+      "papers": {
+        "prefix": "ppr",
+        "inventory_path": "/Users/ghost/core/papers/state/proposals/inventory.json"
+      },
+      "secret": {
+        "prefix": "sec",
+        "inventory_path": "/Users/ghost/core/secret/state/proposals/inventory.json"
+      },
+      "contact": {
+        "prefix": "cnt",
+        "inventory_path": "/Users/ghost/core/contact/state/proposals/inventory.json"
       }
     },
     "convention_loss_free_roi": "All ROI-category proposals must use 무손실 (loss-free) semantics — no regression, no user-visible break. Category tag: `loss_free_roi`.",
