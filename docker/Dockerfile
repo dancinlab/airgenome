@@ -55,20 +55,23 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && npm cache clean --force
 
 # ═══════════════════════════════════════════════════════════════════
-# Stage 3: Rust toolchain + hexa self-build
+# Stage 3: Rust toolchain + hexa (self-host, 사전 빌드된 linux ELF 복사)
 # ═══════════════════════════════════════════════════════════════════
+# hexa-lang 은 self-host 컴파일러 (Cargo 아님). 이미 빌드된 linux/amd64
+# 바이너리 `hexa-lang/build/hexa_stage0.linux` (Apr19+ bitwise 지원) 를
+# 직접 COPY. 이미지 내 재빌드는 `hexa build self/main.hexa` 로 가능.
 FROM node AS rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-      sh -s -- -y --default-toolchain stable --profile minimal \
-        --component rustfmt clippy
+      sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}" CARGO_TERM_COLOR=always
 
-# hexa source (full tree for in-container rebuild)
+# hexa source (full tree, 이미지 내 재빌드 가능)
 COPY hexa-lang/ /opt/hexa-lang/
-RUN cd /opt/hexa-lang \
- && cargo build --release \
- && install -m 755 target/release/hexa /usr/local/bin/hexa_real \
- && ln -sf /usr/local/bin/hexa_real /usr/local/bin/hexa
+# 사전 빌드 바이너리 → /usr/local/bin/
+COPY hexa-lang/build/hexa_stage0.linux /usr/local/bin/hexa_real
+RUN chmod +x /usr/local/bin/hexa_real \
+ && ln -sf /usr/local/bin/hexa_real /usr/local/bin/hexa \
+ && ln -sf /usr/local/bin/hexa_real /usr/local/bin/hexa_stage0
 
 # ═══════════════════════════════════════════════════════════════════
 # Stage 4: final — repos + runtime
@@ -88,7 +91,7 @@ RUN mkdir -p /root/.hx/bin /root/.hx/packages /workspace /root/.airgenome \
       -type f 2>/dev/null -exec chmod +x {} \; || true
 
 # sshd config
-COPY docker/sshd_config /etc/ssh/sshd_config.d/airgenome.conf
+COPY airgenome/docker/sshd_config /etc/ssh/sshd_config.d/airgenome.conf
 RUN mkdir -p /var/run/sshd /root/.ssh && chmod 700 /root/.ssh
 
 ENV PATH="/opt/airgenome/bin:/opt/nexus/bin:/opt/nexus/scripts/bin:/root/.hx/bin:/root/.cargo/bin:${PATH}" \
