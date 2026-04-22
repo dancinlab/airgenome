@@ -8,6 +8,8 @@
 #   ring           Phase 3.1  ring JSONL integrity (3 host parallel rings)
 #   forge          Phase 3.2  forge log health (compute_filter / lb / settings_guard)
 #   divergence     Phase 3.7  cross-ring Jaccard (pid/comm set overlap)
+#   forecast       Phase 3.6  forecast.jsonl vs labeled_anomaly.jsonl match rate
+#   infra          Phase 3.5  infra_state.json + launchd/systemd/docker parity
 #   doctor         aggregate: run all Phase 3 scanners in sequence
 #   health         aggregate: print 0-100 score from state/ag_*.json
 #   selftest       run --selftest on every scanner
@@ -37,6 +39,8 @@ SCANNERS=(
     "ring_integrity:tool/ag_ring_integrity.hexa"
     "forge_health:tool/ag_forge_health.hexa"
     "ring_divergence:tool/ag_ring_divergence.hexa"
+    "forecast_hit_rate:tool/ag_forecast_hit_rate.hexa"
+    "infra_parity:tool/ag_infra_parity.hexa"
 )
 
 _scanner_path() {
@@ -53,6 +57,8 @@ _scanner_path() {
 cmd_ring()       { _hexa "$(_scanner_path ring_integrity)" "$@"; }
 cmd_forge()      { _hexa "$(_scanner_path forge_health)" "$@"; }
 cmd_divergence() { _hexa "$(_scanner_path ring_divergence)" "$@"; }
+cmd_forecast()   { _hexa "$(_scanner_path forecast_hit_rate)" "$@"; }
+cmd_infra()      { _hexa "$(_scanner_path infra_parity)" "$@"; }
 
 cmd_doctor() {
     local rc=0
@@ -156,6 +162,8 @@ main() {
         ring)            cmd_ring "$@" ;;
         forge)           cmd_forge "$@" ;;
         divergence)      cmd_divergence "$@" ;;
+        forecast)        cmd_forecast "$@" ;;
+        infra)           cmd_infra "$@" ;;
         doctor)          cmd_doctor "$@" ;;
         health)          cmd_health "$@" ;;
         selftest)        cmd_selftest ;;
