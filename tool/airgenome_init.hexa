@@ -27,6 +27,10 @@
 //      canonical shape (wildcard allow + git-push-force deny + additional-
 //      Directories ["/"]). cl-settings is the L0 CORE SSOT normalizer
 //      (chflags uchg); airgenome-init invokes it but never modifies it.
+//   9. Install L1+L2 settings.json drift defense (ensure_settings_guard):
+//      apply chflags uchg and bootstrap com.airgenome.settings-guard.plist
+//      (WatchPaths → tool/settings_guard.hexa). Pairs with H-BYPASS-DRIFT
+//      in hexa-lang/gate/enforcement_registry.json (L4 declarative layer).
 //
 // What it does NOT do:
 //   - Require Claude Code CLI hook protocol.
@@ -322,6 +326,94 @@ fn ensure_claude_bootstrap() -> void {
     println("[airgenome-init] ~/.claude/settings.json ← rendered whole (env + hooks + statusLine + push-force deny)")
 }
 
+// L1+L2 글로벌 settings.json 방어 레이어. H-BYPASS-DRIFT (enforcement_registry)
+// 와 짝. main() 에서 ensure_claude_bootstrap() 다음에 호출됨.
+//   L1  chflags uchg ~/.claude/settings.json        BSD 불변 플래그
+//   L2  com.airgenome.settings-guard.plist          launchd WatchPaths 재잠금
+//       → tool/settings_guard.hexa 실행
+// 멱등: 이미 uchg 면 chflags no-op. plist 내용 동일하면 launchctl reload 생략.
+fn settings_guard_label() -> str { return "com.airgenome.settings-guard" }
+
+fn settings_guard_plist_path() -> str {
+    return env("HOME") + "/Library/LaunchAgents/" + settings_guard_label() + ".plist"
+}
+
+fn render_settings_guard_plist() -> str {
+    let hexa_bin = env("HOME") + "/.hx/bin/hexa"
+    let tool = root() + "/tool/settings_guard.hexa"
+    let settings = env("HOME") + "/.claude/settings.json"
+    let stdout_log = root() + "/forge/settings_guard.stdout.log"
+    let stderr_log = root() + "/forge/settings_guard.stderr.log"
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+           "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
+           "<plist version=\"1.0\"><dict>\n" +
+           "  <key>Label</key><string>" + settings_guard_label() + "</string>\n" +
+           "  <key>ProgramArguments</key>\n" +
+           "  <array>\n" +
+           "    <string>" + hexa_bin + "</string>\n" +
+           "    <string>run</string>\n" +
+           "    <string>" + tool + "</string>\n" +
+           "  </array>\n" +
+           "  <key>WatchPaths</key>\n" +
+           "  <array>\n" +
+           "    <string>" + settings + "</string>\n" +
+           "  </array>\n" +
+           "  <key>RunAtLoad</key><true/>\n" +
+           "  <key>ThrottleInterval</key><integer>5</integer>\n" +
+           "  <key>StandardOutPath</key><string>" + stdout_log + "</string>\n" +
+           "  <key>StandardErrorPath</key><string>" + stderr_log + "</string>\n" +
+           "  <key>WorkingDirectory</key><string>" + root() + "</string>\n" +
+           "  <key>EnvironmentVariables</key>\n" +
+           "  <dict>\n" +
+           "    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>\n" +
+           "    <key>HOME</key><string>" + env("HOME") + "</string>\n" +
+           "    <key>LANG</key><string>en_US.UTF-8</string>\n" +
+           "    <key>HEXA_LANG</key><string>" + env("HOME") + "/core/hexa-lang</string>\n" +
+           "  </dict>\n" +
+           "  <key>ProcessType</key><string>Background</string>\n" +
+           "  <key>Nice</key><integer>10</integer>\n" +
+           "  <key>LowPriorityIO</key><true/>\n" +
+           "</dict></plist>\n"
+}
+
+fn ensure_settings_guard() -> void {
+    let settings = env("HOME") + "/.claude/settings.json"
+    if file_exists(settings) == false {
+        println("[airgenome-init] " + settings + " missing — skipping settings-guard")
+        return
+    }
+    // L1: chflags uchg (멱등). 실패해도 L2 로 커버.
+    let flag = exec("ls -lO '" + settings + "' 2>/dev/null | awk '{print $5}'").trim()
+    if flag != "uchg" {
+        let _ = exec("chflags uchg '" + settings + "' 2>&1")
+        println("[airgenome-init] chflags uchg applied → " + settings)
+    } else {
+        println("[airgenome-init] " + settings + " already uchg")
+    }
+    // L2: launchd agent plist 설치 + bootstrap.
+    let p = settings_guard_plist_path()
+    let _ = exec("mkdir -p '" + env("HOME") + "/Library/LaunchAgents'")
+    let _ = exec("mkdir -p '" + root() + "/forge'")
+    let rendered = render_settings_guard_plist()
+    let current = ""
+    if file_exists(p) { current = read_file(p) }
+    let needs_reload = current != rendered
+    if needs_reload {
+        write_file(p, rendered)
+        println("[airgenome-init] wrote " + p)
+    } else {
+        println("[airgenome-init] " + p + " already up-to-date")
+    }
+    // bootstrap (idempotent via bootout-then-bootstrap).
+    let _ = exec("launchctl bootout gui/$(id -u)/" + settings_guard_label() + " 2>/dev/null || true")
+    let out = exec("launchctl bootstrap gui/$(id -u) '" + p + "' 2>&1").trim()
+    if out == "" {
+        println("[airgenome-init] launchctl bootstrap " + settings_guard_label() + " ok")
+    } else {
+        println("[airgenome-init] launchctl: " + out)
+    }
+}
+
 // bin/cl-settings — L0 CORE (chflags uchg) SSOT normalizer for
 // ~/.claude/settings.json. Enforces wildcard allow + git-push-force deny +
 // additionalDirectories ["/"]; strips defaultMode:bypassPermissions and
@@ -354,4 +446,5 @@ fn main() -> void {
     ensure_mcp_json(mcp_bin)
     ensure_workspace_commands()
     ensure_claude_bootstrap()
+    ensure_settings_guard()
 }

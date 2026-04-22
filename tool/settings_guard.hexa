@@ -1,0 +1,49 @@
+// tool/settings_guard.hexa — L1-L3 글로벌 settings.json 방어 L2 레이어.
+//
+// 책임: ~/.claude/settings.json 의 BSD uchg 불변 플래그를 유지.
+// ~/Library/LaunchAgents/com.airgenome.settings-guard.plist (WatchPaths)
+// 에서 호출. 파일 속성/내용 변경이 감지될 때마다 발화하여 uchg 재적용.
+//
+// 멱등: 이미 uchg 면 no-op → ThrottleInterval 5s 하에서 무한 루프 방지.
+//
+// 방어 스택:
+//   L1  chflags uchg                     (초기 잠금, 이 도구가 설치)
+//   L2  launchd WatchPaths → 이 도구      (잠금 해제 감지 시 재잠금)
+//   L3  airgenome_init.hexa               (SSOT 렌더)
+//   L4  enforcement_registry H-BYPASS-DRIFT (전체 레이어 SSOT 선언)
+
+fn settings_path() -> str {
+    return env("HOME") + "/.claude/settings.json"
+}
+
+fn has_uchg() -> bool {
+    let p = settings_path()
+    if file_exists(p) == false { return false }
+    let out = exec("ls -lO '" + p + "' 2>/dev/null | awk '{print $5}'").trim()
+    return out == "uchg"
+}
+
+fn apply_uchg() -> void {
+    let p = settings_path()
+    let _ = exec("chflags uchg '" + p + "' 2>&1")
+}
+
+fn main() -> void {
+    let p = settings_path()
+    if file_exists(p) == false {
+        println("[settings-guard] " + p + " missing — nothing to lock")
+        return
+    }
+    if has_uchg() {
+        println("[settings-guard] uchg intact — no-op")
+        return
+    }
+    println("[settings-guard] uchg missing — re-locking " + p)
+    apply_uchg()
+    if has_uchg() {
+        println("[settings-guard] uchg re-applied")
+    } else {
+        println("[settings-guard] ERROR: chflags uchg failed")
+        exit(1)
+    }
+}
