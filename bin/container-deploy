@@ -1,0 +1,60 @@
+#!/bin/bash
+# container-deploy — race-free fat image deploy on a host
+# 2026-04-22: try-restart 후 wrapper pre-flight (4-6s) 가 race window 만들어서
+# 직후 docker inspect 가 "no such object" 보고함. 이걸 30s polling 으로 제거.
+#
+# Usage: container-deploy <ssh-target> [tag]
+#   container-deploy ubu1                  # uses :fat
+#   container-deploy aiden@100.96.193.56 fat
+#
+# Exit: 0 = healthy with new digest, 2 = timed out, 3 = digest mismatch
+
+set -eu
+
+TARGET="${1:?usage: container-deploy <ssh-target> [tag]}"
+TAG="${2:-fat}"
+IMAGE="ghcr.io/need-singularity/airgenome:${TAG}"
+NAME="airgenome-claude"
+TIMEOUT="${DEPLOY_TIMEOUT:-60}"
+
+ssh_q() { ssh -o BatchMode=yes -o ConnectTimeout=8 "$@"; }
+
+echo ">>> [1/4] pull $IMAGE on $TARGET"
+PULL_OUT=$(ssh_q "$TARGET" "docker pull $IMAGE 2>&1 | tail -3" || true)
+echo "$PULL_OUT"
+NEW_DIGEST=$(echo "$PULL_OUT" | grep -oE 'sha256:[0-9a-f]{12,}' | head -1)
+[ -z "$NEW_DIGEST" ] && {
+  # already up-to-date 경로 — local 에서 digest 추출
+  NEW_DIGEST=$(ssh_q "$TARGET" "docker inspect --format '{{.Id}}' $IMAGE 2>/dev/null") || true
+}
+echo "    new digest: ${NEW_DIGEST:-unknown}"
+
+echo ">>> [2/4] systemctl try-restart $NAME (user scope)"
+ssh_q "$TARGET" "systemctl --user try-restart ${NAME}.service" 2>&1 || \
+  ssh_q "$TARGET" "sudo systemctl try-restart ${NAME}.service" 2>&1 || true
+
+echo ">>> [3/4] poll for container with new digest (timeout ${TIMEOUT}s)"
+deadline=$(( $(date +%s) + TIMEOUT ))
+last_state=""
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  state=$(ssh_q "$TARGET" "docker inspect $NAME --format '{{.State.Status}}|{{.State.Health.Status}}|{{.Image}}' 2>/dev/null" || echo "missing||")
+  if [ "$state" != "$last_state" ]; then
+    echo "    [$(date +%H:%M:%S)] $state"
+    last_state="$state"
+  fi
+  status=$(echo "$state" | cut -d'|' -f1)
+  health=$(echo "$state" | cut -d'|' -f2)
+  digest=$(echo "$state" | cut -d'|' -f3)
+  if [ "$status" = "running" ] && [ "$health" = "healthy" ]; then
+    echo ">>> [4/4] container running + healthy"
+    if [ -n "$NEW_DIGEST" ] && [ "$digest" != "$NEW_DIGEST" ]; then
+      echo "!!! digest mismatch: container=$digest expected=$NEW_DIGEST" >&2
+      exit 3
+    fi
+    exit 0
+  fi
+  sleep 2
+done
+
+echo "!!! deploy timed out after ${TIMEOUT}s — last state: $last_state" >&2
+exit 2
