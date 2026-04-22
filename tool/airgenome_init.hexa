@@ -4,6 +4,28 @@
 //   hexa run tool/airgenome_init.hexa
 //
 // Idempotent. Safe to re-run.
+
+// @convergence-start
+// state: ossified
+// id: SSH_CONTROLMASTER_OFF
+// value: ~/.ssh/config 의 airgenome 호스트 8개 블록
+//        (ubu/ubu1, ubu-ts, ubu2, ubu2-relay, hetzner/htz/htz1,
+//        ubu-d/ubu1-d, ubu2-d, htz-d) ControlMaster=no 로 고정.
+//        ControlPath 라인은 ssh_config 상 무시되므로 diff 최소화 위해
+//        건드리지 않는다.
+// threshold: rsync/ssh 가 이 호스트들로 연결할 때 ControlPath 소켓
+//        공유 실패로 인한 EIO / "Operation not permitted" 0 건.
+// rationale: 2026-04-22 — Claude Code 샌드박스에서 docker/build 의
+//        rsync 가 ControlMaster auto 소켓 공유를 실패시켜 원격 빌드
+//        offload 가 중단됐다. offload 본 경로는 c14be1ec 에서 이미
+//        per-call `-o ControlMaster=no -o ControlPath=none` 로 우회해
+//        뒀지만, rsync/lb/executor/remote_load/stress/host 등 다른
+//        ssh 호출 10+ 군데는 옵션 미지정 상태였다. 분산 패턴을
+//        반복하는 대신 ~/.ssh/config 를 중앙 SSOT 로 삼아 Host
+//        블록만 수정하는 것이 min-path. 성능 손해 (연결마다 TCP/auth
+//        재수립, 0.1~0.5s) 는 허용 가능.
+// ossified_at: 2026-04-22
+// @convergence-end
 //
 // What it does:
 //   1. Build build/hook native binary (skip if already fresh).
