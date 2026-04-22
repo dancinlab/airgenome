@@ -1,0 +1,52 @@
+{
+  "schema": "airgenome.proposal_inventory.v1",
+  "id_prefix": "agm",
+  "updated_ts": "2026-04-22T15:26:50Z",
+  "entries": [
+    {
+      "id": "agm-20260422-001",
+      "kind": "tool",
+      "title": "own_stack bootstrap — airgenome 자체 proposal-inventory 체계",
+      "from_repo": "anima",
+      "user_status": "pending",
+      "score_priority": 70,
+      "submitted_ts": "2026-04-22T15:26:48Z",
+      "prompt_ref": "docs/upstream_notes/own_stack_bootstrap_airgenome.md"
+    },
+    {
+      "id": "agm-20260422-002",
+      "kind": "cluster",
+      "title": "ROI 항목 '무손실 ROI' 카테고리 재태깅 audit (forge 측 ROI entries)",
+      "from_repo": "hexa-lang",
+      "user_status": "pending",
+      "score_priority": 60,
+      "submitted_ts": "2026-04-22T15:26:50Z",
+      "category": "loss_free_roi"
+    }
+  ],
+  "proposals": [],
+  "_meta": {
+    "owner_repo": "airgenome",
+    "sister_repos": {
+      "anima": {
+        "prefix": "anima",
+        "inventory_path": "/Users/ghost/core/anima/state/proposals/inventory.json"
+      },
+      "nexus": {
+        "prefix": "nxs",
+        "inventory_path": "/Users/ghost/core/nexus/state/proposals/inventory.json"
+      },
+      "hexa-lang": {
+        "prefix": "hxa",
+        "inventory_path": "/Users/ghost/core/hexa-lang/state/proposals/inventory.json"
+      },
+      "n6-architecture": {
+        "prefix": "n6a",
+        "inventory_path": "/Users/ghost/core/n6-architecture/state/proposals/inventory.json"
+      }
+    },
+    "convention_loss_free_roi": "All ROI-category proposals must use 무손실 (loss-free) semantics — no regression, no user-visible break. Category tag: `loss_free_roi`.",
+    "cross_repo_links": [],
+    "created_by": "airgenome proposal_inbox bootstrap (2026-04-23)"
+  }
+}
