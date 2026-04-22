@@ -386,16 +386,13 @@ pub fn lc_ui_title_update() -> void {
     let prog = "jq -r '(.stack // [])[0] | if . == null then \"\" else \"🔭 \\(.command): \\(.seed)\" end' '" + tmp + "'"
     let title = exec(prog).trim()
     let _ = exec("rm -f '" + tmp + "'")
-    // Build raw OSC 0 sequence: ESC(0x1b) ']' '0' ';' <title-bytes> BEL(0x07).
-    // Hexa source lacks \x escapes (stage0), so we assemble the byte list
-    // numerically: ESC + ']'(0x5d) + '0'(0x30) + ';'(0x3b), then walk the
-    // title via byte_at, then BEL(0x07).
-    let mut bytes = [0x1b, 0x5d, 0x30, 0x3b]
-    let mut i = 0
-    while i < title.len() {
-        bytes = bytes + [title.byte_at(i)]
-        i = i + 1
-    }
-    bytes = bytes + [0x07]
-    write_bytes(lc_ui_title_path(), bytes)
+    // Emit raw OSC 0 sequence via printf: ESC ']0;<title>' BEL.
+    // Earlier we built the byte list numerically and called byte_at(i) in
+    // a loop, but stage0 C codegen lacks byte_at → hook watch fired
+    // "CODEGEN ERROR: unhandled method: byte_at" on every tick and the
+    // LaunchAgent exited 1. printf handles the escapes itself and quotes
+    // are shell-escaped via single-quote doubling.
+    let safe = title.replace("'", "'\\''")
+    let cmd = "printf '\\033]0;%s\\007' '" + safe + "' > '" + lc_ui_title_path() + "'"
+    let _ = exec(cmd)
 }
