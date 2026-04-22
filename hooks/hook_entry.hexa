@@ -125,9 +125,14 @@ fn extract_message(stdout: str) -> str {
 
 fn main() -> void {
     let argv = args()
-    let mut event_name = ""
-    if argv.len() >= 3 { event_name = argv[2] }
-    if event_name == "" {
+    // Local name intentionally differs from lib/event.hexa::event_name(path).
+    // Stage0 resolves bare identifiers to the global function when a local
+    // var shadows it, which compiles `resolve_phases(event_name)` into
+    // `hexa_fn_new((void*)event_name, 0)` and fails in clang. Avoid the
+    // collision at the source.
+    let mut ev_name = ""
+    if argv.len() >= 3 { ev_name = argv[2] }
+    if ev_name == "" {
         println("{\"decision\":\"allow\",\"error\":\"missing event_name argv\"}")
         exit(0)
     }
@@ -147,10 +152,10 @@ fn main() -> void {
     let dry = env("HOOK_DRY") == "1"
 
     // Resolve phases. TSV lines; "*" wildcard first, event-specific after.
-    let tsv = resolve_phases(event_name)
+    let tsv = resolve_phases(ev_name)
     if tsv == "" {
         // No manifest or no phases → audit-only, allow.
-        let _ = audit_append(event_name, "no-op", "-", "NO_PHASES")
+        let _ = audit_append(ev_name, "no-op", "-", "NO_PHASES")
         println(allow_json())
         let mut rmp = []
         rmp.push("rm -f '")
@@ -188,7 +193,7 @@ fn main() -> void {
             }
         }
 
-        let _ = audit_append(event_name, pname, phndl, status)
+        let _ = audit_append(ev_name, pname, phndl, status)
 
         // Check decision — block short-circuits chain.
         let decision = extract_decision(stdout_str)
