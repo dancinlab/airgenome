@@ -565,11 +565,10 @@ fn render_tg_bot_plist(token_file: str) -> str {
            "    <key>LANG</key><string>en_US.UTF-8</string>\n" +
            "    <key>TG_TOKEN_FILE</key><string>" + token_file + "</string>\n" +
            "    <key>TG_OFFSET_FILE</key><string>" + offset_file + "</string>\n" +
-           // TG_DISPATCH: tg_cx_md wrapper 사용 — cx-core 출력을 ```…``` 코드블록
-           // 으로 감싸 TG_PARSE_MODE=Markdown 과 결합해 telegram 에서 raw markdown
-           // literal 로 보이지 않고 pre 블록으로 렌더. 절대경로로 PATH 비의존.
+           // TG_DISPATCH: tg_cx_md wrapper — cx-core 출력을 ASCII-friendly
+           // 로 정규화 (━━━ header, · list, column 정렬 테이블). parse_mode
+           // 없이 plain text 로 보내 markdown 이스케이프 지뢰 회피.
            "    <key>TG_DISPATCH</key><string>" + ag_bin + "/tg_cx_md</string>\n" +
-           "    <key>TG_PARSE_MODE</key><string>Markdown</string>\n" +
            "  </dict>\n" +
            "</dict></plist>\n"
 }

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# tg_cx_md — cx-core 래퍼. markdown 을 monospace-friendly ASCII 로 정규화
-# 후 ```…``` pre block 으로 감싸 Telegram 렌더.
+# tg_cx_md — cx-core 래퍼. markdown 을 Telegram 에서 읽기 좋은 ASCII 로
+# 정규화. ```…``` pre wrap 은 사용자 요청으로 제거 — plain text 출력.
 #
 # 변환:
 #   ## header              → ━━━ header ━━━
-#   **bold** / __bold__    → bold (literal 마커 제거; pre 블록 안이라 굵지 않음)
+#   **bold** / __bold__    → bold (literal 마커 제거)
 #   | a | b |  (표)        → column -t 로 컬럼 폭 정렬
 #   - item (리스트)        → · item (시각 구분)
 #   나머지 그대로.
@@ -53,8 +53,5 @@ aligned=$(printf '%s' "$inline" | awk '
     END { flush() }
 ')
 
-# inner triple-backtick 충돌 방지
-safe=$(printf '%s' "$aligned" | sed $'s/^```/\xe2\x80\x8b```/g')
-
-printf '```\n%s\n```' "$safe"
+printf '%s' "$aligned"
 exit "$rc"
