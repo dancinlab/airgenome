@@ -80,6 +80,7 @@ echo ">>> [1/4] rsync 3 repo → $HOST:$REMOTE_CORE"
 run "AIRG_OFFLOAD_FORCE=1 '$AIRGENOME_OFFLOAD' offload '$HOST' 'mkdir -p $REMOTE_CORE/airgenome $REMOTE_CORE/hexa-lang $REMOTE_CORE/nexus'"
 for repo in airgenome hexa-lang nexus; do
   run "rsync -a --delete \
+        -e 'ssh -o ControlMaster=no -o ControlPath=none -o BatchMode=yes' \
         --exclude='.git/' --exclude='archive/' --exclude='.claude/worktrees/' \
         --exclude='node_modules/' --exclude='target/' --exclude='__pycache__/' \
         --exclude='*.log' --exclude='.DS_Store' \
