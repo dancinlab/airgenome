@@ -227,12 +227,31 @@ guard_loop() {
 # 서브커맨드
 # ============================================================
 
+# Open macOS Privacy & Security deep-links so the user can drop Claude Code
+# (or whatever parent is running `airgenome init`) into Full Disk Access and
+# App Management. launchctl bootstrap from a sandboxed Terminal/CLI context
+# returns EIO until both toggles are on; there is no API to grant them
+# programmatically, so we just open the panels and print instructions.
+_airg_open_tcc_panels() {
+    echo "⚠  launchctl bootstrap 실패 — macOS TCC 권한이 부족할 가능성이 높음." >&2
+    echo "   System Settings → Privacy & Security 에서 현재 터미널(Claude Code" >&2
+    echo "   또는 Terminal.app)에 ① Full Disk Access ② App Management 토글을" >&2
+    echo "   켠 뒤, 해당 앱을 완전 종료/재시작하고 'airgenome init' 을 다시 실행." >&2
+    echo "   (설정 패널을 자동으로 엽니다…)" >&2
+    open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles" >/dev/null 2>&1 &
+    sleep 1
+    open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AppBundles" >/dev/null 2>&1 &
+}
+
 cmd_init() {
     [ -f "$PLIST_SRC" ] || die "plist source missing: $PLIST_SRC"
     [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
     cp "$PLIST_SRC" "$PLIST_DST"
     launchctl bootout "gui/$UID_VAL/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$UID_VAL" "$PLIST_DST" || die "launchctl bootstrap failed"
+    if ! launchctl bootstrap "gui/$UID_VAL" "$PLIST_DST" 2>&1; then
+        _airg_open_tcc_panels
+        die "launchctl bootstrap failed (TCC 누락 추정)"
+    fi
     log "installed + bootstrapped: $LABEL"
     log "next: airgenome status (확인) → airgenome arm (live kill on) 필요 시"
 }

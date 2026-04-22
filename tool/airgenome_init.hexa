@@ -153,6 +153,19 @@ fn render_plist(bin: str) -> str {
            "</dict></plist>\n"
 }
 
+// Open macOS Privacy & Security deep-links so the user can drop the
+// current terminal host (Claude Code / Terminal.app) into Full Disk Access
+// and App Management. launchctl bootstrap from a sandboxed CLI context
+// returns EIO until both toggles are on, and there is no API to grant them
+// programmatically — we just open the panels and print instructions.
+fn open_tcc_panels() -> void {
+    println("[airgenome-init] ⚠  launchctl bootstrap 실패 — TCC 권한 누락 가능성.")
+    println("[airgenome-init]    Privacy & Security 에서 현재 터미널에 Full Disk")
+    println("[airgenome-init]    Access + App Management 토글을 켠 뒤 재실행.")
+    let _ = exec("open 'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles' >/dev/null 2>&1 &")
+    let _ = exec("sleep 1; open 'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AppBundles' >/dev/null 2>&1 &")
+}
+
 fn install_launchagent(bin: str) -> void {
     let p = plist_path()
     let _ = exec("mkdir -p '" + env("HOME") + "/Library/LaunchAgents'")
@@ -161,7 +174,12 @@ fn install_launchagent(bin: str) -> void {
     // Bootout first so we pick up a new plist cleanly on re-run.
     let _ = exec("launchctl bootout gui/$(id -u) '" + p + "' 2>/dev/null || true")
     let out = exec("launchctl bootstrap gui/$(id -u) '" + p + "' 2>&1")
-    println("[airgenome-init] launchctl bootstrap: " + out.trim())
+    let t = out.trim()
+    println("[airgenome-init] launchctl bootstrap: " + t)
+    // EIO(5) / permission 계열 문구면 TCC 패널 자동 오픈.
+    if t.contains("Input/output error") || t.contains("Operation not permitted") || t.contains("failed: 5") {
+        open_tcc_panels()
+    }
     println("[airgenome-init] LaunchAgent: " + p)
 }
 
