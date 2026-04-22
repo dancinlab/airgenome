@@ -2,7 +2,7 @@
   "_meta": {
     "name": "airgenome 프로젝트 규칙",
     "description": "OS 게놈 스캐너 전용 규칙",
-    "updated": "2026-04-11",
+    "updated": "2026-04-23",
     "project": "airgenome"
   },
   "rules": [
@@ -63,9 +63,18 @@
       "enforcement": "modules/filters/process/compute.hexa 가 30s 주기 launchd (com.airgenome.compute-filter) 로 실행. (1) check_remote(ubu1/htz/hetzner) — alive 1+ 시 (2) pgrep -af hexa → BLACKLIST 필터 (3) TERM 3s → KILL 잔존. BLACKLIST 는 2026-04-22 복귀 시 emptied — dry-run + enforce 검증 후 blowup/seed 엔트리 복원 예정. WHITELIST: launcher_cap/menubar/sampler/ag3_*/infra_probe/auto_dispatch/resource_*/detector/growth_bus/genome_*/session_*/usage_refresh/ramdisk/sync_remote/forge_sync_hetzner/cl.hexa/log_rotate/auto_vacuum/compute_filter/ubu_hexa_guard/ubu_bridge/implant/guard/gate_*. unknown 은 log only (보수). remote 전부 down 시에도 strict 모드 (R-MAC-01) 유지 — 배터리/열 보호.",
       "ossified": "2026-04-12",
       "applies_to": "airgenome",
-      "trigger_keywords": ["자원연결된게 있으면", "remote available then mac zero", "AG6", "Mac Compute ZERO", "compute filter"],
+      "trigger_keywords": [
+        "자원연결된게 있으면",
+        "remote available then mac zero",
+        "AG6",
+        "Mac Compute ZERO",
+        "compute filter"
+      ],
       "ssot": "modules/filters/process/compute.hexa",
-      "l0_paths": ["modules/filters/process/compute.hexa", "scripts/com.airgenome.compute-filter.plist"],
+      "l0_paths": [
+        "modules/filters/process/compute.hexa",
+        "scripts/com.airgenome.compute-filter.plist"
+      ],
       "user_directive": "이부분부터 자원연결된게 있으면 mac 자원은 쓰지 않는다 / 1 규칙으로 등록 / 코어부터 만들고 / L0 스크립트로 고정 / 골화 진행"
     },
     {
@@ -75,9 +84,18 @@
       "enforcement": "modules/load_balancer.hexa 가 30s 주기 launchd (com.airgenome.load-balancer) 로 실행. Score = cpu_free*w_cpu + ram_free*w_ram + gpu_free*w_gpu + lan_bonus. Weights: gpu_heavy(1,2,5), cpu_heavy(5,2,0), realtime_gpu(1,2,3)+lan30, io_heavy(1,3,0)+lan20. LAN bonus 는 ubu1(local) vs hetzner(WAN) 차별. dispatch_state.json 출력: hosts free% + best{task_type:{host,score}}. 최초 검증 (2026-04-12): 전부 ubu1 선택 — ubu1 idle (load 0.08) vs hetzner busy (load 12.87).",
       "ossified": "2026-04-12",
       "applies_to": "airgenome",
-      "trigger_keywords": ["자원들 연결 로드밸런싱", "load balancer", "AG7", "dispatch_state", "best-fit host"],
+      "trigger_keywords": [
+        "자원들 연결 로드밸런싱",
+        "load balancer",
+        "AG7",
+        "dispatch_state",
+        "best-fit host"
+      ],
       "ssot": "modules/load_balancer.hexa",
-      "l0_paths": ["modules/load_balancer.hexa", "scripts/com.airgenome.load-balancer.plist"],
+      "l0_paths": [
+        "modules/load_balancer.hexa",
+        "scripts/com.airgenome.load-balancer.plist"
+      ],
       "user_directive": "이제 자원들 연결해줘 로드밸런싱 / 추천순서 (B → A → C)"
     },
     {
@@ -88,8 +106,15 @@
       "ossified": "2026-04-12",
       "applies_to": "airgenome",
       "ssot": "modules/ssh_gate.hexa",
-      "l0_paths": ["modules/ssh_gate.hexa", "nexus/bin/ssh_gate"],
-      "config_keys": ["ssh_gate_max_ubu", "ssh_gate_max_htz", "ssh_gate_timeout"],
+      "l0_paths": [
+        "modules/ssh_gate.hexa",
+        "nexus/bin/ssh_gate"
+      ],
+      "config_keys": [
+        "ssh_gate_max_ubu",
+        "ssh_gate_max_htz",
+        "ssh_gate_timeout"
+      ],
       "migrated_files": 16,
       "migrated_ssh_calls": 60,
       "user_directive": "ssh 접속을 airgenome 게이트가 통제 / 필터도 설치 / 성능자원개선 재해석필터"
@@ -102,8 +127,19 @@
       "ossified": "2026-04-12",
       "applies_to": "airgenome",
       "ssot": "modules/resource_ceiling.hexa",
-      "l0_paths": ["modules/resource_ceiling.hexa", "modules/resource_coordinator.hexa", "modules/infra_probe.hexa", "modules/monitor_test.hexa", "modules/load_balancer.hexa"],
-      "bugs_fixed": ["cpu_free→load 파싱", "ubu_cpu_used→ubu1.load", "MAC_ONLY 누락→Ubuntu 라우팅", "to_int float 변환"],
+      "l0_paths": [
+        "modules/resource_ceiling.hexa",
+        "modules/resource_coordinator.hexa",
+        "modules/infra_probe.hexa",
+        "modules/monitor_test.hexa",
+        "modules/load_balancer.hexa"
+      ],
+      "bugs_fixed": [
+        "cpu_free→load 파싱",
+        "ubu_cpu_used→ubu1.load",
+        "MAC_ONLY 누락→Ubuntu 라우팅",
+        "to_int float 변환"
+      ],
       "user_directive": "모니터링 완전 정확한지 체크 / test 모드로 직접 ui 표시데이터 볼수 있게 / L0 골화"
     },
     {
@@ -113,9 +149,31 @@
       "enforcement": "hexa-lang/gate/prompt_scan.hexa — (1) 맨 위에 AG10 SESSION BANNER (English, ai-native, 1800s TTL): 'DO NOT create CLAUDE.md / hooks / .claude/skills/' 을 모든 prompt 최상단에 출력 (삭제된 CLAUDE.md session 컨텍스트 대체). (2) check_no_hook_keyword() 키워드 세트 확장 — skill/MCP-UI/update-config/CLAUDE.md 작성/init 토큰 추가, 검출 시 [H-NOHOOK/AG10] 방어문구 주입. pre_tool_guard 는 기존 H-NOHOOK 의 .claude/hooks 쓰기 차단 유지. skill 파일 생성·settings.json hooks 편집·CLAUDE.md 신규 작성은 ai-native 1차 방어로 처리, 재발 시 pre_write check_no_skill_file / check_no_claudemd_write 로 승격. 2026-04-21 운영: 7 repo (airgenome/anima/contact/hexa-lang/n6-architecture/nexus/papers) 의 CLAUDE.md 455개 + .claude/settings.json 8개 전면 purge.",
       "ossified": "2026-04-21",
       "applies_to": "airgenome",
-      "trigger_keywords": ["hook skill 캐치", "skill 작성", "MCP 승인 프롬프트", "update-config", "CLAUDE.md 작성", "/init", "AG10"],
+      "trigger_keywords": [
+        "hook skill 캐치",
+        "skill 작성",
+        "MCP 승인 프롬프트",
+        "update-config",
+        "CLAUDE.md 작성",
+        "/init",
+        "AG10"
+      ],
       "ssot": "nexus/rules/airgenome.json#AG10",
-      "l0_paths": ["hexa-lang/gate/entry.hexa", "hexa-lang/gate/prompt_scan.hexa", "hexa-lang/gate/pre_tool_guard.hexa", "hexa-lang/gate/cmd_gate.hexa", "hexa-lang/gate/lint.hexa", "hexa-lang/gate/post_bash.hexa", "hexa-lang/gate/post_edit.hexa", "hexa-lang/gate/claude_statusline.hexa", "hexa-lang/gate/claude_statusline.jq", "hexa-lang/gate/claude_harness_pointer.hexa", "hexa-lang/gate/commands.json", "hexa-lang/gate/enforcement_registry.json", "nexus/rules/airgenome.json"],
+      "l0_paths": [
+        "hexa-lang/gate/entry.hexa",
+        "hexa-lang/gate/prompt_scan.hexa",
+        "hexa-lang/gate/pre_tool_guard.hexa",
+        "hexa-lang/gate/cmd_gate.hexa",
+        "hexa-lang/gate/lint.hexa",
+        "hexa-lang/gate/post_bash.hexa",
+        "hexa-lang/gate/post_edit.hexa",
+        "hexa-lang/gate/claude_statusline.hexa",
+        "hexa-lang/gate/claude_statusline.jq",
+        "hexa-lang/gate/claude_harness_pointer.hexa",
+        "hexa-lang/gate/commands.json",
+        "hexa-lang/gate/enforcement_registry.json",
+        "nexus/rules/airgenome.json"
+      ],
       "user_directive": "hook skills 작성시도 캐치 → ai-native 방어문구 → hexa-only 해결 유도 / airgenome 자체룰로 own",
       "migration": {
         "note": "2026-04-21: harness runtime 을 nexus/tool/ 에서 hexa-lang/gate/ 로 이전 — gate 는 cmd_gate/pre_tool_guard 등의 '관문' 은유와 일치. HARNESS 상수 버그 (nexus/harness → nexus/tool) 동시 수정, entry.hexa argv 파싱 fallback 추가 (compiled-exe invocation 지원). Domain handlers (agent_*/bt_*/engine_*/session_*/broadcast/errors/git_fresh 등) 는 nexus/tool/ 유지, gate entry.hexa 가 HARNESS 상수로 참조. commands.json + enforcement_registry.json 도 gate/ 로 동반 이전.",
@@ -146,6 +204,15 @@
           "empty_or_missing": "idle fallback with project basename"
         }
       }
+    },
+    {
+      "id": "AG11",
+      "rule": "inbox preflight — 모든 [CMD] go 시 자기 repo 의 state/proposals/inventory.json 최상위 pending 1개를 자동 노출. 블로킹 없음 — 정보만. 새 세션에서도 maintainer 가 상대 repo 요청을 즉시 발견하도록.",
+      "level": "🔴",
+      "enforcement": "$HEXA_LANG/gate/prompt_scan.hexa 에서 matched=='go' 분기 내 proposal_inbox next --repo $(basename $proj_root) 호출. SSOT: $HEXA_LANG/tool/proposal_inbox.hexa",
+      "applies_to": "전 repo (airgenome/anima/hexa-lang/nexus/n6-architecture)",
+      "rationale": "proposal_inbox 체계 도입 후 새 세션에서 'go' 가 바로 동작하지 않던 문제 해결 (2026-04-23). H-NOHOOK 원칙 준수 — Claude Code hook 아닌 hexa-only 2층 구조.",
+      "registered": "2026-04-23"
     }
   ],
   "filter_taxonomy": {
@@ -157,40 +224,98 @@
         "pattern": "raw bytes → structural analysis → reencoded bytes",
         "requirement": "lossless or labeled lossy, measurable latency/size improvement",
         "implementations": [
-          {"name": "claude_quantum_filter", "method": "entanglement drop", "input": "JSONL", "output": "qjsonl.gz"},
-          {"name": "claude_byte_reinterpret", "method": "session-constant extraction", "input": "JSONL", "output": "reduced JSONL"},
-          {"name": "claude_runtime_filter", "method": "entanglement-collapsed msgpack", "input": "JSONL", "output": "binary blob"},
-          {"name": "safari_runtime_filter", "method": "mmap binary bisect", "input": "History.db", "output": "SHBF blob"},
-          {"name": "sqlite_byte_reinterpret", "method": "VACUUM page repack", "input": "sqlite DB", "output": "compacted DB"}
+          {
+            "name": "claude_quantum_filter",
+            "method": "entanglement drop",
+            "input": "JSONL",
+            "output": "qjsonl.gz"
+          },
+          {
+            "name": "claude_byte_reinterpret",
+            "method": "session-constant extraction",
+            "input": "JSONL",
+            "output": "reduced JSONL"
+          },
+          {
+            "name": "claude_runtime_filter",
+            "method": "entanglement-collapsed msgpack",
+            "input": "JSONL",
+            "output": "binary blob"
+          },
+          {
+            "name": "safari_runtime_filter",
+            "method": "mmap binary bisect",
+            "input": "History.db",
+            "output": "SHBF blob"
+          },
+          {
+            "name": "sqlite_byte_reinterpret",
+            "method": "VACUUM page repack",
+            "input": "sqlite DB",
+            "output": "compacted DB"
+          }
         ]
       },
       "A_process_gate": {
         "description": "Mac 프로세스 관찰 → 자원 회수 추천",
         "pattern": "ps census → context reinterpret → JSONL recommendation",
-        "implementations": ["safari_gate", "telegram_gate", "claude_gate", "memo_gate", "finder_gate", "mail_gate", "calendar_gate"]
+        "implementations": [
+          "safari_gate",
+          "telegram_gate",
+          "claude_gate",
+          "memo_gate",
+          "finder_gate",
+          "mail_gate",
+          "calendar_gate"
+        ]
       },
       "B_host_balancing": {
         "description": "호스트 간 자원 상태 → 작업 라우팅 결정",
         "pattern": "infra_state → scoring/entanglement → dispatch_state",
-        "implementations": ["load_balancer", "resource_ceiling", "auto_dispatch"]
+        "implementations": [
+          "load_balancer",
+          "resource_ceiling",
+          "auto_dispatch"
+        ]
       },
       "C_transport": {
         "description": "SSH 트래픽 제어 + 패시브 메트릭 + 재해석 액션",
         "pattern": "SSH call → semaphore + filter + metric piggyback + reinterpret action",
-        "implementations": ["ssh_gate"]
+        "implementations": [
+          "ssh_gate"
+        ]
       },
       "D_genome": {
         "description": "대화/세션 데이터 → 6축 게놈 투영",
         "pattern": "JSONL messages → 6-axis projection → 60-byte genome signature",
-        "implementations": ["forge", "per_source_genome", "per_source_sigdiff"]
+        "implementations": [
+          "forge",
+          "per_source_genome",
+          "per_source_sigdiff"
+        ]
       }
     },
     "principles": [
-      {"id": "P1", "rule": "관찰은 무료 — 기존 데이터 흐름에 피기백, 별도 프로브 금지"},
-      {"id": "P2", "rule": "재해석은 맥락 의존 — 물리적 한계 + 정책 필수 참조"},
-      {"id": "P3", "rule": "출력은 시그널 — 판단과 실행 분리, 집행기에 안전장치"},
-      {"id": "P4", "rule": "얽힘은 cross-read — 다중 호스트/프로세스 상관 분석"},
-      {"id": "P5", "rule": "필터는 겹쳐 쌓인다 — raw→정규화→맥락→얽힘→시그널→실행"}
+      {
+        "id": "P1",
+        "rule": "관찰은 무료 — 기존 데이터 흐름에 피기백, 별도 프로브 금지"
+      },
+      {
+        "id": "P2",
+        "rule": "재해석은 맥락 의존 — 물리적 한계 + 정책 필수 참조"
+      },
+      {
+        "id": "P3",
+        "rule": "출력은 시그널 — 판단과 실행 분리, 집행기에 안전장치"
+      },
+      {
+        "id": "P4",
+        "rule": "얽힘은 cross-read — 다중 호스트/프로세스 상관 분석"
+      },
+      {
+        "id": "P5",
+        "rule": "필터는 겹쳐 쌓인다 — raw→정규화→맥락→얽힘→시그널→실행"
+      }
     ]
   }
 }
