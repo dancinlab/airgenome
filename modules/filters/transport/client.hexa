@@ -5,7 +5,7 @@
 // 설정: gate_config.jsonl 의 ubu_gate_sock 키 (값은 gate_config.jsonl 참조)
 // 구현: nc -U 쉘 우회 (hexa raw socket API 부재). ncat 미설치 → nc 사용.
 //
-// 사용 (ubu):
+// 사용 (ubu1):
 //   cat payload.bin | ~/Dev/hexa-lang/target/release/hexa modules/gate_client.hexa
 //
 // 주의: nc -U 는 stdin EOF 후 종료. 영구 스트리밍 필요 시 nc -q 0 옵션 사용.

@@ -165,7 +165,7 @@ fn refresh_snapshot() -> void {
     snap_compute = field(dp, 0)
     snap_gpu = field(dp, 1)
 
-    let i_expr = "[.hosts.mac.cpu_pct, .hosts.mac.ram_pct, .hosts.ubu.load, .hosts.htz.load, ((.hosts.ubu.load // \"0\") | tonumber * 12.5 | floor), ((.hosts.htz.load // \"0\") | tonumber / 32 * 100 | floor), .hosts.ubu2.load, ((.hosts.ubu2.load // \"0\") | tonumber / 12 * 100 | floor)] | @tsv"
+    let i_expr = "[.hosts.mac.cpu_pct, .hosts.mac.ram_pct, .hosts.ubu1.load, .hosts.htz.load, ((.hosts.ubu1.load // \"0\") | tonumber * 12.5 | floor), ((.hosts.htz.load // \"0\") | tonumber / 32 * 100 | floor), .hosts.ubu2.load, ((.hosts.ubu2.load // \"0\") | tonumber / 12 * 100 | floor)] | @tsv"
     let i = jq_tsv(INFRA_STATE, i_expr)
     let ip = i.split("\t")
     snap_mac_cpu = field(ip, 0)
@@ -242,7 +242,7 @@ fn attr_str(s: str, color: *Void) -> *Void {
     return msg2(alloc, sel("initWithString:attributes:"), nsstr(s), dict)
 }
 
-// title: [level icon] [mac bar] [ubu bar][ubu2 bar][htz bar]
+// title: [level icon] [mac bar] [ubu1 bar][ubu2 bar][htz bar]
 // stale 이어도 title 에 ⚠ 안 붙임 — 혼동 유발. 정보는 dropdown 에만.
 // dispatch target 도 title 에 안 붙임 — dropdown 에서 확인.
 fn compose_title_attr() -> *Void {
@@ -349,7 +349,7 @@ fn build_menu() -> *Void {
 
     // Hosts block + 갱신 age — stale 판별 투명화
     menu_add_info(menu, "mac:  " + bar(snap_mac_pct) + "  cpu=" + snap_mac_cpu + "%  ram=" + snap_mac_ram + "%")
-    menu_add_info(menu, "ubu:  " + bar(snap_ubu_pct) + "  load=" + snap_ubu_load + "  (≈" + to_string(snap_ubu_pct) + "%)")
+    menu_add_info(menu, "ubu1: " + bar(snap_ubu_pct) + "  load=" + snap_ubu_load + "  (≈" + to_string(snap_ubu_pct) + "%)")
     menu_add_info(menu, "ubu2: " + bar(snap_ubu2_pct) + "  load=" + snap_ubu2_load + "  (≈" + to_string(snap_ubu2_pct) + "%)")
     menu_add_info(menu, "htz:  " + bar(snap_htz_pct) + "  load=" + snap_htz_load + "  (≈" + to_string(snap_htz_pct) + "%)")
     menu_add_info(menu, "  updated: infra=" + to_string(snap_infra_age) + "s  throttle=" + to_string(snap_throttle_age) + "s  dispatch=" + to_string(snap_dispatch_age) + "s")
@@ -358,14 +358,14 @@ fn build_menu() -> *Void {
 
     // sparkline trend
     menu_add_info(menu, "trend mac: " + spark_render(spark_mac))
-    menu_add_info(menu, "trend ubu: " + spark_render(spark_ubu))
+    menu_add_info(menu, "trend ubu1: " + spark_render(spark_ubu))
     menu_add_info(menu, "trend ubu2:" + spark_render(spark_ubu2))
     menu_add_info(menu, "trend htz: " + spark_render(spark_htz))
 
     menu_add_separator(menu)
 
     // Rings block
-    menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu=" + ring_count("genomes.ubu.ring") + "  ubu2=" + ring_count("genomes.ubu2.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
+    menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu1=" + ring_count("genomes.ubu1.ring") + "  ubu2=" + ring_count("genomes.ubu2.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
 
     // Recent throttle history
     let hist = exec("tail -3 '" + THROTTLE_HIST + "' 2>/dev/null | awk -F'[,:{}\"]' '{for(i=1;i<=NF;i++)if($i==\"cpu\"){c=$(i+2)}; for(i=1;i<=NF;i++)if($i==\"ram\"){r=$(i+2)}; print \"    cpu=\" c \" ram=\" r}' | tr '\\n' '|'").trim()
@@ -482,7 +482,7 @@ fn main() -> void {
         }
 
         // [Track B gap 2] snapshot 상태 덤프 — 런타임 값 추적
-        println("TEST SNAP level=" + snap_level + " mac=" + to_string(snap_mac_pct) + " ubu=" + to_string(snap_ubu_pct) + " ubu2=" + to_string(snap_ubu2_pct) + " htz=" + to_string(snap_htz_pct) + " infra_age=" + to_string(snap_infra_age) + "s throttle_age=" + to_string(snap_throttle_age) + "s")
+        println("TEST SNAP level=" + snap_level + " mac=" + to_string(snap_mac_pct) + " ubu1=" + to_string(snap_ubu_pct) + " ubu2=" + to_string(snap_ubu2_pct) + " htz=" + to_string(snap_htz_pct) + " infra_age=" + to_string(snap_infra_age) + "s throttle_age=" + to_string(snap_throttle_age) + "s")
 
         println("TEST DONE PASS")
         return

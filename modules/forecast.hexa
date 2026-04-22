@@ -262,18 +262,18 @@ fn self_test() -> void {
     if mae_pct(pred_f, 30) >= 15 { panic("self_test FAIL [flat MAE]") }
 
     // 7. distinct_keys + series_for_key + host_for_key (M11d unified ring 지원)
-    //    합성 unified-스타일 게놈 5건 (host=mac/ubu 섞임, pid="host.N" string)
+    //    합성 unified-스타일 게놈 5건 (host=mac/ubu1 섞임, pid="host.N" string)
     let g_a = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[10,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
     let g_b = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[20,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
-    let g_c = "{\"ts\":\"x\",\"pid\":\"ubu.1\",\"comm\":\"b\",\"vitals\":[80,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
-    let g_d = "{\"ts\":\"x\",\"pid\":\"ubu.1\",\"comm\":\"b\",\"vitals\":[90,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let g_c = "{\"ts\":\"x\",\"pid\":\"ubu1.1\",\"comm\":\"b\",\"vitals\":[80,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu1\"}"
+    let g_d = "{\"ts\":\"x\",\"pid\":\"ubu1.1\",\"comm\":\"b\",\"vitals\":[90,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu1\"}"
     let g_e = "{\"ts\":\"x\",\"pid\":\"htz.7\",\"comm\":\"c\",\"vitals\":[50,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"htz\"}"
     let synth = [g_a, g_b, g_c, g_d, g_e]
 
     let keys = distinct_keys(synth, 10)
     if len(keys) != 3 { panic("self_test FAIL [distinct_keys count, got " + to_string(len(keys)) + "]") }
     if keys[0] != "mac.1" { panic("self_test FAIL [distinct_keys[0]]") }
-    if keys[1] != "ubu.1" { panic("self_test FAIL [distinct_keys[1] — host.pid 분리 실패]") }
+    if keys[1] != "ubu1.1" { panic("self_test FAIL [distinct_keys[1] — host.pid 분리 실패]") }
     if keys[2] != "htz.7" { panic("self_test FAIL [distinct_keys[2]]") }
 
     let s_mac = series_for_key(synth, "mac.1", 0)
@@ -281,11 +281,11 @@ fn self_test() -> void {
     if s_mac[0] != 10 { panic("self_test FAIL [series_for_key mac.1[0]]") }
     if s_mac[1] != 20 { panic("self_test FAIL [series_for_key mac.1[1]]") }
 
-    let s_ubu = series_for_key(synth, "ubu.1", 0)
-    if len(s_ubu) != 2 { panic("self_test FAIL [series_for_key ubu.1 count]") }
-    if s_ubu[0] != 80 { panic("self_test FAIL [series_for_key ubu.1[0] — pid 충돌!]") }
+    let s_ubu = series_for_key(synth, "ubu1.1", 0)
+    if len(s_ubu) != 2 { panic("self_test FAIL [series_for_key ubu1.1 count]") }
+    if s_ubu[0] != 80 { panic("self_test FAIL [series_for_key ubu1.1[0] — pid 충돌!]") }
 
-    if host_for_key(synth, "ubu.1") != "ubu" { panic("self_test FAIL [host_for_key ubu]") }
+    if host_for_key(synth, "ubu1.1") != "ubu1" { panic("self_test FAIL [host_for_key ubu1]") }
     if host_for_key(synth, "htz.7") != "htz" { panic("self_test FAIL [host_for_key htz]") }
     if host_for_key(synth, "missing") != "local" { panic("self_test FAIL [host_for_key missing fallback]") }
 

@@ -11,7 +11,7 @@
 # 검증 항목:
 #   1. TEST START / TEST DONE PASS 마커
 #   2. 최소 아이템 개수 (MIN_ITEMS)
-#   3. 필수 아이템 존재 — Legend, Throttle, Dispatch, mac, ubu, htz, trend, rings, cfg, Quit
+#   3. 필수 아이템 존재 — Legend, Throttle, Dispatch, mac, ubu1, htz, trend, rings, cfg, Quit
 #   4. statusItem ok / button ok / setMenu roundtrip ok
 #   5. 종료 코드 0
 #
@@ -149,10 +149,10 @@ REQUIRED=(
     "Throttle:"
     "Dispatch:"
     "mac:"
-    "ubu:"
+    "ubu1:"
     "htz:"
     "trend mac:"
-    "trend ubu:"
+    "trend ubu1:"
     "trend htz:"
     "rings"
     "cfg:"

@@ -7,11 +7,11 @@
 //    "1 규칙으로 등록 / 코어부터 만들고 / L0 스크립트로 고정 / 골화 진행"
 //
 //  Prime Directive:
-//    원격(ubu/htz/hetzner) 1개 이상 가용 → Mac heavy compute 절대 0
+//    원격(ubu1/htz/hetzner) 1개 이상 가용 → Mac heavy compute 절대 0
 //    Mac 은 오케스트레이션/UI/모니터링 전용 (AG3 strict)
 //
 //  동작 (30s 주기 launchd):
-//    1. check_remote(ubu) || check_remote(htz) — 하나라도 alive ?
+//    1. check_remote(ubu1) || check_remote(htz) — 하나라도 alive ?
 //    2. list_violators() — Mac hexa 프로세스 중 BLACKLIST 매칭 (compute)
 //    3. enforce() — TERM → 3s sleep → KILL 잔존
 //    4. log: forge/compute_filter.log
@@ -140,7 +140,7 @@ fn check_remote(host: str) -> bool {
 }
 
 fn any_remote_alive() -> bool {
-    if check_remote("ubu") { return true }
+    if check_remote("ubu1") { return true }
     if check_remote("htz") { return true }
     return false
 }

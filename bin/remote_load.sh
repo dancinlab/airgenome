@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/remote_load.sh — Phase R2: remote host load poller
 #
-# 목적: ubu + hetzner 의 load/mem/proc counts 를 주기적으로 수집해
+# 목적: ubu1 + hetzner 의 load/mem/proc counts 를 주기적으로 수집해
 #       ~/.airgenome/remote_load.jsonl 에 1-host-당-1-line JSONL 로 기록.
 # 용도: 이후 dispatcher/circuit-breaker 의 판단 근거, 간섭 분석.
 #
@@ -22,7 +22,7 @@ if [ -r "$REG" ] && command -v jq >/dev/null 2>&1; then
     HOSTS=($(jq -r '.hosts | to_entries[] | select(.value.enabled == true and .value.kind != "self") | .value.ssh_alias' "$REG" 2>/dev/null))
 fi
 if [ "${#HOSTS[@]}" -eq 0 ]; then
-    HOSTS=("ubu" "ubu2" "hetzner")
+    HOSTS=("ubu1" "ubu2" "hetzner")
 fi
 
 # 원격에서 실행되는 한 줄 JSON 생성기. single-quoted 로 로컬 확장 방지.

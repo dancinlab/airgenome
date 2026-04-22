@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/lb.sh — mac 클라이언트용 로드밸런서 (3-layer orchestrator)
 #
-# 아키텍처 (3-layer):  mac (this) → lb.sh → { ubu, ubu2, htz }
+# 아키텍처 (3-layer):  mac (this) → lb.sh → { ubu1, ubu2, htz }
 # 데이터 소스:         ~/.airgenome/remote_load.jsonl  (remote_load.sh 30s 폴 JSONL)
 # 상태 출력:           ~/Dev/nexus/lb_state.json (atomic write per pick)
 # 실행 로그:           ~/.airgenome/lb.jsonl  (1 line per run)
@@ -13,11 +13,11 @@
 #   gpu            →  has_gpu 호스트만, free_ci (무GPU 호스트는 0)
 #
 # Fresh gate:   한 호스트의 마지막 remote_load 엔트리 age > 120s → 후보 제외
-# Tie-breaker:  등가 점수 시 순서 고정 (ubu → ubu2 → htz). centi 단위에선 실전 tie 드묾.
+# Tie-breaker:  등가 점수 시 순서 고정 (ubu1 → ubu2 → htz). centi 단위에선 실전 tie 드묾.
 # 하드코딩 아님: 점수는 실시간 load1/nproc 에서 직접 산출. kind/host 가중치 없음.
 #
 # Commands:
-#   lb.sh pick <kind>               stdout: ubu|ubu2|htz|none
+#   lb.sh pick <kind>               stdout: ubu1|ubu2|htz|none
 #   lb.sh status                    모든 호스트 snapshot + 3 kind 선택 요약
 #   lb.sh run <kind> <cmd...>       pick → ssh 실행 + jsonl 로그 + exit code 전파
 #   lb.sh --self-test               단위 테스트 (점수/선택 로직)
@@ -235,7 +235,7 @@ self_test() {
     # 4. candidate_keys — hosts.json 에 kind!=self 3개 이상
     local n
     n=$(candidate_keys | wc -l | tr -d ' ')
-    [ "$n" -ge 3 ] || { echo "  FAIL candidate_keys=$n (expect ≥ 3: ubu, ubu2, htz)"; fail=1; }
+    [ "$n" -ge 3 ] || { echo "  FAIL candidate_keys=$n (expect ≥ 3: ubu1, ubu2, htz)"; fail=1; }
 
     # 5. probe_host live — 최소 1 host 가 ok=1 이어야 (remote_load daemon 동작 조건)
     local any_ok=0 key probe ok _r

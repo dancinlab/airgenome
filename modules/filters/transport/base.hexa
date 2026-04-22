@@ -84,7 +84,7 @@ fn mac_load_1m() -> str {
     return r
 }
 
-// ubu/htz 중 하나라도 active 이면 true
+// ubu1/htz 중 하나라도 active 이면 true
 fn remote_alive() -> bool {
     if file_exists(INFRA_STATE) == false { return false }
     let raw = safe_exec("cat '" + INFRA_STATE + "' 2>/dev/null")

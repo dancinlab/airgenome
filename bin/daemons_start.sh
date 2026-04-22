@@ -7,7 +7,7 @@
 #
 # 관리 대상:
 #   - compute-tick: dispatch.selection.compute 로 주기 워크 송신 (ubu2 자원 활용)
-#   - remote-load:  ubu/ubu2/hetzner load poll 30s 주기 → remote_load.jsonl
+#   - remote-load:  ubu1/ubu2/hetzner load poll 30s 주기 → remote_load.jsonl
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -21,7 +21,7 @@ if [ -z "$url" ]; then
 fi
 
 # queue 경로 — sshfs reverse-mount 탐지 기반 선택.
-#   container (ubu/htz docker): /mac_home 이 sshfs mount → 이 경로 우선
+#   container (ubu1/htz docker): /mac_home 이 sshfs mount → 이 경로 우선
 #   Mac 본체: /Users/ghost 가 실제 HOME
 #   ssh host-OS (sshfs 없음): $HOME 로 fallback (Mac 이 볼 수 없으므로 실질 무의미)
 QUEUE=""

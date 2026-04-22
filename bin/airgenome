@@ -547,7 +547,7 @@ WORKSPACE_SRC="$HOME/core/.workspace"
 
 _offload_ssh_host() {
     case "$1" in
-        ubu1|ubu)     echo "ubu" ;;
+        ubu1|ubu)     echo "ubu1" ;;
         ubu2)         echo "ubu2" ;;
         htz|hetzner)  echo "hetzner" ;;
         *)            echo "" ;;
@@ -556,7 +556,7 @@ _offload_ssh_host() {
 
 _offload_state_key() {
     case "$1" in
-        ubu1|ubu)     echo "ubu" ;;
+        ubu1|ubu)     echo "ubu1" ;;
         ubu2)         echo "ubu2" ;;
         htz|hetzner)  echo "htz" ;;
         *)            echo "" ;;
@@ -600,7 +600,7 @@ cmd_offload() {
 usage: airgenome offload <target> <command...>
 
 targets:
-  ubu1 | ubu    — ssh alias: ubu     (12T CPU, GPU)
+  ubu1 | ubu    — ssh alias: ubu1    (12T CPU, GPU)
   ubu2          — ssh alias: ubu2    (12T CPU)
   htz | hetzner — ssh alias: hetzner (32T CPU)
 
