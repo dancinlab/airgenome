@@ -339,20 +339,20 @@ airgenome-init
 
 ## 36. 완성도 체크리스트
 ```
-[ ] 4 panel renderer 각각 동작
-[ ] wcwidth 정렬 정확
-[ ] 3-tier COLUMNS 적응
-[ ] anti-flicker hysteresis
-[ ] cache (git sha + roadmap mtime + event mtime)
-[ ] degraded paths 6종
-[ ] observability log
-[ ] per-panel timeout
-[ ] fixture × golden 테스트
-[ ] A/B env var swap
-[ ] init tool 연동 + uchg 재잠금
-[ ] 롤백 1-step
-[ ] dogfood 1주
-[ ] linear stack renderer demotion
+[x] 4 panel renderer 각각 동작
+[ ] wcwidth 정렬 정확                     # deferred — needed when box-drawing activates
+[x] 3-tier COLUMNS 적응                   # env COLUMNS → tput → stty → 100 (§21)
+[x] anti-flicker hysteresis               # /tmp/sl-state-<session>, +10% boost
+[~] cache (git sha + roadmap mtime + event mtime)  # CONTEXT 60s cache wired; roadmap/emergence mtime-driven invalidation pending
+[x] degraded paths 6종                    # jq/git/transcript/.raw/timeout/stdin-parse
+[x] observability log                     # .hook-statusline.jsonl + render_ms
+[x] per-panel timeout                     # CONTEXT 150ms, EMERGENCE 150ms, bundle 200ms
+[~] fixture × golden 테스트               # smoke harness landed (test/t_statusline_4panel.hexa); golden-file level deferred (needs frozen clock)
+[x] A/B env var swap                      # STATUSLINE_V=legacy|4panel
+[x] init tool 연동 + uchg 재잠금          # tool/airgenome_init.hexa + bin/cl-settings
+[x] 롤백 1-step                           # STATUSLINE_V=legacy airgenome-init
+[ ] dogfood 1주                           # time-based (starts post-merge)
+[x] linear stack renderer demotion        # claude_statusline.jq → EMERGENCE fallback (spec §26 step 5)
 ```
 
 ## 37. 범위 밖 (의도적 제외)
