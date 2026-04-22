@@ -7,7 +7,12 @@
 //     (top-5 first-line patterns, counts)
 //
 // Outputs scanner proposals (each is a hypothesis, not a commitment):
-//   { kind, rationale, evidence_count, suggested_name }
+//   { kind, category, priority, rationale, evidence_count, suggested_name }
+//
+// Convention (agm-20260422-005 cross_repo_blocker):
+//   category ∈ lang_gap | infra_gap | atlas_gap | data_gap
+//   priority ≥ 95 only when the proposal blocks another repo's work.
+//   airgenome-local gaps are categorized "infra_gap" with default prio 70.
 //
 // This is the groundwork for the proposal's "Phase 6.2 gap_proposer +
 // 6.3 declarative scanner DSL" loop. Runs now without needing 30d
@@ -99,29 +104,29 @@ fn main() {
 
     if no_verify > 0 {
         if pcount > 0 { proposals = proposals + "," }
-        proposals = proposals + "{\"kind\":\"hook_bypass\",\"rationale\":\"git log shows --no-verify usage\",\"evidence_count\":" + to_string(no_verify) + ",\"suggested_name\":\"ag_hook_bypass_scan\"}"
+        proposals = proposals + "{\"kind\":\"hook_bypass\",\"rationale\":\"git log shows --no-verify usage\",\"evidence_count\":" + to_string(no_verify) + ",\"category\":\"infra_gap\",\"priority\":70,\"suggested_name\":\"ag_hook_bypass_scan\"}"
         pcount = pcount + 1
     }
     if workaround + hotfix + hack > 3 {
         if pcount > 0 { proposals = proposals + "," }
-        proposals = proposals + "{\"kind\":\"tech_debt_hotspot\",\"rationale\":\"workaround/hotfix/HACK tokens accumulating\",\"evidence_count\":" + to_string(workaround + hotfix + hack) + ",\"suggested_name\":\"ag_tech_debt_trend\"}"
+        proposals = proposals + "{\"kind\":\"tech_debt_hotspot\",\"rationale\":\"workaround/hotfix/HACK tokens accumulating\",\"evidence_count\":" + to_string(workaround + hotfix + hack) + ",\"category\":\"infra_gap\",\"priority\":70,\"suggested_name\":\"ag_tech_debt_trend\"}"
         pcount = pcount + 1
     }
     if todo + fixme > 20 {
         if pcount > 0 { proposals = proposals + "," }
-        proposals = proposals + "{\"kind\":\"todo_inventory\",\"rationale\":\"TODO/FIXME commit mentions > 20 in window\",\"evidence_count\":" + to_string(todo + fixme) + ",\"suggested_name\":\"ag_todo_scan\"}"
+        proposals = proposals + "{\"kind\":\"todo_inventory\",\"rationale\":\"TODO/FIXME commit mentions > 20 in window\",\"evidence_count\":" + to_string(todo + fixme) + ",\"category\":\"infra_gap\",\"priority\":70,\"suggested_name\":\"ag_todo_scan\"}"
         pcount = pcount + 1
     }
     if sed_i > 0 {
         if pcount > 0 { proposals = proposals + "," }
-        proposals = proposals + "{\"kind\":\"inplace_edit_trend\",\"rationale\":\"sed -i in commits suggests manual file rewriting patterns\",\"evidence_count\":" + to_string(sed_i) + ",\"suggested_name\":\"ag_inplace_edit_audit\"}"
+        proposals = proposals + "{\"kind\":\"inplace_edit_trend\",\"rationale\":\"sed -i in commits suggests manual file rewriting patterns\",\"evidence_count\":" + to_string(sed_i) + ",\"category\":\"infra_gap\",\"priority\":70,\"suggested_name\":\"ag_inplace_edit_audit\"}"
         pcount = pcount + 1
     }
     // If the top stderr prefix count > 10, propose a panic-pattern scanner.
     let top_count = to_int(to_string(exec("printf '%s' " + _sh_q(stderr_prefixes) + " | grep -oE '\"count\":[0-9]+' | head -1 | cut -d: -f2")).trim())
     if top_count > 10 {
         if pcount > 0 { proposals = proposals + "," }
-        proposals = proposals + "{\"kind\":\"stderr_pattern_cluster\",\"rationale\":\"single stderr prefix repeats > 10×\",\"evidence_count\":" + to_string(top_count) + ",\"suggested_name\":\"ag_panic_pattern_scan\"}"
+        proposals = proposals + "{\"kind\":\"stderr_pattern_cluster\",\"rationale\":\"single stderr prefix repeats > 10×\",\"evidence_count\":" + to_string(top_count) + ",\"category\":\"infra_gap\",\"priority\":70,\"suggested_name\":\"ag_panic_pattern_scan\"}"
         pcount = pcount + 1
     }
 
