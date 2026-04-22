@@ -80,13 +80,43 @@ fn audit_append(event: str, phase: str, handler: str, status: str) -> str {
 
 // Verify chain: re-compute each line's SHA_CURR from stored SHA_PREV + fields.
 // Returns "OK" on success, "FAIL:<line_no>" on mismatch.
+//
+// Pure-hexa walker (no bash shell-out). Semantics match the previous bash
+// implementation exactly: `prev` carries the previous row's SHA_CURR across
+// iterations and feeds the payload hash; the stored SHA_PREV column on the
+// current row is not consulted (the chain is anchored by prior-row curr).
 fn audit_verify() -> str {
     let p = audit_path()
     if file_exists(p) == false { return "FAIL:0" }
-    // Use awk to walk lines and re-hash via shell. Keep hexa loop simple by
-    // delegating to a one-shot awk+shasum pipeline.
-    // Line-by-line verify using a bash loop — single-line string concatenation
-    // (hexa-lang stage1 doesn't accept multi-line `let = "a" + "b"` expressions).
-    let cmd = "i=0; ok=1; prev=\"" + AUDIT_GENESIS_SHA + "\"; while IFS=$'\\t' read -r ts ev ph hn sp sc st; do i=$((i+1)); if [ \"$ev\" = \"GENESIS\" ]; then prev=\"$sc\"; continue; fi; payload=\"$prev\\t$ts\\t$ev\\t$ph\\t$hn\\t$st\"; calc=$(printf '%s' \"$payload\" | shasum -a 256 | awk '{print $1}'); if [ \"$calc\" != \"$sc\" ]; then echo \"FAIL:$i\"; ok=0; break; fi; prev=\"$sc\"; done < '" + p + "'; [ $ok -eq 1 ] && echo OK"
-    return exec("bash -c " + shell_quote(cmd)).trim()
+    let raw = read_file(p)
+    let lines = raw.split("\n")
+    let mut prev = AUDIT_GENESIS_SHA
+    let mut i = 0
+    let mut lineno = 0
+    while i < lines.len() {
+        let line = lines[i]
+        i = i + 1
+        // Skip blank trailing line(s) without advancing the line counter —
+        // the bash `read` loop likewise skips empty records.
+        if line == "" { continue }
+        lineno = lineno + 1
+        let cols = line.split("\t")
+        if cols.len() < 7 { return "FAIL:" + to_string(lineno) }
+        let ts = cols[0]
+        let ev = cols[1]
+        let ph = cols[2]
+        let hn = cols[3]
+        // cols[4] is the stored SHA_PREV — intentionally unused (see note above).
+        let sc = cols[5]
+        let st = cols[6]
+        if ev == "GENESIS" {
+            prev = sc
+            continue
+        }
+        let payload = prev + "\t" + ts + "\t" + ev + "\t" + ph + "\t" + hn + "\t" + st
+        let calc = sha256_of(payload)
+        if calc != sc { return "FAIL:" + to_string(lineno) }
+        prev = sc
+    }
+    return "OK"
 }

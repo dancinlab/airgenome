@@ -1,6 +1,6 @@
 # airgenome self-hosted hook event bus
 
-Manifest-driven, hexa-native event bus for every Claude Code hook.
+Manifest-driven, hexa-native event bus observing every Claude Code event. airgenome hooks are **not** wired into Claude Code's hook protocol — policy forbids per-project `.claude/settings.json`. Instead, a launchd-driven native binary tails session transcripts and dispatches compiled-in handlers.
 
 ## Design
 
@@ -20,8 +20,8 @@ Manifest-driven, hexa-native event bus for every Claude Code hook.
 ```
 hooks/
   manifest.hook.json     — SSOT (all routing here)
-  settings.patch.json    — snippet to merge into .claude/settings.json
-  hook_entry.hexa        — dispatcher (generic)
+  hook_main.hexa         — transcript-watcher entry (compiled → build/hook)
+  hook_entry.hexa        — stdin-event dispatcher (for unit tests / dev)
   hook_cli.hexa          — admin CLI (audit verify | tail, manifest dump, events list)
   universal_audit.hexa   — "*" wildcard (runs on EVERY event)
   user_prompt.hexa       — UserPromptSubmit
@@ -41,14 +41,25 @@ hooks/
 
 ## Install
 
-One-shot jq merge of the snippet into `.claude/settings.json`:
+Installed by `tool/airgenome_init.hexa`:
+
+1. `hexa build hooks/hook_main.hexa -o build/hook` — compile the native watcher.
+2. Write `~/Library/LaunchAgents/com.airgenome.hook-watch.plist` — runs `build/hook watch` every 5s (`StartInterval`).
+3. `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.airgenome.hook-watch.plist`.
+
+The watcher tails `~/.claude/projects/<slug>/*.jsonl` from `.hook-cursor.json` offsets, appends dispatched events to `.hook-observe.jsonl`, and runs handlers in-process. **Observation-only** — never injects into Claude Code.
 
 ```
-jq -s '.[0] * .[1]' .claude/settings.json hooks/settings.patch.json > .claude/settings.json.new
-mv .claude/settings.json.new .claude/settings.json
+hexa run tool/airgenome_init.hexa      # idempotent; re-run anytime
+launchctl list | grep com.airgenome.hook-watch   # verify loaded
+tail -f .hook-observe.jsonl                       # verify triggering
 ```
 
-After merge, Claude Code dispatches every hook event to the single hexa dispatcher.
+Removal:
+```
+launchctl bootout gui/$UID com.airgenome.hook-watch
+rm ~/Library/LaunchAgents/com.airgenome.hook-watch.plist
+```
 
 ## Test
 
@@ -67,5 +78,5 @@ Expected: 8 green + `audit_chain_verify PASS` + non-genesis row count ≥ 16 (wi
 - raw#9 hexa-only: no `.sh` files in `hooks/`.
 - raw#10 proof-carrying: `.hook-audit` exists + chain verifier ships.
 - raw#11 ai-native-enforce: handlers are regex/jq only, no LLM.
-- raw#13 ai-tool-ban: `settings.json` block is declaration only, all logic in `.hexa`.
+- raw#13 ai-tool-ban: no per-project `.claude/settings.json`; trigger mechanism is airgenome's own launchd watcher.
 - raw#28 gate-order: phases execute in manifest array order (deterministic).

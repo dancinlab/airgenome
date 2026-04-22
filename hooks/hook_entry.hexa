@@ -19,6 +19,12 @@
 // Env:
 //   AIRGENOME_HOOK_ROOT  — explicit override (else falls back to CLAUDE_PROJECT_DIR, then pwd)
 //   HOOK_DRY=1           — dry-run: audit only, skip handler exec, always allow
+//
+// Perf note (raw#9): every exec/log command string is assembled via
+//   let mut parts = []; parts.push(...); parts.join("")
+// to stay under the runtime's string-concat O(n^2) perf detector threshold
+// (see self/hexa_full.hexa `__str_concat_count`). Mirrors the style used by
+// session_start.hexa and hexa-lang/tool/verify_meta2_chain.hexa:187–201.
 
 use "lib/event"
 use "lib/audit"
@@ -39,15 +45,45 @@ fn exec_phase(handler_abs: str, timeout_s: int, event_json_path: str) -> str {
     // Fallback to perl alarm for portability.
     let has_timeout = exec("command -v timeout >/dev/null 2>&1 && echo y || echo n").trim()
     // Prefer ~/.hx/bin/hexa (self-hosted toolchain); fall back to PATH 'hexa'.
-    let hb_home = env("HOME") + "/.hx/bin/hexa"
-    let hb_home_ok = exec("[ -x '" + hb_home + "' ] && echo y || echo n").trim()
+    let mut hb_parts = []
+    hb_parts.push(env("HOME"))
+    hb_parts.push("/.hx/bin/hexa")
+    let hb_home = hb_parts.join("")
+
+    let mut probe_parts = []
+    probe_parts.push("[ -x '")
+    probe_parts.push(hb_home)
+    probe_parts.push("' ] && echo y || echo n")
+    let hb_home_ok = exec(probe_parts.join("")).trim()
+
     let hexa_bin = if hb_home_ok == "y" { hb_home } else { "hexa" }
-    let cmd_core = hexa_bin + " run '" + handler_abs + "' < '" + event_json_path + "' 2>/dev/null"
+
+    let mut core_parts = []
+    core_parts.push(hexa_bin)
+    core_parts.push(" run '")
+    core_parts.push(handler_abs)
+    core_parts.push("' < '")
+    core_parts.push(event_json_path)
+    core_parts.push("' 2>/dev/null")
+    let cmd_core = core_parts.join("")
+
     if has_timeout == "y" {
-        return exec("timeout " + to_string(timeout_s) + " " + cmd_core + " || true").trim()
+        let mut tparts = []
+        tparts.push("timeout ")
+        tparts.push(to_string(timeout_s))
+        tparts.push(" ")
+        tparts.push(cmd_core)
+        tparts.push(" || true")
+        return exec(tparts.join("")).trim()
     }
     // perl fallback — portable alarm-based timeout
-    return exec("perl -e 'alarm " + to_string(timeout_s) + "; exec @ARGV' /bin/sh -c \"" + cmd_core.replace("\"", "\\\"") + "\" 2>/dev/null || true").trim()
+    let mut pparts = []
+    pparts.push("perl -e 'alarm ")
+    pparts.push(to_string(timeout_s))
+    pparts.push("; exec @ARGV' /bin/sh -c \"")
+    pparts.push(cmd_core.replace("\"", "\\\""))
+    pparts.push("\" 2>/dev/null || true")
+    return exec(pparts.join("")).trim()
 }
 
 // Extract decision field from a handler's stdout (may be multiline/garbage).
@@ -56,8 +92,16 @@ fn extract_decision(stdout: str) -> str {
     if stdout == "" { return "allow" }
     let tmp = exec("mktemp -t hook_out.XXXXXX").trim()
     write_file(tmp, stdout)
-    let d = exec("jq -r '.decision // \"allow\"' '" + tmp + "' 2>/dev/null").trim()
-    let _ = exec("rm -f '" + tmp + "'")
+    let mut jqp = []
+    jqp.push("jq -r '.decision // \"allow\"' '")
+    jqp.push(tmp)
+    jqp.push("' 2>/dev/null")
+    let d = exec(jqp.join("")).trim()
+    let mut rmp = []
+    rmp.push("rm -f '")
+    rmp.push(tmp)
+    rmp.push("'")
+    let _ = exec(rmp.join(""))
     if d == "" { return "allow" }
     return d
 }
@@ -66,8 +110,16 @@ fn extract_message(stdout: str) -> str {
     if stdout == "" { return "" }
     let tmp = exec("mktemp -t hook_out.XXXXXX").trim()
     write_file(tmp, stdout)
-    let m = exec("jq -r '.message // .systemMessage // \"\"' '" + tmp + "' 2>/dev/null").trim()
-    let _ = exec("rm -f '" + tmp + "'")
+    let mut jqp = []
+    jqp.push("jq -r '.message // .systemMessage // \"\"' '")
+    jqp.push(tmp)
+    jqp.push("' 2>/dev/null")
+    let m = exec(jqp.join("")).trim()
+    let mut rmp = []
+    rmp.push("rm -f '")
+    rmp.push(tmp)
+    rmp.push("'")
+    let _ = exec(rmp.join(""))
     return m
 }
 
@@ -82,7 +134,11 @@ fn main() -> void {
 
     // Export root so library calls can resolve.
     let root = resolve_hook_root()
-    let _ = exec("export AIRGENOME_HOOK_ROOT='" + root + "'")
+    let mut exp_parts = []
+    exp_parts.push("export AIRGENOME_HOOK_ROOT='")
+    exp_parts.push(root)
+    exp_parts.push("'")
+    let _ = exec(exp_parts.join(""))
 
     // Slurp stdin once, reuse across all phases (so handlers see identical payload).
     let raw = read_event_json()
@@ -96,7 +152,11 @@ fn main() -> void {
         // No manifest or no phases → audit-only, allow.
         let _ = audit_append(event_name, "no-op", "-", "NO_PHASES")
         println(allow_json())
-        let _ = exec("rm -f '" + ev_path + "'")
+        let mut rmp = []
+        rmp.push("rm -f '")
+        rmp.push(ev_path)
+        rmp.push("'")
+        let _ = exec(rmp.join(""))
         exit(0)
     }
 
@@ -140,7 +200,11 @@ fn main() -> void {
     }
 
     // Cleanup tmp event file.
-    let _ = exec("rm -f '" + ev_path + "'")
+    let mut rmp = []
+    rmp.push("rm -f '")
+    rmp.push(ev_path)
+    rmp.push("'")
+    let _ = exec(rmp.join(""))
 
     if blocked {
         println(decision_json("block", block_msg))

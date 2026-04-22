@@ -87,7 +87,7 @@ fn handle_tools_list(id: str) -> str {
              ",\"required\":[\"chain\",\"kind\",\"payload\"]" +
              ",\"additionalProperties\":false}}"
     let t3 = "{\"name\":\"drill_release\"" +
-             ",\"description\":\"Release an active command from the stack with a reason (resolved/abandoned/superseded/...). Removes from active.json + appends to resolved.jsonl + re-renders advice.md and ui-title.sh.\"" +
+             ",\"description\":\"Release an active command from the stack with a reason (resolved/abandoned/superseded/...). Removes from active.json + appends to resolved.jsonl + re-renders advice.md and .hook-ui-title (raw OSC-0 bytes).\"" +
              ",\"inputSchema\":{\"type\":\"object\"" +
              ",\"properties\":{\"chain\":{\"type\":\"string\",\"description\":\"8-char chain id from drill_status\"}" +
              ",\"reason\":{\"type\":\"string\",\"description\":\"free-form release reason\"}}" +
