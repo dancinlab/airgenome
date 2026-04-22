@@ -42,6 +42,8 @@
         <string>/Users/ghost</string>
         <key>LANG</key>
         <string>en_US.UTF-8</string>
+        <key>HEXA_LANG</key>
+        <string>/Users/ghost/core/hexa-lang</string>
     </dict>
 
     <key>ProcessType</key>
