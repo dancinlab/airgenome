@@ -33,7 +33,8 @@ let AGENT_LABELS = [
     "com.airgenome.forecast",
     "com.airgenome.ring-sync",
     "com.airgenome.predictive-throttle",
-    "com.airgenome.menubar"
+    "com.airgenome.menubar",
+    "com.airgenome.tg-bot"
 ]
 
 // Mac-safe subset — AG6 Mac Compute ZERO 준수.
@@ -42,13 +43,15 @@ let AGENT_LABELS = [
 // - probe: ssh outbound + infra_state.json 갱신 (blowup 감지 전제)
 // - dispatch: jq 파싱 + dispatch_state.json 갱신 (best_host 선택)
 // - menubar: T4 Cocoa status item (build 된 경우만 등록, 없으면 skip)
+// - tg-bot: bash + curl + jq long-poll, 무거운 compute 無. TG 서버와 outbound.
 // 나머지 (harvest/label/forecast) 는 ubu/htz 에서 실행.
 let MAC_SAFE_AGENTS = [
     "com.airgenome.ring-sync",
     "com.airgenome.predictive-throttle",
     "com.airgenome.probe",
     "com.airgenome.dispatch",
-    "com.airgenome.menubar"
+    "com.airgenome.menubar",
+    "com.airgenome.tg-bot"
 ]
 
 fn hexa_bin() -> str {

@@ -640,6 +640,46 @@ fn ensure_disk_budget() -> int {
     return 0
 }
 
+// 전체 auto-start 재조정: ~/Library/LaunchAgents/com.airgenome.*.plist
+// 를 순회하며 bootstrap 상태 보증. 개별 ensure_* 함수가 특정 plist 하나만
+// 관리하는 것과 달리, 이건 "디스크에 있는 모든 airgenome agent 를 로드
+// 상태로" 만드는 reconciler. 그림자 plist (static 복사본, 수동 추가본,
+// 다른 세션 잔존물 등) 까지 일괄 복구. 사용자 요구: "자동 기동이 기본값".
+//
+// 방식: airgenome.*.plist 이름 각각에 대해 enable → bootout → bootstrap.
+// bootout 은 이미 로드된 경우에만 성공 (없어도 무해). bootstrap 은 디스크
+// 여유 / launchd 상태가 정상일 때만 성공. 실패는 warn 으로 찍고 계속 (다른
+// 에이전트 복구 막지 않음).
+fn ensure_all_agents_loaded() -> void {
+    let la_dir = env("HOME") + "/Library/LaunchAgents"
+    let names = exec("ls -1 '" + la_dir + "' 2>/dev/null | grep -E '^com\\.airgenome\\..*\\.plist$' | sed 's/\\.plist$//'").trim()
+    if names == "" {
+        println("[airgenome-init] agents: no com.airgenome.* plists in " + la_dir)
+        return
+    }
+    let list = names.split("\n")
+    let mut i = 0
+    let mut loaded = 0
+    let mut failed = 0
+    while i < len(list) {
+        let label = list[i].trim()
+        if label == "" { i = i + 1; continue }
+        let plist = la_dir + "/" + label + ".plist"
+        let _ = exec("launchctl enable gui/$(id -u)/" + label + " 2>/dev/null || true")
+        let _ = exec("launchctl bootout gui/$(id -u)/" + label + " 2>/dev/null || true")
+        let out = exec("launchctl bootstrap gui/$(id -u) '" + plist + "' 2>&1").trim()
+        if out == "" {
+            loaded = loaded + 1
+        } else {
+            failed = failed + 1
+            println("[airgenome-init] agents: " + label + " — " + out)
+        }
+        i = i + 1
+    }
+    println("[airgenome-init] agents: " + to_string(loaded) + " loaded, " +
+            to_string(failed) + " failed (of " + to_string(len(list)) + ")")
+}
+
 fn main() -> void {
     println("[airgenome-init] root: " + root())
     println("[airgenome-init] slug: " + slug_from_root())
@@ -653,4 +693,5 @@ fn main() -> void {
     ensure_claude_bootstrap()
     ensure_settings_guard()
     ensure_telegram_bot()
+    ensure_all_agents_loaded()
 }
