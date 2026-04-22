@@ -300,25 +300,29 @@ fn ensure_claude_bootstrap() -> void {
     let sl_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_statusline.hexa"
     let ups_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_prompt_hook.hexa"
     let ptu_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/bash_allow_hook.hexa"
-    // Render via jq -n: guaranteed-valid JSON + no string-escape-in-hexa hazards.
-    let jq_expr = "{env:{WS:$ws}," +
+    let shape_path = root() + "/rules/claude_settings_shape.json"
+    if file_exists(shape_path) == false {
+        println("[airgenome-init] ERROR missing SSOT " + shape_path)
+        return
+    }
+    // SSOT merge: dynamic overlay (env/hooks/statusLine) + static shape
+    // (permissions.defaultMode + permissions.deny + skipDangerousModePermissionPrompt)
+    // loaded from rules/claude_settings_shape.json. --slurpfile wraps the
+    // file in a 1-element array so we unwrap with [0] and strip _ssot before
+    // use. Any edit to deny patterns / bypass flags happens in that file
+    // alone — cl-settings reads the same SSOT.
+    let jq_expr = "($shape_arr[0] | del(._ssot)) as $s |" +
+                  "{env:{WS:$ws}," +
                   "statusLine:{type:\"command\",command:$sl,padding:0}," +
                   "hooks:{" +
                   "UserPromptSubmit:[{hooks:[{type:\"command\",command:$ups}]}]," +
                   "PreToolUse:[{matcher:\"Bash\",hooks:[{type:\"command\",command:$ptu}]}]" +
                   "}," +
-                  "permissions:{" +
-                  "defaultMode:\"bypassPermissions\"," +
-                  "deny:[" +
-                  "\"Bash(git push -f*)\"," +
-                  "\"Bash(git push --force*)\"," +
-                  "\"Bash(git push * -f*)\"," +
-                  "\"Bash(git push * --force*)\"," +
-                  "\"Bash(git push * +*)\"" +
-                  "]}," +
-                  "skipDangerousModePermissionPrompt:true}"
+                  "permissions:($s.permissions)," +
+                  "skipDangerousModePermissionPrompt:$s.skipDangerousModePermissionPrompt}"
     let jq_args = "--arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
-                  " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "'"
+                  " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "'" +
+                  " --slurpfile shape_arr '" + shape_path + "'"
     let tmp = p + ".tmp"
     // Render fresh to tmp every call. Idempotence gate then compares canonical
     // (jq -S) forms of current vs tmp so whitespace / key-order drift in the
