@@ -121,6 +121,7 @@ roadmap 2 done "M1 L0 guard parse-check 추가 — phantom 차단"
   why            phantom L0 재발 방지 — nexus/shared/lockdown/l0_guard.hexa 에 parse 가능성 section 추가
   exit_criteria  l0_guard section 4 + 21 PASS / 0 FAIL + nexus self-verify 9 phantom 발견
   mirror         config/roadmap/airgenome.json#M1_l0_strict
+  note           원본 l0_guard.hexa 는 2026-04-14 nexus refactor 로 archive/superseded-20260414/l0_guard.hexa 이동 — 기능은 pre_tool_guard/cmd_gate 로 흡수, M1 exit criteria 달성 상태 유지
   depends-on     1
 
 roadmap 3 done "M2 probe — Mac/원격 vitals 수집"
