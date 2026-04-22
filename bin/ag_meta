@@ -17,12 +17,14 @@
 #   motif          Phase 3.10 top-K (comm, rss_bucket) motifs per ring
 #   blockers       Phase 1    aggregated prioritized blocker inventory
 #   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
+#   gap            Phase 6.2  mine git log + stderr patterns → scanner proposals
 #   doctor         aggregate: run all Phase 3 scanners in sequence
 #   health         aggregate: print 0-100 score from state/ag_*.json
 #   selftest       run --selftest on every scanner
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
 #   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
 #   fast           fast-subset for pre-commit (ring + forge + blockers)
+#   report         render state/ag_report.md (--stdout to print instead)
 #
 # Environment:
 #   HEXA_BIN    path to self-hosted hexa (default: /Users/ghost/core/hexa-lang/hexa)
@@ -112,6 +114,7 @@ SCANNERS=(
 AGGREGATORS=(
     "blockers:tool/ag_blockers.hexa"
     "roi:tool/ag_roi.hexa"
+    "gap_proposals:tool/ag_gap_proposer.hexa"
 )
 
 _scanner_path() {
@@ -137,6 +140,7 @@ cmd_rules()      { _hexa_timed "$(_scanner_path rule_effect_map)" "$@"; }
 cmd_motif()      { _hexa_timed "$(_scanner_path mutation_motif)" "$@"; }
 cmd_blockers()   { _hexa_timed "$(_scanner_path blockers)" "$@"; }
 cmd_roi()        { _hexa_timed "$(_scanner_path roi)" "$@"; }
+cmd_gap()        { _hexa_timed "$(_scanner_path gap_proposals)" "$@"; }
 
 cmd_doctor() {
     local rc=0
@@ -224,6 +228,131 @@ cmd_fast() {
     fi
     echo "ag_meta fast: OK (no critical blockers)"
     return $rc
+}
+
+# cmd_report — render a markdown summary of state/ag_*.json. Writes to
+# state/ag_report.md (or --stdout to print instead).
+cmd_report() {
+    local stdout=0
+    for a in "$@"; do [[ "$a" == "--stdout" ]] && stdout=1; done
+    local out="state/ag_report.md"
+    local tmp
+    tmp="$(mktemp)"
+
+    local ts
+    ts="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    {
+        echo "# airgenome meta-evolution report"
+        echo
+        echo "Generated: \`$ts\`"
+        echo
+        # Health score line (just re-run cmd_health to stdout)
+        echo "## Health"
+        echo
+        echo '```'
+        cmd_health
+        echo '```'
+        echo
+
+        # Blockers section
+        if [[ -f state/ag_blockers.json ]]; then
+            echo "## Blockers"
+            echo
+            local summary
+            summary="$(grep -oE '"summary": *\{[^}]*\}' state/ag_blockers.json | head -1 | sed 's/"summary": *//')"
+            echo "- summary: \`${summary:-none}\`"
+            echo
+            grep -oE '"severity":"[^"]+","kind":"[^"]+","source":"[^"]+","evidence":"[^"]+"' state/ag_blockers.json |
+                awk -F'"' '{printf "  - **%s** — %s — evidence: %s — source: %s\n", $4, $8, $16, $12}'
+            echo
+        fi
+
+        # ROI findings
+        if [[ -f state/ag_roi.json ]]; then
+            echo "## ROI opportunities"
+            echo
+            local fc
+            fc="$(grep -oE '"finding_count": *[0-9]+' state/ag_roi.json | head -1 | grep -oE '[0-9]+')"
+            echo "- total findings: ${fc:-0}"
+            grep -oE '"kind":"[^"]+"' state/ag_roi.json | awk -F'"' '{print $4}' | sort -u | sed 's|.*|  - &|'
+            echo
+        fi
+
+        # Per-scanner headline
+        echo "## Per-scanner headlines"
+        echo
+
+        _headline() {
+            local label="$1" file="$2" pattern="$3"
+            [[ -f "$file" ]] || { echo "- $label: _(no data)_"; return; }
+            local v
+            v="$(grep -oE "$pattern" "$file" | head -5 | tr '\n' ' ' | sed 's/"//g')"
+            printf -- "- %s: %s\n" "$label" "${v:-(none)}"
+        }
+
+        _headline "ring_integrity"      state/ag_ring_integrity.json     '"total_records": *[0-9]+|"total_issues": *[0-9]+'
+        _headline "forge_health"        state/ag_forge_health.json       '"stalled_logs": *[0-9]+|"total_issues": *[0-9]+'
+        _headline "ring_divergence"     state/ag_ring_divergence.json    '"pair":"[^"]+","intersection":[0-9]+,"union":[0-9]+,"jaccard":[0-9.]+'
+        _headline "forecast_hit_rate"   state/ag_forecast_hit_rate.json  '"precision":[0-9.]+|"recall":[0-9.]+|"matched_keys":[0-9]+'
+        _headline "infra_parity"        state/ag_infra_parity.json       '"launchd_plists": *[0-9]+|"systemd_units": *[0-9]+|"hosts_inactive": *[0-9]+'
+        _headline "evolution_velocity"  state/ag_evolution_velocity.json '"rate_24h_per_hour":[0-9.]+'
+        _headline "compute_cost"        state/ag_compute_cost.json       '"seconds_per_genome": *[0-9.]+|"total_genomes": *[0-9]+'
+        _headline "dispatch_coverage"   state/ag_dispatch_coverage.json  '"dead_handler_count": *[0-9]+'
+        _headline "rule_effect_map"     state/ag_rule_effect_map.json    '"dormant_count": *[0-9]+'
+        echo
+
+        # Top motifs — JSON file has 3 ring blocks in order mac, ubu, ubu2.
+        # awk splits on {"path": to isolate each block; motifs within.
+        if [[ -f state/ag_mutation_motif.json ]]; then
+            echo "## Top mutation motifs (per ring)"
+            echo
+            awk '
+                BEGIN { RS="{\"path\":"; ORS="" }
+                NR==1 { next }   # header chunk
+                {
+                    chunk = $0
+                    # extract ring name from path=forge/genomes.ring -> mac; .ubu.ring -> ubu; .ubu2.ring -> ubu2
+                    name = "?"
+                    if (match(chunk, /"forge\/genomes\.ring"/))  name = "mac"
+                    else if (match(chunk, /"forge\/genomes\.ubu\.ring"/))  name = "ubu"
+                    else if (match(chunk, /"forge\/genomes\.ubu2\.ring"/)) name = "ubu2"
+                    print "### " name "\n\n"
+                    # pick top 3 motifs
+                    n = 0
+                    while ( (idx = match(chunk, /"comm":"[^"]+","rss_bucket":"[^"]+","count":[0-9]+/)) > 0 && n < 3 ) {
+                        m = substr(chunk, RSTART, RLENGTH)
+                        # extract fields
+                        match(m, /"comm":"[^"]+"/); c = substr(m, RSTART+8, RLENGTH-9)
+                        match(m, /"rss_bucket":"[^"]+"/); r = substr(m, RSTART+14, RLENGTH-15)
+                        match(m, /"count":[0-9]+/); k = substr(m, RSTART+8, RLENGTH-8)
+                        printf "- `%s` / rss=%s / count=%s\n", c, r, k
+                        chunk = substr(chunk, idx + RLENGTH)
+                        n++
+                    }
+                    print "\n"
+                }
+            ' state/ag_mutation_motif.json
+        fi
+
+        # Telemetry summary tail
+        if [[ -f "$TELEMETRY_LOG" ]]; then
+            echo "## Telemetry"
+            echo
+            local n
+            n="$(wc -l < "$TELEMETRY_LOG" | tr -d ' ')"
+            echo "- $n invocations logged (append-only, \`$TELEMETRY_LOG\`)"
+            echo
+        fi
+    } > "$tmp"
+
+    if [[ $stdout -eq 1 ]]; then
+        cat "$tmp"
+        rm -f "$tmp"
+    else
+        mkdir -p state
+        mv "$tmp" "$out"
+        echo "ag_meta report: wrote $out ($(wc -l < "$out" | tr -d ' ') lines)"
+    fi
 }
 
 cmd_continuous_scan() {
@@ -328,12 +457,14 @@ main() {
         motif)           cmd_motif "$@" ;;
         blockers)        cmd_blockers "$@" ;;
         roi)             cmd_roi "$@" ;;
+        gap)             cmd_gap "$@" ;;
         doctor)          cmd_doctor "$@" ;;
         health)          cmd_health "$@" ;;
         selftest)        cmd_selftest ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
         telemetry)       cmd_telemetry "$@" ;;
         fast)            cmd_fast "$@" ;;
+        report)          cmd_report "$@" ;;
         -h|--help|help)
             sed -n '/^# Usage:/,/^$/p' "$SELF" | sed 's/^# \{0,1\}//'
             ;;
