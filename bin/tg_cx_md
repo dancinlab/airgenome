@@ -1,69 +1,60 @@
 #!/usr/bin/env bash
-# tg_cx_md — cx-core + Telegraph render.
+# tg_cx_md — cx-core 래퍼. markdown 을 monospace-friendly ASCII 로 정규화
+# 후 ```…``` pre block 으로 감싸 Telegram 렌더.
 #
-# 흐름: cx-core → markdown → pandoc(HTML) → tg_html2tg(JSON nodes) →
-#        curl createPage → URL → Telegram reply (URL + preview)
+# 변환:
+#   ## header              → ━━━ header ━━━
+#   **bold** / __bold__    → bold (literal 마커 제거; pre 블록 안이라 굵지 않음)
+#   | a | b |  (표)        → column -t 로 컬럼 폭 정렬
+#   - item (리스트)        → · item (시각 구분)
+#   나머지 그대로.
 #
-# 짧은 응답 (≤ THRESH 바이트, 기본 600) 은 in-chat 에 ```…``` 로 직출력해
-# 왕복 지연 회피. 넘어가면 Telegraph URL.
-#
-# 의존: pandoc, python3, curl. L0 tg_bot-core 와 동일 계층.
-# env : CX_CORE_BIN, TG_CX_THRESH, TELEGRAPH_TOKEN_FILE, TELEGRAPH_AUTHOR
+# stdin=user text, stdout=reply. 의존: awk, sed, column.
+# env: CX_CORE_BIN
 
 set -uo pipefail
 
 CX="${CX_CORE_BIN:-/Users/ghost/core/airgenome/bin/cx-core}"
-THRESH="${TG_CX_THRESH:-600}"
-H2T="/Users/ghost/core/airgenome/bin/tg_html2tg"
-TOKFILE="${TELEGRAPH_TOKEN_FILE:-$HOME/.airgenome/telegraph_token}"
-AUTHOR="${TELEGRAPH_AUTHOR:-ag_cl_bot}"
 
 q=$(cat)
-
-# title: 첫 줄 최대 80자. LC_ALL 로 UTF-8 tr 안정화.
-title=$(printf '%s' "$q" | LC_ALL=en_US.UTF-8 head -n1 | LC_ALL=en_US.UTF-8 cut -c1-80)
-[ -z "$title" ] && title="airgenome"
-
-# cx-core 호출
 out=$(printf '%s' "$q" | "$CX" local -- -p 2>&1)
 rc=$?
 
-# 짧은 응답: in-chat pre block
-blen=${#out}
-if [ "$blen" -le "$THRESH" ]; then
-    safe=$(printf '%s' "$out" | sed $'s/^```/\xe2\x80\x8b```/g')
-    printf '```\n%s\n```' "$safe"
-    exit "$rc"
-fi
+# inline transforms (row-by-row 가능한 것)
+inline=$(printf '%s' "$out" | sed -E \
+    -e 's/^## +(.+)$/━━━ \1 ━━━/' \
+    -e 's/^# +(.+)$/━━━━━━ \1 ━━━━━━/' \
+    -e 's/^### +(.+)$/── \1 ──/' \
+    -e 's/\*\*([^*]+)\*\*/\1/g' \
+    -e 's/__([^_]+)__/\1/g' \
+    -e 's/^(- |[*] )/· /')
 
-# 긴 응답: pandoc MD→HTML → html2tg JSON → curl createPage
-html=$(printf '%s' "$out" | pandoc -f gfm -t html 2>/dev/null)
-if [ -z "$html" ]; then
-    escaped=$(printf '%s' "$out" | python3 -c 'import sys,html; print(html.escape(sys.stdin.read()))')
-    html="<pre>${escaped}</pre>"
-fi
-content=$(printf '%s' "$html" | "$H2T" 2>/dev/null)
+# 테이블 블록 (연속된 ^| ... | 라인) 버퍼링 후 column 로 정렬.
+# markdown separator `|---|---|` 는 보기 흉해 스킵.
+aligned=$(printf '%s' "$inline" | awk '
+    function flush() {
+        if (nbuf == 0) return
+        cmd = "column -t -s \"|\""
+        for (i=1; i<=nbuf; i++) print buf[i] | cmd
+        close(cmd)
+        nbuf = 0
+    }
+    /^\|.*\|$/ {
+        # markdown separator 스킵
+        if ($0 ~ /^\|[- :|]+\|$/) {
+            # 폭 맞추기 위해 대시 라인은 유지하되 렌더 없이 통과
+            # 더 단순: 스킵
+            next
+        }
+        buf[++nbuf] = $0
+        next
+    }
+    { flush(); print }
+    END { flush() }
+')
 
-url=""
-if [ -n "$content" ] && [ -r "$TOKFILE" ]; then
-    token=$(tr -d '\n\r' < "$TOKFILE")
-    resp=$(curl -sS --max-time 15 "https://api.telegra.ph/createPage" \
-        --data-urlencode "access_token=$token" \
-        --data-urlencode "title=$title" \
-        --data-urlencode "author_name=$AUTHOR" \
-        --data-urlencode "content=$content" \
-        --data-urlencode "return_content=false" 2>&1)
-    url=$(printf '%s' "$resp" | python3 -c 'import sys,json; d=json.loads(sys.stdin.read()); print(d["result"]["url"] if d.get("ok") else "")' 2>/dev/null)
-fi
+# inner triple-backtick 충돌 방지
+safe=$(printf '%s' "$aligned" | sed $'s/^```/\xe2\x80\x8b```/g')
 
-if [ -z "$url" ]; then
-    # fallback: truncated pre block
-    head_out=$(printf '%s' "$out" | head -c 3500)
-    safe=$(printf '%s' "$head_out" | sed $'s/^```/\xe2\x80\x8b```/g')
-    printf '```\n%s\n```\n\n(잘림 · telegraph 실패)' "$safe"
-    exit "$rc"
-fi
-
-preview=$(printf '%s' "$out" | head -3 | sed 's/[`*_]//g' | head -c 200)
-printf '📋 %s\n🔗 %s\n\n%s' "$title" "$url" "$preview"
+printf '```\n%s\n```' "$safe"
 exit "$rc"
