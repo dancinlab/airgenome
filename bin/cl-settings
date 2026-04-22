@@ -10,12 +10,13 @@
 #   cl-settings --project <dir> sync <dir>/.claude/settings.json in addition
 #                               to global.
 #   cl-settings --global-only   global only (explicit; same as no flag).
-#   cl-settings --accounts      strip skipDangerousModePermissionPrompt from
-#                               every ~/.claude-claude*/settings.json
+#   cl-settings --accounts      inject defaultMode:bypassPermissions +
+#                               skipDangerousModePermissionPrompt into every
+#                               ~/.claude-claude*/settings.json
 #                               (no allow/deny injection — account dirs are
 #                               auth dirs, not policy dirs).
-#   cl-settings --sweep         strip defaultMode:bypassPermissions +
-#                               skipDangerousModePermissionPrompt from every
+#   cl-settings --sweep         inject defaultMode:bypassPermissions +
+#                               skipDangerousModePermissionPrompt into every
 #                               ~/core/*/.claude/settings.json and
 #                               ~/etc/*/.claude/settings.json
 #                               (allow/deny lists preserved — each project
@@ -25,12 +26,10 @@
 #   cl-settings self-test       tmp-file sync + strip + idempotence check.
 #
 # Shape it enforces (merged via jq — preserves keys not listed):
-#   .permissions.allow                  ⊇  wildcard list (below)
-#   .permissions.deny                   ⊇  git push -f/--force 5 patterns
-#   .permissions.additionalDirectories  ⊇  ["/"]
-# Shape it strips:
-#   .permissions.defaultMode == "bypassPermissions"  → removed
-#   .skipDangerousModePermissionPrompt               → removed
+#   .permissions.allow                    ⊇  wildcard list (below)
+#   .permissions.deny                     ⊇  git push -f/--force 5 patterns
+#   .permissions.defaultMode              =  "bypassPermissions"
+#   .skipDangerousModePermissionPrompt    =  true
 #
 # Policy: no backups. airgenome convention is "don't keep .bak.* files" —
 # settings.json is recoverable via git (project files) or by re-running
@@ -47,21 +46,10 @@ _shape_json() {
 {
   "permissions": {
     "allow": [
-      "*",
-      "Bash", "Bash(*)",
-      "Edit", "Edit(*)",
-      "ExitPlanMode",
-      "Glob",
-      "Grep",
-      "NotebookEdit",
-      "Read", "Read(*)",
-      "SlashCommand",
-      "Task",
-      "TodoWrite",
-      "WebFetch",
-      "WebSearch",
-      "Write", "Write(*)",
-      "mcp__*"
+      "Bash", "Bash(*)", "Bash(*:*)",
+      "Read(//**)",
+      "Write(//**)",
+      "Edit(//**)"
     ],
     "deny": [
       "Bash(git push -f*)",
@@ -70,14 +58,15 @@ _shape_json() {
       "Bash(git push * --force*)",
       "Bash(git push * +*)"
     ],
-    "additionalDirectories": ["/"]
-  }
+    "defaultMode": "bypassPermissions"
+  },
+  "skipDangerousModePermissionPrompt": true
 }
 JSON
 }
 
-# Merge SHAPE into TARGET, union-ing allow/deny/additionalDirectories,
-# and stripping defaultMode:bypassPermissions + skipDangerousModePermissionPrompt.
+# Merge SHAPE into TARGET, union-ing allow/deny, and enforcing
+# defaultMode:bypassPermissions + skipDangerousModePermissionPrompt=true.
 # Emits merged JSON on stdout.
 _merged_for() {
     local target="$1"
@@ -93,12 +82,10 @@ _merged_for() {
         def uniq_union(a; b): (a // []) + (b // []) | unique;
         ($cur + $sh)
         | .permissions = (($cur.permissions // {}) + ($sh.permissions // {}))
-        | .permissions.allow                 = uniq_union($cur.permissions.allow;                 $sh.permissions.allow)
-        | .permissions.deny                  = uniq_union($cur.permissions.deny;                  $sh.permissions.deny)
-        | .permissions.additionalDirectories = uniq_union($cur.permissions.additionalDirectories; $sh.permissions.additionalDirectories)
-        | if (.permissions.defaultMode // "") == "bypassPermissions"
-            then del(.permissions.defaultMode) else . end
-        | del(.skipDangerousModePermissionPrompt)
+        | .permissions.allow = uniq_union($cur.permissions.allow; $sh.permissions.allow)
+        | .permissions.deny  = uniq_union($cur.permissions.deny;  $sh.permissions.deny)
+        | .permissions.defaultMode = "bypassPermissions"
+        | .skipDangerousModePermissionPrompt = true
     '
 }
 
@@ -108,9 +95,10 @@ _write() {
     printf '%s\n' "$new_content" > "$target"
 }
 
-# Strip-only pass — no shape injection. Removes defaultMode:bypassPermissions
-# and skipDangerousModePermissionPrompt. Emits result on stdout.
-_stripped_for() {
+# Inject-only pass — no allow/deny changes. Sets
+# defaultMode:bypassPermissions + skipDangerousModePermissionPrompt=true.
+# Emits result on stdout.
+_injected_for() {
     local target="$1"
     local current
     if [ -f "$target" ]; then
@@ -120,30 +108,29 @@ _stripped_for() {
         return 1
     fi
     jq '
-        if (.permissions.defaultMode // "") == "bypassPermissions"
-            then del(.permissions.defaultMode) else . end
-        | del(.skipDangerousModePermissionPrompt)
+        .permissions = ((.permissions // {}) | .defaultMode = "bypassPermissions")
+        | .skipDangerousModePermissionPrompt = true
     ' <<< "$current"
 }
 
-_apply_strip() {
+_apply_inject() {
     local target="$1" dry="${2:-0}"
-    local stripped
-    if ! stripped=$(_stripped_for "$target"); then
+    local injected
+    if ! injected=$(_injected_for "$target"); then
         return 1
     fi
     if [ "$dry" = "1" ]; then
-        echo "--- strip only: $target ---"
-        diff <(jq -S . "$target" 2>/dev/null) <(printf '%s\n' "$stripped" | jq -S .) || true
+        echo "--- inject only: $target ---"
+        diff <(jq -S . "$target" 2>/dev/null) <(printf '%s\n' "$injected" | jq -S .) || true
         return 0
     fi
     if diff -q \
             <(jq -S . "$target" 2>/dev/null) \
-            <(printf '%s\n' "$stripped" | jq -S .) >/dev/null 2>&1; then
+            <(printf '%s\n' "$injected" | jq -S .) >/dev/null 2>&1; then
         return 0  # quiet — no change
     fi
-    printf '%s\n' "$stripped" > "$target"
-    echo "cl-settings: stripped $target"
+    printf '%s\n' "$injected" > "$target"
+    echo "cl-settings: injected bypass into $target"
 }
 
 _apply() {
@@ -182,47 +169,45 @@ _self_test() {
 
     # 1. merge into empty
     _apply "$tmp/empty.json" >/dev/null
-    if jq -e '(.permissions.allow | index("*"))
+    if jq -e '(.permissions.allow | index("Bash(*)"))
+              and (.permissions.allow | index("Read(//**)"))
               and (.permissions.deny  | index("Bash(git push --force*)"))
-              and (.permissions.additionalDirectories | index("/"))
-              and (.permissions.defaultMode == null)
-              and (.skipDangerousModePermissionPrompt == null)' \
+              and (.permissions.defaultMode == "bypassPermissions")
+              and (.skipDangerousModePermissionPrompt == true)' \
             "$tmp/empty.json" >/dev/null; then
         echo "  ✓ merge into empty produces expected shape"
     else
         echo "  ✗ merge into empty missing fields" >&2; rc=1
     fi
 
-    # 2. strip bypass from an existing file that has it
-    cat > "$tmp/bypass.json" <<'JSON'
+    # 2. inject bypass into a plain file that lacks it
+    cat > "$tmp/plain.json" <<'JSON'
 {
   "permissions": {
     "allow": ["Read"],
-    "deny": ["Bash(rm -rf /*)"],
-    "defaultMode": "bypassPermissions"
+    "deny": ["Bash(rm -rf /*)"]
   },
-  "skipDangerousModePermissionPrompt": true,
   "env": {"KEEP_ME": "1"}
 }
 JSON
-    _apply "$tmp/bypass.json" >/dev/null
-    if jq -e '(.permissions.defaultMode == null)
-              and (.skipDangerousModePermissionPrompt == null)
+    _apply "$tmp/plain.json" >/dev/null
+    if jq -e '(.permissions.defaultMode == "bypassPermissions")
+              and (.skipDangerousModePermissionPrompt == true)
               and (.env.KEEP_ME == "1")
               and (.permissions.allow | index("Read"))
-              and (.permissions.allow | index("*"))
+              and (.permissions.allow | index("Bash(*)"))
               and (.permissions.deny  | index("Bash(rm -rf /*)"))
               and (.permissions.deny  | index("Bash(git push --force*)"))' \
-            "$tmp/bypass.json" >/dev/null; then
-        echo "  ✓ bypass stripped, unrelated keys preserved, unions taken"
+            "$tmp/plain.json" >/dev/null; then
+        echo "  ✓ bypass injected, unrelated keys preserved, unions taken"
     else
-        echo "  ✗ strip/preserve/union broke" >&2; rc=1
+        echo "  ✗ inject/preserve/union broke" >&2; rc=1
     fi
 
     # 3. idempotence — second apply must not change the file
-    cp "$tmp/bypass.json" "$tmp/bypass.snap"
-    _apply "$tmp/bypass.json" >/dev/null
-    if diff -q <(jq -S . "$tmp/bypass.snap") <(jq -S . "$tmp/bypass.json") >/dev/null; then
+    cp "$tmp/plain.json" "$tmp/plain.snap"
+    _apply "$tmp/plain.json" >/dev/null
+    if diff -q <(jq -S . "$tmp/plain.snap") <(jq -S . "$tmp/plain.json") >/dev/null; then
         echo "  ✓ idempotent (second apply = no-op)"
     else
         echo "  ✗ not idempotent" >&2; rc=1
@@ -289,20 +274,20 @@ if [ "$do_accounts" = "1" ]; then
     for d in "$HOME"/.claude-claude*; do
         [ -d "$d" ] || continue
         [ -f "$d/settings.json" ] || continue
-        _apply_strip "$d/settings.json" "$dry" || rc_total=1
+        _apply_inject "$d/settings.json" "$dry" || rc_total=1
     done
     shopt -u nullglob
 fi
 if [ "$do_sweep" = "1" ]; then
     shopt -s nullglob
     # Include global too since it belongs to the same "strip policy" pass.
-    [ -f "$HOME/.claude/settings.json" ] && _apply_strip "$HOME/.claude/settings.json" "$dry"
+    [ -f "$HOME/.claude/settings.json" ] && _apply_inject "$HOME/.claude/settings.json" "$dry"
     for f in "$HOME"/core/*/.claude/settings.json "$HOME"/etc/*/.claude/settings.json; do
         [ -f "$f" ] || continue
         if [ "$sweep_include_nexus" = "0" ] && [[ "$f" == *"/core/nexus/"* ]]; then
             continue
         fi
-        _apply_strip "$f" "$dry" || rc_total=1
+        _apply_inject "$f" "$dry" || rc_total=1
     done
     shopt -u nullglob
 fi
