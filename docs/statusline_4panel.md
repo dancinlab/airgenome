@@ -102,3 +102,262 @@ CC statusLine 은 multi-line 지원 확인 필요 — 지원 시 3줄 박스 가
 2. wcwidth 유틸 (`nexus/shared/stdlib/wcwidth.hexa`?) 유무 확인, 없으면 포팅
 3. CC multi-line 지원 여부 live probe (별건, 박스 단계에서)
 4. `.statusline-events.jsonl` 관측 개시 → 1주 후 priority 재튜닝
+
+---
+
+# Part II — Implementation
+
+## 13. 파일 / 모듈 구조
+```
+hexa-lang/gate/
+  claude_statusline_4panel.hexa       # entry
+  claude_statusline_4panel.jq         # transcript + stdin 파서
+  panels/
+    left_context.hexa
+    center_session.hexa
+    emergence.hexa
+    right_economy.hexa
+  lib/
+    wcwidth.hexa                      # cell-width (없으면 포팅)
+    columns.hexa                      # tput / env / fallback
+    ansi.hexa                         # color / strip helpers
+    cache.hexa                        # git SHA 캐시 60s
+  events/
+    emergence_ranker.hexa             # score fn + recency decay
+    sources.hexa                      # file → Event adapter
+  observability/
+    statusline_log.hexa               # .hook-statusline.jsonl appender
+```
+기존 `claude_statusline.{hexa,jq}` 는 emergence fallback 경로로 호출만 유지.
+
+## 14. CC stdin JSON (실측 스키마)
+```json
+{
+  "session_id":"uuid",
+  "transcript_path":"/Users/ghost/.claude-claudeN/projects/<slug>/<uuid>.jsonl",
+  "cwd":"/Users/ghost/core/airgenome",
+  "model":{"id":"claude-opus-4-7","display_name":"Opus 4.7"},
+  "workspace":{"current_dir":"…","project_dir":"…"},
+  "version":"1.0.x",
+  "output_style":{"name":"default"}
+}
+```
+사용:
+- `cwd` → git root 검증
+- `model.display_name` → CENTER
+- `transcript_path` → ctx%, turn count, usage, last_user_ts
+- `session_id` → `.hook-statusline.jsonl` 파티션 키, flicker 상태 분리 저장
+
+## 15. Git 상태 캡처 — edge cases
+1회 fork: `git status --porcelain=v2 --branch --ahead-behind 2>/dev/null` — branch/ahead/behind/dirty 일괄.
+| 케이스 | 처리 |
+|---|---|
+| detached HEAD | `⎇ @abc1234` |
+| init 직후 | `⎇ (init)` |
+| no remote / no upstream | `↑?` 생략 |
+| submodule | 가장 바깥 repo 만 |
+| worktree | `rev-parse --show-toplevel` 결과 그대로 |
+| stash | 표시 안 함 |
+| git 없음 | LEFT 전체 drop |
+
+## 16. Transcript 파싱 — ctx% / turn / cost
+- Transcript jsonl 각 줄: `{role, content, usage:{input_tokens, cache_read_input_tokens, cache_creation_input_tokens, output_tokens}}`
+- **ctx%** = (input + cache_read + cache_creation) / context_window. 모델 윈도우: opus-4-7 기본 200K, `[1m]` 변형 1M, sonnet 200K, haiku 200K
+- 비용: 마지막 1KB 에서 마지막 assistant line parse — 전체 스캔 불필요
+- **turn** = `grep -c '"role":"assistant"' transcript.jsonl` (<10ms)
+- **cost** (hardcoded 표):
+```
+opus-4-7:   $15/M in,  $75/M out,  cache_read $1.50,  cache_write $18.75
+sonnet-4-6: $3/M  in,  $15/M out,  cache_read $0.30,  cache_write $3.75
+haiku-4-5:  $0.25/M,   $1.25/M,    cache_read $0.025, cache_write $0.30
+```
+전체 누적은 1 jq stream fork, 캐시 (last_calc_ts + delta 재계산).
+
+## 17. Roadmap active id 파싱
+`.roadmap` 에서 `^roadmap N active` 매칭, 복수일 때 MAIN track 우선 (track 이 `hybrid` 또는 feeds-main 존재). mtime 캐시.
+
+## 18. 창발 이벤트 — 소스/필드 매트릭스
+| type | 파일 | 추출 | weight |
+|---|---|---|---|
+| raw | `$HEXA_LANG/.raw` | 마지막 `^raw #(\d+)` + mtime | 4 |
+| cert | `$HEXA_LANG/.meta2-cert/*.json` | count + newest mtime | 3 |
+| same_structure | `$HEXA_LANG/.raw-audit` | `SAME_STRUCTURE` count | 2 |
+| transfer | `.meta2-cert/transfer_*.json` | count | 1.5 |
+| roadmap_feed | airgenome `state/roadmap_progress.json` | phase delta | 1 |
+| cp | airgenome `state/rig_trend_history.jsonl` | tail `critical_path_len`, head↔tail | 1 |
+| host_offline | airgenome `infra_state.json` | host.status != "active" | anomaly ×5 |
+| forecast_mae | airgenome `state/forecast_eval.jsonl` | MAE > threshold | anomaly ×4 |
+| uchg_drift | `stat -f %f ~/.claude/settings.json` | uchg bit 없음 | anomaly ×3 |
+
+각 source adapter: `source.snapshot() -> Event | null`
+```hexa
+struct Event { type: string, ts: int, label: string, weight: float }
+```
+
+## 19. Priority 계산 (ranker)
+```hexa
+fn score(e: Event, now: int, phase: string) -> float {
+    let halflife = halflife_for(e.type)   // raw 86400, cert 259200, anomaly 3600
+    let recency  = exp(-(now - e.ts) as f64 / halflife)
+    let phase_rel = if phase_matches(e.type, phase) { 1.5 } else { 1.0 }
+    return e.weight * recency * phase_rel
+}
+```
+Top-1 선택. tie-break = 최근 ts.
+
+**Anti-flicker**: 연속 2 turn 다른 type 이 번갈면 직전 type 에 +10% boost (hysteresis).
+`.statusline-state.json` 에 `last_shown_type` + `last_shown_ts` 저장 (session_id per partition).
+
+## 20. wcwidth
+hexa-lang stdlib 미존재 시 Python `wcwidth` 의 East Asian Width + Emoji Presentation 테이블을 `lib/wcwidth.hexa` 로 포팅. 최소 API:
+```
+fn display_cells(s: string) -> int
+fn pad_right(s: string, target_cells: int) -> string
+```
+4-panel 이모지 셋 (🧠 🌱 🔬 ⚠ ⏱ 💸 ✨ 🔁 ⎇) 은 hardcode 2-cell + `️` 붙여 명시적 wide 처리 우회도 가능.
+
+## 21. COLUMNS / TERM / locale
+우선순위: `$COLUMNS` → `tput cols` → `stty size` → 80. CC 가 TTY 제공 안 하면 `COLUMNS` 주입 확인, 없으면 COMPACT (100) 고정.
+`TERM=dumb` 또는 `NO_COLOR` 설정 시 monochrome + ASCII. `STATUSLINE_NO_EMOJI=1` 수동 opt-out.
+`LC_ALL=C.UTF-8 LANG=C.UTF-8` 강제.
+
+## 22. 캐시 `.statusline-cache.json`
+```json
+{
+  "git_sha":"…","git_line":"⎇ fix ±1 · R8","git_ts":…,
+  "roadmap_mtime":…,"roadmap_line":"R8",
+  "last_shown_type":"raw","last_shown_ts":…
+}
+```
+TTL: git 60s, roadmap mtime-driven, emergence mtime-driven, center 항상 재계산.
+Atomic: `write temp → rename`.
+
+## 23. 동시성
+- `.hook-statusline.jsonl` append = 1 line < PIPE_BUF(512) → write(2) atomic
+- `.statusline-cache.json` 은 session_id partition 으로 분리 저장해 flicker 독립
+- 기존 `.hook-commands/*.tmp` 패턴 재사용
+
+## 24. Per-project plugin
+`cwd` → project 매핑:
+```
+/Users/ghost/core/airgenome  → airgenome
+/Users/ghost/core/hexa-lang  → hexa-lang
+/Users/ghost/core/anima      → anima
+else                         → generic
+```
+Emergence panel 만 plugin 으로 교체 (`gate/statusline_plugins/<project>.hexa`). LEFT/CENTER/RIGHT 공통.
+
+## 25. Settings 통합 (AG10 준수, Claude 금지)
+1. `tool/airgenome_init.hexa::ensure_statusline()` 기본값 변경
+2. `rules/claude_settings_shape.json` SSOT 갱신
+3. 유저 수동: `airgenome-init` 실행 → settings.json 재생성 → `chflags uchg` 재잠금
+- A/B swap: 환경변수 `STATUSLINE_V=legacy|4panel` 로 ensure_statusline 분기
+
+## 26. Migration 스텝
+1. prototype `claude_statusline_4panel.hexa` — LEFT+CENTER 만, 나머지 `—`
+2. 수동 렌더 확인: `echo '<stdin>' | hexa claude_statusline_4panel.hexa`
+3. 창발, RIGHT 점진 추가 → 단계별 snapshot test
+4. env `STATUSLINE_V=4panel` A/B 로 1주 dogfood
+5. linear stack renderer → emergence fallback 으로 demotion
+6. SSOT default 변경
+
+## 27. 테스트 harness
+```
+tests/statusline/
+  fixtures/
+    stdin_opus_bypass.json
+    stdin_sonnet_plan.json
+    transcript_short.jsonl
+    transcript_long.jsonl
+    raw_with_raw30.txt
+    rig_trend_recent.jsonl
+    infra_state_htz_down.json
+  golden/
+    full_140cols.txt
+    compact_100cols.txt
+    narrow_80cols.txt
+    degraded_no_git.txt
+    anomaly_htz_down.txt
+  run.hexa
+```
+CI: p99 render_ms < 200ms (여유 100ms).
+
+## 28. 관측성 로그 스키마 `.hook-statusline.jsonl`
+```json
+{
+  "ts":"2026-04-22T13:50:00Z","session":"uuid",
+  "render_ms":47,"columns":140,
+  "panels":["ctx","sess","emerg","econ"],
+  "event_type":"raw","event_label":"raw#30",
+  "cost_cum":0.42,"ctx_pct":47,"turn":12
+}
+```
+1주 후 분석: 최빈 type, 평균 render_ms, anomaly 비율, COLUMNS 분포.
+
+## 29. 성능 예산 강제
+Per-panel timeout (ms): LEFT 50, CENTER 80, 창발 50, RIGHT 30. 초과 시 last-good + `⌛` + log.
+구현: `exec_with_timeout(cmd, ms)` 또는 `timeout(1)` 래핑.
+
+## 30. Binary 의존 / degraded
+`jq`, `git` 필수. `tput`, `timeout` 선택. 한 번만 probe → `.statusline-deps.json` 캐시. 부재 시 해당 panel drop.
+| 실패 | 대응 |
+|---|---|
+| jq | bash-only renderer, 창발 = active.json stack 만 |
+| git | LEFT drop |
+| transcript read | CENTER `🧠 ?` |
+| `.raw` | 창발 → active.json fallback |
+| 렌더 > 300ms | last-good + `⌛` |
+| stdin 파싱 실패 | LEFT/창발/RIGHT 만 |
+
+## 31. 롤백
+```
+export STATUSLINE_V=legacy
+airgenome-init
+```
+또는 `statusLine.command` 를 `claude_statusline.hexa` 로 복구 + uchg 재잠금.
+
+## 32. Hook framework 통합 (M13 landed 후)
+- event bus 구독 → file polling 제거
+- `.statusline-events.jsonl` 을 bus publish → statusline 은 tail `-c 2048`
+- cross-host events → 원격 호스트 probe 결과도 local statusline 표시
+
+## 33. Dogfood 메트릭
+- p50 / p99 render_ms
+- COLUMNS 분포
+- degraded 경로 빈도 (<1% 목표)
+- 창발 panel 공란 turn 비율 (<30% 목표)
+- cost_cum vs CC usage summary ±5%
+
+## 34. 보안 / PII
+- transcript 내용 읽지 않음 — `usage` + line count 만
+- branch 이름 `SECRET_*` prefix → `⎇ ****` 치환 (옵션)
+- 로그 로컬 전용
+
+## 35. Cross-platform
+- macOS 전용 (`stat -f`, `chflags`) 분기
+- Linux: uchg_drift 소스 skip, 나머지 POSIX 공통
+
+## 36. 완성도 체크리스트
+```
+[ ] 4 panel renderer 각각 동작
+[ ] wcwidth 정렬 정확
+[ ] 3-tier COLUMNS 적응
+[ ] anti-flicker hysteresis
+[ ] cache (git sha + roadmap mtime + event mtime)
+[ ] degraded paths 6종
+[ ] observability log
+[ ] per-panel timeout
+[ ] fixture × golden 테스트
+[ ] A/B env var swap
+[ ] init tool 연동 + uchg 재잠금
+[ ] 롤백 1-step
+[ ] dogfood 1주
+[ ] linear stack renderer demotion
+```
+
+## 37. 범위 밖 (의도적 제외)
+- Rust/Go 재작성 (overkill)
+- MCP server 경유 (CC → MCP 로 statusline 호출 불가)
+- Web dashboard sync (M12 후)
+- Interactive statusline (CC 지원 안 함)
+- LLM in-the-loop re-ranking (300ms 못 맞춤)
