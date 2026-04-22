@@ -1,0 +1,11 @@
+# 3-host liveness monitor (agm-20260422-008: "host down 시 ring divergence 급증").
+# If mac ring hasn't been written in >1h, mac forge process is dead/disconnected.
+
+name=mac_ring_liveness
+kind=threshold_abs
+source=file_age_seconds:forge/genomes.ring
+# Any age > 3600s is "host may be down". one-sided high alarm.
+baseline_bytes=3600
+alarm_pct=0
+severity=high
+description=mac ring mtime > 1h — mac forge may be down

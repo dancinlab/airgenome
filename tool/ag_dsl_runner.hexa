@@ -15,6 +15,7 @@
 //     line_count:<path>         wc -l on the file
 //     glob_count:<pattern>      count of matching glob entries
 //     grep_count:<path>:<regex> grep -cE occurrences
+//     file_age_seconds:<path>   now - mtime (seconds); -1 if missing
 //   baseline_bytes    integer baseline
 //   alarm_pct         integer: tolerance window in percent around baseline.
 //                     0 = one-sided (current > baseline → alarm_high only).
@@ -89,6 +90,9 @@ fn _measure_source(source: string) -> int {
         let out = to_string(exec("grep -cE " + _sh_q(pat) + " " + _sh_q(p) + " 2>/dev/null || true")).trim()
         if len(out) == 0 { return 0 }
         return to_int(out)
+    }
+    if kind == "file_age_seconds" {
+        return _file_age_seconds(rest)
     }
     return -1
 }

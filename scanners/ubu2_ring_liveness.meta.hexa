@@ -1,0 +1,7 @@
+name=ubu2_ring_liveness
+kind=threshold_abs
+source=file_age_seconds:forge/genomes.ubu2.ring
+baseline_bytes=3600
+alarm_pct=0
+severity=high
+description=ubu2 ring mtime > 1h — ubu2 forge may be down (SPOF risk)
