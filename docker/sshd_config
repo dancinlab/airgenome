@@ -9,5 +9,13 @@ AuthorizedKeysFile /root/.airgenome/docker_authorized_keys.root .ssh/authorized_
 X11Forwarding no
 PrintMotd no
 AcceptEnv LANG LC_*
+# ssh non-interactive sessions 은 ~/.bashrc/.profile 안 읽음 → PATH 수동 주입.
+# fat image 의 rust (/root/.cargo/bin) 와 airgenome/nexus wrappers 를 전달체크에서
+# 'rustc/cargo MISS' 로 놓쳤던 문제 해결.
+SetEnv PATH=/opt/airgenome/bin:/opt/nexus/bin:/opt/nexus/scripts/bin:/root/.hx/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+SetEnv HEXA=/usr/local/bin/hexa_real
+SetEnv NEXUS=/opt/nexus
+SetEnv AIRGENOME_ROOT=/opt/airgenome
+SetEnv HEXA_LANG=/opt/hexa-lang
 Subsystem sftp /usr/lib/openssh/sftp-server
 LogLevel INFO
