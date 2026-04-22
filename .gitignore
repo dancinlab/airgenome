@@ -53,6 +53,7 @@ bin/hook_cli_state
 bin/nx
 infra_state.json
 state/roadmap_progress.json
+state/rig_trend_history.jsonl
 
 # airgenome hook bus runtime (transcript-watcher mode, no Claude Code hook protocol)
 .hook-audit
