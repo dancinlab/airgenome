@@ -230,7 +230,7 @@ JSON
     cat > "$tmp/init_shape.json" <<'JSON'
 {
   "env": {"WS": "/Users/ghost/core"},
-  "statusLine": {"type": "command", "command": "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_statusline.hexa", "padding": 0},
+  "statusLine": {"type": "command", "command": "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_statusline_4panel.hexa", "padding": 0},
   "hooks": {
     "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_prompt_hook.hexa"}]}],
     "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/bash_allow_hook.hexa"}]}]

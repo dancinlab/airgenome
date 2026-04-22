@@ -287,7 +287,8 @@ fn ensure_workspace_commands() -> void {
 // permissions.deny keeps git-push-force as a hard stop — deny takes
 // precedence over bypass.
 //   - env.WS                             resolves $WS-templated commands
-//   - statusLine                         hexa gate claude_statusline.hexa
+//   - statusLine                         hexa gate claude_statusline_4panel.hexa
+//                                        (override: STATUSLINE_V=legacy → claude_statusline.hexa)
 //   - hooks.UserPromptSubmit             hexa gate claude_prompt_hook.hexa
 //   - hooks.PreToolUse[Bash]             hexa gate bash_allow_hook.hexa
 //   - permissions.defaultMode            bypassPermissions (enforced)
@@ -297,7 +298,11 @@ fn ensure_workspace_commands() -> void {
 fn ensure_claude_bootstrap() -> void {
     let p = env("HOME") + "/.claude/settings.json"
     let ws_abs = env("HOME") + "/core"
-    let sl_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_statusline.hexa"
+    // STATUSLINE_V: "legacy" → original linear-stack renderer. Anything else
+    // (including unset) → 4-panel renderer per airgenome/docs/statusline_4panel.md.
+    let sl_variant = env("STATUSLINE_V")
+    let sl_file = if sl_variant == "legacy" { "claude_statusline.hexa" } else { "claude_statusline_4panel.hexa" }
+    let sl_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/" + sl_file
     let ups_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_prompt_hook.hexa"
     let ptu_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/bash_allow_hook.hexa"
     let shape_path = root() + "/rules/claude_settings_shape.json"
