@@ -15,8 +15,41 @@
 set -uo pipefail
 
 CX="${CX_CORE_BIN:-/Users/ghost/core/airgenome/bin/cx-core}"
+HEXA="${HEXA_BIN:-/Users/ghost/core/hexa-lang/hexa}"
 
 q=$(cat)
+
+# ── /run intercept ─────────────────────────────────────────────
+# "/run <abs-path.hexa>" 메시지는 cx-core 로 보내지 않고 hexa 로 직접 실행.
+# 응답에 hexa://run?file=<path> 클릭 링크를 추가 — macOS HexaURL.app 이
+# 설치된 클라이언트(데스크톱 mac) 에서 링크 탭하면 재실행 가능.
+# 보안: 경로는 절대경로 + .hexa 확장자 + 파일 존재 검증. shell-expansion 없음.
+first_line=$(printf '%s' "$q" | head -n1)
+if [[ "$first_line" =~ ^/run[[:space:]]+(.+)$ ]]; then
+    path="${BASH_REMATCH[1]}"
+    # strip trailing whitespace
+    path="${path%"${path##*[![:space:]]}"}"
+    if [[ "$path" != /*.hexa ]]; then
+        printf '❌ /run <abs-path-ending-with-.hexa> 형식 필요\n   받은 입력: %s\n' "$path"
+        exit 2
+    fi
+    if [[ ! -f "$path" ]]; then
+        printf '❌ file not found: %s\n' "$path"
+        exit 2
+    fi
+    if [[ ! -x "$HEXA" ]]; then
+        printf '❌ hexa binary not executable: %s\n' "$HEXA"
+        exit 3
+    fi
+    run_out=$("$HEXA" run "$path" 2>&1)
+    run_rc=$?
+    printf '%s\n' "$run_out"
+    printf -- '─────────────────────\n'
+    printf '🔗 hexa://run?file=%s\n' "$path"
+    printf '   (mac: 위 링크 탭하면 재실행)\n'
+    exit "$run_rc"
+fi
+
 out=$(printf '%s' "$q" | "$CX" local -- -p 2>&1)
 rc=$?
 
