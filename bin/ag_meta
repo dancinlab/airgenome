@@ -15,6 +15,7 @@
 #   dispatch       Phase 3.3  dispatch handler fire count (dead_handler)
 #   rules          Phase 3.4  rule fire count map (dormant_rule)
 #   motif          Phase 3.10 top-K (comm, rss_bucket) motifs per ring
+#   panic          self-proposed: cluster stderr lines by severity
 #   blockers       Phase 1    aggregated prioritized blocker inventory
 #   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
 #   gap            Phase 6.2  mine git log + stderr patterns → scanner proposals
@@ -108,6 +109,7 @@ SCANNERS=(
     "dispatch_coverage:tool/ag_dispatch_coverage.hexa"
     "rule_effect_map:tool/ag_rule_effect_map.hexa"
     "mutation_motif:tool/ag_mutation_motif.hexa"
+    "panic_pattern_scan:tool/ag_panic_pattern_scan.hexa"
 )
 
 # Aggregator scanners — run *after* Phase 3 scanners so they see fresh state/.
@@ -138,6 +140,7 @@ cmd_cost()       { _hexa_timed "$(_scanner_path compute_cost)" "$@"; }
 cmd_dispatch()   { _hexa_timed "$(_scanner_path dispatch_coverage)" "$@"; }
 cmd_rules()      { _hexa_timed "$(_scanner_path rule_effect_map)" "$@"; }
 cmd_motif()      { _hexa_timed "$(_scanner_path mutation_motif)" "$@"; }
+cmd_panic()      { _hexa_timed "$(_scanner_path panic_pattern_scan)" "$@"; }
 cmd_blockers()   { _hexa_timed "$(_scanner_path blockers)" "$@"; }
 cmd_roi()        { _hexa_timed "$(_scanner_path roi)" "$@"; }
 cmd_gap()        { _hexa_timed "$(_scanner_path gap_proposals)" "$@"; }
@@ -455,6 +458,7 @@ main() {
         dispatch)        cmd_dispatch "$@" ;;
         rules)           cmd_rules "$@" ;;
         motif)           cmd_motif "$@" ;;
+        panic)           cmd_panic "$@" ;;
         blockers)        cmd_blockers "$@" ;;
         roi)             cmd_roi "$@" ;;
         gap)             cmd_gap "$@" ;;
