@@ -274,29 +274,52 @@ fn ensure_workspace_commands() -> void {
     println(out.trim())
 }
 
-// Global ~/.claude/settings.json is reduced to a single env pointer:
-//   {"env":{"WS":"<HOME>/core"}}
-// All permissions/hooks/statusLine previously written here have moved out —
-// airgenome operates off its own SSOT (rules/airgenome.json) via the hexa
-// gate tree under $WS/hexa-lang/gate/. Claude Code only needs WS resolved
-// so any external $WS-templated command (e.g. slash-command scripts) expands
-// to a stable absolute path regardless of invoking-shell environment.
-// Unconditional overwrite — idempotent when content already matches.
-// SSOT: airgenome/rules/airgenome.json (single-truth; global settings is a
-// pure pointer, not a second source).
+// airgenome-init is the sole author of ~/.claude/settings.json — writes
+// the file whole on every init. No permissions.allow; the PreToolUse Bash
+// hook (bash_allow_hook.hexa) emits permissionDecision=allow at runtime
+// so Claude Code's builtin approval prompts are bypassed without a static
+// allow list. permissions.deny keeps git-push-force as a hard stop since
+// deny takes precedence over hook allow.
+//   - env.WS                             resolves $WS-templated commands
+//   - statusLine                         hexa gate claude_statusline.hexa
+//   - hooks.UserPromptSubmit             hexa gate claude_prompt_hook.hexa
+//   - hooks.PreToolUse[Bash]             hexa gate bash_allow_hook.hexa
+// SSOT: airgenome/rules/airgenome.json (this function is the renderer;
+// edits to the shape live here, not in the global file).
 fn ensure_claude_bootstrap() -> void {
     let p = env("HOME") + "/.claude/settings.json"
     let ws_abs = env("HOME") + "/core"
-    let content = "{\"env\":{\"WS\":\"" + ws_abs + "\"}}\n"
-    // Compare-before-write so a clean run doesn't rewrite-in-place on every init.
+    let sl_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_statusline.hexa"
+    let ups_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_prompt_hook.hexa"
+    let ptu_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/bash_allow_hook.hexa"
+    // Render via jq -n: guaranteed-valid JSON + no string-escape-in-hexa hazards.
+    let jq_expr = "{env:{WS:$ws}," +
+                  "statusLine:{type:\"command\",command:$sl,padding:0}," +
+                  "hooks:{" +
+                  "UserPromptSubmit:[{hooks:[{type:\"command\",command:$ups}]}]," +
+                  "PreToolUse:[{matcher:\"Bash\",hooks:[{type:\"command\",command:$ptu}]}]" +
+                  "}," +
+                  "permissions:{deny:[" +
+                  "\"Bash(git push -f*)\"," +
+                  "\"Bash(git push --force*)\"," +
+                  "\"Bash(git push * -f*)\"," +
+                  "\"Bash(git push * --force*)\"," +
+                  "\"Bash(git push * +*)\"" +
+                  "]}}"
+    let tmp = p + ".tmp"
+    let cmd = "jq -n --arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
+              " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "' '" + jq_expr + "'" +
+              " > '" + tmp + "' && mv -f '" + tmp + "' '" + p + "'"
+    let rendered = exec("jq -n --arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
+                        " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "' '" + jq_expr + "' 2>&1")
     let current = ""
     if file_exists(p) { current = read_file(p) }
-    if current == content {
-        println("[airgenome-init] ~/.claude/settings.json already minimal (WS=" + ws_abs + ")")
+    if current == rendered {
+        println("[airgenome-init] ~/.claude/settings.json already up-to-date")
         return
     }
-    write_file(p, content)
-    println("[airgenome-init] ~/.claude/settings.json ← {\"env\":{\"WS\":\"" + ws_abs + "\"}} (1-line pointer)")
+    let _ = exec(cmd)
+    println("[airgenome-init] ~/.claude/settings.json ← rendered whole (env + hooks + statusLine + push-force deny)")
 }
 
 // bin/cl-settings — L0 CORE (chflags uchg) SSOT normalizer for
