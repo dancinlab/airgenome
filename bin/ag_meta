@@ -21,6 +21,7 @@
 #   health         aggregate: print 0-100 score from state/ag_*.json
 #   selftest       run --selftest on every scanner
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
+#   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
 #
 # Environment:
 #   HEXA_BIN    path to self-hosted hexa (default: /Users/ghost/core/hexa-lang/hexa)
@@ -35,10 +36,61 @@ HEXA_BIN="${HEXA_BIN:-/Users/ghost/core/hexa-lang/hexa}"
 
 cd "$AG_ROOT"
 
+TELEMETRY_LOG="state/ag_meta_telemetry.jsonl"
+
 _hexa() {
     # Suppress "exec() argument contains shell metacharacters" informational
     # warnings from self-hosted hexa — they are harmless but very noisy.
     "$HEXA_BIN" run "$@" 2> >(grep -v '^security warning: exec() argument contains shell metacharacters' >&2)
+}
+
+# _hexa_timed wraps _hexa with telemetry: records start ts, elapsed ms, rc,
+# resulting state/ag_*.json size (if any), and appends a line to
+# $TELEMETRY_LOG. The tool name is derived from the hexa script basename.
+# Output and stderr pass through so callers see normal behavior.
+_hexa_timed() {
+    local script="$1"
+    shift
+    local tool
+    tool="$(basename "$script" .hexa)"
+    tool="${tool#ag_}"
+    local start_s start_ns end_s end_ns elapsed_ms rc out_path out_size host
+    start_s=$(date -u +%s)
+    start_ns=$(date +%N 2>/dev/null || echo 0)
+    # Handle BSD date where %N isn't supported — fall back to python or 0.
+    if [[ "$start_ns" == "N" || "$start_ns" == "0" ]]; then
+        start_ns=$(python3 -c 'import time; print(int((time.time()%1)*1e9))' 2>/dev/null || echo 0)
+    fi
+    _hexa "$script" "$@"
+    rc=$?
+    end_s=$(date -u +%s)
+    end_ns=$(date +%N 2>/dev/null || echo 0)
+    if [[ "$end_ns" == "N" || "$end_ns" == "0" ]]; then
+        end_ns=$(python3 -c 'import time; print(int((time.time()%1)*1e9))' 2>/dev/null || echo 0)
+    fi
+    # Elapsed ms = (end_s - start_s) * 1000 + (end_ns - start_ns) / 1e6
+    elapsed_ms=$(awk "BEGIN{printf \"%d\", (($end_s - $start_s) * 1000) + (($end_ns - $start_ns) / 1000000)}")
+    # Guard against negative elapsed from coarse timers.
+    if [[ "$elapsed_ms" -lt 0 ]]; then elapsed_ms=0; fi
+    # --selftest runs don't write state/, so out_size is meaningless in that
+    # mode — flag it to -1 so aggregators can filter.
+    local is_selftest=0
+    for a in "$@"; do [[ "$a" == "--selftest" ]] && is_selftest=1 && break; done
+    out_path="state/ag_${tool}.json"
+    if [[ $is_selftest -eq 1 ]]; then
+        out_size=-1
+    elif [[ -f "$out_path" ]]; then
+        out_size=$(wc -c < "$out_path" | tr -d ' ')
+    else
+        out_size=0
+    fi
+    host="${HOST_OVERRIDE:-$(hostname -s 2>/dev/null || echo unknown)}"
+    local ts
+    ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+    mkdir -p state
+    printf '{"ts":"%s","tool":"%s","runtime_ms":%d,"rc":%d,"out_size":%d,"host":"%s"}\n' \
+        "$ts" "$tool" "$elapsed_ms" "$rc" "$out_size" "$host" >> "$TELEMETRY_LOG"
+    return "$rc"
 }
 
 # Known scanners — keep in sync with tool/ag_*.hexa additions.
@@ -72,18 +124,18 @@ _scanner_path() {
     return 1
 }
 
-cmd_ring()       { _hexa "$(_scanner_path ring_integrity)" "$@"; }
-cmd_forge()      { _hexa "$(_scanner_path forge_health)" "$@"; }
-cmd_divergence() { _hexa "$(_scanner_path ring_divergence)" "$@"; }
-cmd_forecast()   { _hexa "$(_scanner_path forecast_hit_rate)" "$@"; }
-cmd_infra()      { _hexa "$(_scanner_path infra_parity)" "$@"; }
-cmd_velocity()   { _hexa "$(_scanner_path evolution_velocity)" "$@"; }
-cmd_cost()       { _hexa "$(_scanner_path compute_cost)" "$@"; }
-cmd_dispatch()   { _hexa "$(_scanner_path dispatch_coverage)" "$@"; }
-cmd_rules()      { _hexa "$(_scanner_path rule_effect_map)" "$@"; }
-cmd_motif()      { _hexa "$(_scanner_path mutation_motif)" "$@"; }
-cmd_blockers()   { _hexa "$(_scanner_path blockers)" "$@"; }
-cmd_roi()        { _hexa "$(_scanner_path roi)" "$@"; }
+cmd_ring()       { _hexa_timed "$(_scanner_path ring_integrity)" "$@"; }
+cmd_forge()      { _hexa_timed "$(_scanner_path forge_health)" "$@"; }
+cmd_divergence() { _hexa_timed "$(_scanner_path ring_divergence)" "$@"; }
+cmd_forecast()   { _hexa_timed "$(_scanner_path forecast_hit_rate)" "$@"; }
+cmd_infra()      { _hexa_timed "$(_scanner_path infra_parity)" "$@"; }
+cmd_velocity()   { _hexa_timed "$(_scanner_path evolution_velocity)" "$@"; }
+cmd_cost()       { _hexa_timed "$(_scanner_path compute_cost)" "$@"; }
+cmd_dispatch()   { _hexa_timed "$(_scanner_path dispatch_coverage)" "$@"; }
+cmd_rules()      { _hexa_timed "$(_scanner_path rule_effect_map)" "$@"; }
+cmd_motif()      { _hexa_timed "$(_scanner_path mutation_motif)" "$@"; }
+cmd_blockers()   { _hexa_timed "$(_scanner_path blockers)" "$@"; }
+cmd_roi()        { _hexa_timed "$(_scanner_path roi)" "$@"; }
 
 cmd_doctor() {
     local rc=0
@@ -91,7 +143,7 @@ cmd_doctor() {
         local key="${entry%%:*}"
         local path="${entry#*:}"
         echo "=== $key ==="
-        if ! _hexa "$path" "$@"; then rc=$((rc + 1)); fi
+        if ! _hexa_timed "$path" "$@"; then rc=$((rc + 1)); fi
     done
     return $rc
 }
@@ -103,7 +155,7 @@ cmd_selftest() {
         local key="${entry%%:*}"
         local path="${entry#*:}"
         echo "--- selftest: $key ---"
-        if ! _hexa "$path" --selftest; then rc=$((rc + 1)); fi
+        if ! _hexa_timed "$path" --selftest; then rc=$((rc + 1)); fi
     done
     if [[ $rc -eq 0 ]]; then
         echo "ag_meta: all selftests PASS (${#all[@]} tools)"
@@ -111,6 +163,42 @@ cmd_selftest() {
         echo "ag_meta: $rc selftest FAILED" >&2
     fi
     return $rc
+}
+
+# cmd_telemetry — summarize $TELEMETRY_LOG: total runs, per-tool mean
+# runtime, last 10 entries. No fancy parsing — stay shell-only.
+cmd_telemetry() {
+    if [[ ! -f "$TELEMETRY_LOG" ]]; then
+        echo "ag_meta: no telemetry yet at $TELEMETRY_LOG"
+        return 0
+    fi
+    local total
+    total=$(wc -l < "$TELEMETRY_LOG" | tr -d ' ')
+    echo "ag_meta telemetry: $total invocations logged"
+    echo
+    echo "per-tool mean runtime_ms and invocation count (all-time):"
+    awk '
+        {
+            tool=""
+            if (match($0, /"tool":"[^"]+"/)) {
+                tool = substr($0, RSTART+8, RLENGTH-9)
+            }
+            ms=0
+            if (match($0, /"runtime_ms":[0-9]+/)) {
+                ms = substr($0, RSTART+13, RLENGTH-13) + 0
+            }
+            if (tool != "") {
+                sum[tool] += ms
+                cnt[tool]++
+            }
+        }
+        END {
+            for (t in cnt) printf "  %-25s mean=%5d ms  n=%d\n", t, sum[t]/cnt[t], cnt[t]
+        }
+    ' "$TELEMETRY_LOG" | sort
+    echo
+    echo "most recent 10 entries:"
+    tail -10 "$TELEMETRY_LOG"
 }
 
 cmd_continuous_scan() {
@@ -219,6 +307,7 @@ main() {
         health)          cmd_health "$@" ;;
         selftest)        cmd_selftest ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
+        telemetry)       cmd_telemetry "$@" ;;
         -h|--help|help)
             sed -n '/^# Usage:/,/^$/p' "$SELF" | sed 's/^# \{0,1\}//'
             ;;
