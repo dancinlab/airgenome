@@ -101,7 +101,7 @@
           "resource": "CPU + RAM",
           "scripts": ["training/train_byte_clm.hexa", "training/train_byte_kr.hexa"],
           "serving": ["serving/eval_clm.hexa", "serving/eval_clm_kr.hexa", "serving/measure_latency.hexa"],
-          "host": "동일 Pod CPU 또는 ubu"
+          "host": "동일 Pod CPU 또는 ubu1"
         },
         "launch_order": "두 트랙 동시 (parallel tool calls), 순차 금지",
         "evidence": "2026-04-12 H100 pod에서 ALM 14B GPU 99% + CLM Korean CPU 922ms/step 동시 실행, 간섭 0"

@@ -44,7 +44,7 @@ let AGENT_LABELS = [
 // - dispatch: jq 파싱 + dispatch_state.json 갱신 (best_host 선택)
 // - menubar: T4 Cocoa status item (build 된 경우만 등록, 없으면 skip)
 // - tg-bot: bash + curl + jq long-poll, 무거운 compute 無. TG 서버와 outbound.
-// 나머지 (harvest/label/forecast) 는 ubu/htz 에서 실행.
+// 나머지 (harvest/label/forecast) 는 ubu1/htz 에서 실행.
 let MAC_SAFE_AGENTS = [
     "com.airgenome.ring-sync",
     "com.airgenome.predictive-throttle",
@@ -238,21 +238,21 @@ fn cmd_logs(agent: str, lines: int) -> void {
     }
 }
 
-// cmd_remote — ssh ubu/htz 에 airgenome 모듈 원격 실행.
+// cmd_remote — ssh ubu1/htz 에 airgenome 모듈 원격 실행.
 // 사용: airgenome remote <host> <module> [args...]
-//   airgenome remote ubu harvest
+//   airgenome remote ubu1 harvest
 //   airgenome remote htz probe
-//   airgenome remote ubu ring-count   — 간편 명령 (forge/genomes.ring wc -l)
+//   airgenome remote ubu1 ring-count   — 간편 명령 (forge/genomes.ring wc -l)
 fn cmd_remote(host: str, rest: str) -> void {
-    if host != "ubu" && host != "htz" && host != "hetzner" {
-        println("❌ unknown host: " + host + " (ubu | htz | hetzner)")
+    if host != "ubu1" && host != "htz" && host != "hetzner" {
+        println("❌ unknown host: " + host + " (ubu1 | htz | hetzner)")
         return
     }
     let ssh_host = if host == "htz" { "hetzner" } else { host }
-    // ring 경로: forge/genomes.ring — ubu = $AIRGENOME, htz = /root/Dev/airgenome
-    let ring_root = if host == "ubu" { "$AIRGENOME" } else { "/root/Dev/airgenome" }
-    // modules 경로: 원격 deploy 구조가 다름 — ubu = ~/airgenome-v2, htz = /root/Dev/airgenome
-    let module_root = if host == "ubu" { "~/airgenome-v2" } else { "/root/Dev/airgenome" }
+    // ring 경로: forge/genomes.ring — ubu1 = $AIRGENOME, htz = /root/Dev/airgenome
+    let ring_root = if host == "ubu1" { "$AIRGENOME" } else { "/root/Dev/airgenome" }
+    // modules 경로: 원격 deploy 구조가 다름 — ubu1 = ~/airgenome-v2, htz = /root/Dev/airgenome
+    let module_root = if host == "ubu1" { "~/airgenome-v2" } else { "/root/Dev/airgenome" }
 
     // 간편 명령 ring-count — 모듈 실행 없이 ring 개수만
     if rest == "ring-count" {
@@ -311,10 +311,10 @@ fn cmd_doctor() -> void {
     let ld_detail = to_string(agent_count) + " com.airgenome.* agent(s) loaded"
     fails = fails + doctor_check("launchd", ld_ok, ld_detail)
 
-    // 4. ring freshness — unified/ubu/htz 중 하나라도 5분 이내 수정이면 OK
+    // 4. ring freshness — unified/ubu1/htz 중 하나라도 5분 이내 수정이면 OK
     let now = to_int(exec("date +%s").trim())
     let mut freshest = 0
-    let rings = ["genomes.ring", "genomes.ubu.ring", "genomes.htz.ring", "genomes.unified.ring"]
+    let rings = ["genomes.ring", "genomes.ubu1.ring", "genomes.htz.ring", "genomes.unified.ring"]
     let mut i = 0
     while i < len(rings) {
         let p = forge_dir() + "/" + rings[i]
@@ -403,7 +403,7 @@ fn cmd_watch(interval_s: int) -> void {
     let clear_seq = exec("printf '\\033[2J\\033[H'")
     let fd = forge_dir()
     let r_mac = fd + "/genomes.ring"
-    let r_ubu = fd + "/genomes.ubu.ring"
+    let r_ubu = fd + "/genomes.ubu1.ring"
     let r_htz = fd + "/genomes.htz.ring"
     let r_uni = fd + "/genomes.unified.ring"
     let mut prev_mac = ring_count(r_mac)
@@ -443,7 +443,7 @@ fn cmd_watch(interval_s: int) -> void {
         let c_uni = ring_count(r_uni)
         println("Rings (entries, Δ since last tick):")
         println("  mac      " + to_string(c_mac) + "\t(Δ " + to_string(c_mac - prev_mac) + ")")
-        println("  ubu      " + to_string(c_ubu) + "\t(Δ " + to_string(c_ubu - prev_ubu) + ")")
+        println("  ubu1     " + to_string(c_ubu) + "\t(Δ " + to_string(c_ubu - prev_ubu) + ")")
         println("  htz      " + to_string(c_htz) + "\t(Δ " + to_string(c_htz - prev_htz) + ")")
         println("  unified  " + to_string(c_uni) + "\t(Δ " + to_string(c_uni - prev_uni) + ")")
 
@@ -478,7 +478,7 @@ fn print_help() -> void {
     println("  doctor              통합 진단 (core/launchd/ring/throttle)")
     println("  cli                 인터랙티브 TUI — 숫자 선택 dispatch")
     println("  logs [agent] [N]    ~/.airgenome/*.log 최근 tail (기본 all, N=20)")
-    println("  remote <host> <sub> ubu/htz 원격 airgenome subcommand 실행")
+    println("  remote <host> <sub> ubu1/htz 원격 airgenome subcommand 실행")
     println("  status              launchd + ring + state 한눈에")
     println("  install [mode]      LaunchAgent bootstrap — mode=all|mac-safe (기본 all)")
     println("                      mac-safe: ring-sync + predictive-throttle만 (AG6 준수)")
@@ -521,7 +521,7 @@ fn main() -> void {
     }
     if sub == "remote" {
         if len(a) < 5 {
-            println("usage: airgenome remote <ubu|htz> <sub> [args...]")
+            println("usage: airgenome remote <ubu1|htz> <sub> [args...]")
             return
         }
         let host = a[3]

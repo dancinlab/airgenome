@@ -13,9 +13,9 @@
     }
   },
   "hosts": {
-    "ubu": {
+    "ubu1": {
       "enabled": true,
-      "ssh_alias": "ubu",
+      "ssh_alias": "ubu1",
       "kind": "lan",
       "has_gpu": true,
       "threads": 12,
