@@ -69,3 +69,39 @@ fn system_message_json(msg: str) -> str {
 fn allow_json() -> str {
     return "{}"
 }
+
+// ─── AI-native structured decisions ─────────────────────────────────────
+//
+// raw:llm-no-self-judgment (raw#32) + raw:ai-native-english-only (raw#33)
+// compliance: rule-evidence is structured (rule / tool / path / reason /
+// next-steps / ssot) rather than a flat human sentence, so downstream LLM
+// consumers can parse and cite, and the nudge/guide semantics survive
+// the decision-message hop. Returned inner message is itself JSON so
+// the reader gets a machine-parseable guide; Claude Code treats it as
+// opaque string for the user-facing prompt.
+
+fn ai_guide_payload(rule: str, tool: str, path: str, reason: str, next: str, ssot: str) -> str {
+    return "{\"rule\":\"" + json_escape(rule) +
+           "\",\"tool\":\"" + json_escape(tool) +
+           "\",\"path\":\"" + json_escape(path) +
+           "\",\"reason\":\"" + json_escape(reason) +
+           "\",\"next\":\"" + json_escape(next) +
+           "\",\"ssot\":\"" + json_escape(ssot) + "\"}"
+}
+
+// Block: deterministic deny with AI-native guide payload as message.
+fn ai_block_json(rule: str, tool: str, path: str, reason: str, next: str, ssot: str) -> str {
+    let payload = ai_guide_payload(rule, tool, path, reason, next, ssot)
+    return "{\"decision\":\"block\",\"message\":\"" + json_escape(payload) + "\"}"
+}
+
+// Ask: route to user approval prompt. Uses PreToolUse hookSpecificOutput
+// permissionDecision="ask" (current Claude Code schema); the reason field
+// is what the user sees, so we embed the same AI-native guide payload for
+// consistency — humans parse the JSON as a brief structured rationale and
+// the assistant reads the same surface on resume.
+fn ai_ask_json(rule: str, tool: str, path: str, reason: str, next: str, ssot: str) -> str {
+    let payload = ai_guide_payload(rule, tool, path, reason, next, ssot)
+    return "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"" +
+           json_escape(payload) + "\"}}"
+}

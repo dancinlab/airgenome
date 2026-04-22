@@ -1,13 +1,26 @@
 // hooks/pre_tool.hexa — PreToolUse handler
 //
 // Responsibility: permission-gate certain tool_name patterns.
-// Deterministic blocklist — no LLM call. Blocks return decision="block".
+// Deterministic blocklist — no LLM call. Messages follow raw:ai-native-
+// english-only + raw:llm-no-self-judgment: structured JSON payload
+// (rule / tool / path / reason / next / ssot) rather than flat prose.
 //
 // Current rules (extend locally, no dispatcher touch needed):
-//   Bash(rm -rf ~ ...)           → block
-//   Bash(git push --force ...)   → block (double-safety over settings.json deny)
-//   Write/Edit(**/.env)          → block (secret file ban)
-//   Write/Edit(out-of-scope path)→ advisory systemMessage (scope-drift; no block)
+//   Bash(rm -rf ~ ...)                 → block
+//   Bash(git push --force ...)         → block (double-safety over settings.json deny)
+//   Write/Edit(**/.env)                → block (secret file ban)
+//   Write(raw:ai-automation-config-ban)→ block (CLAUDE.md + per-repo .claude/
+//                                        + .github/workflows/ + .husky/ etc.)
+//   Edit(raw:ai-automation-config-ban) → ask (user approval required; OS
+//                                        SBPL / LD_PRELOAD already returns
+//                                        EPERM, this surfaces the unlock
+//                                        decision to the user in-chat)
+//   Write/Edit(out-of-scope path)      → advisory systemMessage (scope-drift)
+//
+// Mirrors raw#13 ban-list in .raw / self/sbpl/native.sb / self/native/
+// native_gate.c. Per-repo `.claude/` is banned; user-global `~/.claude/`
+// is permitted (detected by $HOME/.claude/ prefix match, same shape as
+// native_gate.c::is_user_global_claude).
 //
 // Scope-drift advisory (raw 32 / own 4 spirit — pre-emptive chain guard):
 //   When an `airgenome hook` active chain declares `declared_paths` (prefix
@@ -95,6 +108,48 @@ fn stderr_scope_drift(target: str, chain: str, paths_tsv: str) -> void {
     let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' 1>&2")
 }
 
+// ─── raw:ai-automation-config-ban path matcher ──────────────────────────
+//
+// Mirror of .raw#13 bans and self/native/native_gate.c BANNED_SUBSTRS.
+// Match rule: any `path` containing one of these anchor substrings
+// triggers the rule. User-global `$HOME/.claude/` is carved out via
+// is_user_global_claude() below so ~/.claude/settings.json edits keep
+// working — only per-repo `.claude/` is banned.
+
+fn is_user_global_claude(path: str) -> bool {
+    // Matches /Users/<one>/.claude/ (macOS) and /home/<one>/.claude/ (Linux).
+    // Per-repo /Users/<one>/core/<proj>/.claude/ has an extra segment after
+    // the user name, so it does NOT match.
+    let home = exec("printf %s \"$HOME\"").trim()
+    if home == "" { return false }
+    return path.starts_with(home + "/.claude/")
+}
+
+fn ai_config_ban_reason(path: str) -> str {
+    // Return empty string if not a banned path; else a short English reason
+    // identifying which sub-pattern fired. Order: most-specific first.
+    if path.contains("/.github/workflows/") { return "github-workflow" }
+    if path.contains("/.githooks/")          { return "legacy-githooks" }
+    if path.contains("/.husky/")             { return "husky-hooks" }
+    if path.contains("/husky.config.")       { return "husky-config" }
+    if path.contains("/.pre-commit-config.") { return "pre-commit-config" }
+    if path.contains("/lefthook.")           { return "lefthook-config" }
+    if path.contains("/.cursorrules")        { return "cursor-rules" }
+    if path.contains("/.continue/")          { return "continue-config" }
+    if path.contains("/.aider.conf.")        { return "aider-config" }
+    if path.contains("/.windsurfrules")      { return "windsurf-rules" }
+    if path.ends_with("/CLAUDE.md")          { return "project-claude-md" }
+    // Per-repo .claude/ family — user-global carve-out applied first.
+    if is_user_global_claude(path)           { return "" }
+    if path.contains("/.claude/hooks/")      { return "project-claude-hooks" }
+    if path.contains("/.claude/skills/")     { return "project-claude-skills" }
+    if path.contains("/.claude/agents/")     { return "project-claude-agents" }
+    if path.contains("/.claude/commands/")   { return "project-claude-commands" }
+    if path.contains("/.claude/settings.json") { return "project-claude-settings" }
+    if path.contains("/.claude/settings.local.json") { return "project-claude-settings-local" }
+    return ""
+}
+
 // In-process entry for hook_main dispatcher. Block decisions surface through
 // the return value; the dispatcher inspects `.decision` and short-circuits
 // the phase chain when it sees "block".
@@ -104,16 +159,66 @@ pub fn pre_tool_entry(p: str) -> str {
     if tool == "Bash" {
         let bashcmd = jq_tool_input(p, "command").to_lower()
         if bashcmd.contains("rm -rf ~") || bashcmd.contains("rm -rf /") {
-            return decision_json("block", "destructive rm -rf on home or root denied by pre_tool gate")
+            return ai_block_json(
+                "pre_tool:destructive-rm",
+                "Bash",
+                bashcmd,
+                "rm -rf targets $HOME or filesystem root",
+                "narrow the target path or delete specific files explicitly",
+                ".raw#pre-tool-gate"
+            )
         }
         if bashcmd.contains("git push") && (bashcmd.contains("--force") || bashcmd.contains(" -f")) {
-            return decision_json("block", "force-push denied by pre_tool gate")
+            return ai_block_json(
+                "pre_tool:force-push",
+                "Bash",
+                bashcmd,
+                "git push --force rewrites remote history",
+                "use push --force-with-lease after confirming with collaborators, or push a new branch",
+                ".raw#pre-tool-gate"
+            )
         }
     }
     if tool == "Write" || tool == "Edit" {
         let fpath = jq_tool_input(p, "file_path")
         if fpath.contains("/.env") || fpath.ends_with(".env") {
-            return decision_json("block", "writing to .env file denied — secrets must live outside repo")
+            return ai_block_json(
+                "pre_tool:env-secret",
+                tool,
+                fpath,
+                ".env files hold secrets and must not live in the working tree",
+                "store secrets in keychain / 1Password / env var and reference by name",
+                ".raw#pre-tool-gate"
+            )
+        }
+
+        // raw#13 ai-automation-config-ban — CLAUDE.md + per-repo .claude/
+        // + .github/workflows/ + .husky/ + lefthook + cursor/continue/aider.
+        // Write (new file creation) = hard block.
+        // Edit (modify existing) = user approval required — the OS layer
+        // (SBPL / LD_PRELOAD) already returns EPERM; this surfaces the
+        // approval decision in-chat instead of dying silently.
+        let ban_reason = ai_config_ban_reason(fpath)
+        if ban_reason != "" {
+            if tool == "Write" {
+                return ai_block_json(
+                    "raw:ai-automation-config-ban",
+                    "Write",
+                    fpath,
+                    "project-local AI/CI automation config creation is forbidden (" + ban_reason + ")",
+                    "move to user-global ~/.claude/ or ~/.cursor/, or delete; per-repo config bypasses the raw gate",
+                    ".raw#13"
+                )
+            }
+            // Edit path — ask user, do not auto-block.
+            return ai_ask_json(
+                "raw:ai-automation-config-ban",
+                "Edit",
+                fpath,
+                "editing project-local AI/CI automation config requires user approval (" + ban_reason + ")",
+                "approve this one edit, or migrate config to user-global ~/.claude/ or ~/.cursor/",
+                ".raw#13"
+            )
         }
 
         // Scope-drift advisory. graceful on any failure path.
