@@ -22,6 +22,7 @@
 #   selftest       run --selftest on every scanner
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
 #   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
+#   fast           fast-subset for pre-commit (ring + forge + blockers)
 #
 # Environment:
 #   HEXA_BIN    path to self-hosted hexa (default: /Users/ghost/core/hexa-lang/hexa)
@@ -201,6 +202,30 @@ cmd_telemetry() {
     tail -10 "$TELEMETRY_LOG"
 }
 
+# cmd_fast — tight subset suitable for pre-commit.
+# Runs ring_integrity + forge_health + blockers. Exits non-zero if the
+# resulting blocker summary has any "critical" entries.
+# Wire into git via:
+#   ln -sf ../../bin/ag_meta .git/hooks/pre-commit-ag-meta-fast
+# (user can edit their actual pre-commit to call `ag_meta fast`).
+cmd_fast() {
+    local rc=0
+    _hexa_timed "$(_scanner_path ring_integrity)" || rc=$((rc+1))
+    _hexa_timed "$(_scanner_path forge_health)"   || rc=$((rc+1))
+    _hexa_timed "$(_scanner_path blockers)"       || rc=$((rc+1))
+    # Guard on critical severity in state/ag_blockers.json
+    local crit=0
+    if [[ -f state/ag_blockers.json ]]; then
+        crit=$(grep -oE '"severity":"critical"' state/ag_blockers.json | wc -l | tr -d ' ')
+    fi
+    if [[ $crit -gt 0 ]]; then
+        echo "ag_meta fast: $crit CRITICAL blocker(s) — see state/ag_blockers.json" >&2
+        return 1
+    fi
+    echo "ag_meta fast: OK (no critical blockers)"
+    return $rc
+}
+
 cmd_continuous_scan() {
     local date_dir
     date_dir="state/history/$(date -u +%Y-%m-%d)"
@@ -308,6 +333,7 @@ main() {
         selftest)        cmd_selftest ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
         telemetry)       cmd_telemetry "$@" ;;
+        fast)            cmd_fast "$@" ;;
         -h|--help|help)
             sed -n '/^# Usage:/,/^$/p' "$SELF" | sed 's/^# \{0,1\}//'
             ;;
