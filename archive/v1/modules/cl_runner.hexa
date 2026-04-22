@@ -76,7 +76,7 @@ fn parse_effort(av: [string]) -> [string] {
                 effort = a.substring(9, len(a))
                 i = i + 1
             } else {
-                rest = rest.push(a)
+                rest.push(a)
                 i = i + 1
             }
         }
@@ -91,7 +91,7 @@ fn parse_effort(av: [string]) -> [string] {
     let mut result = [effort]
     let mut j = 0
     while j < len(rest) {
-        result = result.push(rest[j])
+        result.push(rest[j])
         j = j + 1
     }
     return result
@@ -279,7 +279,7 @@ fn main() {
     let mut user_args = []
     let mut i = 2
     while i < len(av) {
-        user_args = user_args.push(av[i])
+        user_args.push(av[i])
         i = i + 1
     }
 
@@ -296,7 +296,7 @@ fn main() {
     let mut rest = []
     let mut p = 1
     while p < len(parsed) {
-        rest = rest.push(parsed[p])
+        rest.push(parsed[p])
         p = p + 1
     }
 

@@ -279,15 +279,19 @@ fn ensure_workspace_commands() -> void {
 }
 
 // airgenome-init is the sole author of ~/.claude/settings.json — writes
-// the file whole on every init. No permissions.allow; the PreToolUse Bash
-// hook (bash_allow_hook.hexa) emits permissionDecision=allow at runtime
-// so Claude Code's builtin approval prompts are bypassed without a static
-// allow list. permissions.deny keeps git-push-force as a hard stop since
-// deny takes precedence over hook allow.
+// the file whole on every init. Per user directive 2026-04-22, global
+// bypass is ENFORCED (not stripped): permissions.defaultMode =
+// "bypassPermissions" + skipDangerousModePermissionPrompt = true. The
+// PreToolUse Bash hook remains as defense-in-depth (redundant under bypass
+// but harmless, and still fires if bypass is ever drift-removed).
+// permissions.deny keeps git-push-force as a hard stop — deny takes
+// precedence over bypass.
 //   - env.WS                             resolves $WS-templated commands
 //   - statusLine                         hexa gate claude_statusline.hexa
 //   - hooks.UserPromptSubmit             hexa gate claude_prompt_hook.hexa
 //   - hooks.PreToolUse[Bash]             hexa gate bash_allow_hook.hexa
+//   - permissions.defaultMode            bypassPermissions (enforced)
+//   - skipDangerousModePermissionPrompt  true (enforced)
 // SSOT: airgenome/rules/airgenome.json (this function is the renderer;
 // edits to the shape live here, not in the global file).
 fn ensure_claude_bootstrap() -> void {
@@ -303,27 +307,52 @@ fn ensure_claude_bootstrap() -> void {
                   "UserPromptSubmit:[{hooks:[{type:\"command\",command:$ups}]}]," +
                   "PreToolUse:[{matcher:\"Bash\",hooks:[{type:\"command\",command:$ptu}]}]" +
                   "}," +
-                  "permissions:{deny:[" +
+                  "permissions:{" +
+                  "defaultMode:\"bypassPermissions\"," +
+                  "deny:[" +
                   "\"Bash(git push -f*)\"," +
                   "\"Bash(git push --force*)\"," +
                   "\"Bash(git push * -f*)\"," +
                   "\"Bash(git push * --force*)\"," +
                   "\"Bash(git push * +*)\"" +
-                  "]}}"
+                  "]}," +
+                  "skipDangerousModePermissionPrompt:true}"
+    let jq_args = "--arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
+                  " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "'"
     let tmp = p + ".tmp"
-    let cmd = "jq -n --arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
-              " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "' '" + jq_expr + "'" +
-              " > '" + tmp + "' && mv -f '" + tmp + "' '" + p + "'"
-    let rendered = exec("jq -n --arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
-                        " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "' '" + jq_expr + "' 2>&1")
-    let current = ""
-    if file_exists(p) { current = read_file(p) }
-    if current == rendered {
+    // Render fresh to tmp every call. Idempotence gate then compares canonical
+    // (jq -S) forms of current vs tmp so whitespace / key-order drift in the
+    // on-disk file does not force a rewrite.
+    let render_cmd = "jq -n " + jq_args + " '" + jq_expr + "' > '" + tmp + "'"
+    let render_err = exec(render_cmd + " 2>&1").trim()
+    if render_err != "" {
+        println("[airgenome-init] ERROR rendering settings.json: " + render_err)
+        return
+    }
+    // Canonicalize both via jq -S into tmp files, then cmp -s (bash process
+    // substitution avoided — exec() may invoke /bin/sh which lacks <(...)).
+    let cur_canon = tmp + ".cur"
+    let ren_canon = tmp + ".ren"
+    let _ = exec("jq -S . '" + p + "' > '" + cur_canon + "' 2>/dev/null; jq -S . '" + tmp + "' > '" + ren_canon + "' 2>/dev/null")
+    let cmp = exec("cmp -s '" + cur_canon + "' '" + ren_canon + "' && echo eq || echo ne").trim()
+    let _ = exec("rm -f '" + cur_canon + "' '" + ren_canon + "'")
+    if cmp == "eq" {
+        let _ = exec("rm -f '" + tmp + "'")
         println("[airgenome-init] ~/.claude/settings.json already up-to-date")
         return
     }
-    let _ = exec(cmd)
-    println("[airgenome-init] ~/.claude/settings.json ← rendered whole (env + hooks + statusLine + push-force deny)")
+    // L1 uchg may be set (drift defense). Unlock before mv; ensure_settings_guard
+    // relocks immediately after. Unlock is a no-op when flag is already clear.
+    let flag_before = exec("ls -lO '" + p + "' 2>/dev/null | awk '{print $5}'").trim()
+    if flag_before == "uchg" {
+        let _ = exec("chflags nouchg '" + p + "' 2>&1")
+    }
+    let mv_err = exec("mv -f '" + tmp + "' '" + p + "' 2>&1").trim()
+    if mv_err != "" {
+        println("[airgenome-init] ERROR writing " + p + ": " + mv_err)
+    } else {
+        println("[airgenome-init] ~/.claude/settings.json ← rendered whole (env + hooks + statusLine + push-force deny)")
+    }
 }
 
 // L1+L2 글로벌 settings.json 방어 레이어. H-BYPASS-DRIFT (enforcement_registry)
@@ -414,14 +443,18 @@ fn ensure_settings_guard() -> void {
     }
 }
 
-// bin/cl-settings — L0 CORE (chflags uchg) SSOT normalizer for
-// ~/.claude/settings.json. Enforces wildcard allow + git-push-force deny +
-// additionalDirectories ["/"]; strips defaultMode:bypassPermissions and
-// skipDangerousModePermissionPrompt. airgenome-init invokes it after
-// ensure_claude_bootstrap() so a single init converges the entire shape
-// (hook wiring from the hexa layer + permission canonicalization from
-// cl-settings). Idempotent: cl-settings short-circuits when shape already
-// matches.
+// bin/cl-settings — L0 CORE (chflags uchg) drift-defense normalizer.
+// Scope narrowed 2026-04-22 to be a strict subset of
+// ensure_claude_bootstrap()'s output so cl-settings is a no-op after init
+// (mutual idempotence). Enforces only:
+//   - permissions.deny  ⊇  5 git-push-force patterns
+//   - strips permissions.defaultMode == "bypassPermissions"
+//   - strips skipDangerousModePermissionPrompt
+// Does NOT manage allow / additionalDirectories / env / hooks / statusLine
+// — those are owned by ensure_claude_bootstrap. cl-settings is not invoked
+// from main() on the global file (init already writes it whole); it is the
+// tool users run manually with --sweep / --accounts / --project to propagate
+// drift defense across other settings.json files.
 fn ensure_cl_settings() -> void {
     let bin = root() + "/bin/cl-settings"
     if file_exists(bin) == false {
