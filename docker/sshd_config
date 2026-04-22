@@ -1,0 +1,13 @@
+# /etc/ssh/sshd_config.d/airgenome.conf — fat container sshd.
+Port 2222
+ListenAddress 0.0.0.0
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile /root/.airgenome/docker_authorized_keys.root .ssh/authorized_keys
+X11Forwarding no
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+LogLevel INFO
