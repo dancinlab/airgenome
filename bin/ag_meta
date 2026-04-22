@@ -16,6 +16,8 @@
 #   rules          Phase 3.4  rule fire count map (dormant_rule)
 #   motif          Phase 3.10 top-K (comm, rss_bucket) motifs per ring
 #   panic          self-proposed: cluster stderr lines by severity
+#   cache          hexa AOT cache + /tmp/hexa_* hygiene
+#   audit          forge/*.log reference count (orphan detection)
 #   blockers       Phase 1    aggregated prioritized blocker inventory
 #   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
 #   gap            Phase 6.2  mine git log + stderr patterns → scanner proposals
@@ -26,6 +28,7 @@
 #   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
 #   fast           fast-subset for pre-commit (ring + forge + blockers)
 #   report         render state/ag_report.md (--stdout to print instead)
+#   build          native-compile every scanner via `hexa build` (2-3× faster)
 #
 # Environment:
 #   HEXA_BIN    path to self-hosted hexa (default: /Users/ghost/core/hexa-lang/hexa)
@@ -55,9 +58,15 @@ _hexa() {
 _hexa_timed() {
     local script="$1"
     shift
-    local tool
+    local tool native_bin
     tool="$(basename "$script" .hexa)"
     tool="${tool#ag_}"
+    # Native build/ag_<tool> takes precedence if newer than source.
+    native_bin="build/$(basename "$script" .hexa)"
+    local use_native=0
+    if [[ -x "$native_bin" && "$native_bin" -nt "$script" ]]; then
+        use_native=1
+    fi
     local start_s start_ns end_s end_ns elapsed_ms rc out_path out_size host
     start_s=$(date -u +%s)
     start_ns=$(date +%N 2>/dev/null || echo 0)
@@ -65,7 +74,11 @@ _hexa_timed() {
     if [[ "$start_ns" == "N" || "$start_ns" == "0" ]]; then
         start_ns=$(python3 -c 'import time; print(int((time.time()%1)*1e9))' 2>/dev/null || echo 0)
     fi
-    _hexa "$script" "$@"
+    if [[ $use_native -eq 1 ]]; then
+        "$native_bin" "$@"
+    else
+        _hexa "$script" "$@"
+    fi
     rc=$?
     end_s=$(date -u +%s)
     end_ns=$(date +%N 2>/dev/null || echo 0)
@@ -91,9 +104,11 @@ _hexa_timed() {
     host="${HOST_OVERRIDE:-$(hostname -s 2>/dev/null || echo unknown)}"
     local ts
     ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+    local mode
+    if [[ $use_native -eq 1 ]]; then mode="native"; else mode="interp"; fi
     mkdir -p state
-    printf '{"ts":"%s","tool":"%s","runtime_ms":%d,"rc":%d,"out_size":%d,"host":"%s"}\n' \
-        "$ts" "$tool" "$elapsed_ms" "$rc" "$out_size" "$host" >> "$TELEMETRY_LOG"
+    printf '{"ts":"%s","tool":"%s","mode":"%s","runtime_ms":%d,"rc":%d,"out_size":%d,"host":"%s"}\n' \
+        "$ts" "$tool" "$mode" "$elapsed_ms" "$rc" "$out_size" "$host" >> "$TELEMETRY_LOG"
     return "$rc"
 }
 
@@ -110,6 +125,8 @@ SCANNERS=(
     "rule_effect_map:tool/ag_rule_effect_map.hexa"
     "mutation_motif:tool/ag_mutation_motif.hexa"
     "panic_pattern_scan:tool/ag_panic_pattern_scan.hexa"
+    "hexa_cache_scan:tool/ag_hexa_cache_scan.hexa"
+    "log_writer_audit:tool/ag_log_writer_audit.hexa"
 )
 
 # Aggregator scanners — run *after* Phase 3 scanners so they see fresh state/.
@@ -141,6 +158,8 @@ cmd_dispatch()   { _hexa_timed "$(_scanner_path dispatch_coverage)" "$@"; }
 cmd_rules()      { _hexa_timed "$(_scanner_path rule_effect_map)" "$@"; }
 cmd_motif()      { _hexa_timed "$(_scanner_path mutation_motif)" "$@"; }
 cmd_panic()      { _hexa_timed "$(_scanner_path panic_pattern_scan)" "$@"; }
+cmd_cache()      { _hexa_timed "$(_scanner_path hexa_cache_scan)" "$@"; }
+cmd_audit()      { _hexa_timed "$(_scanner_path log_writer_audit)" "$@"; }
 cmd_blockers()   { _hexa_timed "$(_scanner_path blockers)" "$@"; }
 cmd_roi()        { _hexa_timed "$(_scanner_path roi)" "$@"; }
 cmd_gap()        { _hexa_timed "$(_scanner_path gap_proposals)" "$@"; }
@@ -358,6 +377,29 @@ cmd_report() {
     fi
 }
 
+# cmd_build — native-compile every scanner to build/ via `hexa build`.
+# _hexa_timed auto-picks native when build/ag_<name> is newer than source.
+cmd_build() {
+    mkdir -p build
+    local rc=0
+    local all=("${SCANNERS[@]}" "${AGGREGATORS[@]}")
+    for entry in "${all[@]}"; do
+        local key="${entry%%:*}"
+        local src="${entry#*:}"
+        local out="build/$(basename "$src" .hexa)"
+        printf '[build] %-28s -> %s\n' "$key" "$out"
+        if ! "$HEXA_BIN" build "$src" -o "$out" 2>&1 | tail -2; then
+            rc=$((rc+1))
+        fi
+    done
+    if [[ $rc -eq 0 ]]; then
+        echo "ag_meta build: ${#all[@]} scanners compiled OK"
+    else
+        echo "ag_meta build: $rc FAILED" >&2
+    fi
+    return $rc
+}
+
 cmd_continuous_scan() {
     local date_dir
     date_dir="state/history/$(date -u +%Y-%m-%d)"
@@ -459,6 +501,8 @@ main() {
         rules)           cmd_rules "$@" ;;
         motif)           cmd_motif "$@" ;;
         panic)           cmd_panic "$@" ;;
+        cache)           cmd_cache "$@" ;;
+        audit)           cmd_audit "$@" ;;
         blockers)        cmd_blockers "$@" ;;
         roi)             cmd_roi "$@" ;;
         gap)             cmd_gap "$@" ;;
@@ -469,6 +513,7 @@ main() {
         telemetry)       cmd_telemetry "$@" ;;
         fast)            cmd_fast "$@" ;;
         report)          cmd_report "$@" ;;
+        build)           cmd_build "$@" ;;
         -h|--help|help)
             sed -n '/^# Usage:/,/^$/p' "$SELF" | sed 's/^# \{0,1\}//'
             ;;

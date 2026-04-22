@@ -1,0 +1,95 @@
+// tool/ag_log_writer_audit.hexa — count how many files in the repo
+// reference each forge log path. Orphan = 0 references.
+//
+// Motivated by: forge/load_balancer.log flagged as "stalled 9d" by
+// ag_forge_health. Investigation showed the real load balancer
+// (bin/lb.sh) writes to ~/.airgenome/lb.jsonl, not forge/load_balancer.log.
+//
+// Caveat: this scanner counts REFERENCES, not writes specifically. A
+// path with references can still be write-orphan (only readers remain).
+// Distinguishing readers from writers reliably would require a real
+// AST walk. For now, zero_refs is the strong signal; low ref count
+// with "stalled" status is a soft signal worth manual inspection.
+//
+// CLI
+//   hexa run tool/ag_log_writer_audit.hexa --selftest
+//   hexa run tool/ag_log_writer_audit.hexa [--dry-run] [--out PATH]
+
+use "tool/ag_common"
+
+// _count_repo_refs returns the number of files (excluding state/ and
+// archive/ and .git) that contain the given path literal.
+fn _count_repo_refs(path: string) -> int {
+    // grep -r over working tree (includes uncommitted). Exclude noise dirs.
+    let cmd = "grep -rlF " + _sh_q(path) + " . --include='*.hexa' --include='*.sh' --include='*.json' --include='*.jsonl' --include='*.plist' --include='Makefile' --exclude-dir=.git --exclude-dir=state --exclude-dir=archive --exclude-dir=docs --exclude-dir=build --exclude-dir=.hook-commands --exclude-dir=.playwright-mcp 2>/dev/null | wc -l | tr -d ' '"
+    let out = to_string(exec(cmd)).trim()
+    if len(out) == 0 { return 0 }
+    return to_int(out)
+}
+
+fn _file_mtime_age(path: string) -> int { return _file_age_seconds(path) }
+
+fn _selftest() -> int {
+    // Smoke test: this very file should be found when we look for a
+    // token unique to it. Use the schema string.
+    let n = _count_repo_refs("airgenome/ag_log_writer_audit/1")
+    if n < 1 {
+        eprintln("ag_log_writer_audit: selftest FAIL — expected self-reference count >= 1, got " + to_string(n))
+        return 1
+    }
+    // Build the token from parts so the source file doesn't literally
+    // contain the combined string — otherwise grep finds itself.
+    let unlikely = "zz_" + "probe_token" + "_" + to_string(_epoch_now())
+    let missing = _count_repo_refs(unlikely)
+    if missing != 0 {
+        eprintln("ag_log_writer_audit: selftest FAIL — unlikely-token count expected 0 got " + to_string(missing))
+        return 1
+    }
+    println("ag_log_writer_audit: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+    let dry_run = _arg_flag(args, "--dry-run")
+    let out_path = _arg_value(args, "--out", "state/ag_log_writer_audit.json")
+
+    let mut paths = []
+    paths.push("forge/compute_filter.log")
+    paths.push("forge/compute_filter.stderr.log")
+    paths.push("forge/compute_filter.stdout.log")
+    paths.push("forge/load_balancer.log")
+    paths.push("forge/settings_guard.stdout.log")
+    paths.push("forge/settings_guard.stderr.log")
+    paths.push("forge/forecast.jsonl")
+    paths.push("forge/labeled_anomaly.jsonl")
+    paths.push("forge/e2e_samples.jsonl")
+
+    let mut entries = "["
+    let mut orphan_count = 0
+    let mut i = 0
+    while i < len(paths) {
+        let p = paths[i]
+        let refs = _count_repo_refs(p)
+        let age = _file_mtime_age(p)
+        let orphan = refs == 0 && file_exists(p)
+        // Soft signal: file present but referenced by few places and stale.
+        let soft_orphan = refs <= 3 && age > 604800 && file_exists(p)
+        if orphan { orphan_count = orphan_count + 1 }
+        if i > 0 { entries = entries + "," }
+        entries = entries + "{\"path\":\"" + _json_esc(p) + "\",\"reference_count\":" + to_string(refs) + ",\"age_sec\":" + to_string(age) + ",\"present\":" + to_string(file_exists(p)) + ",\"orphan\":" + to_string(orphan) + ",\"soft_orphan\":" + to_string(soft_orphan) + "}"
+        i = i + 1
+    }
+    entries = entries + "]"
+
+    let body = "{\n  \"schema\": \"airgenome/ag_log_writer_audit/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"motivated_by\": \"forge/load_balancer.log stall mystery — no repo code references it\",\n  \"total_paths\": " + to_string(len(paths)) + ",\n  \"orphan_count\": " + to_string(orphan_count) + ",\n  \"entries\": " + entries + "\n}\n"
+
+    if dry_run { println(body); exit(0) }
+    _ensure_state_dir()
+    try { write_file(out_path, body) } catch e {
+        eprintln("ag_log_writer_audit: write FAIL " + out_path); exit(1)
+    }
+    println("ag_log_writer_audit: wrote " + out_path + " (orphans=" + to_string(orphan_count) + ")")
+    exit(0)
+}
