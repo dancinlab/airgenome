@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-22T15:54:31Z",
+  "updated_ts": "2026-04-22T17:01:04Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -29,8 +29,10 @@
       "title": "hexa_v2 baseline binary 는 Mac ARM64 compiled — Linux pod 에서 'Exec format error'. pod bootstrap 은 cross-compile 또는 pod-내 rebuild 필요",
       "from_repo": "hexa-lang",
       "user_status": "pending",
-      "score_priority": 75,
-      "submitted_ts": "2026-04-22T15:30:10Z"
+      "score_priority": 95,
+      "submitted_ts": "2026-04-22T15:30:10Z",
+      "category": "resource_gap",
+      "priority_reason": "cross_repo_blocker floor (pod bootstrap blocker across repos)"
     },
     {
       "id": "agm-20260422-004",
@@ -46,19 +48,21 @@
       "kind": "advisory",
       "title": "CONVENTION cross_repo_blocker: 어느 repo 가 다른 repo 의 작업을 막고 있으면 해당 entry priority ≥ 95 (0순위). 하위 카테고리: lang_gap (hexa-lang blocker), infra_gap (airgenome host/build/plist blocker), atlas_gap (nexus/n6 atlas blocker), data_gap (anima cert/weight blocker). 여기저기서 blocker 생기므로 일반화.",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "in_progress",
       "score_priority": 90,
-      "submitted_ts": "2026-04-22T15:50:04Z"
+      "submitted_ts": "2026-04-22T15:50:04Z",
+      "in_progress_ts": "2026-04-22T16:58:38Z"
     },
     {
       "id": "agm-20260422-006",
       "kind": "cluster",
       "title": "Linux x86_64 binary 미제공 — macOS ARM64 만 빌드됨 → pod bootstrap 영구 block. cross-compile 또는 Docker 레시피 필요",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "in_progress",
       "score_priority": 95,
       "submitted_ts": "2026-04-22T15:50:41Z",
-      "category": "resource_gap"
+      "category": "resource_gap",
+      "in_progress_ts": "2026-04-22T16:38:02Z"
     },
     {
       "id": "agm-20260422-007",
@@ -75,10 +79,11 @@
       "kind": "cluster",
       "title": "3-host (macOS/ubu/ubu2) 접근 가용성 단일 실패 지점 — 한 host down 시 ring divergence 급증. host failover/quorum 전략",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "in_progress",
       "score_priority": 95,
       "submitted_ts": "2026-04-22T15:50:43Z",
-      "category": "resource_gap"
+      "category": "resource_gap",
+      "in_progress_ts": "2026-04-22T16:44:54Z"
     },
     {
       "id": "agm-20260422-009",
