@@ -1,0 +1,100 @@
+// tool/tg_bot_smoke.hexa — airgenome tg-bot smoke test
+// @allow-bare-exec
+//
+// Purpose:
+//   Verify tg-bot launchd service is running after `airgenome-init` ran.
+//   Intended to be called ~5 sec after init from CI / post-boot hooks.
+//
+// Checks (in order, short-circuit on first failure):
+//   1. launchctl list shows com.airgenome.tg-bot with non-empty PID
+//   2. `kill -0 <PID>` succeeds (process alive)
+//   3. stderr log is absent OR has no "error"/"panic"/"fatal" tokens in last 20 lines
+//   4. (optional) if AIRGENOME_TG_SELF_TEST=1 set, send /self-test via tg_cx_md and
+//      wait up to 5s for reply pattern in stdout log
+//
+// Exit:
+//   0 — all checks pass
+//   1 — service not loaded or PID missing
+//   2 — process dead
+//   3 — stderr contains failure signal
+//   4 — self-test timeout (only when enabled)
+//
+// Usage:
+//   $HEXA_LANG/build/hexa_stage0 tool/tg_bot_smoke.hexa
+//   AIRGENOME_TG_SELF_TEST=1 $HEXA_LANG/build/hexa_stage0 tool/tg_bot_smoke.hexa
+
+fn tg_label() -> str { return "com.airgenome.tg-bot" }
+
+fn get_pid() -> str {
+    let out = exec("launchctl list | awk '$3==\"" + tg_label() + "\" {print $1}'").trim()
+    return out
+}
+
+fn alive(pid: str) -> bool {
+    if pid == "" { return false }
+    if pid == "-" { return false }
+    let r = exec("kill -0 " + pid + " 2>/dev/null && echo y || echo n").trim()
+    return r == "y"
+}
+
+fn stderr_tail_has_failure() -> bool {
+    let p = env("HOME") + "/.airgenome/tg_bot-core.stderr.log"
+    let chk = exec("test -s '" + p + "' && tail -20 '" + p + "' | grep -iE 'error|panic|fatal|traceback' | head -1 2>/dev/null").trim()
+    return chk != ""
+}
+
+fn main() -> void {
+    println("[tg-bot-smoke] label: " + tg_label())
+
+    // Check 1: PID
+    let pid = get_pid()
+    if pid == "" || pid == "-" {
+        eprintln("[tg-bot-smoke] FAIL step-1: not in launchctl list (pid empty). Try:")
+        eprintln("  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/" + tg_label() + ".plist")
+        exit(1)
+    }
+    println("[tg-bot-smoke] step-1 ok: pid=" + pid)
+
+    // Check 2: process alive
+    if !alive(pid) {
+        eprintln("[tg-bot-smoke] FAIL step-2: pid " + pid + " dead (or kill -0 denied)")
+        exit(2)
+    }
+    println("[tg-bot-smoke] step-2 ok: kill -0 succeeded")
+
+    // Check 3: no failure signal in stderr tail
+    if stderr_tail_has_failure() {
+        eprintln("[tg-bot-smoke] FAIL step-3: stderr tail contains error/panic/fatal/traceback")
+        eprintln("  tail -20 ~/.airgenome/tg_bot-core.stderr.log 확인")
+        exit(3)
+    }
+    println("[tg-bot-smoke] step-3 ok: stderr clean")
+
+    // Check 4 (optional): self-test via tg_cx_md
+    let self_test = env("AIRGENOME_TG_SELF_TEST")
+    if self_test == "1" {
+        println("[tg-bot-smoke] step-4 enabled (AIRGENOME_TG_SELF_TEST=1)")
+        // Fire /self-test against dispatch script; don't assert on exit (wrapper may noop).
+        let _ = exec(env("HOME") + "/core/airgenome/bin/tg_cx_md '/self-test' 2>&1 >/dev/null")
+        // Poll stdout log for 5s looking for /self-test echo
+        let mut i = 0
+        let mut found = false
+        while i < 10 {
+            let r = exec("tail -30 '" + env("HOME") + "/.airgenome/tg_bot-core.stdout.log' 2>/dev/null | grep -c 'self-test' | tr -d '\\n'").trim()
+            if r != "0" && r != "" {
+                found = true
+                i = 10
+            } else {
+                let _ = exec("sleep 0.5")
+                i = i + 1
+            }
+        }
+        if !found {
+            eprintln("[tg-bot-smoke] FAIL step-4: /self-test echo not seen in stdout within 5s")
+            exit(4)
+        }
+        println("[tg-bot-smoke] step-4 ok: /self-test round-trip observed")
+    }
+
+    println("[tg-bot-smoke] ALL PASS")
+}
