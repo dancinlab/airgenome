@@ -1,0 +1,242 @@
+// tool/ag_forge_health.hexa — airgenome meta-evolution Phase 3.2.
+//
+// Scans forge process logs for health signals:
+//   - presence / size / line count
+//   - staleness (now - mtime > threshold ⇒ stalled)
+//   - top-5 event distribution (first whitespace-token after [AG6])
+//   - stderr critical keywords ("No space", "panic", "traceback", "Error",
+//     "OOM", "killed")
+//
+// Logs inspected (all read-only):
+//   forge/compute_filter.log + .stderr.log
+//   forge/load_balancer.log
+//   forge/settings_guard.stdout.log + .stderr.log
+//
+// Thresholds (default):
+//   stall: age > 3600s (1h) for compute_filter
+//          age > 86400s (24h) for load_balancer (it is low-frequency)
+//          age > 86400s for settings_guard
+//   Overrides: --stall-compute-sec N, --stall-lb-sec N, --stall-sg-sec N
+//
+// CLI
+//   hexa run tool/ag_forge_health.hexa --selftest
+//   hexa run tool/ag_forge_health.hexa [--dry-run] [--out PATH]
+//
+// OUTPUT
+//   state/ag_forge_health.json  (schema airgenome/ag_forge_health/1)
+
+use "tool/ag_common"
+
+// Critical stderr patterns — matched as substring, case-insensitive.
+fn _stderr_keywords() -> array {
+    let mut k = []
+    k.push("No space")
+    k.push("panic")
+    k.push("traceback")
+    k.push("OOM")
+    k.push("killed")
+    k.push("fatal")
+    return k
+}
+
+// _count_events returns a JSON object string mapping top-5 events → count.
+// Event = 3rd whitespace-separated field (index after "<ts> [AG6]").
+fn _count_events(path: string) -> string {
+    let qp = _sh_q(path)
+    let raw = to_string(exec("awk '{print $3}' " + qp + " 2>/dev/null | sort | uniq -c | sort -rn | head -5"))
+    let lines = raw.trim()
+    if len(lines) == 0 { return "{}" }
+    // lines look like:  "  941 TICK"
+    let mut out = "{"
+    let mut first = true
+    let split = lines.split("\n")
+    let mut i = 0
+    while i < len(split) {
+        let line = split[i].trim()
+        if len(line) > 0 {
+            // split on whitespace — first token = count, rest = event name
+            let parts = line.split(" ")
+            // filter empties (awk formatting can give leading spaces)
+            let mut tok = []
+            let mut j = 0
+            while j < len(parts) {
+                if len(parts[j]) > 0 { tok.push(parts[j]) }
+                j = j + 1
+            }
+            if len(tok) >= 2 {
+                if first == false { out = out + "," }
+                out = out + "\"" + _json_esc(tok[1]) + "\":" + tok[0]
+                first = false
+            }
+        }
+        i = i + 1
+    }
+    out = out + "}"
+    return out
+}
+
+// _count_keyword_hits returns the total number of stderr lines matching
+// any keyword in _stderr_keywords (case-insensitive substring).
+fn _count_keyword_hits(path: string) -> int {
+    if file_exists(path) == false { return 0 }
+    let kws = _stderr_keywords()
+    let mut pattern = ""
+    let mut i = 0
+    while i < len(kws) {
+        if i > 0 { pattern = pattern + "|" }
+        pattern = pattern + kws[i]
+        i = i + 1
+    }
+    let cmd = "grep -ciE " + _sh_q(pattern) + " " + _sh_q(path) + " 2>/dev/null || true"
+    let out = to_string(exec(cmd)).trim()
+    if len(out) == 0 { return 0 }
+    return to_int(out)
+}
+
+// _check_log inspects one log file. Returns JSON object string.
+fn _check_log(name: string, path: string, kind: string, stall_sec: int) -> string {
+    if file_exists(path) == false {
+        return "{\"name\":\"" + name + "\",\"path\":\"" + _json_esc(path) + "\",\"kind\":\"" + kind + "\",\"present\":false,\"issues\":[{\"kind\":\"missing\"}]}"
+    }
+    let qp = _sh_q(path)
+    let size = to_int(to_string(exec("wc -c < " + qp + " | tr -d ' '")).trim())
+    let lines = to_int(to_string(exec("wc -l < " + qp + " | tr -d ' '")).trim())
+    let age = _file_age_seconds(path)
+    let stalled = age > stall_sec
+    let mut events = "{}"
+    let mut keyword_hits = 0
+    if kind == "stdout" {
+        events = _count_events(path)
+    } else {
+        keyword_hits = _count_keyword_hits(path)
+    }
+    let mut issues = "["
+    let mut icount = 0
+    if stalled {
+        issues = issues + "{\"kind\":\"stalled\",\"age_sec\":" + to_string(age) + ",\"threshold\":" + to_string(stall_sec) + "}"
+        icount = icount + 1
+    }
+    if keyword_hits > 0 {
+        if icount > 0 { issues = issues + "," }
+        issues = issues + "{\"kind\":\"stderr_critical\",\"hits\":" + to_string(keyword_hits) + "}"
+        icount = icount + 1
+    }
+    if size == 0 && kind == "stdout" {
+        if icount > 0 { issues = issues + "," }
+        issues = issues + "{\"kind\":\"empty_stdout\"}"
+        icount = icount + 1
+    }
+    issues = issues + "]"
+    return "{\"name\":\"" + name + "\",\"path\":\"" + _json_esc(path) + "\",\"kind\":\"" + kind + "\",\"present\":true,\"size_bytes\":" + to_string(size) + ",\"lines\":" + to_string(lines) + ",\"age_sec\":" + to_string(age) + ",\"stalled\":" + to_string(stalled) + ",\"events\":" + events + ",\"stderr_keyword_hits\":" + to_string(keyword_hits) + ",\"issue_count\":" + to_string(icount) + ",\"issues\":" + issues + "}"
+}
+
+fn _selftest() -> int {
+    let tmpdir = "/tmp/ag_forge_health_selftest"
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
+    // fresh stdout log (not stalled)
+    let fresh = tmpdir + "/fresh.log"
+    write_file(fresh, "2026-04-22T10:00:00Z [AG6] TICK a=1\n2026-04-22T10:00:01Z [AG6] TICK a=2\n2026-04-22T10:00:02Z [AG6] DONE x=1\n")
+    // stderr log with critical keyword
+    let bad_err = tmpdir + "/bad.stderr.log"
+    write_file(bad_err, "warning: deprecated\nsh: No space left on device\nfatal: crashed\n")
+    // missing file
+    let missing = tmpdir + "/does_not_exist.log"
+
+    let fresh_rep = _check_log("fresh", fresh, "stdout", 3600)
+    let err_rep = _check_log("bad_err", bad_err, "stderr", 3600)
+    let miss_rep = _check_log("miss", missing, "stdout", 3600)
+
+    let mut ok = true
+    if fresh_rep.contains("\"TICK\":2") == false {
+        eprintln("ag_forge_health: selftest FAIL — fresh event parse wrong: " + fresh_rep)
+        ok = false
+    }
+    if fresh_rep.contains("\"DONE\":1") == false {
+        eprintln("ag_forge_health: selftest FAIL — missing DONE event: " + fresh_rep)
+        ok = false
+    }
+    if err_rep.contains("stderr_critical") == false {
+        eprintln("ag_forge_health: selftest FAIL — critical keyword missed: " + err_rep)
+        ok = false
+    }
+    if miss_rep.contains("\"present\":false") == false {
+        eprintln("ag_forge_health: selftest FAIL — missing-file wrong: " + miss_rep)
+        ok = false
+    }
+    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    if ok == false { return 1 }
+    println("ag_forge_health: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+
+    let dry_run = _arg_flag(args, "--dry-run")
+    let out_path = _arg_value(args, "--out", "state/ag_forge_health.json")
+    let stall_cf = to_int(_arg_value(args, "--stall-compute-sec", "3600"))
+    let stall_lb = to_int(_arg_value(args, "--stall-lb-sec", "86400"))
+    let stall_sg = to_int(_arg_value(args, "--stall-sg-sec", "86400"))
+
+    // (name, path, kind, stall_threshold)
+    let mut names = []
+    let mut paths = []
+    let mut kinds = []
+    let mut stalls = []
+    names.push("compute_filter.stdout")
+    paths.push("forge/compute_filter.log")
+    kinds.push("stdout")
+    stalls.push(stall_cf)
+
+    names.push("compute_filter.stderr")
+    paths.push("forge/compute_filter.stderr.log")
+    kinds.push("stderr")
+    stalls.push(stall_cf)
+
+    names.push("load_balancer")
+    paths.push("forge/load_balancer.log")
+    kinds.push("stdout")
+    stalls.push(stall_lb)
+
+    names.push("settings_guard.stdout")
+    paths.push("forge/settings_guard.stdout.log")
+    kinds.push("stdout")
+    stalls.push(stall_sg)
+
+    names.push("settings_guard.stderr")
+    paths.push("forge/settings_guard.stderr.log")
+    kinds.push("stderr")
+    stalls.push(stall_sg)
+
+    let ts = _iso_now()
+    let mut body = "{\n  \"schema\": \"airgenome/ag_forge_health/1\",\n  \"ts\": \"" + ts + "\",\n  \"logs\": ["
+    let mut i = 0
+    let mut total_issues = 0
+    let mut stalled_count = 0
+    while i < len(names) {
+        let rep = _check_log(names[i], paths[i], kinds[i], stalls[i])
+        if i > 0 { body = body + "," }
+        body = body + "\n    " + rep
+        let ic = to_string(exec("printf '%s' " + _sh_q(rep) + " | grep -oE '\"issue_count\":[0-9]+' | head -1 | cut -d: -f2")).trim()
+        if len(ic) > 0 { total_issues = total_issues + to_int(ic) }
+        if rep.contains("\"stalled\":true") { stalled_count = stalled_count + 1 }
+        i = i + 1
+    }
+    body = body + "\n  ],\n  \"total_issues\": " + to_string(total_issues) + ",\n  \"stalled_logs\": " + to_string(stalled_count) + "\n}\n"
+
+    if dry_run {
+        println(body)
+        exit(0)
+    }
+
+    _ensure_state_dir()
+    try {
+        write_file(out_path, body)
+    } catch e {
+        eprintln("ag_forge_health: write FAIL " + out_path)
+        exit(1)
+    }
+    println("ag_forge_health: wrote " + out_path + " (issues=" + to_string(total_issues) + " stalled=" + to_string(stalled_count) + ")")
+    exit(0)
+}
