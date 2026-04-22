@@ -27,6 +27,10 @@
 //      canonical shape (wildcard allow + git-push-force deny + additional-
 //      Directories ["/"]). cl-settings is the L0 CORE SSOT normalizer
 //      (chflags uchg); airgenome-init invokes it but never modifies it.
+//   9. Install L1+L2 settings.json drift defense (ensure_settings_guard):
+//      apply chflags uchg and bootstrap com.airgenome.settings-guard.plist
+//      (WatchPaths → tool/settings_guard.hexa). Pairs with H-BYPASS-DRIFT
+//      in hexa-lang/gate/enforcement_registry.json (L4 declarative layer).
 //
 // What it does NOT do:
 //   - Require Claude Code CLI hook protocol.
@@ -44,11 +48,39 @@
 //      from the binary path without any env set.
 //   4. pwd (last resort; used during hexa run dev mode where argv[0] is the
 //      hexa interpreter rather than this script).
+// macOS HFS+/APFS 는 case-insensitive 기본 → `/users/ghost/...` 와 `/Users/ghost/...`
+// 가 같은 디렉터리를 가리키지만, launchctl bootstrap 은 ProgramArguments 경로를
+// 글자 그대로 정규화(canonicalization)하며 사용자 HOME 과 대소문자 불일치 시
+// "Bootstrap failed: 5: Input/output error" 로 거부. Claude Code 하니스가
+// additional working directory 를 소문자 `/users/ghost/core/airgenome` 로
+// 주입하는 경우(현재 세션에서 관측됨)가 있어 `exec("pwd")` 나 argv[0] 이
+// 소문자 경로를 반환 → 플리스트 전체가 오염 → 모든 launchd 설치 실패.
+//
+// 정규화 규칙: 결과 경로가 `env("HOME")` 과 case-insensitive 로 매치하면
+// HOME 의 실제 케이스로 prefix 교체. env("HOME") 은 macOS 에서 항상
+// getpwuid 에서 읽히는 canonical 값이라 신뢰 가능.
+fn _canon_root(r: str) -> str {
+    let home = env("HOME")
+    if home == "" { return r }
+    if r.len() < home.len() { return r }
+    let head = r.substring(0, home.len())
+    // 대소문자 무시 비교. hexa 는 to_lower() 가 있으면 이상적이지만, 안전하게
+    // 수동 소문자화: 여기서는 "/users/ghost" vs "/Users/ghost" 한정 이슈라
+    // 좁은 패치로 충분.
+    if head == home { return r }
+    let lc = head.replace("/Users/", "/users/")
+    let hc = home.replace("/Users/", "/users/")
+    if lc == hc {
+        return home + r.substring(home.len(), r.len())
+    }
+    return r
+}
+
 fn root() -> str {
     let ev = env("AIRGENOME_HOOK_ROOT")
-    if ev != "" { return ev }
+    if ev != "" { return _canon_root(ev) }
     let cp = env("CLAUDE_PROJECT_DIR")
-    if cp != "" { return cp }
+    if cp != "" { return _canon_root(cp) }
     let argv = args()
     if argv.len() >= 1 {
         let self_p = argv[0]
@@ -56,10 +88,10 @@ fn root() -> str {
         // Strip /bin/airgenome-init to get project root.
         if self_p.ends_with("/bin/airgenome-init") {
             let n = self_p.len() - "/bin/airgenome-init".len()
-            return self_p.substring(0, n)
+            return _canon_root(self_p.substring(0, n))
         }
     }
-    return exec("pwd").trim()
+    return _canon_root(exec("pwd").trim())
 }
 
 fn ensure_binary() -> str {
@@ -275,61 +307,191 @@ fn ensure_workspace_commands() -> void {
 }
 
 // airgenome-init is the sole author of ~/.claude/settings.json — writes
-// the file whole on every init. No permissions.allow; the PreToolUse Bash
-// hook (bash_allow_hook.hexa) emits permissionDecision=allow at runtime
-// so Claude Code's builtin approval prompts are bypassed without a static
-// allow list. permissions.deny keeps git-push-force as a hard stop since
-// deny takes precedence over hook allow.
+// the file whole on every init. Per user directive 2026-04-22, global
+// bypass is ENFORCED (not stripped): permissions.defaultMode =
+// "bypassPermissions" + skipDangerousModePermissionPrompt = true. The
+// PreToolUse Bash hook remains as defense-in-depth (redundant under bypass
+// but harmless, and still fires if bypass is ever drift-removed).
+// permissions.deny keeps git-push-force as a hard stop — deny takes
+// precedence over bypass.
 //   - env.WS                             resolves $WS-templated commands
-//   - statusLine                         hexa gate claude_statusline.hexa
+//   - statusLine                         hexa gate claude_statusline_4panel.hexa
+//                                        (override: STATUSLINE_V=legacy → claude_statusline.hexa)
 //   - hooks.UserPromptSubmit             hexa gate claude_prompt_hook.hexa
 //   - hooks.PreToolUse[Bash]             hexa gate bash_allow_hook.hexa
+//   - permissions.defaultMode            bypassPermissions (enforced)
+//   - skipDangerousModePermissionPrompt  true (enforced)
 // SSOT: airgenome/rules/airgenome.json (this function is the renderer;
 // edits to the shape live here, not in the global file).
 fn ensure_claude_bootstrap() -> void {
     let p = env("HOME") + "/.claude/settings.json"
     let ws_abs = env("HOME") + "/core"
-    let sl_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_statusline.hexa"
+    // STATUSLINE_V: "legacy" → original linear-stack renderer. Anything else
+    // (including unset) → 4-panel renderer per airgenome/docs/statusline_4panel.md.
+    let sl_variant = env("STATUSLINE_V")
+    let sl_file = if sl_variant == "legacy" { "claude_statusline.hexa" } else { "claude_statusline_4panel.hexa" }
+    let sl_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/" + sl_file
     let ups_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_prompt_hook.hexa"
     let ptu_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/bash_allow_hook.hexa"
-    // Render via jq -n: guaranteed-valid JSON + no string-escape-in-hexa hazards.
-    let jq_expr = "{env:{WS:$ws}," +
+    let shape_path = root() + "/rules/claude_settings_shape.json"
+    if file_exists(shape_path) == false {
+        println("[airgenome-init] ERROR missing SSOT " + shape_path)
+        return
+    }
+    // SSOT merge: dynamic overlay (env/hooks/statusLine) + static shape
+    // (permissions.defaultMode + permissions.deny + skipDangerousModePermissionPrompt)
+    // loaded from rules/claude_settings_shape.json. --slurpfile wraps the
+    // file in a 1-element array so we unwrap with [0] and strip _ssot before
+    // use. Any edit to deny patterns / bypass flags happens in that file
+    // alone — cl-settings reads the same SSOT.
+    let jq_expr = "($shape_arr[0] | del(._ssot)) as $s |" +
+                  "{env:{WS:$ws}," +
                   "statusLine:{type:\"command\",command:$sl,padding:0}," +
                   "hooks:{" +
                   "UserPromptSubmit:[{hooks:[{type:\"command\",command:$ups}]}]," +
                   "PreToolUse:[{matcher:\"Bash\",hooks:[{type:\"command\",command:$ptu}]}]" +
                   "}," +
-                  "permissions:{deny:[" +
-                  "\"Bash(git push -f*)\"," +
-                  "\"Bash(git push --force*)\"," +
-                  "\"Bash(git push * -f*)\"," +
-                  "\"Bash(git push * --force*)\"," +
-                  "\"Bash(git push * +*)\"" +
-                  "]}}"
+                  "permissions:($s.permissions)," +
+                  "skipDangerousModePermissionPrompt:$s.skipDangerousModePermissionPrompt}"
+    let jq_args = "--arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
+                  " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "'" +
+                  " --slurpfile shape_arr '" + shape_path + "'"
     let tmp = p + ".tmp"
-    let cmd = "jq -n --arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
-              " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "' '" + jq_expr + "'" +
-              " > '" + tmp + "' && mv -f '" + tmp + "' '" + p + "'"
-    let rendered = exec("jq -n --arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
-                        " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "' '" + jq_expr + "' 2>&1")
-    let current = ""
-    if file_exists(p) { current = read_file(p) }
-    if current == rendered {
+    // Render fresh to tmp every call. Idempotence gate then compares canonical
+    // (jq -S) forms of current vs tmp so whitespace / key-order drift in the
+    // on-disk file does not force a rewrite.
+    let render_cmd = "jq -n " + jq_args + " '" + jq_expr + "' > '" + tmp + "'"
+    let render_err = exec(render_cmd + " 2>&1").trim()
+    if render_err != "" {
+        println("[airgenome-init] ERROR rendering settings.json: " + render_err)
+        return
+    }
+    // Canonicalize both via jq -S into tmp files, then cmp -s (bash process
+    // substitution avoided — exec() may invoke /bin/sh which lacks <(...)).
+    let cur_canon = tmp + ".cur"
+    let ren_canon = tmp + ".ren"
+    let _ = exec("jq -S . '" + p + "' > '" + cur_canon + "' 2>/dev/null; jq -S . '" + tmp + "' > '" + ren_canon + "' 2>/dev/null")
+    let cmp = exec("cmp -s '" + cur_canon + "' '" + ren_canon + "' && echo eq || echo ne").trim()
+    let _ = exec("rm -f '" + cur_canon + "' '" + ren_canon + "'")
+    if cmp == "eq" {
+        let _ = exec("rm -f '" + tmp + "'")
         println("[airgenome-init] ~/.claude/settings.json already up-to-date")
         return
     }
-    let _ = exec(cmd)
-    println("[airgenome-init] ~/.claude/settings.json ← rendered whole (env + hooks + statusLine + push-force deny)")
+    // L1 uchg may be set (drift defense). Unlock before mv; ensure_settings_guard
+    // relocks immediately after. Unlock is a no-op when flag is already clear.
+    let flag_before = exec("ls -lO '" + p + "' 2>/dev/null | awk '{print $5}'").trim()
+    if flag_before == "uchg" {
+        let _ = exec("chflags nouchg '" + p + "' 2>&1")
+    }
+    let mv_err = exec("mv -f '" + tmp + "' '" + p + "' 2>&1").trim()
+    if mv_err != "" {
+        println("[airgenome-init] ERROR writing " + p + ": " + mv_err)
+    } else {
+        println("[airgenome-init] ~/.claude/settings.json ← rendered whole (env + hooks + statusLine + push-force deny)")
+    }
 }
 
-// bin/cl-settings — L0 CORE (chflags uchg) SSOT normalizer for
-// ~/.claude/settings.json. Enforces wildcard allow + git-push-force deny +
-// additionalDirectories ["/"]; strips defaultMode:bypassPermissions and
-// skipDangerousModePermissionPrompt. airgenome-init invokes it after
-// ensure_claude_bootstrap() so a single init converges the entire shape
-// (hook wiring from the hexa layer + permission canonicalization from
-// cl-settings). Idempotent: cl-settings short-circuits when shape already
-// matches.
+// L1+L2 글로벌 settings.json 방어 레이어. H-BYPASS-DRIFT (enforcement_registry)
+// 와 짝. main() 에서 ensure_claude_bootstrap() 다음에 호출됨.
+//   L1  chflags uchg ~/.claude/settings.json        BSD 불변 플래그
+//   L2  com.airgenome.settings-guard.plist          launchd WatchPaths 재잠금
+//       → tool/settings_guard.hexa 실행
+// 멱등: 이미 uchg 면 chflags no-op. plist 내용 동일하면 launchctl reload 생략.
+fn settings_guard_label() -> str { return "com.airgenome.settings-guard" }
+
+fn settings_guard_plist_path() -> str {
+    return env("HOME") + "/Library/LaunchAgents/" + settings_guard_label() + ".plist"
+}
+
+fn render_settings_guard_plist() -> str {
+    let hexa_bin = env("HOME") + "/.hx/bin/hexa"
+    let tool = root() + "/tool/settings_guard.hexa"
+    let settings = env("HOME") + "/.claude/settings.json"
+    let stdout_log = root() + "/forge/settings_guard.stdout.log"
+    let stderr_log = root() + "/forge/settings_guard.stderr.log"
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+           "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
+           "<plist version=\"1.0\"><dict>\n" +
+           "  <key>Label</key><string>" + settings_guard_label() + "</string>\n" +
+           "  <key>ProgramArguments</key>\n" +
+           "  <array>\n" +
+           "    <string>" + hexa_bin + "</string>\n" +
+           "    <string>run</string>\n" +
+           "    <string>" + tool + "</string>\n" +
+           "  </array>\n" +
+           "  <key>WatchPaths</key>\n" +
+           "  <array>\n" +
+           "    <string>" + settings + "</string>\n" +
+           "  </array>\n" +
+           "  <key>RunAtLoad</key><true/>\n" +
+           "  <key>ThrottleInterval</key><integer>5</integer>\n" +
+           "  <key>StandardOutPath</key><string>" + stdout_log + "</string>\n" +
+           "  <key>StandardErrorPath</key><string>" + stderr_log + "</string>\n" +
+           "  <key>WorkingDirectory</key><string>" + root() + "</string>\n" +
+           "  <key>EnvironmentVariables</key>\n" +
+           "  <dict>\n" +
+           "    <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>\n" +
+           "    <key>HOME</key><string>" + env("HOME") + "</string>\n" +
+           "    <key>LANG</key><string>en_US.UTF-8</string>\n" +
+           "    <key>HEXA_LANG</key><string>" + env("HOME") + "/core/hexa-lang</string>\n" +
+           "  </dict>\n" +
+           "  <key>ProcessType</key><string>Background</string>\n" +
+           "  <key>Nice</key><integer>10</integer>\n" +
+           "  <key>LowPriorityIO</key><true/>\n" +
+           "</dict></plist>\n"
+}
+
+fn ensure_settings_guard() -> void {
+    let settings = env("HOME") + "/.claude/settings.json"
+    if file_exists(settings) == false {
+        println("[airgenome-init] " + settings + " missing — skipping settings-guard")
+        return
+    }
+    // L1: chflags uchg (멱등). 실패해도 L2 로 커버.
+    let flag = exec("ls -lO '" + settings + "' 2>/dev/null | awk '{print $5}'").trim()
+    if flag != "uchg" {
+        let _ = exec("chflags uchg '" + settings + "' 2>&1")
+        println("[airgenome-init] chflags uchg applied → " + settings)
+    } else {
+        println("[airgenome-init] " + settings + " already uchg")
+    }
+    // L2: launchd agent plist 설치 + bootstrap.
+    let p = settings_guard_plist_path()
+    let _ = exec("mkdir -p '" + env("HOME") + "/Library/LaunchAgents'")
+    let _ = exec("mkdir -p '" + root() + "/forge'")
+    let rendered = render_settings_guard_plist()
+    let current = ""
+    if file_exists(p) { current = read_file(p) }
+    let needs_reload = current != rendered
+    if needs_reload {
+        write_file(p, rendered)
+        println("[airgenome-init] wrote " + p)
+    } else {
+        println("[airgenome-init] " + p + " already up-to-date")
+    }
+    // bootstrap (idempotent via bootout-then-bootstrap).
+    let _ = exec("launchctl bootout gui/$(id -u)/" + settings_guard_label() + " 2>/dev/null || true")
+    let out = exec("launchctl bootstrap gui/$(id -u) '" + p + "' 2>&1").trim()
+    if out == "" {
+        println("[airgenome-init] launchctl bootstrap " + settings_guard_label() + " ok")
+    } else {
+        println("[airgenome-init] launchctl: " + out)
+    }
+}
+
+// bin/cl-settings — L0 CORE (chflags uchg) drift-defense normalizer.
+// Scope narrowed 2026-04-22 to be a strict subset of
+// ensure_claude_bootstrap()'s output so cl-settings is a no-op after init
+// (mutual idempotence). Enforces only:
+//   - permissions.deny  ⊇  5 git-push-force patterns
+//   - strips permissions.defaultMode == "bypassPermissions"
+//   - strips skipDangerousModePermissionPrompt
+// Does NOT manage allow / additionalDirectories / env / hooks / statusLine
+// — those are owned by ensure_claude_bootstrap. cl-settings is not invoked
+// from main() on the global file (init already writes it whole); it is the
+// tool users run manually with --sweep / --accounts / --project to propagate
+// drift defense across other settings.json files.
 fn ensure_cl_settings() -> void {
     let bin = root() + "/bin/cl-settings"
     if file_exists(bin) == false {
@@ -344,9 +506,143 @@ fn ensure_cl_settings() -> void {
     }
 }
 
+// 텔레그램 봇 자동 기동 (재부팅 후 응답 보장).
+//
+// 배경: 이전 설치본은 ~/Library/LaunchAgents/com.airgenome.tg-bot.plist 에
+// bin/tg_bot.hexa (full-featured) 를 물려 놓았는데, hexa_stage0 shim 이
+// safe_hexa_launchd.sh 부재로 실행 거부 → lock timeout 반복 → 재부팅 후
+// 봇 침묵. 추가로 Disabled=true 가 설정돼 launchctl bootstrap 도 무시됨.
+//
+// 해결: bin/tg_bot-core (bash L0, curl+jq 만 필요; hexa 의존 無) 로 교체.
+// plist 는 init 이 매번 렌더 → 표류 방지. 토큰 파일 경로는 env 로 override
+// (AIRGENOME_TG_TOKEN_FILE). 파일 없으면 graceful skip.
+fn tg_bot_label() -> str { return "com.airgenome.tg-bot" }
+
+fn tg_bot_plist_path() -> str {
+    return env("HOME") + "/Library/LaunchAgents/" + tg_bot_label() + ".plist"
+}
+
+fn tg_bot_token_file() -> str {
+    let ov = env("AIRGENOME_TG_TOKEN_FILE")
+    if ov != "" { return ov }
+    return env("HOME") + "/etc/secret/tg_bot_token"
+}
+
+fn render_tg_bot_plist(token_file: str) -> str {
+    let bin = root() + "/bin/tg_bot-core"
+    let stdout_log = env("HOME") + "/.airgenome/tg_bot-core.stdout.log"
+    let stderr_log = env("HOME") + "/.airgenome/tg_bot-core.stderr.log"
+    let offset_file = env("HOME") + "/.airgenome/tg_core.offset"
+    // PATH 은 tg_bot-core 의 TG_DISPATCH (기본 "cx-core local -- -p") 가
+    // airgenome/bin/cx-core 를 찾을 수 있어야 함. 시스템 bin 뒤에 append 해
+    // 시스템 툴 우선권은 유지 + airgenome 툴 도달성 확보.
+    let ag_bin = root() + "/bin"
+    let nx_bin = env("HOME") + "/core/nexus/shared/bin"
+    let hx_bin = env("HOME") + "/.hx/bin"
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+           "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
+           "<plist version=\"1.0\"><dict>\n" +
+           "  <key>Label</key><string>" + tg_bot_label() + "</string>\n" +
+           "  <key>ProgramArguments</key>\n" +
+           "  <array>\n" +
+           "    <string>" + bin + "</string>\n" +
+           "    <string>run</string>\n" +
+           "  </array>\n" +
+           "  <key>WorkingDirectory</key><string>" + root() + "</string>\n" +
+           "  <key>RunAtLoad</key><true/>\n" +
+           "  <key>KeepAlive</key><true/>\n" +
+           "  <key>ThrottleInterval</key><integer>15</integer>\n" +
+           "  <key>ProcessType</key><string>Background</string>\n" +
+           "  <key>Nice</key><integer>10</integer>\n" +
+           "  <key>LowPriorityIO</key><true/>\n" +
+           "  <key>StandardOutPath</key><string>" + stdout_log + "</string>\n" +
+           "  <key>StandardErrorPath</key><string>" + stderr_log + "</string>\n" +
+           "  <key>EnvironmentVariables</key>\n" +
+           "  <dict>\n" +
+           "    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" +
+                 ag_bin + ":" + nx_bin + ":" + hx_bin + "</string>\n" +
+           "    <key>HOME</key><string>" + env("HOME") + "</string>\n" +
+           "    <key>LANG</key><string>en_US.UTF-8</string>\n" +
+           "    <key>TG_TOKEN_FILE</key><string>" + token_file + "</string>\n" +
+           "    <key>TG_OFFSET_FILE</key><string>" + offset_file + "</string>\n" +
+           // TG_DISPATCH: tg_bot-core 의 기본값 "cx-core local -- -p" 는 PATH 의존.
+           // 절대경로로 고정해 어떤 shell/launchd 컨텍스트에서도 실행 보장.
+           "    <key>TG_DISPATCH</key><string>" + ag_bin + "/cx-core local -- -p</string>\n" +
+           "  </dict>\n" +
+           "</dict></plist>\n"
+}
+
+fn ensure_telegram_bot() -> void {
+    let bot_bin = root() + "/bin/tg_bot-core"
+    if file_exists(bot_bin) == false {
+        println("[airgenome-init] tg-bot: " + bot_bin + " missing — skipping")
+        return
+    }
+    let tok = tg_bot_token_file()
+    if file_exists(tok) == false {
+        println("[airgenome-init] tg-bot: token file " + tok + " missing — skipping (set AIRGENOME_TG_TOKEN_FILE to override)")
+        return
+    }
+    let _ = exec("mkdir -p '" + env("HOME") + "/.airgenome' '" + env("HOME") + "/Library/LaunchAgents'")
+    let p = tg_bot_plist_path()
+    let rendered = render_tg_bot_plist(tok)
+    let current = ""
+    if file_exists(p) { current = read_file(p) }
+    let needs_reload = current != rendered
+    if needs_reload {
+        write_file(p, rendered)
+        println("[airgenome-init] wrote " + p)
+    } else {
+        println("[airgenome-init] " + p + " already up-to-date")
+    }
+    // 과거 설치본에 Disabled=true 가 박혔거나 launchctl disable 이 걸려 있으면
+    // bootstrap 이 조용히 무시됨. enable 먼저 풀고 bootout→bootstrap.
+    let _ = exec("launchctl enable gui/$(id -u)/" + tg_bot_label() + " 2>/dev/null || true")
+    let _ = exec("launchctl bootout gui/$(id -u)/" + tg_bot_label() + " 2>/dev/null || true")
+    let _ = exec("sleep 1")
+    let out = exec("launchctl bootstrap gui/$(id -u) '" + p + "' 2>&1").trim()
+    if out == "" {
+        println("[airgenome-init] launchctl bootstrap " + tg_bot_label() + " ok")
+    } else {
+        println("[airgenome-init] launchctl: " + out)
+    }
+}
+
+// 디스크 잔여 용량 가드. 2026-04-22 사고: /System/Volumes/Data 가 196 MiB
+// 까지 차서 launchctl bootstrap 이 "Input/output error" 로 실패 → launchd
+// unit cache (/private/var/folders/.../launchd) 쓰기 불가. 증상이 Claude
+// sandbox 차단과 구별되지 않아 오래 삽질. 이후 init 진입 시점에 가용량을
+// 측정해 임계치 미만이면 조기 중단.
+//
+// 기본 임계: 1 GiB. `AIRGENOME_MIN_FREE_MIB` env 로 override.
+fn ensure_disk_budget() -> int {
+    let thresh_s = env("AIRGENOME_MIN_FREE_MIB")
+    let thresh = if thresh_s == "" { 1024 } else { parse_int(thresh_s) }
+    // df -Pk HOME → 4th column = 1K blocks available.
+    let out = exec("df -Pk '" + env("HOME") + "' 2>/dev/null | awk 'NR==2{print $4}'").trim()
+    if out == "" {
+        println("[airgenome-init] disk: could not read df — continuing")
+        return 0
+    }
+    let avail_kb = parse_int(out)
+    let avail_mib = avail_kb / 1024
+    if avail_mib < thresh {
+        println("[airgenome-init] ABORT: free space " + to_string(avail_mib) +
+                " MiB < threshold " + to_string(thresh) + " MiB")
+        println("[airgenome-init]   launchd bootstrap needs disk for unit cache;")
+        println("[airgenome-init]   continuing would silently fail with I/O error.")
+        println("[airgenome-init]   Free space, then re-run. Override: AIRGENOME_MIN_FREE_MIB=<mib>")
+        exit(3)
+    }
+    println("[airgenome-init] disk: " + to_string(avail_mib) + " MiB free (threshold " +
+            to_string(thresh) + " MiB) — ok")
+    return 0
+}
+
 fn main() -> void {
     println("[airgenome-init] root: " + root())
     println("[airgenome-init] slug: " + slug_from_root())
+    let _ = ensure_disk_budget()
     let bin = ensure_binary()
     install_launchagent(bin)
     verify_setup(bin)
@@ -354,4 +650,6 @@ fn main() -> void {
     ensure_mcp_json(mcp_bin)
     ensure_workspace_commands()
     ensure_claude_bootstrap()
+    ensure_settings_guard()
+    ensure_telegram_bot()
 }

@@ -634,7 +634,11 @@ HELP
     local to="${AIRG_OFFLOAD_TIMEOUT:-5}"
     # Pass args joined with spaces — remote sh parses shell metacharacters naturally.
     # Callers quote the full command as a single arg (examples in usage).
-    exec ssh -o ConnectTimeout="$to" -o BatchMode=yes "$ssh_host" "$*"
+    # ControlMaster/ControlPath=none — sandboxed harnesses (e.g. Claude Code)
+    # block socket link in ~/.ssh/cm/; avoid mux entirely for offload robustness.
+    exec ssh -o ConnectTimeout="$to" -o BatchMode=yes \
+             -o ControlMaster=no -o ControlPath=none \
+             "$ssh_host" "$*"
 }
 
 # ============================================================
