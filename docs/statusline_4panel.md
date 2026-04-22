@@ -1,4 +1,4 @@
-# Claude Code statusLine — 4-panel design (맥락 · 세션 · 창발 · 경제)
+# Claude Code statusLine — 4-panel design (맥락 · 세션 · EMERGENCE · 경제)
 
 Status: **draft**, single-line first. Box rendering deferred.
 Scope: replace current linear stack renderer (`hexa-lang/gate/claude_statusline.{hexa,jq}`) with a 4-panel layout. Non-breaking — new sibling file.
@@ -7,10 +7,10 @@ Scope: replace current linear stack renderer (`hexa-lang/gate/claude_statusline.
 
 | id | label | 변화 속도 | 의도 |
 |----|-------|-----------|------|
-| LEFT   | 맥락 | slow  | "내가 지금 어디에 서 있나" — git + active roadmap |
-| CENTER | 세션 | fast  | CC 런타임 상태 — ctx% · model · turn |
-| 3rd    | 창발 | bursty | 이 프로젝트의 novelty / convergence / anomaly 신호 |
-| RIGHT  | 경제 | medium | 시간·비용 — idle · cost |
+| CONTEXT   | 맥락 | slow  | "내가 지금 어디에 서 있나" — git + active roadmap |
+| SESSION | 세션 | fast  | CC 런타임 상태 — ctx% · model · turn |
+| EMERGENCE | 창발 | bursty | 이 프로젝트의 novelty / convergence / anomaly 신호 |
+| ECONOMY  | 경제 | medium | 시간·비용 — idle · cost |
 
 ## 2. 렌더 (박스 없음, 1-line)
 
@@ -31,20 +31,20 @@ Scope: replace current linear stack renderer (`hexa-lang/gate/claude_statusline.
 ⎇ fix ±1 · 🧠 47% · 🌱 #30 · 💸 $.42
 ```
 
-Priority 드롭 순서: repo → phase id → mode → idle → branch detail. **창발 panel 은 마지막까지 유지**.
+Priority 드롭 순서: repo → phase id → mode → idle → branch detail. **EMERGENCE panel 은 마지막까지 유지**.
 
 ## 3. 데이터 소스
 
 | panel | 소스 | 비용 |
 |-------|------|------|
-| LEFT   | `git symbolic-ref HEAD` + `git status --porcelain=v2 \| wc -l` + `.roadmap` active id | ~15ms, SHA-캐시 60s |
-| CENTER | CC stdin JSON (`model.display_name`, `session_id`) + `transcript_path` tail (`usage` 최종 1줄) | ~30ms |
-| 창발   | `.raw`/`.meta2-cert/` + airgenome `state/rig_trend_history.jsonl` tail (mtime-driven) | ~5ms |
-| RIGHT  | CENTER 와 동일 transcript parse 재활용 (`usage` 누적 + 마지막 user ts) | ~0ms |
+| CONTEXT   | `git symbolic-ref HEAD` + `git status --porcelain=v2 \| wc -l` + `.roadmap` active id | ~15ms, SHA-캐시 60s |
+| SESSION | CC stdin JSON (`model.display_name`, `session_id`) + `transcript_path` tail (`usage` 최종 1줄) | ~30ms |
+| EMERGENCE   | `.raw`/`.meta2-cert/` + airgenome `state/rig_trend_history.jsonl` tail (mtime-driven) | ~5ms |
+| ECONOMY  | SESSION 와 동일 transcript parse 재활용 (`usage` 누적 + 마지막 user ts) | ~0ms |
 
 합: ≈ 50ms. CC 300ms 예산의 1/6.
 
-## 4. 창발 panel — priority calculus
+## 4. EMERGENCE panel — priority calculus
 
 3 축, 이벤트 마다 score 매기고 top-1 표시.
 
@@ -72,7 +72,7 @@ phase_relevance: 현재 MAIN phase(P1/P2/P3) 와 일치 시 ×1.5
 
 ## 6. 구현 위치 & migration
 - 신규: `/Users/ghost/core/hexa-lang/gate/claude_statusline_4panel.hexa` (+ `.jq`)
-- 기존 `claude_statusline.{hexa,jq}` 유지 — `active.json` stack 전용 sub-mode 로 흡수 (창발 fallback 경로)
+- 기존 `claude_statusline.{hexa,jq}` 유지 — `active.json` stack 전용 sub-mode 로 흡수 (EMERGENCE fallback 경로)
 - swap 포인트: `~/.claude/settings.json` 의 `statusLine.command` 만 새 경로로
 - settings.json 직접 편집 금지 (H-NOHOOK/AG10). `airgenome-init` / `hexa-lang` init 툴이 re-render
 
@@ -98,7 +98,7 @@ CC statusLine 은 multi-line 지원 확인 필요 — 지원 시 3줄 박스 가
 - budget: `time` 랩퍼 p99 < 300ms
 
 ## 12. 다음 스텝
-1. `claude_statusline_4panel.hexa` prototype — LEFT + 창발 2 panel 부터
+1. `claude_statusline_4panel.hexa` prototype — CONTEXT + EMERGENCE 2 panel 부터
 2. wcwidth 유틸 (`nexus/shared/stdlib/wcwidth.hexa`?) 유무 확인, 없으면 포팅
 3. CC multi-line 지원 여부 live probe (별건, 박스 단계에서)
 4. `.statusline-events.jsonl` 관측 개시 → 1주 후 priority 재튜닝
@@ -113,10 +113,10 @@ hexa-lang/gate/
   claude_statusline_4panel.hexa       # entry
   claude_statusline_4panel.jq         # transcript + stdin 파서
   panels/
-    left_context.hexa
-    center_session.hexa
+    context.hexa
+    session.hexa
     emergence.hexa
-    right_economy.hexa
+    economy.hexa
   lib/
     wcwidth.hexa                      # cell-width (없으면 포팅)
     columns.hexa                      # tput / env / fallback
@@ -128,7 +128,7 @@ hexa-lang/gate/
   observability/
     statusline_log.hexa               # .hook-statusline.jsonl appender
 ```
-기존 `claude_statusline.{hexa,jq}` 는 emergence fallback 경로로 호출만 유지.
+기존 `claude_statusline.{hexa,jq}` 는 EMERGENCE fallback 경로로 호출만 유지.
 
 ## 14. CC stdin JSON (실측 스키마)
 ```json
@@ -144,7 +144,7 @@ hexa-lang/gate/
 ```
 사용:
 - `cwd` → git root 검증
-- `model.display_name` → CENTER
+- `model.display_name` → SESSION
 - `transcript_path` → ctx%, turn count, usage, last_user_ts
 - `session_id` → `.hook-statusline.jsonl` 파티션 키, flicker 상태 분리 저장
 
@@ -158,7 +158,7 @@ hexa-lang/gate/
 | submodule | 가장 바깥 repo 만 |
 | worktree | `rev-parse --show-toplevel` 결과 그대로 |
 | stash | 표시 안 함 |
-| git 없음 | LEFT 전체 drop |
+| git 없음 | CONTEXT 전체 drop |
 
 ## 16. Transcript 파싱 — ctx% / turn / cost
 - Transcript jsonl 각 줄: `{role, content, usage:{input_tokens, cache_read_input_tokens, cache_creation_input_tokens, output_tokens}}`
@@ -176,7 +176,7 @@ haiku-4-5:  $0.25/M,   $1.25/M,    cache_read $0.025, cache_write $0.30
 ## 17. Roadmap active id 파싱
 `.roadmap` 에서 `^roadmap N active` 매칭, 복수일 때 MAIN track 우선 (track 이 `hybrid` 또는 feeds-main 존재). mtime 캐시.
 
-## 18. 창발 이벤트 — 소스/필드 매트릭스
+## 18. EMERGENCE 이벤트 — 소스/필드 매트릭스
 | type | 파일 | 추출 | weight |
 |---|---|---|---|
 | raw | `$HEXA_LANG/.raw` | 마지막 `^raw #(\d+)` + mtime | 4 |
@@ -229,7 +229,7 @@ fn pad_right(s: string, target_cells: int) -> string
   "last_shown_type":"raw","last_shown_ts":…
 }
 ```
-TTL: git 60s, roadmap mtime-driven, emergence mtime-driven, center 항상 재계산.
+TTL: git 60s, roadmap mtime-driven, EMERGENCE mtime-driven, SESSION 항상 재계산.
 Atomic: `write temp → rename`.
 
 ## 23. 동시성
@@ -245,7 +245,7 @@ Atomic: `write temp → rename`.
 /Users/ghost/core/anima      → anima
 else                         → generic
 ```
-Emergence panel 만 plugin 으로 교체 (`gate/statusline_plugins/<project>.hexa`). LEFT/CENTER/RIGHT 공통.
+EMERGENCE panel 만 plugin 으로 교체 (`gate/statusline_plugins/<project>.hexa`). CONTEXT/SESSION/ECONOMY 공통.
 
 ## 25. Settings 통합 (AG10 준수, Claude 금지)
 1. `tool/airgenome_init.hexa::ensure_statusline()` 기본값 변경
@@ -254,11 +254,11 @@ Emergence panel 만 plugin 으로 교체 (`gate/statusline_plugins/<project>.hex
 - A/B swap: 환경변수 `STATUSLINE_V=legacy|4panel` 로 ensure_statusline 분기
 
 ## 26. Migration 스텝
-1. prototype `claude_statusline_4panel.hexa` — LEFT+CENTER 만, 나머지 `—`
+1. prototype `claude_statusline_4panel.hexa` — CONTEXT+SESSION 만, 나머지 `—`
 2. 수동 렌더 확인: `echo '<stdin>' | hexa claude_statusline_4panel.hexa`
-3. 창발, RIGHT 점진 추가 → 단계별 snapshot test
+3. EMERGENCE, ECONOMY 점진 추가 → 단계별 snapshot test
 4. env `STATUSLINE_V=4panel` A/B 로 1주 dogfood
-5. linear stack renderer → emergence fallback 으로 demotion
+5. linear stack renderer → EMERGENCE fallback 으로 demotion
 6. SSOT default 변경
 
 ## 27. 테스트 harness
@@ -295,19 +295,19 @@ CI: p99 render_ms < 200ms (여유 100ms).
 1주 후 분석: 최빈 type, 평균 render_ms, anomaly 비율, COLUMNS 분포.
 
 ## 29. 성능 예산 강제
-Per-panel timeout (ms): LEFT 50, CENTER 80, 창발 50, RIGHT 30. 초과 시 last-good + `⌛` + log.
+Per-panel timeout (ms): CONTEXT 50, SESSION 80, EMERGENCE 50, ECONOMY 30. 초과 시 last-good + `⌛` + log.
 구현: `exec_with_timeout(cmd, ms)` 또는 `timeout(1)` 래핑.
 
 ## 30. Binary 의존 / degraded
 `jq`, `git` 필수. `tput`, `timeout` 선택. 한 번만 probe → `.statusline-deps.json` 캐시. 부재 시 해당 panel drop.
 | 실패 | 대응 |
 |---|---|
-| jq | bash-only renderer, 창발 = active.json stack 만 |
-| git | LEFT drop |
-| transcript read | CENTER `🧠 ?` |
-| `.raw` | 창발 → active.json fallback |
+| jq | bash-only renderer, EMERGENCE = active.json stack 만 |
+| git | CONTEXT drop |
+| transcript read | SESSION `🧠 ?` |
+| `.raw` | EMERGENCE → active.json fallback |
 | 렌더 > 300ms | last-good + `⌛` |
-| stdin 파싱 실패 | LEFT/창발/RIGHT 만 |
+| stdin 파싱 실패 | CONTEXT/EMERGENCE/ECONOMY 만 |
 
 ## 31. 롤백
 ```
@@ -325,7 +325,7 @@ airgenome-init
 - p50 / p99 render_ms
 - COLUMNS 분포
 - degraded 경로 빈도 (<1% 목표)
-- 창발 panel 공란 turn 비율 (<30% 목표)
+- EMERGENCE panel 공란 turn 비율 (<30% 목표)
 - cost_cum vs CC usage summary ±5%
 
 ## 34. 보안 / PII
