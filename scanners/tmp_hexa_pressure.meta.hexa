@@ -1,0 +1,10 @@
+# Third DSL scanner — /tmp/hexa_* file count ceiling. Addresses the
+# root cause surfaced by ag_hexa_cache_scan (1532 files found).
+
+name=tmp_hexa_pressure
+kind=threshold_abs
+source=glob_count:/tmp/hexa_*
+baseline_bytes=200
+alarm_pct=0
+severity=high
+description=/tmp/hexa_* file count pressure (causes hexa_cache_err 'No space')

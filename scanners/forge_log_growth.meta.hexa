@@ -1,0 +1,11 @@
+# Second DSL scanner — watches compute_filter.log size against an
+# absolute ceiling. If the log grows past 10MB without rotation, alarm.
+
+name=forge_log_growth
+kind=threshold_abs
+source=file_size_bytes:forge/compute_filter.log
+baseline_bytes=10485760
+# Any value above baseline fires (one-sided high alarm).
+alarm_pct=0
+severity=med
+description=compute_filter.log exceeds 10MB without rotation

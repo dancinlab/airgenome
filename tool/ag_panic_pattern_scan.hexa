@@ -53,7 +53,7 @@ fn _cluster_file(path: string, top_n: int) -> string {
     while i < len(lines) {
         let line = lines[i].trim()
         if len(line) > 0 {
-            let sp = line.find(" ")
+            let sp = _index_of(line, " ")
             if sp > 0 {
                 let cnt = line.substring(0, sp)
                 let prefix = line.substring(sp + 1, len(line)).trim()

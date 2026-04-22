@@ -21,6 +21,7 @@
 #   blockers       Phase 1    aggregated prioritized blocker inventory
 #   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
 #   gap            Phase 6.2  mine git log + stderr patterns → scanner proposals
+#   dsl            Phase 6.3  run every scanners/*.meta.hexa declarative spec
 #   doctor         aggregate: run all Phase 3 scanners in sequence
 #   health         aggregate: print 0-100 score from state/ag_*.json
 #   selftest       run --selftest on every scanner
@@ -134,6 +135,7 @@ AGGREGATORS=(
     "blockers:tool/ag_blockers.hexa"
     "roi:tool/ag_roi.hexa"
     "gap_proposals:tool/ag_gap_proposer.hexa"
+    "dsl_runner:tool/ag_dsl_runner.hexa"
 )
 
 _scanner_path() {
@@ -163,6 +165,16 @@ cmd_audit()      { _hexa_timed "$(_scanner_path log_writer_audit)" "$@"; }
 cmd_blockers()   { _hexa_timed "$(_scanner_path blockers)" "$@"; }
 cmd_roi()        { _hexa_timed "$(_scanner_path roi)" "$@"; }
 cmd_gap()        { _hexa_timed "$(_scanner_path gap_proposals)" "$@"; }
+# DSL: default to --all so users can do `ag_meta dsl` and get every spec.
+cmd_dsl() {
+    local script
+    script="$(_scanner_path dsl_runner)"
+    if [[ $# -eq 0 ]]; then
+        _hexa_timed "$script" --all
+    else
+        _hexa_timed "$script" "$@"
+    fi
+}
 
 cmd_doctor() {
     local rc=0
@@ -481,6 +493,25 @@ cmd_health() {
         parts+=("dormant_rules=$dormant")
     fi
 
+    # Phase 6.3 DSL alarms — each alarm_high/low subtracts by severity weight
+    local dsl_alarms=0
+    for f in state/ag_dsl_*.json; do
+        [[ -e "$f" ]] || continue
+        local v
+        v="$(grep -oE '"verdict": *"[^"]+"' "$f" | head -1 | awk -F'"' '{print $(NF-1)}')"
+        [[ "$v" == "alarm_high" || "$v" == "alarm_low" ]] || continue
+        dsl_alarms=$((dsl_alarms + 1))
+        local sev
+        sev="$(grep -oE '"severity": *"[^"]+"' "$f" | head -1 | awk -F'"' '{print $(NF-1)}')"
+        case "${sev:-med}" in
+            critical) score=$((score - 15)) ;;
+            high)     score=$((score - 7))  ;;
+            med)      score=$((score - 3))  ;;
+            low)      score=$((score - 1))  ;;
+        esac
+    done
+    parts+=("dsl_alarms=$dsl_alarms")
+
     if [[ $score -lt 0 ]]; then score=0; fi
     printf 'ag_meta health: %d/100  (%s)\n' "$score" "$(IFS=' '; echo "${parts[*]}")"
     return 0
@@ -506,6 +537,7 @@ main() {
         blockers)        cmd_blockers "$@" ;;
         roi)             cmd_roi "$@" ;;
         gap)             cmd_gap "$@" ;;
+        dsl)             cmd_dsl "$@" ;;
         doctor)          cmd_doctor "$@" ;;
         health)          cmd_health "$@" ;;
         selftest)        cmd_selftest ;;

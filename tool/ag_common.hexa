@@ -69,3 +69,13 @@ fn _file_age_seconds(path: string) -> int {
     let mt = to_int(to_string(exec("stat -f %m " + _sh_q(path) + " 2>/dev/null || stat -c %Y " + _sh_q(path) + " 2>/dev/null")).trim())
     return _epoch_now() - mt
 }
+
+// _index_of returns 0-based index of needle in haystack, or -1 if absent.
+// Portable across interpreted and native (native codegen lacks .find()).
+fn _index_of(haystack: string, needle: string) -> int {
+    if len(needle) == 0 { return 0 }
+    let cmd = "printf '%s' " + _sh_q(haystack) + " | awk -v n=" + _sh_q(needle) + " '{i=index($0,n); print (i==0)?-1:i-1}'"
+    let out = to_string(exec(cmd)).trim()
+    if len(out) == 0 { return -1 }
+    return to_int(out)
+}

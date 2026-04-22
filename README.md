@@ -75,7 +75,16 @@ bin/ag_meta motif             # Phase 3.10 top-K process signatures
 bin/ag_meta blockers          # Phase 1    prioritized inventory
 bin/ag_meta roi               # Phase 2    loss-free cleanup candidates
 bin/ag_meta continuous-scan   # Phase 5    doctor + snapshot state/history/
+bin/ag_meta telemetry         # Phase 6.1  per-tool runtime summary
+bin/ag_meta gap               # Phase 6.2  emit scanner proposals
+bin/ag_meta dsl               # Phase 6.3  run scanners/*.meta.hexa specs
+bin/ag_meta build             # native-compile every scanner (2-4× faster)
+bin/ag_meta report            # markdown dashboard (--stdout for pipe)
 ```
+
+Declarative scanners live in `scanners/*.meta.hexa` (key=value specs).
+Add a spec there, run `ag_meta dsl`, and its verdict lands in
+`state/ag_dsl_<name>.json` — no Hexa code required.
 
 Schedule continuous-scan every 12h via
 `config/launchd/com.airgenome.meta_continuous_scan.plist`:
