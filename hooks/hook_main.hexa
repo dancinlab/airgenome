@@ -49,6 +49,10 @@ use "lib/manifest"
 use "commands/drill"
 use "commands/scan"
 use "commands/record"
+use "commands/safelanding"
+use "commands/verify"
+use "commands/advance"
+use "commands/roadmap"
 
 // ─────────────────────────────────────────────────────────────── handlers ──
 
@@ -98,6 +102,33 @@ fn workspace_keyword_table() -> str {
     if file_exists(lock_p) == false { return "" }
     let prog = "awk 'BEGIN{insec=0} /^\\[keywords\\]/{insec=1; next} /^\\[/{insec=0; next} insec==1 && /^kw /{sub(/^kw +/, \"\"); cmd=$1; rest=$0; sub(/^[^ ]+ +/, \"\", rest); n=split(rest, arr, /, */); line=cmd; for(i=1;i<=n;i++){ gsub(/^ +| +$/, \"\", arr[i]); if(arr[i] != \"\") line=line \"\\t\" arr[i] } print line }' '" + lock_p + "'"
     return exec(prog)
+}
+
+// Built-in keyword table for commands owned by airgenome itself (not
+// sourced from ~/core/.workspace.lock). Same TSV shape as
+// workspace_keyword_table() so the dispatcher can concatenate the two
+// without special-casing. Adding a new airgenome-owned command is:
+//   1. drop a commands/<name>.hexa module
+//   2. add the `use` + if-branch in run_command()
+//   3. append one `cmd\tkw1\tkw2...` row here
+// Commands listed here are safelanding / verify / advance / roadmap —
+// they drive anima / hexa-lang tooling and have no natural home in
+// core-bundle (.workspace is nexus-owned commands only).
+fn builtin_keyword_table() -> str {
+    return "safelanding\tsafelanding\tsafe landing\t안전 착지\t이탈\tdrift\t돌아가\trollback\n" +
+           "verify\tverify\t검증\n" +
+           "advance\tadvance\t승급\tflip\n" +
+           "roadmap\t로드맵\troadmap\tready"
+}
+
+// Merge workspace + built-in keyword tables. Workspace wins on cmd
+// name collision (first row for a given cmd is used by the caller's
+// loop, so workspace rows come first).
+fn merged_keyword_table() -> str {
+    let ws = workspace_keyword_table()
+    let bi = builtin_keyword_table()
+    if ws.trim() == "" { return bi }
+    return ws + "\n" + bi
 }
 
 // grep -E word-boundary match. Non-alnum-underscore chars flank the keyword.
@@ -157,6 +188,18 @@ fn run_command(cmd: str, matched_kw: str, prompt: str, keywords: [str], transcri
     if cmd == "record" {
         return record_dispatch(prompt, keywords, matched_kw, transcript_path, session)
     }
+    if cmd == "safelanding" {
+        return safelanding_dispatch(prompt, keywords, matched_kw, transcript_path, session)
+    }
+    if cmd == "verify" {
+        return verify_dispatch(prompt, keywords, matched_kw, transcript_path, session)
+    }
+    if cmd == "advance" {
+        return advance_dispatch(prompt, keywords, matched_kw, transcript_path, session)
+    }
+    if cmd == "roadmap" {
+        return roadmap_dispatch(prompt, keywords, matched_kw, transcript_path, session)
+    }
     return ""
 }
 
@@ -193,7 +236,7 @@ fn user_prompt_entry(p: str) -> str {
     // command module (e.g. commands/drill.hexa) decides how to derive the
     // seed (freeform, context-aware). We just find the first matching
     // keyword and hand the full prompt + keyword list off.
-    let tbl = workspace_keyword_table()
+    let tbl = merged_keyword_table()
     if tbl == "" { return allow_json() }
     let tpath = event_transcript(p)
 

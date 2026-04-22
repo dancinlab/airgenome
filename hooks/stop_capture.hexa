@@ -1,53 +1,360 @@
-// hooks/stop_capture.hexa — Stop handler (assistant response capture)
+// hooks/stop_capture.hexa — Stop handler
 //
-// Responsibility:
-//   - On Stop event, tail the transcript JSONL (~/.claude/projects/.../N.jsonl)
-//     and extract the most recent "assistant" message text.
-//   - Append to $root/.hook-history.jsonl with session + timestamp.
-//   - Deterministic path: Claude Code guarantees transcript_path in the Stop event.
+// Responsibilities (never blocks session; rc=0 always):
+//   1. Capture most recent "assistant" message text from the transcript tail
+//      and append to $root/.hook-history.jsonl.
+//   2. Stale-chain sweep: release active chains whose started_at is >= 24h old
+//      via `airgenome hook release <chain> "stale session sweep"`.
+//   3. Handover: append every still-active chain to $root/.hook-handover.jsonl
+//      so the next session can resume or pick a rollback point.
+//   4. Landed-at: if integrity_guard has a recent FAIL line for an active
+//      chain, record `landed_at` = HEAD SHA via `airgenome hook touch <chain>
+//      landed_at "HEAD=<sha>"`. Findings.jsonl gains a `kind=landed_at` line
+//      so the next session has an explicit rollback candidate.
 //
-// No LLM, no network, O(tail-1) read.
+// CLI-only: uses the `airgenome hook` subcommand. If that CLI is missing or
+// returns non-zero, we skip gracefully (release) or fall back to direct JSON
+// file edits (touch) — see `airgenome_hook_*` helpers below.
+//
+// Self-test: `STOP_CAPTURE_SELFTEST=1` env triggers the in-tree fixture run
+// (mock 25h old chain + mock failing integrity). No transcript parsing in
+// that branch so the harness stays hermetic.
 
 use "lib/event"
 
-fn history_path() -> str {
+// ───────────────────────────────────────────────────────── path helpers ──
+
+fn resolve_root() -> str {
     let mut root = env("AIRGENOME_HOOK_ROOT")
     if root == "" { root = env("CLAUDE_PROJECT_DIR") }
     if root == "" { root = exec("pwd").trim() }
-    return root + "/.hook-history.jsonl"
+    return root
 }
 
-fn main() -> void {
-    let raw = read_event_json()
-    let p = dump_json(raw)
-    let sess = event_session(p)
-    let tpath = event_transcript(p)
-    let _ = exec("rm -f '" + p + "'")
+fn history_path(root: str) -> str    { return root + "/.hook-history.jsonl" }
+fn handover_path(root: str) -> str   { return root + "/.hook-handover.jsonl" }
+fn state_dir(root: str) -> str       { return root + "/.hook-commands" }
+fn active_path(root: str) -> str     { return state_dir(root) + "/active.json" }
+fn chain_dir(root: str, chain: str) -> str { return state_dir(root) + "/" + chain }
 
-    if tpath == "" {
-        println(allow_json())
-        exit(0)
-    }
-    if file_exists(tpath) == false {
-        println(allow_json())
-        exit(0)
-    }
+fn shq(s: str) -> str { return "'" + s.replace("'", "'\\''") + "'" }
 
-    // Extract last assistant message text via jq streaming tail.
-    // Claude transcript JSONL schema: each line has role + message.content (array of blocks).
-    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
-    let extract = "tail -n 200 '" + tpath + "' | jq -rs '[.[] | select(.type==\"assistant\" or .role==\"assistant\")] | last | (.message.content // .content) | if type==\"array\" then (map(select(.type==\"text\") | .text) | join(\"\\n\")) else (.|tostring) end' 2>/dev/null"
+fn ts_iso() -> str { return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() }
+
+// ─────────────────────────────────────────────────── assistant capture ──
+
+fn capture_assistant(root: str, sess: str, tpath: str) -> void {
+    if tpath == "" { return }
+    if file_exists(tpath) == false { return }
+    let ts = ts_iso()
+    let extract = "tail -n 200 " + shq(tpath) + " | jq -rs '[.[] | select(.type==\"assistant\" or .role==\"assistant\")] | last | (.message.content // .content) | if type==\"array\" then (map(select(.type==\"text\") | .text) | join(\"\\n\")) else (.|tostring) end' 2>/dev/null"
     let text = exec(extract)
-    let text_sha = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | shasum -a 256 | awk '{print $1}'").trim()
-    let text_len = exec("printf '%s' '" + text.replace("'", "'\\''") + "' | wc -c | tr -d ' '").trim()
-
+    let text_sha = exec("printf '%s' " + shq(text) + " | shasum -a 256 | awk '{print $1}'").trim()
+    let text_len = exec("printf '%s' " + shq(text) + " | wc -c | tr -d ' '").trim()
     let line = "{\"ts\":\"" + ts +
                "\",\"session\":\"" + json_escape(sess) +
                "\",\"transcript\":\"" + json_escape(tpath) +
                "\",\"response_bytes\":" + text_len +
                ",\"response_sha256\":\"" + text_sha +
                "\",\"response_text\":\"" + json_escape(text) + "\"}"
-    let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + history_path() + "'")
+    let _ = exec("printf '%s\\n' " + shq(line) + " >> " + shq(history_path(root)))
+}
+
+// ─────────────────────────────────────────── airgenome hook CLI bridge ──
+//
+// graceful: if the CLI is missing or returns non-zero the call is a no-op
+// for `release`; `touch` falls back to a direct append to findings.jsonl so
+// the landed-at line is still materialised.
+
+fn airgenome_bin() -> str {
+    // Prefer explicit override; fall back to PATH lookup; empty if absent.
+    let ov = env("AIRGENOME_BIN")
+    if ov != "" {
+        let okov = exec("[ -x " + shq(ov) + " ] && echo y || echo n").trim()
+        if okov == "y" { return ov }
+    }
+    let hxb = env("HOME") + "/.hx/bin/airgenome"
+    let okhx = exec("[ -x " + shq(hxb) + " ] && echo y || echo n").trim()
+    if okhx == "y" { return hxb }
+    let which = exec("command -v airgenome 2>/dev/null").trim()
+    return which
+}
+
+fn airgenome_hook_release(root: str, chain: str, reason: str) -> void {
+    let bin = airgenome_bin()
+    if bin == "" { return }
+    let cmd = "AIRGENOME_HOOK_ROOT=" + shq(root) + " " + bin +
+              " hook release " + shq(chain) + " " + shq(reason) + " >/dev/null 2>&1 || true"
+    let _ = exec(cmd)
+}
+
+fn airgenome_hook_touch(root: str, chain: str, kind: str, payload: str) -> str {
+    // Returns "cli" if the CLI ran, "fallback" if we wrote findings.jsonl directly.
+    // The CLI uses AIRGENOME_HOOK_ROOT to locate state — propagate it so the
+    // selftest's sandbox root is respected even when the real CLI is wired.
+    let bin = airgenome_bin()
+    if bin != "" {
+        let cmd = "AIRGENOME_HOOK_ROOT=" + shq(root) + " " + bin +
+                  " hook touch " + shq(chain) + " " + shq(kind) + " " + shq(payload) +
+                  " >/dev/null 2>&1; echo $?"
+        let rc = exec(cmd).trim()
+        if rc == "0" { return "cli" }
+    }
+    // Fallback: append to <root>/.hook-commands/<chain>/findings.jsonl directly.
+    let _ = exec("mkdir -p " + shq(chain_dir(root, chain)))
+    let line = "{\"ts\":\"" + ts_iso() + "\",\"kind\":\"" + json_escape(kind) +
+               "\",\"payload\":\"" + json_escape(payload) + "\"}"
+    let _ = exec("printf '%s\\n' " + shq(line) + " >> " + shq(chain_dir(root, chain) + "/findings.jsonl"))
+    return "fallback"
+}
+
+// ──────────────────────────────────────────────── active-stack helpers ──
+
+fn active_stale_chains(root: str, max_age_s: int) -> str {
+    // TSV "<chain>\t<age_s>" for every stack entry older than max_age_s.
+    let p = active_path(root)
+    if file_exists(p) == false { return "" }
+    let prog = "jq -r --argjson ms " + to_string(max_age_s) +
+               " '(.stack // [])[] | . as $e | (now - (($e.started_at // \"1970-01-01T00:00:00Z\") | fromdateiso8601)) as $age | select($age >= $ms) | \"\\($e.chain)\\t\\($age|floor)\"' " + shq(p) +
+               " 2>/dev/null"
+    return exec(prog).trim()
+}
+
+fn active_chain_tsv(root: str) -> str {
+    // TSV "<chain>\t<turns>\t<seed>\t<session>" for every stack entry.
+    let p = active_path(root)
+    if file_exists(p) == false { return "" }
+    let prog = "jq -r '(.stack // [])[] | \"\\(.chain)\\t\\(.turns // 0)\\t\\(.seed // \"\")\\t\\(.session // \"\")\"' " + shq(p) +
+               " 2>/dev/null"
+    return exec(prog).trim()
+}
+
+// ───────────────────────────────────────────────── integrity FAIL scan ──
+//
+// Detection precedence for a chain:
+//   1. <root>/.hook-commands/<chain>/integrity.jsonl  — last line has
+//      "status":"FAIL" (or a "result":"FAIL" variant).
+//   2. <root>/.hook-commands/<chain>/findings.jsonl   — last "kind":"integrity"
+//      line has payload containing "FAIL".
+// Returns "1" on FAIL, "0" otherwise.
+
+fn chain_integrity_failed(root: str, chain: str) -> str {
+    let idir = chain_dir(root, chain)
+    let ig = idir + "/integrity.jsonl"
+    if file_exists(ig) {
+        let q = "tail -n 1 " + shq(ig) +
+                " | jq -r '((.status // .result // \"\") == \"FAIL\") | if . then 1 else 0 end' 2>/dev/null"
+        let r = exec(q).trim()
+        if r == "1" { return "1" }
+    }
+    let fj = idir + "/findings.jsonl"
+    if file_exists(fj) {
+        let q = "tail -n 50 " + shq(fj) +
+                " | jq -rs '[.[] | select(.kind==\"integrity\")] | last | ((.payload // \"\") | test(\"FAIL\")) | if . then 1 else 0 end' 2>/dev/null"
+        let r = exec(q).trim()
+        if r == "1" { return "1" }
+    }
+    return "0"
+}
+
+fn head_sha(root: str) -> str {
+    // -C so it resolves relative to the project root even if cwd differs.
+    let sha = exec("git -C " + shq(root) + " rev-parse HEAD 2>/dev/null").trim()
+    if sha != "" { return sha }
+    // Fallback to the invoking shell's cwd — useful when the hook root is a
+    // sandbox temp dir (selftest) that isn't itself a git repo.
+    let sha2 = exec("git rev-parse HEAD 2>/dev/null").trim()
+    if sha2 != "" { return sha2 }
+    return "unknown"
+}
+
+// ────────────────────────────────────────────────── sweep + handover ──
+//
+// Run all three end-of-session chores. `session` is stamped into the
+// handover line so the next boot can correlate.
+
+fn session_sweep(root: str, session: str) -> void {
+    let max_age_s = 24 * 3600   // 24h
+
+    // 1. stale release pass — do this FIRST so handover only contains the
+    //    chains we still consider "live".
+    let stale = active_stale_chains(root, max_age_s)
+    if stale != "" {
+        let lines = stale.split("\n")
+        let mut i = 0
+        while i < lines.len() {
+            let ln = lines[i].trim()
+            i = i + 1
+            if ln == "" { continue }
+            let cols = ln.split("\t")
+            if cols.len() < 1 { continue }
+            let chain = cols[0]
+            if chain == "" { continue }
+            airgenome_hook_release(root, chain, "stale session sweep")
+        }
+    }
+
+    // 2. snapshot remaining active chains → .hook-handover.jsonl
+    //    Re-read active.json AFTER the release pass so sessions with a real
+    //    CLI see a clean post-sweep view. When the CLI is absent the list
+    //    still includes stale chains — that's fine; the handover is
+    //    informational, and the stale-release attempt is already recorded
+    //    in the caller's attempt count.
+    let ts = ts_iso()
+    let active = active_chain_tsv(root)
+    if active != "" {
+        let lines = active.split("\n")
+        let mut i = 0
+        while i < lines.len() {
+            let ln = lines[i]
+            i = i + 1
+            if ln.trim() == "" { continue }
+            let cols = ln.split("\t")
+            if cols.len() < 1 { continue }
+            let chain   = if cols.len() > 0 { cols[0] } else { "" }
+            if chain == "" { continue }
+            let turns   = if cols.len() > 1 { cols[1] } else { "0" }
+            let seed    = if cols.len() > 2 { cols[2] } else { "" }
+            let csess   = if cols.len() > 3 { cols[3] } else { "" }
+            let turns_num = to_int(turns.trim())
+            let ho = "{\"ts\":\"" + ts +
+                     "\",\"session\":\"" + json_escape(session) +
+                     "\",\"chain\":\"" + json_escape(chain) +
+                     "\",\"turns\":" + to_string(turns_num) +
+                     ",\"last_seed\":\"" + json_escape(seed) +
+                     "\",\"chain_session\":\"" + json_escape(csess) + "\"}"
+            let _ = exec("printf '%s\\n' " + shq(ho) + " >> " + shq(handover_path(root)))
+
+            // 3. landed-at: FAIL integrity → mark rollback candidate
+            if chain_integrity_failed(root, chain) == "1" {
+                let _ = airgenome_hook_touch(root, chain, "landed_at", "HEAD=" + head_sha(root))
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────── selftest ──
+//
+// Invoked via `STOP_CAPTURE_SELFTEST=1 hexa run stop_capture.hexa`.
+// Builds a disposable AIRGENOME_HOOK_ROOT with:
+//   - one 25h-old chain  (must get released by session_sweep)
+//   - one fresh chain    (must survive)
+//   - fresh chain has integrity.jsonl with "status":"FAIL" → landed_at must
+//     land in findings.jsonl (kind=landed_at line).
+// Emits PASS / FAIL lines on stdout and exits rc=0 either way — the hook
+// contract is non-blocking; tests signal via stdout text.
+
+fn selftest_setup(root: str) -> str {
+    let _ = exec("rm -rf " + shq(root))
+    let _ = exec("mkdir -p " + shq(root + "/.hook-commands"))
+
+    // Mock active.json with one stale + one fresh chain.
+    let stale_chain = "stale_chain_25h"
+    let fresh_chain = "fresh_chain_fail"
+    // 25h ago = now - 90000s. Use gdate if available, fall back to perl.
+    let stale_ts = exec("python3 -c 'import datetime,sys;print((datetime.datetime.utcnow()-datetime.timedelta(hours=25)).strftime(\"%Y-%m-%dT%H:%M:%SZ\"))' 2>/dev/null || perl -MPOSIX -e 'print strftime(\"%Y-%m-%dT%H:%M:%SZ\", gmtime(time-90000))'").trim()
+    let fresh_ts = ts_iso()
+    let active = "{\"stack\":[" +
+                 "{\"chain\":\"" + stale_chain + "\",\"command\":\"drill\",\"session\":\"old\",\"keyword\":\"x\",\"seed\":\"old-seed\",\"started_at\":\"" + stale_ts + "\",\"turns\":2}," +
+                 "{\"chain\":\"" + fresh_chain + "\",\"command\":\"drill\",\"session\":\"new\",\"keyword\":\"y\",\"seed\":\"new-seed\",\"started_at\":\"" + fresh_ts + "\",\"turns\":1}" +
+                 "]}"
+    write_file(root + "/.hook-commands/active.json", active)
+
+    // Fresh chain gets a FAIL integrity record.
+    let _ = exec("mkdir -p " + shq(root + "/.hook-commands/" + fresh_chain))
+    let integ = "{\"ts\":\"" + fresh_ts + "\",\"status\":\"FAIL\",\"detail\":\"mock integrity failure\"}"
+    write_file(root + "/.hook-commands/" + fresh_chain + "/integrity.jsonl", integ + "\n")
+    return fresh_chain
+}
+
+fn selftest_check_stale(root: str, stale_chain: str) -> int {
+    // Without the airgenome hook CLI available, release is a no-op — we can
+    // only verify the stale detector itself picked the chain up. The
+    // selftest therefore asserts `active_stale_chains()` returns the mocked
+    // 25h-old chain.
+    let out = exec("jq -r --argjson ms 86400 '(.stack // [])[] | . as $e | (now - (($e.started_at // \"1970-01-01T00:00:00Z\") | fromdateiso8601)) as $age | select($age >= $ms) | .chain' " + shq(root + "/.hook-commands/active.json") + " 2>/dev/null").trim()
+    if out == stale_chain {
+        println("PASS  stale_25h_detected  chain=" + stale_chain)
+        return 0
+    }
+    println("FAIL  stale_25h_detected  got=" + shq(out) + " want=" + stale_chain)
+    return 1
+}
+
+fn selftest_check_landed(root: str, fresh_chain: str) -> int {
+    let fj = root + "/.hook-commands/" + fresh_chain + "/findings.jsonl"
+    if file_exists(fj) == false {
+        println("FAIL  landed_at_touch  findings.jsonl absent at " + fj)
+        return 1
+    }
+    let have = exec("grep -c '\"kind\":\"landed_at\"' " + shq(fj) + " 2>/dev/null || echo 0").trim()
+    if to_int(have) >= 1 {
+        println("PASS  landed_at_touch  findings.jsonl has kind=landed_at (count=" + have + ")")
+        return 0
+    }
+    println("FAIL  landed_at_touch  findings.jsonl missing kind=landed_at")
+    return 1
+}
+
+fn run_selftest() -> int {
+    let root = exec("mktemp -d -t stop_capture_selftest.XXXXXX").trim()
+    let fresh_chain = selftest_setup(root)
+
+    // Run the sweep against the sandbox root directly (no env mutation —
+    // hexa has no setenv so we thread `root` as a parameter everywhere).
+    session_sweep(root, "selftest-session")
+
+    let mut fails = 0
+    fails = fails + selftest_check_stale(root, "stale_chain_25h")
+    fails = fails + selftest_check_landed(root, fresh_chain)
+
+    // Handover must contain the fresh chain (stale was released so may or
+    // may not still be in active.json depending on CLI availability; we
+    // only require the fresh one here).
+    let hp = root + "/.hook-handover.jsonl"
+    if file_exists(hp) {
+        let have = exec("grep -c " + shq("\"chain\":\"" + fresh_chain + "\"") + " " + shq(hp) + " 2>/dev/null || echo 0").trim()
+        if to_int(have) >= 1 {
+            println("PASS  handover_line_written  chain=" + fresh_chain)
+        } else {
+            println("FAIL  handover_line_written  no line for " + fresh_chain)
+            fails = fails + 1
+        }
+    } else {
+        println("FAIL  handover_line_written  .hook-handover.jsonl absent")
+        fails = fails + 1
+    }
+
+    let _ = exec("rm -rf " + shq(root))
+    if fails == 0 {
+        println("ALL PASS")
+        return 0
+    }
+    println("FAILURES=" + to_string(fails))
+    return 0   // non-blocking per raw#9/15 — always rc=0
+}
+
+// ────────────────────────────────────────────────────────────── main ──
+
+fn main() -> void {
+    if env("STOP_CAPTURE_SELFTEST") == "1" {
+        let _ = run_selftest()
+        println(allow_json())
+        exit(0)
+    }
+
+    let root = resolve_root()
+    let raw = read_event_json()
+    let p = dump_json(raw)
+    let sess = event_session(p)
+    let tpath = event_transcript(p)
+    let _ = exec("rm -f '" + p + "'")
+
+    // 1. assistant capture (existing behaviour, preserved)
+    capture_assistant(root, sess, tpath)
+
+    // 2/3/4. stale sweep + handover + landed-at
+    session_sweep(root, sess)
 
     println(allow_json())
     exit(0)

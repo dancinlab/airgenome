@@ -1,0 +1,57 @@
+// hooks/commands/safelanding.hexa — safelanding command dispatch.
+//
+// Shape parallels drill.hexa / scan.hexa / record.hexa. The keyword lands
+// the current session on the "last green" commit by invoking the anima
+// os_rollback_cli and surfacing a post-rollback status snapshot.
+//
+// Keyword triggers (registered under `command safelanding` in
+// ~/core/.workspace [keywords] section): safelanding, 안전 착지, 이탈,
+// drift, 돌아가, rollback.
+//
+// Seed is a short human-readable tag ("safe landing requested") so the
+// chain id stays stable across turns even when the prompt is a single
+// word like "rollback".
+//
+// Dependency tools (os_rollback_cli.hexa, anima_main.hexa) are NOT
+// verified at dispatch time; the intent.sh is always written so the
+// user gets a deterministic re-run handle. The suggest line handles the
+// missing-tool case by prefixing a `command -v hexa` guard: if hexa is
+// absent, the shell exits non-zero and autorun exec mode records the
+// failure in run.log. If the target .hexa script is missing at exec
+// time, hexa itself emits a diagnostic line the user sees in run.log.
+
+use "commands/_lifecycle"
+
+// Build the safelanding intent one-liner. Two tools: rollback then
+// status. If either .hexa is missing at exec time, `hexa run` emits a
+// "not found" error the user sees in findings/<chain>/run.log, which is
+// the warn+skip surface (no silent failure, no exception).
+fn safelanding_suggest() -> str {
+    let rollback = "$HOME/core/anima/tool/os_rollback_cli.hexa"
+    let status = "$HOME/core/anima/tool/anima_main.hexa"
+    // If rollback tool is missing, warn + skip the rollback step; always
+    // attempt the status snapshot so the user sees current state.
+    return "{ if [ -f '" + rollback + "' ]; then hexa '" + rollback +
+           "' --to-last-green; else echo '[safelanding] warn: os_rollback_cli.hexa missing at " + rollback +
+           " — skip rollback'; fi; if [ -f '" + status +
+           "' ]; then hexa '" + status + "' --status; else echo '[safelanding] warn: anima_main.hexa missing at " + status +
+           " — skip status'; fi; }"
+}
+
+pub fn safelanding_dispatch(prompt: str, keywords: [str], matched_kw: str, transcript_path: str, session: str) -> str {
+    // Fixed seed per user spec — chain identity is stable across
+    // different trigger keywords (rollback vs 이탈 vs drift), so the
+    // same safelanding session doesn't fork when the user re-phrases.
+    let seed = "safe landing requested"
+    let chain = lc_chain_id(session, "safelanding", seed)
+    lc_cmd_activate(session, "safelanding", matched_kw, seed, chain)
+    lc_advice_render()
+    lc_ui_title_update()
+    let suggest = safelanding_suggest()
+    lc_cmd_autorun(chain, "safelanding", suggest)
+    let tail = lc_tail("match", "safelanding", "seed=\"" + seed + "\"")
+    let extras = "\"seed\":\"" + lc_json_escape(seed) + "\"" +
+                 ",\"suggest\":\"" + lc_json_escape(suggest) + "\"" +
+                 ",\"tail\":\"" + lc_json_escape(tail) + "\""
+    return lc_payload("safelanding", "match", matched_kw, chain, extras)
+}

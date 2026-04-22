@@ -3,6 +3,18 @@
 // Responsibility:
 //   - Initialize audit log with GENESIS line if absent.
 //   - Emit a session-start marker into $root/.hook-sessions.jsonl.
+//   - Dump roadmap ready-set + active chain surface into
+//     $root/.hook-advice.ready.md AND prepend a
+//     `## Session start context` section on top of
+//     $root/.hook-advice.md (existing content preserved, append-safe).
+//
+// Design — CLI-ONLY (raw#9 hexa-only, raw#15 no-hardcode):
+//   - Active chains: `airgenome hook status` → JSON of live stack.
+//   - Ready set: `hexa <HEXA_LANG_ROOT>/tool/roadmap_engine.hexa ready --json`
+//   - Both commands resolved via env (AIRGENOME_BIN, HEXA_BIN, HEXA_LANG_ROOT);
+//     fall back to conventional paths under $HOME/core and $HOME/.hx.
+//   - Missing binaries / missing roadmap repo → graceful skip
+//     (session_start still returns allow_json()).
 //
 // No blocking. Deterministic.
 
@@ -14,6 +26,243 @@ fn sessions_path() -> str {
     if root == "" { root = env("CLAUDE_PROJECT_DIR") }
     if root == "" { root = exec("pwd").trim() }
     return root + "/.hook-sessions.jsonl"
+}
+
+fn root_dir() -> str {
+    let mut root = env("AIRGENOME_HOOK_ROOT")
+    if root == "" { root = env("CLAUDE_PROJECT_DIR") }
+    if root == "" { root = exec("pwd").trim() }
+    return root
+}
+
+// ─────────────────────────────────────────────────── env-first resolvers ──
+//
+// raw#15: every resource path is env-first with a documented fallback.
+// A missing binary is NOT an error — the context block is optional.
+
+fn home_dir() -> str {
+    let h = env("HOME")
+    if h != "" { return h }
+    return exec("printf %s \"$HOME\"").trim()
+}
+
+fn airgenome_bin() -> str {
+    let v = env("AIRGENOME_BIN")
+    if v != "" && file_exists(v) { return v }
+    let p = home_dir() + "/core/airgenome/bin/airgenome"
+    if file_exists(p) { return p }
+    // $PATH lookup (graceful-empty if absent).
+    let which = exec("command -v airgenome 2>/dev/null").trim()
+    return which
+}
+
+fn hexa_bin() -> str {
+    let v = env("HEXA_BIN")
+    if v != "" && file_exists(v) { return v }
+    let a = home_dir() + "/.hx/bin/hexa"
+    if file_exists(a) { return a }
+    let b = home_dir() + "/Dev/hexa-lang/hexa"
+    if file_exists(b) { return b }
+    let which = exec("command -v hexa 2>/dev/null").trim()
+    return which
+}
+
+fn roadmap_engine_path() -> str {
+    let v = env("HEXA_LANG_ROOT")
+    if v != "" {
+        let p = v + "/tool/roadmap_engine.hexa"
+        if file_exists(p) { return p }
+    }
+    let p2 = home_dir() + "/core/hexa-lang/tool/roadmap_engine.hexa"
+    if file_exists(p2) { return p2 }
+    return ""
+}
+
+fn roadmap_ready_set_path() -> str {
+    // Direct path to the sub-tool — `--json` is supported here but not
+    // forwarded by the engine orchestrator's `ready` sub. Used as a
+    // fallback so we get structured JSON instead of stringly output.
+    let v = env("HEXA_LANG_ROOT")
+    if v != "" {
+        let p = v + "/tool/roadmap_ready_set.hexa"
+        if file_exists(p) { return p }
+    }
+    let p2 = home_dir() + "/core/hexa-lang/tool/roadmap_ready_set.hexa"
+    if file_exists(p2) { return p2 }
+    return ""
+}
+
+// ─────────────────────────────────────────── capture helpers (tmp-first) ──
+
+fn sq(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+// Capture `airgenome hook status` → tmp JSON; returns "" on any failure.
+fn capture_active_chains() -> str {
+    let bin = airgenome_bin()
+    if bin == "" { return "" }
+    let tmp = exec("mktemp -t active_chains.XXXXXX").trim()
+    if tmp == "" { return "" }
+    let cmd = sq(bin) + " hook status > " + sq(tmp) + " 2>/dev/null; echo $?"
+    let rc = exec(cmd).trim()
+    if rc != "0" {
+        let _ = exec("rm -f " + sq(tmp))
+        return ""
+    }
+    // Sanity: must be non-empty and parse as JSON.
+    let ok = exec("jq -e . " + sq(tmp) + " >/dev/null 2>&1; echo $?").trim()
+    if ok != "0" {
+        let _ = exec("rm -f " + sq(tmp))
+        return ""
+    }
+    return tmp
+}
+
+// Capture roadmap ready set. Prefers the sub-tool `--json` path for
+// structured output; engine orchestrator is accepted as a last resort.
+fn capture_roadmap_ready() -> str {
+    let hx = hexa_bin()
+    if hx == "" { return "" }
+    let tmp = exec("mktemp -t roadmap_ready.XXXXXX").trim()
+    if tmp == "" { return "" }
+
+    // 1) Direct sub-tool → true JSON.
+    let rs = roadmap_ready_set_path()
+    if rs != "" {
+        let cmd = sq(hx) + " run " + sq(rs) + " --json > " + sq(tmp) + " 2>/dev/null; echo $?"
+        let rc = exec(cmd).trim()
+        if rc == "0" {
+            let ok = exec("jq -e . " + sq(tmp) + " >/dev/null 2>&1; echo $?").trim()
+            if ok == "0" { return tmp }
+        }
+    }
+
+    // 2) Engine orchestrator — may emit non-JSON, so we wrap as a
+    //    `{"raw":"..."}` envelope when parsing fails.
+    let eng = roadmap_engine_path()
+    if eng != "" {
+        let out = exec(sq(hx) + " run " + sq(eng) + " ready --json 2>/dev/null")
+        if out.trim() != "" {
+            let wrapped = "{\"raw\":" +
+                          exec("printf %s " + sq(out) + " | jq -Rs .").trim() + "}"
+            write_file(tmp, wrapped)
+            return tmp
+        }
+    }
+
+    let _ = exec("rm -f " + sq(tmp))
+    return ""
+}
+
+// ─────────────────────────────────────────── advice surface composition ──
+
+// jq program → top 3 chain summaries from `airgenome hook status` JSON.
+// The status surface shape is:
+//   {"stack":[{chain,command,seed,keyword,started_at,turns}, ...]}.
+// We use jq string concatenation (`+`) rather than interpolation because
+// `\(…)` inside a jq string cannot easily embed literal `"` defaults
+// (hexa source → shell → jq parser round-trip becomes fragile).
+fn jq_active_summary() -> str {
+    return "'(.stack // []) | .[0:3] | if length == 0 then " +
+           "\"- _no active chains_\" else " +
+           "[ .[] | \"- `\" + (.chain // \"?\") + \"` · \" + (.command // \"?\") + \" · seed=\" + (.seed // \"?\") + \" · turns=\" + ((.turns // 0) | tostring) ] | " +
+           "join(\"\\n\") end'"
+}
+
+// jq program → top 5 ready entries from roadmap_ready_set.hexa JSON.
+// The ready set shape is: {"ready":[[id,status],...], "blocked":[...], ...}.
+fn jq_ready_summary() -> str {
+    return "'if (.ready // null) == null then \"- _roadmap ready unavailable_\" " +
+           "else (.ready[0:5] | if length == 0 then \"- _ready set empty_\" " +
+           "else [ .[] | \"- `\" + (.[0] // \"?\") + \"` [\" + (.[1] // \"?\") + \"]\" ] | join(\"\\n\") end) end'"
+}
+
+// jq program → top 3 blocked entries.
+fn jq_blocked_summary() -> str {
+    return "'if (.blocked // null) == null then \"- _blocked list unavailable_\" " +
+           "else (.blocked[0:3] | if length == 0 then \"- _nothing blocked_\" " +
+           "else [ .[] | \"- `\" + (.[0] // \"?\") + \"` [\" + (.[1] // \"?\") + \"] blocker=\" + (.[2] // \"?\") ] | join(\"\\n\") end) end'"
+}
+
+fn render_section(active_path: str, ready_path: str) -> str {
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let mut body = "## Session start context\n\n_auto-generated by airgenome session_start at " + ts + "._\n\n"
+
+    body = body + "### Active chains (top 3)\n\n"
+    if active_path == "" {
+        body = body + "- _airgenome hook status unavailable_\n"
+    } else {
+        let a = exec("jq -r " + jq_active_summary() + " " + sq(active_path) + " 2>/dev/null").trim()
+        if a == "" { body = body + "- _(empty)_\n" } else { body = body + a + "\n" }
+    }
+
+    body = body + "\n### Ready set (top 5)\n\n"
+    if ready_path == "" {
+        body = body + "- _roadmap_engine ready unavailable_\n"
+    } else {
+        let r = exec("jq -r " + jq_ready_summary() + " " + sq(ready_path) + " 2>/dev/null").trim()
+        if r == "" { body = body + "- _(empty)_\n" } else { body = body + r + "\n" }
+    }
+
+    body = body + "\n### Blocked (top 3)\n\n"
+    if ready_path == "" {
+        body = body + "- _roadmap_engine ready unavailable_\n"
+    } else {
+        let b = exec("jq -r " + jq_blocked_summary() + " " + sq(ready_path) + " 2>/dev/null").trim()
+        if b == "" { body = body + "- _(empty)_\n" } else { body = body + b + "\n" }
+    }
+
+    return body + "\n"
+}
+
+fn advice_ready_path() -> str { return root_dir() + "/.hook-advice.ready.md" }
+fn advice_md_path() -> str    { return root_dir() + "/.hook-advice.md" }
+
+// Prepend the section onto .hook-advice.md while preserving any existing
+// content below. We also strip any previous `## Session start context`
+// block (delimited by the next `## ` or EOF) so repeated session starts
+// don't accumulate stale sections.
+fn prepend_to_advice(section: str) -> void {
+    let p = advice_md_path()
+    let mut existing = ""
+    if file_exists(p) { existing = read_file(p) }
+
+    // Strip prior Session start context block, if present. We use awk
+    // so multi-line stripping stays deterministic regardless of content.
+    if existing != "" {
+        let tmp_in = exec("mktemp -t advice_in.XXXXXX").trim()
+        let tmp_out = exec("mktemp -t advice_out.XXXXXX").trim()
+        write_file(tmp_in, existing)
+        let awk_prog = "awk 'BEGIN{skip=0} /^## Session start context[[:space:]]*$/{skip=1; next} skip==1 && /^## /{skip=0} skip==0{print}' " + sq(tmp_in) + " > " + sq(tmp_out)
+        let _ = exec(awk_prog)
+        existing = read_file(tmp_out)
+        let _ = exec("rm -f " + sq(tmp_in) + " " + sq(tmp_out))
+    }
+
+    write_file(p, section + existing)
+}
+
+// ─────────────────────────────────────────────── entry + context compose ──
+
+fn dump_session_context() -> void {
+    let active = capture_active_chains()
+    let ready  = capture_roadmap_ready()
+
+    // Both surfaces missing → nothing to render. Bail silently (raw#15
+    // graceful-skip), leaving existing advice.md untouched.
+    if active == "" && ready == "" { return }
+
+    let section = render_section(active, ready)
+
+    // Standalone ready-surface file for external consumers.
+    write_file(advice_ready_path(), section)
+
+    // Prepend onto the primary advice surface.
+    prepend_to_advice(section)
+
+    if active != "" { let _ = exec("rm -f " + sq(active)) }
+    if ready  != "" { let _ = exec("rm -f " + sq(ready)) }
 }
 
 // In-process entry for hook_main dispatcher.
@@ -30,6 +279,10 @@ pub fn session_start_entry(p: str) -> str {
                "\",\"source\":\"" + json_escape(src) +
                "\",\"cwd\":\"" + json_escape(cwd_) + "\"}"
     let _ = exec("printf '%s\\n' '" + line.replace("'", "'\\''") + "' >> '" + sessions_path() + "'")
+
+    // Best-effort context dump — never blocks SessionStart.
+    dump_session_context()
+
     return allow_json()
 }
 

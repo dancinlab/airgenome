@@ -15,7 +15,11 @@
 # Env:
 #   CL_COOLDOWN_HOURS        default cooldown window (cl-cooldown); 5h.
 #   CL_CORE_REAL_CLAUDE      override real claude path (cl-launch).
-#   CLAUDX_BYPASS            add --dangerously-skip-permissions (cl-launch).
+#   CLAUDX_BYPASS            (ignored since 2026-04-21; see bin/cl-launch).
+#   CL_ACCOUNTS_FIXTURE      self-test hook — path (or :-separated list) of
+#                            synthetic account dirs to use instead of
+#                            cl-accounts' real $HOME scan. Pipe shape is
+#                            preserved (fresh + rotate still run).
 #
 # Dependencies: bin/cl-accounts, bin/cl-fresh, bin/cl-rotate, bin/cl-launch.
 
@@ -23,12 +27,20 @@ set -uo pipefail
 
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)
 
+_emit_accounts() {
+    if [ -n "${CL_ACCOUNTS_FIXTURE:-}" ]; then
+        printf '%s\n' "$CL_ACCOUNTS_FIXTURE" | tr ':' '\n' | awk 'NF'
+    else
+        "$SELF_DIR/cl-accounts"
+    fi
+}
+
 _pick_dir() {
     local d
-    d=$("$SELF_DIR/cl-accounts" | "$SELF_DIR/cl-fresh" | "$SELF_DIR/cl-rotate")
+    d=$(_emit_accounts | "$SELF_DIR/cl-fresh" | "$SELF_DIR/cl-rotate")
     if [ -z "$d" ]; then
         # All cooling — fall back to ignoring cooldown filter (best-effort).
-        d=$("$SELF_DIR/cl-accounts" | "$SELF_DIR/cl-rotate")
+        d=$(_emit_accounts | "$SELF_DIR/cl-rotate")
     fi
     [ -n "$d" ] && echo "$d"
 }
@@ -42,13 +54,18 @@ _self_test() {
             echo "  ✗ $sub self-test" >&2; rc=1
         fi
     done
-    local dir
-    dir=$(_pick_dir)
-    if [ -n "$dir" ] && [ -d "$dir" ]; then
-        echo "  ✓ pipe picks dir: $dir"
-    else
-        echo "  ✗ pipe returned no dir" >&2; rc=1
-    fi
+    # Pipe test uses a synthetic fixture — no dependency on ~/.claude-claude*.
+    local tmp dir
+    tmp=$(mktemp -d -t cl-core.XXXXXX)
+    mkdir -p "$tmp/a" "$tmp/b" "$tmp/c"
+    dir=$(CL_ACCOUNTS_FIXTURE="$tmp/a:$tmp/b:$tmp/c" CL_STATE_DIR="$tmp/state" _pick_dir)
+    rm -rf "$tmp"
+    case "$dir" in
+        "$tmp/a"|"$tmp/b"|"$tmp/c")
+            echo "  ✓ pipe picks fixture dir: $dir" ;;
+        *)
+            echo "  ✗ pipe returned unexpected: '$dir'" >&2; rc=1 ;;
+    esac
     [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
     return $rc
 }
