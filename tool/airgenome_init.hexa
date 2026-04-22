@@ -565,9 +565,11 @@ fn render_tg_bot_plist(token_file: str) -> str {
            "    <key>LANG</key><string>en_US.UTF-8</string>\n" +
            "    <key>TG_TOKEN_FILE</key><string>" + token_file + "</string>\n" +
            "    <key>TG_OFFSET_FILE</key><string>" + offset_file + "</string>\n" +
-           // TG_DISPATCH: tg_bot-core 의 기본값 "cx-core local -- -p" 는 PATH 의존.
-           // 절대경로로 고정해 어떤 shell/launchd 컨텍스트에서도 실행 보장.
-           "    <key>TG_DISPATCH</key><string>" + ag_bin + "/cx-core local -- -p</string>\n" +
+           // TG_DISPATCH: tg_cx_md wrapper 사용 — cx-core 출력을 ```…``` 코드블록
+           // 으로 감싸 TG_PARSE_MODE=Markdown 과 결합해 telegram 에서 raw markdown
+           // literal 로 보이지 않고 pre 블록으로 렌더. 절대경로로 PATH 비의존.
+           "    <key>TG_DISPATCH</key><string>" + ag_bin + "/tg_cx_md</string>\n" +
+           "    <key>TG_PARSE_MODE</key><string>Markdown</string>\n" +
            "  </dict>\n" +
            "</dict></plist>\n"
 }

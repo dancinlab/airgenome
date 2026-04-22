@@ -51,3 +51,42 @@
 @rollback: git revert of e7c4c4d5 (#52) + ae3e76d5 (#51). bin/airgenome-init 재실행으로 LaunchAgent 재부트 불필요 — build/hook 바이너리만 교체되면 그대로 작동.
 @commits: airgenome ae3e76d5 (#51 workspace dispatch) + e7c4c4d5 (#52 drill module).
 @follow-ups: (A) "drill 로 돌파!" → seed="로 돌파!" 의 조사 잔여 — drill_strip_keywords 에 두 번째 sed pass (한글 조사 drop) 추가 여부 결정. (B) 두 번째 command 등록 시 (예: "bench", "build") hooks/commands/<cmd>.hexa + hook_main run_command() 에 분기 1줄 추가만 필요 — 자동화 불필요.
+
+[hexa-arena-compound-oom]
+@state: partial (workaround converged, structural fix deferred)
+@date: 2026-04-22
+@scope: hexa-lang/self/hexa_full.hexa (array_is_sole_owner `<=1` → `<=2` + L1 env_set fast-path from cherry-pick of c8a5fb1b) + hexa-lang/self/runtime.c (diagnosis only, not modified — hexa_val_heapify:2460 identified as O(N²) source)
+@problem: `arr.push(i)` in a while-loop on env-bound array caused O(N²) RSS — N=1000 = 831 MB, N=5000 = 9.2 GB (prior session's Mac freeze). Memory hypothesized root at method-dispatch borrow incref'ing self via call_arg_buf. Instrumented refcount probe (eprintln of array_refcounts[idx] in array_push_inplace) disproved that path: refcount is consistently 2 every iter. Real primary cause: array_is_sole_owner checked `<=1` but env_define/env_set unconditionally array_incref, so every env-bound array starts at refcount 2 — the sole-owner check ALWAYS returned false, forcing COW every push. Real dominant cause (separately, and bigger): hexa_val_heapify at runtime.c:2460-2469 descends into array_store[idx] on every __hexa_fn_arena_return and reallocates heap valstructs via shallow-copy malloc at L2430 "COW guard for __VAL_INT_CACHE" — each iter k walks k items, N iters × avg k/2 = N²/2 mallocs. HEXA_VAL_ARENA=1 (default since S7-B 2026-04-16) triggers this; arena=0 skips heapify entirely.
+@decision: Ship (1) the array sole-owner threshold fix committed on feat/statusline-4panel (hexa-lang b50f9ed5). (2) Document HEXA_VAL_ARENA=0 as the immediate lint.hexa / push-loop workload workaround. (3) Defer structural heapify fix to next session — needs slot-dirty tracking OR removal of unconditional shallow-copy COW at runtime.c:L2436 (risk: __VAL_INT_CACHE singleton corruption; needs audit). struct_is_sole_owner change reverted to keep blast radius minimal.
+@verified:
+  - Refcount probe: N=10 → every push reports `rc=2` (10/10 confirmed)
+  - anima_bug4_struct_list_alias regression: ALL 3/3 PASS with fix (struct shallow-clone at StructInit guards aliasing independently of sole-owner threshold)
+  - Memory scaling (host, /tmp/stage0_fix, arena=ON vs arena=OFF):
+    * N=500:   199 MB vs 3 MB
+    * N=1000:  831 MB vs 2.7 MB
+    * N=10000: (skipped on arena=ON) vs **8.2 MB** ← hits <500 MB target with 60× margin
+  - Pre-fix L1-only binary with arena=OFF at N=10000 = 9.8 MB, so the `<=2` fix contributes ~1.6 MB marginal improvement; the dominant win is arena=OFF bypassing heapify's O(N²) walk
+  - HEXA_ALLOC_STATS counters: str_concat / arr_arena_alloc / push grow linearly O(N) in both arena modes; only rss_peak_mb diverges (3 MB vs 199 MB at N=500) → confirms allocation COUNT is O(N) but arena=ON inflates BYTES via heapify re-copies
+@architecture:
+  env-bound array lifecycle:
+    val_array([])                           → refcount 1 (val_array creation)
+    env_define("arr", ...)                  → array_incref → refcount 2
+    arr.push(i)  [with fix]                 → sole_owner(2<=2)=true → in-place host push
+    let b = arr                             → env_define(b) → refcount 3 → sole_owner(3<=2)=false → COW (correct)
+  hexa_val_heapify O(N²) trigger path:
+    user fn returns                         → __hexa_fn_arena_return(ret)
+    ret = TAG_VALSTRUCT wrapping TAG_ARRAY slot-Val
+    heapify hits L2460 TAG_ARRAY descent    → walks array_store[idx]'s host items
+    each item is HexaValStruct (int wrapper)→ L2430 `else` branch shallow-copies via malloc unconditionally
+    iter k: walks k items, k mallocs
+    total N iters: N²/2 mallocs
+@rollback: `git -C /Users/ghost/core/hexa-lang revert b50f9ed5` — restores `<=1` threshold + removes L1 fast-path. No runtime data changes; next rebuild pipeline via tool/rebuild_stage0.hexa picks up the revert.
+@commits: hexa-lang b50f9ed5 (fix: array sole-owner <=2 + L1 env_set fast-path, pushed to origin/feat/statusline-4panel 2026-04-22).
+@follow-ups:
+  (A) runtime.c:L2436 structural fix — audit __VAL_INT_CACHE corruption concern; if fields are all scalar/void, skip shallow-copy malloc. Expected impact: N=10000 arena=ON drops from OOM to same 8 MB as arena=OFF.
+  (B) Optional: slot-dirty bit in array_refcounts high bit — push sets, heapify clears on first post-dirty walk. Enables O(1) short-circuit in L2460-2469 when slot is already heapified and unchanged.
+  (C) lint.hexa OOM reproduction in Docker (2 GB cap) with `HEXA_VAL_ARENA=0` env — should no longer OOM. hexa-minbench:latest image (debian:12-slim + gcc) staged at /tmp/hexa_bench_src/ + /tmp/hexa_bench.sh but Docker Desktop daemon was down at close of session.
+  (D) Sequencer state on hexa-lang has 2 pending picks (8f93bb59 gitignore + eec019d0 xs.push sweep) — from prior aborted rebase. User should `git -C /Users/ghost/core/hexa-lang cherry-pick --abort` OR `--continue` as appropriate.
+@memory:
+  - /Users/ghost/.claude-claude9/projects/-Users-ghost-core-airgenome/memory/project_hexa_arena_compound.md (full session-2 investigation + measurements)
+  - /Users/ghost/.claude-claude9/projects/-Users-ghost-core-airgenome/memory/feedback_hexa_bench_docker_only.md (NEW rule: push-loop benches in Docker only, host forbidden)
