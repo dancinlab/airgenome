@@ -55,6 +55,11 @@ infra_state.json
 state/roadmap_progress.json
 state/rig_trend_history.jsonl
 
+# meta-evolution scanner outputs (Phase 3+, generated)
+state/ag_*.json
+state/ag_meta_telemetry.jsonl
+state/history/
+
 # airgenome hook bus runtime (transcript-watcher mode, no Claude Code hook protocol)
 .hook-audit
 .hook-cursor.json
