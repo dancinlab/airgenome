@@ -1,0 +1,7 @@
+#!raw
+# airgenome /.own — L1 project-local rules
+# Inherits L0 = hexa-lang /.raw via .raw-ref pin.
+
+since 2026-04-22
+why "Initial hexa init scaffold"
+inherits hexa-lang/.raw
