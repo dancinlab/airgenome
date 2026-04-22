@@ -14,31 +14,24 @@ FROM ${BASE} AS base
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Seoul LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # core
+# apt cache mount — buildkit cache 로 재빌드 시 447MB 다운로드 hit.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl wget git jq ripgrep fd-find yq \
     tini tmux screen vim-nox neovim less man-db bash-completion \
-    # ssh + mount
     openssh-client openssh-server sshfs fuse3 rsync \
-    # python full
     python3 python3-pip python3-venv python3-dev python3-setuptools \
-    # C/C++ build
     build-essential pkg-config cmake ninja-build \
     clang lld lldb gdb strace ltrace \
-    # rust deps
     libssl-dev zlib1g-dev libclang-dev \
-    # system / debug
     util-linux procps coreutils psmisc lsof \
     cpulimit schedtool htop iotop ncdu tree \
-    # locale / tz
     locales tzdata \
-    # network
     iproute2 netcat-openbsd dnsutils traceroute tcpdump \
-    # archive
     zip unzip xz-utils zstd \
  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
- && locale-gen en_US.UTF-8 ko_KR.UTF-8 \
- && rm -rf /var/lib/apt/lists/*
+ && locale-gen en_US.UTF-8 ko_KR.UTF-8
 
 # ═══════════════════════════════════════════════════════════════════
 # Stage 2: Node 20 + @anthropic-ai/claude-code + sdk
@@ -82,11 +75,16 @@ FROM rust AS final
 COPY airgenome/ /opt/airgenome/
 COPY nexus/     /opt/nexus/
 
-# nexus package symlinks (run.hexa 호환 경로)
+# nexus package symlinks (run.hexa 호환 경로) + nexus CLI shim
 RUN mkdir -p /root/.hx/bin /root/.hx/packages /workspace /root/.airgenome \
  && ln -sf /opt/nexus /root/.hx/packages/nexus \
  && ln -sf /usr/local/bin/hexa_real /root/.hx/bin/hexa_real \
  && ln -sf /usr/local/bin/hexa_real /root/.hx/bin/hexa \
+ && if [ -f /opt/nexus/scripts/bin/nexus ]; then \
+      ln -sf /opt/nexus/scripts/bin/nexus /usr/local/bin/nexus; \
+    elif [ -f /opt/nexus/bin/nexus ]; then \
+      ln -sf /opt/nexus/bin/nexus /usr/local/bin/nexus; \
+    fi \
  && find /opt/airgenome/bin /opt/nexus/scripts/bin /opt/nexus/bin \
       -type f 2>/dev/null -exec chmod +x {} \; || true
 
@@ -111,10 +109,14 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/bin/sh", "-c", \
   "ssh-keygen -A >/dev/null 2>&1; /usr/sbin/sshd -f /etc/ssh/sshd_config.d/airgenome.conf -E /var/log/sshd-airgenome.log; exec \"$@\"", "--"]
 CMD ["sleep", "infinity"]
 
+ARG GIT_COMMIT=unknown
+ARG BUILD_DATE=unknown
 LABEL org.opencontainers.image.source="https://github.com/need-singularity/airgenome" \
-      org.opencontainers.image.description="airgenome fat — claude CLI + hexa (cargo-built, self-rebuild) + nexus + airgenome + full build deps" \
+      org.opencontainers.image.description="airgenome fat — claude CLI + hexa + nexus + airgenome + full build deps" \
       org.opencontainers.image.licenses="Proprietary" \
-      fat.includes.hexa="self-built from /opt/hexa-lang" \
+      org.opencontainers.image.revision="${GIT_COMMIT}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      fat.includes.hexa="pre-built ELF from hexa-lang/build/hexa_stage0.linux" \
       fat.includes.claude="@anthropic-ai/claude-code@latest" \
       fat.includes.nexus="/opt/nexus (full tree)" \
       fat.includes.airgenome="/opt/airgenome (full tree)"

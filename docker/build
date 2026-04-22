@@ -94,10 +94,14 @@ if [ "$NO_PUSH" = "0" ]; then
 fi
 
 echo ">>> [3/4] docker build on $HOST"
+# Image ↔ source 역추적 위해 GIT_COMMIT + BUILD_DATE 주입.
+GIT_COMMIT=$(git -C "$CORE/airgenome" rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILD_ARGS="--build-arg GIT_COMMIT=$GIT_COMMIT --build-arg BUILD_DATE=$BUILD_DATE"
 if [ "$MULTIARCH" = "1" ]; then
-  BUILD_CMD="cd $REMOTE_CORE && (docker buildx create --use --name airgenome-builder 2>/dev/null || docker buildx use airgenome-builder); docker buildx build --platform $PLATFORM $([ "$NO_PUSH" = "0" ] && echo --push || echo --load) -f $DOCKERFILE -t $FULL_TAG ."
+  BUILD_CMD="cd $REMOTE_CORE && (docker buildx create --use --name airgenome-builder 2>/dev/null || docker buildx use airgenome-builder); docker buildx build --platform $PLATFORM $BUILD_ARGS $([ "$NO_PUSH" = "0" ] && echo --push || echo --load) -f $DOCKERFILE -t $FULL_TAG ."
 else
-  BUILD_CMD="cd $REMOTE_CORE && docker build -f $DOCKERFILE -t $FULL_TAG ."
+  BUILD_CMD="cd $REMOTE_CORE && DOCKER_BUILDKIT=1 docker build $BUILD_ARGS -f $DOCKERFILE -t $FULL_TAG ."
 fi
 run "AIRG_OFFLOAD_FORCE=1 '$AIRGENOME_OFFLOAD' offload '$HOST' '$BUILD_CMD'"
 

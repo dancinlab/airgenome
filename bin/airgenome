@@ -612,25 +612,38 @@ cmd_list() {
 }
 
 cmd_offload() {
+    # Optional --container / -c : dispatch to airgenome-claude container (ssh :2222 root@host)
+    # instead of host native (ssh :22). fat image L23 경로.
+    local container=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --container|-c) container=1; shift ;;
+            --) shift; break ;;
+            *) break ;;
+        esac
+    done
     local target="${1:-}"
     shift || true
     if [ -z "$target" ] || [ $# -eq 0 ]; then
         cat >&2 <<'HELP'
-usage: airgenome offload <target> <command...>
+usage: airgenome offload [--container|-c] <target> <command...>
 
 targets:
   ubu1 | ubu    — ssh alias: ubu1    (12T CPU, GPU)
   ubu2          — ssh alias: ubu2    (12T CPU)
   htz | hetzner — ssh alias: hetzner (32T CPU)
 
+flags:
+  --container, -c   dispatch to airgenome-claude fat container (ssh :2222, user=root)
+
 env:
   AIRG_OFFLOAD_TIMEOUT=5   ssh ConnectTimeout seconds
   AIRG_OFFLOAD_FORCE=1     skip offline-status pre-check
 
 examples:
-  airgenome offload ubu2 'uname -a && free -h'
-  airgenome offload htz  'bash ~/jobs/train.sh'
-  airgenome offload ubu1 'nvidia-smi'
+  airgenome offload ubu2 'uname -a && free -h'            # host
+  airgenome offload -c ubu1 'hexa_real --version'         # container
+  airgenome offload --container htz 'claude --version'    # container
 HELP
         return 2
     fi
@@ -655,6 +668,13 @@ HELP
     # Callers quote the full command as a single arg (examples in usage).
     # ControlMaster/ControlPath=none — sandboxed harnesses (e.g. Claude Code)
     # block socket link in ~/.ssh/cm/; avoid mux entirely for offload robustness.
+    if [ "$container" = "1" ]; then
+        # ssh:2222 root@ into fat container (port 2222 host-network listen)
+        exec ssh -p 2222 -o ConnectTimeout="$to" -o BatchMode=yes \
+                 -o ControlMaster=no -o ControlPath=none \
+                 -o StrictHostKeyChecking=accept-new \
+                 "root@$ssh_host" "$*"
+    fi
     exec ssh -o ConnectTimeout="$to" -o BatchMode=yes \
              -o ControlMaster=no -o ControlPath=none \
              "$ssh_host" "$*"
