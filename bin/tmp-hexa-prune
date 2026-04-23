@@ -25,24 +25,39 @@ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 ts() { date -u +'%Y-%m-%dT%H:%M:%SZ'; }
 log() { printf '[tmp-hexa-prune %s] %s\n' "$(ts)" "$*" >> "$LOG_FILE"; }
 
-# Inventory before
+# Inventory before — covers both legacy flat layout and the new
+# /tmp/hexa-cl/<date>/ bucket layout used by cl-launch's TMPDIR override.
 before_count=$(ls /tmp/hexa_* 2>/dev/null | wc -l | tr -d ' ')
 before_bytes=$(ls -l /tmp/hexa_* 2>/dev/null | awk '{s+=$5} END{print s+0}')
 
-# Delete files older than MIN_AGE_MIN. Use find (-mmin matches "modified more
-# than N minutes ago"). Survive "Operation not permitted" on individual files.
+# Layer 1: legacy flat /tmp/hexa_* — delete files older than MIN_AGE_MIN.
 deleted=0
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     rm -f "$f" 2>/dev/null && deleted=$((deleted+1))
 done < <(find /tmp -maxdepth 1 -name 'hexa_*' -mmin "+$MIN_AGE_MIN" -type f 2>/dev/null)
 
+# Layer 2: per-day buckets under /tmp/hexa-cl/ — atomically `rm -rf` any
+# subdir whose name is older than today (YYYY-MM-DD format). Today's bucket
+# is preserved (live processes write into it). Yesterday's and older go.
+today=$(date -u +%Y-%m-%d)
+buckets_removed=0
+if [ -d /tmp/hexa-cl ]; then
+    for bucket in /tmp/hexa-cl/*/; do
+        [ -d "$bucket" ] || continue
+        bname=$(basename "$bucket")
+        if [[ "$bname" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$bname" < "$today" ]]; then
+            rm -rf "$bucket" 2>/dev/null && buckets_removed=$((buckets_removed+1))
+        fi
+    done
+fi
+
 # Inventory after
 after_count=$(ls /tmp/hexa_* 2>/dev/null | wc -l | tr -d ' ')
 after_bytes=$(ls -l /tmp/hexa_* 2>/dev/null | awk '{s+=$5} END{print s+0}')
 
 freed=$(( before_bytes - after_bytes ))
-log "files: $before_count -> $after_count (deleted=$deleted, freed=${freed}B)"
+log "flat: $before_count -> $after_count (deleted=$deleted, freed=${freed}B)  buckets_removed=$buckets_removed"
 
 # Truncate log if it grows past 1MB (keep last 100 lines).
 if [ -f "$LOG_FILE" ]; then

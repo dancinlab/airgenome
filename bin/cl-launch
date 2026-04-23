@@ -102,6 +102,14 @@ _launch() {
         return 0
     fi
     export CLAUDE_CONFIG_DIR="$dir"
+    # TMPDIR isolation — every hexa invocation chained from this launch
+    # (pool-refresh's curl/jq, claude itself if it spawns hexa, etc) writes
+    # transient files under our own subdirectory instead of polluting /tmp
+    # top-level. macOS background scanners (Spotlight, periodic, mds_stores)
+    # traverse /tmp; flat accumulation triggers freezes (observed 2026-04-23,
+    # 4988 hexa_* files / 337MB). Per-day bucket auto-rotated by tmp-hexa-prune.
+    local _tmp_bucket="/tmp/hexa-cl/$(date -u +%Y-%m-%d)"
+    mkdir -p "$_tmp_bucket" 2>/dev/null && export TMPDIR="$_tmp_bucket/"
     # Pre-exec token refresh — guarantees the OAuth access token is valid for
     # the TUI session about to start. See _pre_exec_refresh comment above.
     _pre_exec_refresh "$dir"
