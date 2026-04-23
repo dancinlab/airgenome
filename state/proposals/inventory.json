@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-23T13:28:11Z",
+  "updated_ts": "2026-04-23T15:12:07Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -84,11 +84,12 @@
       "kind": "cluster",
       "title": "3-host (macOS/ubu/ubu2) 접근 가용성 단일 실패 지점 — 한 host down 시 ring divergence 급증. host failover/quorum 전략",
       "from_repo": "hexa-lang",
-      "user_status": "in_progress",
+      "user_status": "done",
       "score_priority": 95,
       "submitted_ts": "2026-04-22T15:50:43Z",
       "category": "resource_gap",
-      "in_progress_ts": "2026-04-22T16:44:54Z"
+      "in_progress_ts": "2026-04-22T16:44:54Z",
+      "done_ts": "2026-04-23T15:12:07Z"
     },
     {
       "id": "agm-20260422-009",

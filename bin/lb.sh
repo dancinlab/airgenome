@@ -78,12 +78,30 @@ compute_free_ci() {
     }'
 }
 
+# _reachable — true if ag_reachability_matrix.json reports host reachable,
+# or if state file is absent (fail open).  Addresses agm-20260422-008 SPOF.
+_reachable() {
+    local key=$1
+    local rm="$ROOT/state/ag_reachability_matrix.json"
+    [ -f "$rm" ] || return 0
+    local v
+    local v
+    if command -v jq >/dev/null 2>&1; then
+        # Plain query — do NOT use `// "absent"` (jq `//` treats false as null).
+        v=$(jq -r --arg h "$key" ".entries[] | select(.host == \$h) | .reachable" "$rm" 2>/dev/null)
+    else
+        v=$(grep -oE "\"host\":\"$key\"[^}]*\"reachable\":(true|false)" "$rm" | grep -oE "(true|false)" | tail -1)
+    fi
+    case "$v" in true) return 0 ;; false) return 1 ;; *) return 0 ;; esac
+}
+
 # host-key → (ok load_ci nproc_ci free_ci age_s) space-separated 5-tuple.
 # ok=1 means fresh+reachable, 0 otherwise (score=0).
 probe_host() {
     local key=$1 alias now entry ts ok_s load1 nproc ep age load_ci nproc_ci free_ci
     alias=$(host_to_alias "$key")
     [ -n "$alias" ] || { echo "0 0 0 0 -1"; return; }
+    if ! _reachable "$key"; then echo "0 0 0 0 -2"; return; fi
     now=$(date -u +%s)
     entry=$(last_entry "$alias")
     IFS='|' read -r ts ok_s load1 nproc <<< "$entry"
