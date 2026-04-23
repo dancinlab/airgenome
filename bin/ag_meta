@@ -1012,7 +1012,18 @@ main() {
         report)          cmd_report "$@" ;;
         build)           cmd_build "$@" ;;
         -h|--help|help)
-            sed -n '/^# Usage:/,/^$/p' "$SELF" | sed 's/^# \{0,1\}//'
+            # Optional pattern argument filters the Subcommands table.
+            # Example: ag_meta help persist
+            local pat="${1:-}"
+            if [[ -z "$pat" ]]; then
+                sed -n '/^# Usage:/,/^$/p' "$SELF" | sed 's/^# \{0,1\}//'
+            else
+                sed -n '/^# Usage:/,/^$/p' "$SELF" | sed 's/^# \{0,1\}//' |
+                    grep -E "^(Usage:|Subcommands:|Environment:|  $pat| +$pat|$)" || {
+                        echo "ag_meta help: no matches for '$pat'" >&2
+                        return 1
+                    }
+            fi
             ;;
         *)
             echo "ag_meta: unknown subcommand '$sub'" >&2
