@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-23T01:51:23Z",
+  "updated_ts": "2026-04-23T02:41:41Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -73,10 +73,11 @@
       "kind": "cluster",
       "title": "Mac 4 GB RSS cap — drill heavy-compute 로컬 실패 (SIGKILL 위험, AG10). 원격 호스트 all_unreachable_preflight 시 폴백 전략 강화 필요",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "in_progress",
       "score_priority": 90,
       "submitted_ts": "2026-04-22T15:50:42Z",
-      "category": "resource_gap"
+      "category": "resource_gap",
+      "in_progress_ts": "2026-04-23T02:41:41Z"
     },
     {
       "id": "agm-20260422-008",
