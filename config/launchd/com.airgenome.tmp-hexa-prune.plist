@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome /tmp/hexa_* periodic cleanup.
+
+  Runs hourly. Keeps files < 60 minutes old (live process safety), deletes
+  the rest. Without this, a day of hexa interpreter activity leaves 5000+
+  inodes in /tmp causing APFS B-tree slowdown and spontaneous Mac freezes
+  (observed 2026-04-23: 4988 files / 337MB).
+
+  Install:
+    cp config/launchd/com.airgenome.tmp-hexa-prune.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.airgenome.tmp-hexa-prune.plist
+
+  This is a safety-net while hexa-lang implements per-pid/dated subdirectories
+  (proposal hxa-20260423-004).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.tmp-hexa-prune</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/core/airgenome/bin/tmp-hexa-prune</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>LowPriorityIO</key>
+    <true/>
+
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/.airgenome/tmp-hexa-prune.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/.airgenome/tmp-hexa-prune.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
