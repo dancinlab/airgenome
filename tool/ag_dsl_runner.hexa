@@ -9,19 +9,27 @@
 //
 // Supported keys (v1):
 //   name              scanner identifier (required)
-//   kind              threshold_abs  (only kind in v1)
-//   source            one of:
+//   kind              threshold_abs | isomorphism
+//   source            (kind=threshold_abs) one of:
 //     file_size_bytes:<path>    wc -c on the file
 //     line_count:<path>         wc -l on the file
 //     glob_count:<pattern>      count of matching glob entries
 //     grep_count:<path>:<regex> grep -cE occurrences
 //     file_age_seconds:<path>   now - mtime (seconds); -1 if missing
-//   baseline_bytes    integer baseline
+//   baseline_bytes    integer baseline (kind=threshold_abs)
 //   alarm_pct         integer: tolerance window in percent around baseline.
 //                     0 = one-sided (current > baseline → alarm_high only).
 //                     N = two-sided (> baseline*(1+N/100) OR < baseline*(1-N/100))
 //   severity          low|med|high|critical
 //   description       free text, echoed into output
+//
+// Supported keys (v2, kind=isomorphism):
+//   lhs_source        float-valued source (one of):
+//     constant:<float>                         literal float
+//     grep_float:<path>|<egrep_pattern>        last match line → last decimal
+//   rhs_source        same options as lhs_source
+//   tolerance         float — alarm_high if |lhs-rhs| > tolerance
+//   (alarm is one-sided: only "too far apart" alarms.)
 //
 // Output per spec: state/ag_dsl_<name>.json with schema
 //   airgenome/ag_dsl_scanner/1
@@ -97,6 +105,32 @@ fn _measure_source(source: string) -> int {
     return -1
 }
 
+// _measure_float_source reads a v2 float-valued source spec.
+// Returns the numeric value as a string (preserves precision), or "" on fail.
+// Supports:
+//   constant:<float>
+//   grep_float:<path>|<egrep_pattern>   — last matching line → last decimal
+fn _measure_float_source(source: string) -> string {
+    let colon = _index_of(source, ":")
+    if colon < 0 { return "" }
+    let kind = source.substring(0, colon).trim()
+    let rest = source.substring(colon + 1, len(source)).trim()
+    if kind == "constant" {
+        return rest
+    }
+    if kind == "grep_float" {
+        let pipe = _index_of(rest, "|")
+        if pipe < 0 { return "" }
+        let path = rest.substring(0, pipe).trim()
+        let pat = rest.substring(pipe + 1, len(rest)).trim()
+        if file_exists(path) == false { return "" }
+        let cmd = "grep -oE " + _sh_q(pat) + " " + _sh_q(path) + " 2>/dev/null | tail -1 | grep -oE '[0-9]+\\.[0-9]+' | tail -1"
+        let out = to_string(exec(cmd)).trim()
+        return out
+    }
+    return ""
+}
+
 // _evaluate returns "ok", "alarm_high", "alarm_low", or "unmeasured".
 fn _evaluate(current: int, baseline: int, alarm_pct: int) -> string {
     if current < 0 { return "unmeasured" }
@@ -115,6 +149,58 @@ fn _evaluate(current: int, baseline: int, alarm_pct: int) -> string {
     return "ok"
 }
 
+// _run_isomorphism evaluates a v2 kind=isomorphism spec. Writes state/ag_dsl_<name>.json.
+// Returns 0 ok, 1 error, 2 alarm_high.
+fn _run_isomorphism(spec_path: string, body: string, name: string, severity: string, description: string) -> int {
+    let lhs_source = _spec_get(body, "lhs_source")
+    let rhs_source = _spec_get(body, "rhs_source")
+    let tolerance_s = _spec_get(body, "tolerance")
+    if len(lhs_source) == 0 || len(rhs_source) == 0 || len(tolerance_s) == 0 {
+        eprintln("ag_dsl_runner: isomorphism spec missing lhs_source/rhs_source/tolerance: " + spec_path)
+        return 1
+    }
+    let lhs = _measure_float_source(lhs_source)
+    let rhs = _measure_float_source(rhs_source)
+
+    let mut verdict = "ok"
+    let mut diff_str = "-1"
+    if len(lhs) == 0 || len(rhs) == 0 {
+        verdict = "unmeasured"
+    } else {
+        let cmd = "awk 'BEGIN{d=" + lhs + "-" + rhs + "; if(d<0) d=-d; printf \"%.6f\", d}'"
+        diff_str = to_string(exec(cmd)).trim()
+        let cmp = "awk 'BEGIN{exit !(" + diff_str + " > " + tolerance_s + ")}' && echo yes || echo no"
+        let cmp_out = to_string(exec(cmp)).trim()
+        if cmp_out == "yes" { verdict = "alarm_high" }
+    }
+
+    let body_out = "{\n" +
+        "  \"schema\": \"airgenome/ag_dsl_scanner/1\",\n" +
+        "  \"ts\": \"" + _iso_now() + "\",\n" +
+        "  \"spec\": \"" + _json_esc(spec_path) + "\",\n" +
+        "  \"name\": \"" + _json_esc(name) + "\",\n" +
+        "  \"kind\": \"isomorphism\",\n" +
+        "  \"lhs_source\": \"" + _json_esc(lhs_source) + "\",\n" +
+        "  \"rhs_source\": \"" + _json_esc(rhs_source) + "\",\n" +
+        "  \"lhs\": \"" + _json_esc(lhs) + "\",\n" +
+        "  \"rhs\": \"" + _json_esc(rhs) + "\",\n" +
+        "  \"tolerance\": " + tolerance_s + ",\n" +
+        "  \"severity\": \"" + _json_esc(severity) + "\",\n" +
+        "  \"description\": \"" + _json_esc(description) + "\",\n" +
+        "  \"alignment\": \"" + diff_str + "\",\n" +
+        "  \"verdict\": \"" + verdict + "\"\n" +
+        "}\n"
+    _ensure_state_dir()
+    let out_path = "state/ag_dsl_" + name + ".json"
+    try { write_file(out_path, body_out) } catch e {
+        eprintln("ag_dsl_runner: write FAIL " + out_path)
+        return 1
+    }
+    println("ag_dsl_runner: " + name + " |lhs-rhs|=" + diff_str + " tol=" + tolerance_s + " verdict=" + verdict + " → " + out_path)
+    if verdict == "alarm_high" { return 2 }
+    return 0
+}
+
 fn _run_spec(spec_path: string) -> int {
     let body = _read_spec(spec_path)
     if len(body) == 0 {
@@ -127,11 +213,14 @@ fn _run_spec(spec_path: string) -> int {
         return 1
     }
     let kind = _spec_get(body, "kind")
+    let severity = _spec_get(body, "severity")
+    let description = _spec_get(body, "description")
+    if kind == "isomorphism" {
+        return _run_isomorphism(spec_path, body, name, severity, description)
+    }
     let source = _spec_get(body, "source")
     let baseline_s = _spec_get(body, "baseline_bytes")
     let alarm_pct_s = _spec_get(body, "alarm_pct")
-    let severity = _spec_get(body, "severity")
-    let description = _spec_get(body, "description")
 
     let baseline = to_int(baseline_s)
     let alarm_pct = to_int(alarm_pct_s)
@@ -203,7 +292,30 @@ fn _selftest() -> int {
         eprintln("ag_dsl_runner: selftest FAIL — verdict expected alarm_high got " + v)
         ok = false
     }
-    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    // --- v2 isomorphism selftest ---
+    // Write a fake JSON file containing a "jaccard":0.3496 line, extract it via
+    // grep_float, compare to constant 0.5 (diff=0.15 > tolerance 0.05 → alarm_high).
+    let iso_json = tmpdir + "/iso.json"
+    write_file(iso_json, "{\n  \"pair\":\"ubu_ubu2\",\"intersection\":93,\"union\":266,\"jaccard\":0.3496\n}\n")
+    let rhs_val = _measure_float_source("grep_float:" + iso_json + "|\"pair\":\"ubu_ubu2\",.*\"jaccard\":[0-9.]+")
+    if rhs_val != "0.3496" {
+        eprintln("ag_dsl_runner: selftest FAIL — grep_float expected 0.3496 got '" + rhs_val + "'")
+        ok = false
+    }
+    let lhs_val = _measure_float_source("constant:0.5")
+    if lhs_val != "0.5" {
+        eprintln("ag_dsl_runner: selftest FAIL — constant expected 0.5 got '" + lhs_val + "'")
+        ok = false
+    }
+    // round-trip via _run_isomorphism
+    let iso_spec = tmpdir + "/iso.meta.hexa"
+    write_file(iso_spec, "name=_iso_tst\nkind=isomorphism\nlhs_source=constant:0.5\nrhs_source=grep_float:" + iso_json + "|\"pair\":\"ubu_ubu2\",.*\"jaccard\":[0-9.]+\ntolerance=0.05\nseverity=low\ndescription=iso selftest\n")
+    let iso_rc = _run_isomorphism(iso_spec, _read_spec(iso_spec), "_iso_tst", "low", "iso selftest")
+    if iso_rc != 2 {
+        eprintln("ag_dsl_runner: selftest FAIL — isomorphism rc expected 2 (alarm) got " + to_string(iso_rc))
+        ok = false
+    }
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " state/ag_dsl__iso_tst.json")
     if ok == false { return 1 }
     println("ag_dsl_runner: selftest PASS")
     return 0
