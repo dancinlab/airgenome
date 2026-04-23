@@ -32,6 +32,7 @@
 #   health         aggregate: print 0-100 score from state/ag_*.json
 #   selftest       run --selftest on every scanner (prefixed by verify)
 #   verify         registry ↔ filesystem consistency (no scanner execution)
+#   prune [N]      trim state/history/*.jsonl to last N rows (default 1000)
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
 #   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
 #   fast           fast-subset for pre-commit (ring + forge + blockers)
@@ -536,6 +537,34 @@ cmd_build() {
     return $rc
 }
 
+# cmd_prune — keep last N rows (default 1000) per state/history/*.jsonl.
+# Without this, blocker_ledger / health_trend / build_size grow unbounded
+# (6 rows × every doctor run each in the blocker ledger's case).  Safe:
+# operates atomically via mktemp + mv, never truncates in place.
+cmd_prune() {
+    local keep="${1:-1000}"
+    local rc=0 total=0 touched=0
+    for f in state/history/*.jsonl; do
+        [[ -e "$f" ]] || continue
+        total=$((total + 1))
+        local n
+        n=$(wc -l < "$f" | tr -d ' ')
+        if [[ "$n" -gt "$keep" ]]; then
+            local tmp
+            tmp=$(mktemp)
+            if tail -n "$keep" "$f" > "$tmp" && mv "$tmp" "$f"; then
+                touched=$((touched + 1))
+                echo "ag_meta prune: $f $n → $keep"
+            else
+                rc=$((rc + 1))
+                rm -f "$tmp"
+            fi
+        fi
+    done
+    echo "ag_meta prune: scanned=$total pruned=$touched (keep=$keep)"
+    return $rc
+}
+
 cmd_continuous_scan() {
     local date_dir
     date_dir="state/history/$(date -u +%Y-%m-%d)"
@@ -701,6 +730,7 @@ main() {
         health)          cmd_health "$@" ;;
         selftest)        cmd_selftest ;;
         verify)          cmd_verify ;;
+        prune)           cmd_prune "$@" ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
         telemetry)       cmd_telemetry "$@" ;;
         fast)            cmd_fast "$@" ;;
