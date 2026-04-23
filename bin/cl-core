@@ -508,7 +508,10 @@ _picker_frame() {
     _pf_frame+=$'\n'
     local _jump_hint="1-9/0"
     [ "$count" -gt 10 ] && _jump_hint="1-9/0/a-z"
-    _pf_frame+="  arrow keys move  Enter→${_PK_NAMES[$cursor]}  Space→${_PK_AUTO:-${_PK_NAMES[$cursor]}}(auto)  ${_jump_hint} jump  q cancel"$'\n'
+    # Space and Enter both confirm the cursor row — least-surprise design.
+    # If the user explicitly wants auto-pick, they can press the digit/letter
+    # next to the row marked with '*'.
+    _pf_frame+="  arrow keys move  Enter/Space→${_PK_NAMES[$cursor]}  ${_jump_hint} jump  q cancel"$'\n'
 
     printf -v "$__out" '%s' "$_pf_frame"
 }
@@ -592,12 +595,13 @@ _interactive_pick() {
         case "$_PK_KEY" in
             $'\x1b[A'|$'\x1bOA') cursor=$(( (cursor - 1 + count) % count )) ;;
             $'\x1b[B'|$'\x1bOB') cursor=$(( (cursor + 1) % count )) ;;
-            "")  selected="${_PK_NAMES[$cursor]}"; break ;;
-            " ")
-                # Space → auto-pick (lowest healthy wk). Falls back to cursor
-                # if no account passes the wk<95+no-error filter (e.g. all
-                # rate-limited or all in usage-fetch with stale cache).
-                selected="${_PK_AUTO:-${_PK_NAMES[$cursor]}}"; break ;;
+            ""|" ")
+                # Both Enter and Space confirm the cursor row. Space had been
+                # bound to auto-pick, but users hit it expecting cursor-confirm
+                # (vim/most-pickers convention) and were surprised when an
+                # unrelated account launched. Auto-pick is still reachable by
+                # pressing the digit/letter next to the row marked '*'.
+                selected="${_PK_NAMES[$cursor]}"; break ;;
             [1-9])
                 idx=$(( _PK_KEY - 1 ))
                 if [ "$idx" -lt "$count" ]; then selected="${_PK_NAMES[$idx]}"; break; fi ;;
