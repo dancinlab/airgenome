@@ -394,6 +394,8 @@ _picker_load() {
 
     # Build the row list from on-disk creds dirs (this avoids picking accounts
     # whose .credentials.json is missing). For each, look up cache fields.
+    # Natural-sort the dirs so claude2..claude9 come before claude10..claude12
+    # (cl-accounts emits lexicographic order).
     local now; now=$(date -u +%s)
     local d name row
     while IFS= read -r d; do
@@ -412,7 +414,9 @@ _picker_load() {
                 | (.[$n].session_resets | parse_ts) as $srt
                 | ((.[$n].week_resets // .[$n].week_all_resets) | parse_ts) as $wrt
                 | (.[$n].error // "") as $err
-                | "\($ss // "-")|\($wk // "-")|\($srt // "")|\($wrt // "")|\($err)"
+                | (if $ss == null then "-" else "\($ss|floor)" end) as $ss_s
+                | (if $wk == null then "-" else "\($wk|floor)" end) as $wk_s
+                | "\($ss_s)|\($wk_s)|\($srt // "")|\($wrt // "")|\($err)"
             ' "$cache" 2>/dev/null)
         else
             row="-|-|||"
@@ -420,19 +424,17 @@ _picker_load() {
         _PK_NAMES+=("$name")
         IFS='|' read -r ss wk srt wrt err <<< "$row"
         _PK_SS+=("$ss"); _PK_WK+=("$wk"); _PK_SRT+=("$srt"); _PK_WRT+=("$wrt"); _PK_ERR+=("$err")
-    done < <(_emit_accounts)
+    done < <(_emit_accounts | sort -V)
 
-    # Auto-pick: lowest wk among (err == "" AND wk < 95 AND wk numeric).
-    local i best_i=-1 best_wk=999 wk_int
-    for i in "${!_PK_NAMES[@]}"; do
-        [ -z "${_PK_ERR[$i]}" ] || continue
-        [[ "${_PK_WK[$i]}" =~ ^[0-9.]+$ ]] || continue
-        wk_int=$(awk -v x="${_PK_WK[$i]}" 'BEGIN{printf "%d", (x+0)}')
-        if [ "$wk_int" -lt 95 ] && [ "$wk_int" -lt "$best_wk" ] 2>/dev/null; then
-            best_wk="$wk_int"; best_i="$i"
-        fi
-    done
-    [ "$best_i" -ge 0 ] && _PK_AUTO="${_PK_NAMES[$best_i]}"
+    # Auto-pick: defer to the actual rotation pipeline (cl-fresh | cl-quota |
+    # cl-rotate). This guarantees Space-key behavior == headless `cl --auto`.
+    # Falls back gracefully if the pipeline empties (e.g. all in cooldown).
+    local pick_dir
+    pick_dir=$(_pick_dir 2>/dev/null)
+    if [ -n "$pick_dir" ]; then
+        local pick_name="${pick_dir##*/}"
+        _PK_AUTO="${pick_name#.claude-}"
+    fi
 }
 
 # Build a single rendered frame string into named var.
@@ -444,14 +446,14 @@ _picker_frame() {
     local dots="...................."
     local store_label="~/.airgenome"
     local now; now=$(date -u +%s)
-    local frame=""
+    local _pf_frame=""
 
     # Header
-    frame+="cl -- pick account    active=${_PK_ACTIVE:-none}    store=${store_label}"$'\n'
-    frame+=$(printf '    %-3s  %-10s  %4s  %-20s  %-7s  %4s  %-20s  %-7s  %s' \
+    _pf_frame+="cl -- pick account    active=${_PK_ACTIVE:-none}    store=${store_label}"$'\n'
+    _pf_frame+=$(printf '    %-3s  %-10s  %4s  %-20s  %-7s  %4s  %-20s  %-7s  %s' \
         "no" "name" "ss%" "[session]" "resets" "wk%" "[week_all]" "resets" "err")
-    frame+=$'\n'
-    frame+="    -----------------------------------------------------------------------------------------------"$'\n'
+    _pf_frame+=$'\n'
+    _pf_frame+="    -----------------------------------------------------------------------------------------------"$'\n'
 
     local i ss wk srt wrt err num_label act_mark prefix bar_s bar_w rst_s rst_w
     local ss_col wk_col f
@@ -487,18 +489,18 @@ _picker_frame() {
         # Cursor: 4-space indent normally, "  > " when cursor row.
         if [ "$i" -eq "$cursor" ]; then prefix="  > "; else prefix="    "; fi
 
-        frame+=$(printf '%s%-3s %s%-10s  %4s  %s  %-7s  %4s  %s  %-7s  %s' \
+        _pf_frame+=$(printf '%s%-3s %s%-10s  %4s  %s  %-7s  %4s  %s  %-7s  %s' \
             "$prefix" "$num_label" "$act_mark" "${_PK_NAMES[$i]}" \
             "$ss_col" "$bar_s" "$rst_s" \
             "$wk_col" "$bar_w" "$rst_w" "${err:--}")
-        frame+=$'\n'
+        _pf_frame+=$'\n'
     done
 
     # Footer
-    frame+=$'\n'
-    frame+="  ↑↓ move  Enter→${_PK_NAMES[$cursor]}  1-9/0 jump  q cancel"$'\n'
+    _pf_frame+=$'\n'
+    _pf_frame+="  arrow keys move  Enter→${_PK_NAMES[$cursor]}  Space→${_PK_AUTO:-${_PK_NAMES[$cursor]}}(auto)  1-9/0 jump  q cancel"$'\n'
 
-    printf -v "$__out" '%s' "$frame"
+    printf -v "$__out" '%s' "$_pf_frame"
 }
 
 # Read one key into global _PK_KEY. Handles ESC sequences (arrows).
@@ -581,6 +583,11 @@ _interactive_pick() {
             $'\x1b[A'|$'\x1bOA') cursor=$(( (cursor - 1 + count) % count )) ;;
             $'\x1b[B'|$'\x1bOB') cursor=$(( (cursor + 1) % count )) ;;
             "")  selected="${_PK_NAMES[$cursor]}"; break ;;
+            " ")
+                # Space → auto-pick (lowest healthy wk). Falls back to cursor
+                # if no account passes the wk<95+no-error filter (e.g. all
+                # rate-limited or all in usage-fetch with stale cache).
+                selected="${_PK_AUTO:-${_PK_NAMES[$cursor]}}"; break ;;
             [1-9])
                 idx=$(( _PK_KEY - 1 ))
                 if [ "$idx" -lt "$count" ]; then selected="${_PK_NAMES[$idx]}"; break; fi ;;
