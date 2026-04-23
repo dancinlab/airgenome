@@ -1,27 +1,37 @@
 #!/usr/bin/env bash
 # L0 CORE — chflags uchg 후 수정 금지. 변경 시 `chflags nouchg`.
-# bin/cl-core — compose accounts | fresh | rotate | launch. single entry for `cl`.
+# bin/cl-core — compose accounts | fresh | quota | rotate | launch. single entry for `cl`.
 #
 # Pipeline:
-#   cl-accounts | cl-fresh | cl-rotate | xargs -I{} cl-launch {} "$@"
+#   cl-accounts | cl-fresh | cl-quota | cl-rotate | xargs -I{} cl-launch {} "$@"
 #
 # Contract:
-#   cl-core [args...]       pick account (round-robin, skip cooling) + exec claude.
+#   cl-core [args...]       pick account (round-robin, skip cooling, skip overquota)
+#                           + exec claude. Fallback tiers if filter empties candidates:
+#                             tier 1: fresh + quota + rotate
+#                             tier 2: fresh + rotate         (ignore quota)
+#                             tier 3: rotate                 (ignore both)
 #   cl-core --real [args]   bypass shell function layer, exec real claude directly.
 #                           (picked account still applied via CLAUDE_CONFIG_DIR)
 #   cl-core --dir <d> [a..] force specific account dir.
-#   cl-core self-test       verify all 5 sub-binaries PASS + pipe produces 1 dir.
+#   cl-core -u | --usage | usage
+#                           print per-account usage table from ~/.airgenome/usage-cache.json.
+#                           sort by week_all_pct desc (most-used first). colorized unless
+#                           NO_COLOR is set. no network (pool-refresh writes the cache).
+#   cl-core self-test       verify all 6 sub-binaries PASS + pipe produces 1 dir.
 #
 # Env:
 #   CL_COOLDOWN_HOURS        default cooldown window (cl-cooldown); 5h.
+#   CL_QUOTA_MAX             weekly pct threshold, >= drops (default 95, see cl-quota).
+#   CL_QUOTA_CACHE           usage cache path (default ~/.airgenome/usage-cache.json).
 #   CL_CORE_REAL_CLAUDE      override real claude path (cl-launch).
 #   CLAUDX_BYPASS            (ignored since 2026-04-21; see bin/cl-launch).
 #   CL_ACCOUNTS_FIXTURE      self-test hook — path (or :-separated list) of
 #                            synthetic account dirs to use instead of
 #                            cl-accounts' real $HOME scan. Pipe shape is
-#                            preserved (fresh + rotate still run).
+#                            preserved (fresh + quota + rotate still run).
 #
-# Dependencies: bin/cl-accounts, bin/cl-fresh, bin/cl-rotate, bin/cl-launch.
+# Dependencies: bin/cl-accounts, bin/cl-fresh, bin/cl-quota, bin/cl-rotate, bin/cl-launch.
 
 set -uo pipefail
 
@@ -37,17 +47,236 @@ _emit_accounts() {
 
 _pick_dir() {
     local d
-    d=$(_emit_accounts | "$SELF_DIR/cl-fresh" | "$SELF_DIR/cl-rotate")
+    # Tier 1: fresh (cooldown) + quota + rotate — the intended path.
+    d=$(_emit_accounts | "$SELF_DIR/cl-fresh" | "$SELF_DIR/cl-quota" | "$SELF_DIR/cl-rotate")
     if [ -z "$d" ]; then
-        # All cooling — fall back to ignoring cooldown filter (best-effort).
+        # Tier 2: quota filter emptied the pool — relax it, keep cooldown.
+        d=$(_emit_accounts | "$SELF_DIR/cl-fresh" | "$SELF_DIR/cl-rotate")
+    fi
+    if [ -z "$d" ]; then
+        # Tier 3: everything's cooling — last resort, ignore all filters.
         d=$(_emit_accounts | "$SELF_DIR/cl-rotate")
     fi
     [ -n "$d" ] && echo "$d"
 }
 
+# ── cl -u / cl usage — per-account usage table ─────────────────────────
+# Reads ~/.airgenome/usage-cache.json (written by pool-refresh). No network.
+# ASCII-only (no em-dash, no unicode, no box-drawing). Mirrors the nexus
+# show_dashboard layout from commit 330bea86 (shared/bin/cl):
+#
+#   cl -- Claude accounts    active=<name>    store=~/.airgenome[    cache=Nh STALE->pool-refresh]
+#       no   name         ss%  [session]             resets   wk%  [week_all]            resets   err
+#       -----------------------------------------------------------------------------------------------
+#       1   *claude10      0%  ....................  -          0%  ....................  4d15h    -
+#       ...
+#
+# Column order: no | name | ss% | [session bar] | resets | wk% | [week_all bar] | resets | err
+# no           : 1..9 then 0 for the 10th, "-" for 11+.
+# name         : prefixed with '*' if account is auto-pick (wk lowest among error-free, wk<95).
+# bars         : 20-char, '#' filled + '.' empty. filled = clamp((pct+2)/5, 0, 20).
+# resets       : fmt_until — "-" | "now" | "45s" | "12m" | "2h30m" | "5d04h", max 7 chars.
+# err          : raw error label ("-" when empty).
+# no-creds     : when ~/.claude-<name>/.credentials.json is missing, all numeric cols
+#                become "-" and bars become 20 dots; err = "no-creds".
+# usage-fetch  : transient — keep numerics as "-" where unknown, err = "usage-fetch".
+# stale cache  : if age > 1h, header gains "    cache=<N>h STALE->pool-refresh".
+#
+# Order: natural sort by account name (claude1..claude9, claude10, claude11, ...).
+# Single jq load, pure-bash rendering (no jq-per-row).
+_usage_table() {
+    local cache="${CL_QUOTA_CACHE:-$HOME/.airgenome/usage-cache.json}"
+    if [ ! -f "$cache" ]; then
+        echo "cl: no usage cache at $cache" >&2
+        echo "cl: run /Users/ghost/core/airgenome/bin/pool-refresh first" >&2
+        return 1
+    fi
+    command -v jq >/dev/null 2>&1 || { echo "cl: jq required" >&2; return 1; }
+
+    local now ts age_s stale_note=""
+    now=$(date -u +%s)
+    ts=$(jq -r '._ts // empty' "$cache" 2>/dev/null)
+    if [ -n "$ts" ] && [ "$ts" != "null" ]; then
+        age_s=$(( now - ${ts%.*} ))
+        if [ "$age_s" -ge 3600 ] 2>/dev/null; then
+            local age_h=$(( age_s / 3600 ))
+            stale_note="    cache=${age_h}h STALE->pool-refresh"
+        fi
+    fi
+
+    # Single jq load: emit pipe-separated rows, natural-sorted by account name.
+    # Fields per row: name|ss|wk|srt_epoch|wrt_epoch|err
+    # ss/wk = "-" if null, else integer floor as string.
+    # srt/wrt = epoch seconds as string; "" if absent/null.
+    #
+    # auto-pick: lowest week_all_pct among entries where error is null AND wk<95.
+    # Computed inside the same jq invocation to stay single-pass.
+    local rows auto_pick
+    rows=$(jq -r --argjson now "$now" '
+        def parse_ts:
+          if . == null or . == "" then null
+          else (. | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z"))
+            | try fromdateiso8601
+          end;
+        to_entries
+        | map(select(.key != "_ts"))
+        | map({
+            name: .key,
+            ss:   (.value.session_pct  // null),
+            wk:   (.value.week_all_pct // null),
+            srt:  (.value.session_resets | parse_ts),
+            wrt:  ((.value.week_resets // .value.week_all_resets) | parse_ts),
+            err:  (.value.error // "")
+          })
+        | sort_by(.name
+            | capture("^(?<p>[^0-9]*)(?<n>[0-9]+)?(?<s>.*)$")
+            | [.p, (.n // "0" | tonumber), .s])
+        | .[]
+        | [.name,
+           (.ss | if . == null then "-" else "\(.|floor)" end),
+           (.wk | if . == null then "-" else "\(.|floor)" end),
+           (.srt // "" | tostring),
+           (.wrt // "" | tostring),
+           .err]
+        | join("|")
+    ' "$cache" 2>/dev/null)
+
+    # Auto-pick candidates: error must be null AND wk<95. In addition, the
+    # account must actually have creds on disk (pool-refresh silently keeps
+    # stale entries for accounts whose .credentials.json was removed, so a
+    # pure cache read can "pick" a no-creds account). Filter by $HOME creds.
+    local ap_raw ap_cand name_raw
+    ap_raw=$(jq -r '
+        to_entries
+        | map(select(.key != "_ts"))
+        | map(select(.value.error == null))
+        | map(select((.value.week_all_pct // 100) < 95))
+        | sort_by(.value.week_all_pct // 100)
+        | .[].key
+    ' "$cache" 2>/dev/null)
+    auto_pick=""
+    while IFS= read -r name_raw; do
+        [ -n "$name_raw" ] || continue
+        if [ -f "$HOME/.claude-$name_raw/.credentials.json" ]; then
+            auto_pick="$name_raw"; break
+        fi
+    done <<< "$ap_raw"
+
+    # Active account (from cl-state.json).
+    local state_file="$HOME/.airgenome/cl-state.json"
+    local active=""
+    [ -f "$state_file" ] && active=$(jq -r '.active // empty' "$state_file" 2>/dev/null)
+
+    # Store label — always show "~/.airgenome" (ASCII-friendly home-relative).
+    local store_label="~/.airgenome"
+
+    # Header row 1 (title + active + store + optional stale note).
+    printf 'cl -- Claude accounts    active=%s    store=%s%s\n' \
+        "${active:-none}" "$store_label" "$stale_note"
+    # Header row 2 (column titles).
+    printf '    %-3s  %-10s  %4s  %-20s  %-7s  %4s  %-20s  %-7s  %s\n' \
+        "no" "name" "ss%" "[session]" "resets" "wk%" "[week_all]" "resets" "err"
+    # Header row 3 (separator — 95 dashes matches the right edge of the err column).
+    printf '    -----------------------------------------------------------------------------------------------\n'
+
+    local i=0 name ss wk srt wrt err creds_path num_label act_mark
+    local bar_s bar_w rst_s rst_w err_display
+    local hashes="####################"
+    local dots="...................."
+    local n_present=0 n_usage_fetch=0 n_rate_limit=0 n_no_creds=0
+    while IFS='|' read -r name ss wk srt wrt err; do
+        [ -n "$name" ] || continue
+        creds_path="$HOME/.claude-$name/.credentials.json"
+        if [ ! -f "$creds_path" ]; then
+            ss="-"; wk="-"; srt=""; wrt=""; err="no-creds"
+            n_no_creds=$((n_no_creds+1))
+        else
+            n_present=$((n_present+1))
+            case "$err" in
+                usage-fetch) n_usage_fetch=$((n_usage_fetch+1)) ;;
+                rate-limit)  n_rate_limit=$((n_rate_limit+1)) ;;
+            esac
+        fi
+
+        # Bar rendering: 20-char, # filled + . empty. filled = (pct+2)/5 clamped.
+        if [[ "$ss" =~ ^[0-9]+$ ]]; then
+            local f=$(( (ss + 2) / 5 ))
+            [ $f -gt 20 ] && f=20; [ $f -lt 0 ] && f=0
+            bar_s="${hashes:0:f}${dots:0:$((20-f))}"
+        else
+            bar_s="$dots"
+        fi
+        if [[ "$wk" =~ ^[0-9]+$ ]]; then
+            local f=$(( (wk + 2) / 5 ))
+            [ $f -gt 20 ] && f=20; [ $f -lt 0 ] && f=0
+            bar_w="${hashes:0:f}${dots:0:$((20-f))}"
+        else
+            bar_w="$dots"
+        fi
+
+        # fmt_until — "-"/"now"/"45s"/"12m"/"2h30m"/"5d04h". Max 7 chars.
+        rst_s=$(_fmt_until "$srt" "$now")
+        rst_w=$(_fmt_until "$wrt" "$now")
+
+        # ss%/wk% column: numeric → "NN%", "-" stays "-".
+        local ss_col wk_col
+        if [[ "$ss" =~ ^[0-9]+$ ]]; then ss_col="${ss}%"; else ss_col="-"; fi
+        if [[ "$wk" =~ ^[0-9]+$ ]]; then wk_col="${wk}%"; else wk_col="-"; fi
+
+        # no column.
+        if [ "$i" -lt 9 ]; then num_label=$((i+1))
+        elif [ "$i" -eq 9 ]; then num_label="0"
+        else num_label="-"
+        fi
+
+        # Auto-pick marker.
+        if [ "$name" = "$auto_pick" ] && [ -n "$auto_pick" ]; then
+            act_mark="*"
+        else
+            act_mark=" "
+        fi
+
+        err_display="${err:--}"
+        [ -z "$err_display" ] && err_display="-"
+
+        printf '    %-3s %s%-10s  %4s  %s  %-7s  %4s  %s  %-7s  %s\n' \
+            "$num_label" "$act_mark" "$name" "$ss_col" "$bar_s" "$rst_s" \
+            "$wk_col" "$bar_w" "$rst_w" "$err_display"
+        i=$((i+1))
+    done <<< "$rows"
+
+    # Footer notes — only when conditions warrant. Concise, single-line each.
+    if [ "$n_present" -gt 0 ] && [ "$n_usage_fetch" -ge $(( (n_present + 1) / 2 )) ]; then
+        printf '\n  note: usage-fetch errors come from Anthropic API returning "OAuth authentication is currently not supported".\n'
+        printf '        wk%%/ss%% values frozen at last successful fetch. Rotation still works (token validity checked separately).\n'
+    fi
+    if [ "$n_no_creds" -gt 0 ]; then
+        printf '\n  no-creds: %d account(s) need re-auth — CLAUDE_CONFIG_DIR=~/.claude-claudeN claude\n' "$n_no_creds"
+    fi
+}
+
+# _fmt_until <epoch_target> <now_epoch> → echo a max-7-char remaining-time label.
+# "-" / "now" / "45s" / "12m" / "2h30m" / "5d04h". Empty/null/0 → "-".
+_fmt_until() {
+    local t="${1:-}" now="${2:-0}" diff
+    if [ -z "$t" ] || [ "$t" = "null" ] || [ "$t" = "0" ]; then
+        echo "-"; return
+    fi
+    # Truncate any decimal (epoch from jq may be float).
+    t="${t%.*}"
+    [[ "$t" =~ ^[0-9]+$ ]] || { echo "-"; return; }
+    diff=$(( t - now ))
+    if   [ "$diff" -le 0 ];     then echo "now"
+    elif [ "$diff" -lt 60 ];    then printf '%ds\n'   "$diff"
+    elif [ "$diff" -lt 3600 ];  then printf '%dm\n'   $(( diff / 60 ))
+    elif [ "$diff" -lt 86400 ]; then printf '%dh%02dm\n' $(( diff / 3600 ))     $(( (diff % 3600) / 60 ))
+    else                             printf '%dd%02dh\n' $(( diff / 86400 ))    $(( (diff % 86400) / 3600 ))
+    fi
+}
+
 _self_test() {
     local rc=0
-    for sub in cl-accounts cl-fresh cl-rotate cl-launch cl-cooldown; do
+    for sub in cl-accounts cl-fresh cl-quota cl-rotate cl-launch cl-cooldown; do
         if "$SELF_DIR/$sub" self-test >/dev/null 2>&1; then
             echo "  ✓ $sub self-test"
         else
@@ -58,14 +287,70 @@ _self_test() {
     local tmp dir
     tmp=$(mktemp -d -t cl-core.XXXXXX)
     mkdir -p "$tmp/a" "$tmp/b" "$tmp/c"
-    dir=$(CL_ACCOUNTS_FIXTURE="$tmp/a:$tmp/b:$tmp/c" CL_STATE_DIR="$tmp/state" _pick_dir)
-    rm -rf "$tmp"
+    # Empty cache → cl-quota fails open → all pass through; rotate picks one.
+    dir=$(CL_ACCOUNTS_FIXTURE="$tmp/a:$tmp/b:$tmp/c" \
+          CL_STATE_DIR="$tmp/state" \
+          CL_QUOTA_CACHE="$tmp/nope.json" \
+          _pick_dir)
     case "$dir" in
         "$tmp/a"|"$tmp/b"|"$tmp/c")
             echo "  ✓ pipe picks fixture dir: $dir" ;;
         *)
             echo "  ✗ pipe returned unexpected: '$dir'" >&2; rc=1 ;;
     esac
+    rm -rf "$tmp"
+
+    # -u renderer self-test: synthetic cache, verify bar rendering + ASCII-only.
+    # Fixture has one 100% account (→ 20 hashes) and one 0% account (→ 20 dots).
+    # Active account left unset (state file absent) so header says active=none.
+    local utmp out
+    utmp=$(mktemp -d -t cl-core-u.XXXXXX)
+    # Fake AG_HOME to avoid touching real state/cache.
+    jq -n --argjson ts "$(date -u +%s)" '{
+        claude2: {session_pct: 0, session_resets: null,
+                  week_all_pct: 100, week_resets: null, error: null},
+        claude10: {session_pct: 0, session_resets: null,
+                   week_all_pct: 0, week_resets: null, error: null},
+        _ts: $ts
+    }' > "$utmp/cache.json"
+    # Run with HOME overridden so no-creds override kicks in (no .claude-claude* dirs
+    # in a fresh tmp HOME) — claude2 and claude10 will both show as no-creds,
+    # which is fine: we only need the bar rendering test. To exercise the
+    # non-no-creds path, fabricate creds dirs under the fake HOME.
+    mkdir -p "$utmp/.claude-claude2" "$utmp/.claude-claude10" "$utmp/.airgenome"
+    : > "$utmp/.claude-claude2/.credentials.json"
+    : > "$utmp/.claude-claude10/.credentials.json"
+    out=$(HOME="$utmp" CL_QUOTA_CACHE="$utmp/cache.json" NO_COLOR=1 \
+          bash "$SELF_DIR/cl-core" -u 2>&1)
+    # 100% bar must appear exactly once (claude2).
+    local n_full n_empty has_em has_unicode
+    # Count occurrences (not lines — a row can have both a session bar AND a
+    # week bar, so grep -c would under-count). Use grep -o | wc -l.
+    n_full=$(printf '%s' "$out" | grep -o '####################' | wc -l | tr -d ' ')
+    n_empty=$(printf '%s' "$out" | grep -o '\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.' | wc -l | tr -d ' ')
+    has_em=$(printf '%s' "$out" | grep -c 'â\|—' || true)
+    has_unicode=$(printf '%s' "$out" | LC_ALL=C grep -c '[^[:print:][:space:]]' || true)
+    if [ "$n_full" -eq 1 ] && [ "$n_empty" -ge 3 ]; then
+        echo "  ✓ -u renders 100% bar once and >=3 empty bars"
+    else
+        echo "  ✗ -u bar counts: full=$n_full empty=$n_empty" >&2
+        printf '%s\n' "$out" >&2
+        rc=1
+    fi
+    if [ "$has_em" -eq 0 ] && [ "$has_unicode" -eq 0 ]; then
+        echo "  ✓ -u output is ASCII-only (no em-dash, no unicode)"
+    else
+        echo "  ✗ -u contains non-ASCII: em=$has_em unicode=$has_unicode" >&2
+        rc=1
+    fi
+    # Header must contain the ASCII "--" variant, not the em-dash "—".
+    if printf '%s' "$out" | grep -q 'cl -- Claude accounts'; then
+        echo "  ✓ -u header uses ASCII dashes"
+    else
+        echo "  ✗ -u header missing ASCII dashes" >&2; rc=1
+    fi
+    rm -rf "$utmp"
+
     [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
     return $rc
 }
@@ -79,7 +364,9 @@ while [ "$#" -gt 0 ]; do
         --real) real_mode=1; shift ;;
         --dir)  forced_dir="${2:-}"; shift 2 ;;
         -h|--help|help)
-            sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+            sed -n '3,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -u|--usage|usage)
+            _usage_table; exit $? ;;
         self-test) _self_test; exit $? ;;
         --) shift; fwd+=("$@"); break ;;
         *) fwd+=("$1"); shift ;;

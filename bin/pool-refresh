@@ -1,0 +1,647 @@
+#!/usr/bin/env bash
+# L0 CORE — chflags uchg 후 수정 금지. 변경 시 `chflags nouchg`.
+# bin/pool-refresh — airgenome Claude pool usage-cache.json 갱신 엔진.
+#
+# SSOT principles:
+#   - bash + curl + jq only. No airgenome/ccmon/nexus imports.
+#   - Credentials live in per-account .credentials.json (not macOS keychain).
+#   - Token raw values MUST NOT appear in stdout/stderr/log (no set -x, no curl -v).
+#   - On failure keep prior cache entry — never zero out.
+#   - Refresh cap=2 per cycle for direct POST (IP rate_limit cascade avoidance).
+#   - Partial success exits 0; only catastrophic (no writable paths) is non-zero.
+#
+# Contract:
+#   pool-refresh              refresh all ~/.claude-claude* accounts in parallel
+#   pool-refresh <name>       refresh single account (e.g. "claude3")
+#   pool-refresh --dry-run    inspect only — no network, no writes
+#   pool-refresh --verify     summarize current cache
+#   pool-refresh self-test    fixture-based unit checks (no network)
+#   pool-refresh help
+#
+# Paths:
+#   ~/.claude-claude<N>/.credentials.json   per-account OAuth blob
+#   ~/.airgenome/usage-cache.json           combined cache (+ _ts)
+#   ~/.airgenome/pool-refresh.stderr.log    (via LaunchAgent)
+#   ~/.airgenome/pool-refresh.stdout.log    (via LaunchAgent)
+#   ~/.airgenome/pool-refresh.log           per-cycle timeline
+#   ~/.airgenome/pool-refresh.lock          pid lock
+#
+# Endpoints — mirrors nexus/bin/cl-refresh (as of 2026-04):
+#   POST https://platform.claude.com/v1/oauth/token   (token refresh)
+#   GET  https://api.anthropic.com/api/oauth/usage    (usage fetch)
+#
+# Error labels written into cache entry:
+#   token_refresh_failed   permanent refresh error (invalid_grant etc).
+#                          entry kept so cl-quota can drop it; retried next cycle.
+#   rate-limit             transient; backoff via _retry_at.
+#   usage-fetch            usage fetch returned unexpected body (transient —
+#                          access token likely stale; refreshes next cycle).
+#   no-creds / blob-malformed / keychain-read-fail  structural problems.
+
+set -uo pipefail
+set +x
+
+AG_HOME="${AG_HOME:-$HOME/.airgenome}"
+USAGE="$AG_HOME/usage-cache.json"
+LOCK="$AG_HOME/pool-refresh.lock"
+LOG="$AG_HOME/pool-refresh.log"
+
+TOKEN_URL="https://platform.claude.com/v1/oauth/token"
+USAGE_URL="https://api.anthropic.com/api/oauth/usage"
+CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+BETA="oauth-2025-04-20"
+TIMEOUT=10
+CAP=2
+BACKOFF_INIT=900
+BACKOFF_MAX=14400
+
+td=""
+
+log() {
+    mkdir -p "$AG_HOME" 2>/dev/null || true
+    printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$LOG" 2>/dev/null || true
+}
+err() { echo "pool-refresh: $*" >&2; log "ERR: $*"; }
+require() { command -v "$1" >/dev/null 2>&1 || { err "$1 required"; exit 3; }; }
+
+acquire_lock() {
+    mkdir -p "$AG_HOME"
+    if [ -f "$LOCK" ]; then
+        local pid; pid=$(cat "$LOCK" 2>/dev/null || echo)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            err "already running (pid=$pid)"; exit 4
+        fi
+    fi
+    echo "$$" > "$LOCK"
+    chmod 600 "$LOCK" 2>/dev/null || true
+}
+
+# ── account discovery ──────────────────────────────────────────────────
+# echo names of ~/.claude-claude<N> dirs that have a .credentials.json.
+# Accounts without creds (claude1, claude8) are silently skipped — user
+# will manually re-auth; no .revoked marker, no cache entry touched.
+list_accounts() {
+    local d name
+    shopt -s nullglob
+    for d in "$HOME"/.claude-claude*; do
+        [ -d "$d" ] || continue
+        [ -f "$d/.credentials.json" ] || continue
+        name="${d##*/.claude-}"
+        echo "$name"
+    done | sort -V
+}
+
+read_creds_file() { cat "$HOME/.claude-$1/.credentials.json" 2>/dev/null; }
+
+# atomic write_creds_file <name> <json>
+write_creds_file() {
+    local name="$1" data="$2" path tmp
+    path="$HOME/.claude-$name/.credentials.json"
+    tmp="$path.tmp.$$"
+    printf '%s' "$data" > "$tmp" || return 1
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$path"
+}
+
+# ── token refresh ───────────────────────────────────────────────────────
+# stdout on success: new blob JSON. exit codes: 0 ok, 1 net/unknown,
+# 2 rate_limit (transient), 3 invalid_grant (permanent).
+refresh_token() {
+    local rt="$1" old="$2" body resp at nrt ein http_code error_type
+    body=$(jq -cn --arg rt "$rt" --arg cid "$CLIENT_ID" \
+        '{grant_type:"refresh_token", refresh_token:$rt, client_id:$cid}')
+    resp=$(printf '%s' "$body" | curl -sS -m "$TIMEOUT" -X POST "$TOKEN_URL" \
+        -H "Content-Type: application/json" --data @- \
+        -w '|%HTTP%|%{http_code}' 2>/dev/null) || return 1
+    http_code="${resp##*|%HTTP%|}"
+    resp="${resp%|%HTTP%|*}"
+    at=$(jq -r '.access_token // empty' <<< "$resp" 2>/dev/null)
+    if [ -n "$at" ]; then
+        nrt=$(jq -r '.refresh_token // empty' <<< "$resp" 2>/dev/null)
+        ein=$(jq -r '.expires_in // 3600' <<< "$resp" 2>/dev/null)
+        jq -c --arg at "$at" --arg nrt "$nrt" --argjson ein "$ein" \
+            '.claudeAiOauth.accessToken = $at
+             | .claudeAiOauth.expiresAt = ((now*1000 | floor) + $ein*1000)
+             | (if $nrt != "" then .claudeAiOauth.refreshToken = $nrt else . end)' \
+            <<< "$old" 2>/dev/null
+        return 0
+    fi
+    error_type=$(jq -r '.error.type // .error // empty' <<< "$resp" 2>/dev/null)
+    case "$error_type" in
+        rate_limit_error|rate_limited) return 2 ;;
+        invalid_grant|invalid_request) return 3 ;;
+    esac
+    [ "$http_code" = "429" ] && return 2
+    [ "$http_code" = "400" ] && return 3
+    return 1
+}
+
+fetch_usage() {
+    curl -sS -m "$TIMEOUT" "$USAGE_URL" \
+        -H "Authorization: Bearer $1" -H "anthropic-beta: $BETA" 2>/dev/null
+}
+
+# ── backoff helpers ────────────────────────────────────────────────────
+should_skip_backoff() {
+    local name="$1"
+    [ -f "$USAGE" ] || return 1
+    local now_s retry_at
+    now_s=$(date -u +%s)
+    retry_at=$(jq -r --arg n "$name" '(.[$n]._retry_at // 0) | tonumber' "$USAGE" 2>/dev/null)
+    [ -z "$retry_at" ] || [ "$retry_at" = "null" ] && retry_at=0
+    [ "$retry_at" -le "$now_s" ] 2>/dev/null && return 1
+    local backoff_at sig sig_mt best=0
+    backoff_at=$(jq -r --arg n "$name" '(.[$n]._backoff_at // 0) | tonumber' "$USAGE" 2>/dev/null)
+    [ -z "$backoff_at" ] || [ "$backoff_at" = "null" ] && backoff_at=0
+    for sig in "$HOME/.claude-$name/.claude.json" "$HOME/.claude-$name/.credentials.json"; do
+        [ -f "$sig" ] || continue
+        sig_mt=$(stat -f %m "$sig" 2>/dev/null || stat -c %Y "$sig" 2>/dev/null)
+        [ -n "$sig_mt" ] && [ "$sig_mt" -gt "$best" ] 2>/dev/null && best=$sig_mt
+    done
+    [ "$best" -gt "$backoff_at" ] 2>/dev/null && return 1
+    return 0
+}
+
+# pre-select up to CAP expiring accounts for token refresh this cycle.
+pre_check_expiry() {
+    local now n=0 name blob ea
+    now=$(($(date -u +%s) * 1000))
+    for name in "$@"; do
+        [ "$n" -ge "$CAP" ] && break
+        blob=$(read_creds_file "$name")
+        [ -n "$blob" ] || continue
+        ea=$(jq -r '.claudeAiOauth.expiresAt // 0' <<< "$blob" 2>/dev/null)
+        if [ "$ea" -lt "$((now + 60000))" ] 2>/dev/null; then
+            printf '%s\n' "$name"; n=$((n+1))
+        fi
+    done
+}
+
+# ── process single account → write $td/$name.json ─────────────────────
+process_one() {
+    local name="$1" td="$2" allowed="$3"
+    local out="$td/$name.json"
+    local blob at rt ea now resp
+    blob=$(read_creds_file "$name")
+    [ -n "$blob" ] || { echo '{"error":"no-creds"}' > "$out"; return; }
+    at=$(jq -r '.claudeAiOauth.accessToken // empty'  <<< "$blob" 2>/dev/null)
+    rt=$(jq -r '.claudeAiOauth.refreshToken // empty' <<< "$blob" 2>/dev/null)
+    ea=$(jq -r '.claudeAiOauth.expiresAt // 0'        <<< "$blob" 2>/dev/null)
+    [ -n "$at" ] || { echo '{"error":"blob-malformed"}' > "$out"; return; }
+
+    now=$(($(date -u +%s) * 1000))
+    if [ "$ea" -lt "$((now + 60000))" ] 2>/dev/null; then
+        [ -n "$rt" ] || { echo '{"error":"no-refresh-token"}' > "$out"; return; }
+        if [ "$allowed" -ne 1 ]; then
+            # over cap — re-use old token for usage fetch (may 401 → marked).
+            :
+        else
+            local new_blob direct_rc
+            new_blob=$(refresh_token "$rt" "$blob"); direct_rc=$?
+            if [ -n "$new_blob" ]; then
+                write_creds_file "$name" "$new_blob" || { echo '{"error":"creds-write-fail"}' > "$out"; return; }
+                at=$(jq -r '.claudeAiOauth.accessToken' <<< "$new_blob" 2>/dev/null)
+                log "refreshed: $name"
+            else
+                case "$direct_rc" in
+                    2)
+                        local prev_bo now_s cur_bo retry_at
+                        now_s=$(date -u +%s)
+                        prev_bo=$(jq -r --arg n "$name" '(.[$n]._backoff // 0) | tonumber' "$USAGE" 2>/dev/null)
+                        [ -z "$prev_bo" ] || [ "$prev_bo" = "null" ] && prev_bo=0
+                        if [ "$prev_bo" -lt "$BACKOFF_INIT" ] 2>/dev/null; then
+                            cur_bo=$BACKOFF_INIT
+                        elif [ "$prev_bo" -ge "$BACKOFF_MAX" ] 2>/dev/null; then
+                            cur_bo=$BACKOFF_MAX
+                        else
+                            cur_bo=$((prev_bo * 2))
+                            [ "$cur_bo" -gt "$BACKOFF_MAX" ] && cur_bo=$BACKOFF_MAX
+                        fi
+                        retry_at=$((now_s + cur_bo))
+                        jq -nc --argjson ra "$retry_at" --argjson bo "$cur_bo" --argjson bat "$now_s" \
+                            '{error:"rate-limit", _retry_at:$ra, _backoff:$bo, _backoff_at:$bat}' > "$out"
+                        log "rate-limit: $name (cooldown ${cur_bo}s)"
+                        return ;;
+                    3) echo '{"error":"token_refresh_failed","detail":"invalid-grant"}' > "$out"; log "invalid-grant: $name"; return ;;
+                    *) echo '{"error":"token_refresh_failed","detail":"net-or-unknown"}' > "$out"; log "refresh-failed: $name"; return ;;
+                esac
+            fi
+        fi
+    fi
+
+    resp=$(fetch_usage "$at")
+    if ! jq -e '.five_hour' <<< "$resp" >/dev/null 2>&1; then
+        echo '{"error":"usage-fetch"}' > "$out"; return
+    fi
+    jq -c '{
+        session_pct: .five_hour.utilization,
+        session_resets: .five_hour.resets_at,
+        week_all_pct: .seven_day.utilization,
+        week_resets: .seven_day.resets_at,
+        week_sonnet_pct: (.seven_day_sonnet.utilization // null),
+        week_sonnet_resets: (.seven_day_sonnet.resets_at // null),
+        error: null
+    }' <<< "$resp" > "$out"
+}
+
+# merge $td/*.json into cache. on ok → full replace; on err → preserve
+# prior usage fields, overwrite only error/detail/_retry_at/_backoff fields.
+merge_cache() {
+    local td="$1"; shift
+    local base='{}' acc name entry f
+    [ -f "$USAGE" ] && base=$(jq 'del(._ts)' "$USAGE" 2>/dev/null || echo '{}')
+    acc="$base"
+    for name in "$@"; do
+        f="$td/$name.json"
+        [ -f "$f" ] || continue
+        entry=$(cat "$f")
+        if [ "$(jq -r '.error // "null"' <<< "$entry")" = "null" ]; then
+            acc=$(jq --arg n "$name" --argjson v "$entry" '.[$n] = $v' <<< "$acc")
+        else
+            acc=$(jq --arg n "$name" --argjson v "$entry" '.[$n] = ((.[$n] // {}) + $v)' <<< "$acc")
+        fi
+    done
+    local out="$USAGE.tmp.$$"
+    jq --argjson t "$(date -u +%s)" '. + {_ts:$t}' <<< "$acc" > "$out"
+    chmod 600 "$out" 2>/dev/null || true
+    mv "$out" "$USAGE"
+}
+
+# ── --verify / --dry-run ───────────────────────────────────────────────
+cmd_verify() {
+    [ -f "$USAGE" ] || { err "cache missing: $USAGE"; exit 1; }
+    local ts age=""; ts=$(jq -r '._ts // empty' "$USAGE" 2>/dev/null)
+    [ -n "$ts" ] && [ "$ts" != "null" ] && age=" (age=$(( $(date -u +%s) - ${ts%.*} ))s)"
+    echo "cache: $USAGE$age"
+    jq -r 'to_entries | map(select(.key != "_ts")) | sort_by(.key) | .[]
+        | "\(.key)\t\(.value.week_all_pct // "?")%\t\(.value.session_pct // "?")%\t\(.value.error // "ok")"' \
+        "$USAGE" | column -t -s $'\t'
+}
+
+cmd_dry_run() {
+    require jq
+    local now name blob ea status n=0
+    now=$(($(date -u +%s) * 1000))
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        blob=$(read_creds_file "$name")
+        if [ -z "$blob" ]; then
+            printf '  %-10s  no-creds\n' "$name"; continue
+        fi
+        ea=$(jq -r '.claudeAiOauth.expiresAt // 0' <<< "$blob" 2>/dev/null)
+        [ "$ea" -lt "$((now + 60000))" ] 2>/dev/null && status="EXPIRED" || status="valid"
+        printf '  %-10s  %s\n' "$name" "$status"
+        n=$((n+1))
+    done < <(list_accounts)
+    echo "total: $n accounts with creds"
+}
+
+# ── refresh (default) ──────────────────────────────────────────────────
+cmd_refresh() {
+    require jq; require curl
+    mkdir -p "$AG_HOME" || { err "cannot create $AG_HOME"; exit 5; }
+    [ -w "$AG_HOME" ] || { err "$AG_HOME not writable"; exit 5; }
+    acquire_lock
+
+    local target="${1:-}" names=()
+    if [ -n "$target" ]; then
+        [ -f "$HOME/.claude-$target/.credentials.json" ] \
+            || { err "account '$target' has no credentials"; exit 1; }
+        names=("$target")
+    else
+        while IFS= read -r line; do
+            [ -n "$line" ] && names+=("$line")
+        done < <(list_accounts)
+    fi
+    [ "${#names[@]}" -gt 0 ] || { err "no accounts with credentials"; exit 0; }
+
+    # filter out backoff-active accounts
+    local filtered=() skipped=0 nm
+    for nm in "${names[@]}"; do
+        if should_skip_backoff "$nm"; then
+            skipped=$((skipped+1)); log "backoff skip: $nm"
+        else
+            filtered+=("$nm")
+        fi
+    done
+    names=("${filtered[@]}")
+    [ "$skipped" -gt 0 ] && log "$skipped account(s) in backoff, skipped"
+    [ "${#names[@]}" -eq 0 ] && { log "all in backoff, noop"; exit 0; }
+
+    td=$(mktemp -d -t pool-refresh.XXXXXX)
+    chmod 700 "$td" 2>/dev/null || true
+    trap 'rm -f "$LOCK"; [ -n "$td" ] && rm -rf "$td"' EXIT INT TERM
+
+    local allowed n_allowed=0
+    allowed=$(pre_check_expiry "${names[@]}")
+    [ -n "$allowed" ] && n_allowed=$(printf '%s\n' "$allowed" | grep -c .)
+    log "refresh start: ${#names[@]} accounts, refresh cap=$CAP allowed=$n_allowed this cycle"
+
+    local name is_allowed
+    for name in "${names[@]}"; do
+        is_allowed=0
+        printf '%s\n' "$allowed" | grep -qFx "$name" && is_allowed=1
+        ( process_one "$name" "$td" "$is_allowed" ) &
+    done
+    wait
+
+    merge_cache "$td" "${names[@]}"
+
+    local ok=0 fail=0 wk ss status f
+    for name in "${names[@]}"; do
+        f="$td/$name.json"
+        [ -f "$f" ] || { fail=$((fail+1)); continue; }
+        status=$(jq -r '.error // "ok"' "$f")
+        if [ "$status" = "ok" ]; then
+            wk=$(jq -r '.week_all_pct // "?"' "$f")
+            ss=$(jq -r '.session_pct // "?"' "$f")
+            printf 'OK %-12s wk=%s%% ss=%s%%\n' "$name" "$wk" "$ss"
+            ok=$((ok+1))
+        else
+            printf 'FAIL %-10s %s\n' "$name" "$status"; fail=$((fail+1))
+        fi
+    done
+    printf 'total=%d ok=%d fail=%d\n' "${#names[@]}" "$ok" "$fail"
+    log "refresh done: ok=$ok fail=$fail"
+    return 0
+}
+
+# ── --converge (fixpoint driver) ───────────────────────────────────────
+# logic: fixpoint (raw:problem-solving-triad raw #36)
+# φ = single-shot pool-refresh body (cmd_refresh "")
+# metric E = |{e ∈ entries : e.error ∉ {null, "no-creds"}}|
+# termination: E = 0 ∨ E unchanged 2 cycles
+# bound: ⌈N_refreshable / CAP⌉ + 2
+#
+# Why fixpoint and not N-times loop: Banach contraction. Each iteration
+# refreshes ≤ CAP tokens (rate-limit cascade avoidance) so E monotonically
+# decreases toward 0. Residuals (token_refresh_failed, rate-limit backoff
+# not yet elapsed) form the non-contractive set and are reported at fixed
+# point. `no-creds` is terminal (user re-auth required) → outside domain.
+_compute_E() {
+    local cache="$1"
+    [ -f "$cache" ] || { echo 0; return; }
+    jq '[to_entries[] | select(.key != "_ts")
+         | select(.value.error != null and .value.error != "no-creds")]
+        | length' "$cache" 2>/dev/null || echo 0
+}
+
+# min retry_at across entries with _retry_at > now (for inter-iteration sleep).
+_min_retry_wait() {
+    local cache="$1" now_s
+    [ -f "$cache" ] || { echo 0; return; }
+    now_s=$(date -u +%s)
+    jq -r --argjson now "$now_s" '
+        [to_entries[] | select(.key != "_ts")
+         | (.value._retry_at // 0) | tonumber
+         | select(. > $now)] | (min // 0) - $now
+        | if . < 0 then 0 else . end' "$cache" 2>/dev/null || echo 0
+}
+
+# N_refreshable = accounts with creds minus {no-creds terminal}.
+_count_refreshable() {
+    local n=0 line
+    while IFS= read -r line; do
+        [ -n "$line" ] && n=$((n+1))
+    done < <(list_accounts)
+    echo "$n"
+}
+
+# φ invocation indirection — real mode calls cmd_refresh; self-test overrides.
+_phi() {
+    if [ -n "${PR_PHI_MOCK:-}" ]; then
+        "$PR_PHI_MOCK"
+    else
+        cmd_refresh ""
+    fi
+}
+
+cmd_converge() {
+    require jq
+    mkdir -p "$AG_HOME" || { err "cannot create $AG_HOME"; exit 5; }
+
+    local n_ref cap max_iter
+    n_ref=$(_count_refreshable)
+    cap="${CAP:-2}"
+    # max_iter = ⌈N_refreshable / CAP⌉ + 2  (mathematical safety bound).
+    max_iter=$(( (n_ref + cap - 1) / cap + 2 ))
+    [ "$max_iter" -lt 3 ] && max_iter=3
+
+    echo "converge: N_refreshable=$n_ref CAP=$cap max_iter=$max_iter"
+    # Loop structure:
+    #   - measure E_pre (state going in)
+    #   - run φ
+    #   - measure E_post (state after φ)
+    #   - E_post == 0 → success. E_post > E_pre → invariant violation.
+    #   - E_post == E_pre for 2 consecutive φ invocations → stable residual.
+    local iter=0 E_pre E_post stable=0 rc=0 wait_s
+    E_pre=$(_compute_E "$USAGE")
+    echo "iter=0  E=$E_pre (initial)"
+    while [ "$iter" -lt "$max_iter" ]; do
+        iter=$((iter+1))
+        # Short-circuit: nothing to do.
+        if [ "$E_pre" = "0" ]; then
+            echo "converged: E=0 (pre-iter $iter, no φ needed)"
+            return 0
+        fi
+
+        # Run φ.
+        _phi || rc=$?
+        E_post=$(_compute_E "$USAGE")
+        echo "iter=$iter  E: $E_pre → $E_post"
+
+        # Success fixed point.
+        if [ "$E_post" = "0" ]; then
+            echo "converged: E=0 at iter=$iter"
+            return 0
+        fi
+
+        # Monotonic-decrease invariant.
+        if [ "$E_post" -gt "$E_pre" ] 2>/dev/null; then
+            err "invariant violation: E increased ($E_pre → $E_post); φ not contractive"
+            return 2
+        fi
+
+        # Stable detection: E unchanged across φ invocation.
+        if [ "$E_post" = "$E_pre" ]; then
+            stable=$((stable+1))
+            if [ "$stable" -ge 2 ]; then
+                echo "fixed point with residual: E=$E_post unchanged 2 cycles"
+                jq -r 'to_entries[] | select(.key != "_ts")
+                       | select(.value.error != null and .value.error != "no-creds")
+                       | "  residual: \(.key) → \(.value.error)"' "$USAGE" 2>/dev/null
+                return 0
+            fi
+        else
+            stable=0
+        fi
+        E_pre=$E_post
+
+        # Inter-iteration sleep: honor per-account backoff. NEVER blind.
+        wait_s=$(_min_retry_wait "$USAGE")
+        [ -z "$wait_s" ] && wait_s=0
+        [ "$wait_s" -lt 30 ] 2>/dev/null && wait_s=30
+        if [ "$iter" -lt "$max_iter" ]; then
+            echo "  sleep ${wait_s}s (min _retry_at or floor 30)"
+            sleep "$wait_s"
+        fi
+    done
+
+    # Reached safety bound without converging.
+    E_cur=$(_compute_E "$USAGE")
+    echo "safety bound reached: iter=$iter max_iter=$max_iter E=$E_cur"
+    jq -r 'to_entries[] | select(.key != "_ts")
+           | select(.value.error != null and .value.error != "no-creds")
+           | "  residual: \(.key) → \(.value.error)"' "$USAGE" 2>/dev/null
+    return 0
+}
+
+# ── self-test — no network, no real creds ─────────────────────────────
+_self_test() {
+    local rc=0 tmp fakehome
+    require jq
+
+    # 1. list_accounts on a synthetic HOME.
+    fakehome=$(mktemp -d -t pool-refresh-test.XXXXXX)
+    mkdir -p "$fakehome/.claude-claude2" "$fakehome/.claude-claude9" \
+             "$fakehome/.claude-claude1"
+    echo '{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":99999999999999}}' \
+        > "$fakehome/.claude-claude2/.credentials.json"
+    echo '{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":99999999999999}}' \
+        > "$fakehome/.claude-claude9/.credentials.json"
+    # claude1 has no creds → must be skipped.
+    local names
+    names=$(HOME="$fakehome" bash -c "$(declare -f list_accounts); list_accounts")
+    if [ "$names" = "claude2"$'\n'"claude9" ]; then
+        echo "  ✓ list_accounts skips no-creds dirs"
+    else
+        echo "  ✗ list_accounts output: $(echo "$names" | tr '\n' '|')" >&2; rc=1
+    fi
+
+    # 2. pre_check_expiry selects only expired (in-past expiresAt).
+    echo '{"claudeAiOauth":{"accessToken":"x","refreshToken":"y","expiresAt":0}}' \
+        > "$fakehome/.claude-claude2/.credentials.json"
+    local allowed
+    allowed=$(HOME="$fakehome" bash -c "CAP=$CAP; $(declare -f read_creds_file pre_check_expiry); pre_check_expiry claude2 claude9")
+    if [ "$allowed" = "claude2" ]; then
+        echo "  ✓ pre_check_expiry picks only expired"
+    else
+        echo "  ✗ pre_check_expiry: '$allowed'" >&2; rc=1
+    fi
+
+    # 3. merge_cache — fresh cache + ok entry + error entry.
+    tmp=$(mktemp -d -t pool-refresh-merge.XXXXXX)
+    echo '{"week_all_pct":10,"error":null}' > "$tmp/claude2.json"
+    echo '{"error":"token_refresh_failed"}' > "$tmp/claude9.json"
+    USAGE="$tmp/cache.json" merge_cache "$tmp" claude2 claude9
+    local ok_val err_val ts_val
+    ok_val=$(jq -r '.claude2.week_all_pct' "$tmp/cache.json")
+    err_val=$(jq -r '.claude9.error' "$tmp/cache.json")
+    ts_val=$(jq -r '._ts' "$tmp/cache.json")
+    if [ "$ok_val" = "10" ] && [ "$err_val" = "token_refresh_failed" ] && [ -n "$ts_val" ] && [ "$ts_val" != "null" ]; then
+        echo "  ✓ merge_cache writes ok+error+_ts"
+    else
+        echo "  ✗ merge_cache: ok=$ok_val err=$err_val ts=$ts_val" >&2; rc=1
+    fi
+
+    # 4. merge preserves prior usage fields when new entry is error-only.
+    local prev='{"claude2":{"week_all_pct":42,"session_pct":3,"error":null},"_ts":1}'
+    echo "$prev" > "$tmp/cache2.json"
+    echo '{"error":"token_refresh_failed"}' > "$tmp/claude2.json"
+    USAGE="$tmp/cache2.json" merge_cache "$tmp" claude2
+    local pw pe
+    pw=$(jq -r '.claude2.week_all_pct' "$tmp/cache2.json")
+    pe=$(jq -r '.claude2.error' "$tmp/cache2.json")
+    if [ "$pw" = "42" ] && [ "$pe" = "token_refresh_failed" ]; then
+        echo "  ✓ error overlay preserves prior usage"
+    else
+        echo "  ✗ overlay lost data: wk=$pw err=$pe" >&2; rc=1
+    fi
+
+    # 5. --converge fixpoint — mock φ that drops E by 1 each call.
+    # Fixture cache: E=3 → 2 → 1 → 0 over 3 φ invocations.
+    local ctmp mockphi cache_out
+    ctmp=$(mktemp -d -t pool-refresh-converge.XXXXXX)
+    cache_out="$ctmp/cache.json"
+    jq -n '{claude1:{error:"usage-fetch"},
+            claude2:{error:"usage-fetch"},
+            claude3:{error:"usage-fetch"},
+            claude4:{error:null},
+            claude5:{error:"no-creds"},
+            _ts:1}' > "$cache_out"
+    # mock φ: on each call, flip one usage-fetch → null (error-cleared).
+    mockphi="$ctmp/phi"
+    cat > "$mockphi" <<MOCK
+#!/usr/bin/env bash
+jq '(first(to_entries[] | select(.key != "_ts") | select(.value.error != null and .value.error != "no-creds")).key) as \$k
+    | if \$k then .[\$k].error = null else . end' "$cache_out" > "$cache_out.tmp" && mv "$cache_out.tmp" "$cache_out"
+MOCK
+    chmod +x "$mockphi"
+
+    # Capture metric decrease across iterations via converge run.
+    # Override list_accounts for N_refreshable calculation (4 refreshable: claude1..claude4).
+    local conv_log
+    conv_log=$(
+        USAGE="$cache_out" AG_HOME="$ctmp" LOCK="$ctmp/lock" LOG="$ctmp/log" \
+        PR_PHI_MOCK="$mockphi" CAP=2 \
+        bash -c '
+            list_accounts() { printf "claude1\nclaude2\nclaude3\nclaude4\n"; }
+            export -f list_accounts
+            '"$(declare -f _compute_E _min_retry_wait _count_refreshable _phi cmd_converge err log require)"'
+            # stub sleep to zero-delay for test
+            sleep() { :; }
+            export -f sleep
+            cmd_converge 2>&1
+        '
+    )
+    # Expect: E trajectory 3 → 2 → 1 → 0, converged line present, and
+    # no invariant violation (monotonic decrease).
+    local e_line_count converge_line invariant_line
+    e_line_count=$(echo "$conv_log" | grep -cE '^iter=[0-9]+  E:')
+    converge_line=$(echo "$conv_log" | grep -E 'converged: E=0')
+    invariant_line=$(echo "$conv_log" | grep -E 'invariant violation' || true)
+    if [ "$e_line_count" -ge 3 ] && [ -n "$converge_line" ] && [ -z "$invariant_line" ]; then
+        echo "  ✓ --converge reaches E=0 with monotonic decrease"
+    else
+        echo "  ✗ --converge log: $conv_log" >&2; rc=1
+    fi
+
+    # 6. _compute_E counts only non-null non-no-creds errors.
+    local e_val
+    e_val=$(_compute_E "$cache_out")
+    if [ "$e_val" = "0" ]; then
+        echo "  ✓ _compute_E returns 0 at fixed point"
+    else
+        echo "  ✗ _compute_E post-converge: $e_val" >&2; rc=1
+    fi
+
+    rm -rf "$fakehome" "$tmp" "$ctmp"
+    [ $rc -eq 0 ] && echo "self-test: PASS" || echo "self-test: FAIL"
+    return $rc
+}
+
+usage() {
+    cat <<'EOF'
+pool-refresh — airgenome Claude pool usage-cache.json 갱신 엔진
+
+Usage:
+  pool-refresh              refresh all ~/.claude-claude* in parallel
+  pool-refresh <name>       refresh a single account (e.g. claude3)
+  pool-refresh --dry-run    no network, no writes — list accounts + expiry
+  pool-refresh --verify     summarize current cache
+  pool-refresh --converge   fixpoint driver (iterate until E=0 or stable)
+  pool-refresh self-test    unit checks (no network, no creds)
+  pool-refresh help
+EOF
+}
+
+case "${1:-}" in
+    ""|all)         cmd_refresh "" ;;
+    --dry-run)      cmd_dry_run ;;
+    --verify)       cmd_verify ;;
+    --converge)     cmd_converge ;;
+    self-test)      _self_test; exit $? ;;
+    help|-h|--help) usage ;;
+    -*)             err "unknown option: $1"; exit 64 ;;
+    *)              cmd_refresh "$1" ;;
+esac
