@@ -23,6 +23,14 @@ fn _read_score() -> int {
     return to_int(out)
 }
 
+// _read_parts extracts the "(k1=v1 k2=v2 ...)" payload from cmd_health.
+// Returned as space-separated string with no surrounding parens — callers
+// split on space to get key=value tokens for per-dimension attribution.
+fn _read_parts() -> string {
+    let out = to_string(exec("bin/ag_meta health 2>/dev/null | head -1 | sed -E 's/^[^(]*\\(//; s/\\).*$//'")).trim()
+    return out
+}
+
 fn _ensure_history_dir() { let _ = exec("mkdir -p state/history") }
 
 // _score_at_or_before returns the score from the newest row whose ts is at
@@ -93,7 +101,8 @@ fn main() {
     let s24 = _score_at_or_before(history, 24 * 3600)
     let s7d = _score_at_or_before(history, 7 * 86400)
 
-    let row = "{\"ts\":\"" + ts + "\",\"epoch\":" + to_string(epoch) + ",\"score\":" + to_string(score) + "}\n"
+    let parts = _read_parts()
+    let row = "{\"ts\":\"" + ts + "\",\"epoch\":" + to_string(epoch) + ",\"score\":" + to_string(score) + ",\"parts\":\"" + _json_esc(parts) + "\"}\n"
     let _ = exec("printf '%s' " + _sh_q(row) + " >> " + _sh_q(history))
 
     let mut delta_24h = 0

@@ -420,6 +420,33 @@ cmd_report() {
             else
                 echo "- _(single sample; Δ24h / Δ7d will populate after more runs)_"
             fi
+            # Biggest movers: diff k=v tokens between the last two parts snapshots.
+            local trend_hist="state/history/health_trend.jsonl"
+            if [[ -f "$trend_hist" ]]; then
+                local movers
+                movers=$(tail -2 "$trend_hist" | awk '
+                    {
+                        parts=""
+                        if (match($0, /"parts":"[^"]*"/)) { s=substr($0,RSTART,RLENGTH); sub(/"parts":"/,"",s); sub(/"$/,"",s); parts=s }
+                        lines[NR] = parts
+                    }
+                    END {
+                        if (NR < 2) exit
+                        n1 = split(lines[NR-1], arr1, " ")
+                        n2 = split(lines[NR],   arr2, " ")
+                        for (i=1; i<=n1; i++) { split(arr1[i], kv, "="); if (kv[2] ~ /^-?[0-9.]+$/) prev[kv[1]] = kv[2]+0 }
+                        for (i=1; i<=n2; i++) { split(arr2[i], kv, "="); if (kv[2] ~ /^-?[0-9.]+$/) cur[kv[1]]  = kv[2]+0 }
+                        for (k in cur) {
+                            d = cur[k] - (k in prev ? prev[k] : 0)
+                            ad = (d < 0) ? -d : d
+                            if (ad > 0) printf "%f %s %+g\n", ad, k, d
+                        }
+                    }' | sort -rn | head -3 | awk '{printf "%s %s (%s)", (NR>1 ? "; " : ""), $2, $3}')
+                if [[ -n "$movers" ]]; then
+                    echo "- biggest movers vs previous snapshot: ${movers}"
+                fi
+            fi
+
             # Sparkline: last 20 scores mapped to 8-level unicode blocks.
             # 0..12 → ▁, 13..25 → ▂, 26..37 → ▃, 38..50 → ▄, 51..62 → ▅,
             # 63..75 → ▆, 76..87 → ▇, 88..100 → █ (fixed 0-100 domain).
