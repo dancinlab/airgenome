@@ -312,9 +312,13 @@ cmd_refresh_token() {
     ea=$(jq -r '.claudeAiOauth.expiresAt // 0'        <<< "$blob" 2>/dev/null)
     [ -n "$at" ] || { err "refresh-token: no access token in $name"; return 4; }
 
-    # Skip if comfortably valid (>5 min remaining).
+    # Skip if comfortably valid (>5 min remaining). Even on skip, opportunistically
+    # clear stale rate-limit/error markers in the cache so cl -u doesn't keep
+    # painting an account as broken when its token is in fact usable for the
+    # session about to start.
     now_ms=$(($(date -u +%s) * 1000))
     if [ "$ea" -gt "$((now_ms + 300000))" ] 2>/dev/null; then
+        _cache_clear_error "$name" "token-still-valid"
         return 0
     fi
     [ -n "$rt" ] || { err "refresh-token: no refresh token in $name"; return 4; }
@@ -323,9 +327,46 @@ cmd_refresh_token() {
     new_blob=$(refresh_token "$rt" "$blob"); direct_rc=$?
     if [ -n "$new_blob" ]; then
         write_creds_file "$name" "$new_blob" || { err "refresh-token: write failed"; return 1; }
+        # Refresh succeeded — rate-limit / refresh errors no longer apply.
+        _cache_clear_error "$name" "token-refreshed"
         return 0
     fi
+    # Rate-limited (rc=2): user explicitly picked this account, so the existing
+    # access token is what they're about to use. Clear the dashboard label so
+    # `cl -u` doesn't keep accusing the account of being broken — but preserve
+    # _retry_at/_backoff so pool-refresh's main loop still honors the cool-down.
+    if [ "$direct_rc" = "2" ]; then
+        _cache_clear_error "$name" "rate-limit-but-user-picked"
+    fi
     return "$direct_rc"
+}
+
+# _cache_clear_error <name> <why>
+# Set the user-visible `error` field to null for <name>. Preserves backoff
+# state (_retry_at, _backoff, _backoff_at) so pool-refresh's rate-limiter
+# logic still respects API cool-downs — only the dashboard label is reset.
+#
+# Best-effort: if cache missing, lock contended, or jq fails, silently no-op
+# (the user's launch must not be blocked by cache bookkeeping).
+_cache_clear_error() {
+    local name="$1" why="${2:-cleared}"
+    [ -f "$USAGE" ] || return 0
+    # Lock-light: try once, give up if pool-refresh main loop holds the lock.
+    if [ -f "$LOCK" ]; then
+        local lpid; lpid=$(cat "$LOCK" 2>/dev/null || echo)
+        [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null && return 0
+    fi
+    local tmp="$USAGE.tmp.$$"
+    if jq --arg n "$name" '
+        if .[$n] == null then .
+        else .[$n].error = null
+        end' "$USAGE" > "$tmp" 2>/dev/null; then
+        chmod 600 "$tmp" 2>/dev/null || true
+        mv "$tmp" "$USAGE"
+        log "cache: cleared error label for $name ($why)"
+    else
+        rm -f "$tmp" 2>/dev/null || true
+    fi
 }
 
 cmd_dry_run() {
