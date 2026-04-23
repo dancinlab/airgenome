@@ -6,11 +6,15 @@
 #   cl-accounts | cl-fresh | cl-quota | cl-rotate | xargs -I{} cl-launch {} "$@"
 #
 # Contract:
-#   cl-core [args...]       pick account (round-robin, skip cooling, skip overquota)
-#                           + exec claude. Fallback tiers if filter empties candidates:
+#   cl-core                 NO ARGS + TTY → interactive picker (arrows / 1-9 / 0 / Enter / q).
+#                           NO ARGS + non-TTY → auto-pick + exec.
+#                           Fallback tiers if filter empties candidates:
 #                             tier 1: fresh + quota + rotate
 #                             tier 2: fresh + rotate         (ignore quota)
 #                             tier 3: rotate                 (ignore both)
+#   cl-core <args...>       forward args to claude with auto-picked account.
+#   cl-core --auto [args]   force auto-pick even on TTY (the prior default).
+#   cl-core --pick [args]   force interactive picker even when args are present.
 #   cl-core --real [args]   bypass shell function layer, exec real claude directly.
 #                           (picked account still applied via CLAUDE_CONFIG_DIR)
 #   cl-core --dir <d> [a..] force specific account dir.
@@ -355,14 +359,261 @@ _self_test() {
     return $rc
 }
 
+# ── interactive picker (Phase 2026-04-23 — Option C, hybrid TTY default) ────
+# When `cl` is invoked with no forwarded args AND stdin/stdout are a TTY,
+# default to the picker UI. Visual selection scales better now that the OAuth
+# usage endpoint is dead and wk%/ss% data may be frozen — a human eye can
+# weigh "rate-limit / now / 25%" better than a heuristic on stale numbers.
+#
+# Override flags:
+#   --auto    force auto-pick (the prior default behavior)
+#   --pick    force interactive picker (even with forwarded args)
+#
+# Design references:
+#   - nexus 330bea86 shared/bin/cl::cmd_interactive (frame builder, read_key)
+#   - cl-launch _pre_exec_refresh (called by cl-launch after we hand off the dir)
+#
+# Cursor priority on first frame (matches nexus):
+#   1. active account if it's still usable (no error AND wk<95)
+#   2. auto-pick (lowest wk under threshold) marked '*'
+#   3. row 0 (first account)
+
+CL_STATE_FILE="${CL_STATE_FILE:-$HOME/.airgenome/cl-state.json}"
+
+# Parallel arrays populated by _picker_load.
+_PK_NAMES=(); _PK_SS=(); _PK_WK=(); _PK_SRT=(); _PK_WRT=(); _PK_ERR=()
+_PK_AUTO=""; _PK_ACTIVE=""
+
+# Single jq pass into parallel arrays (no jq inside the render loop).
+_picker_load() {
+    local cache="${CL_QUOTA_CACHE:-$HOME/.airgenome/usage-cache.json}"
+    _PK_NAMES=(); _PK_SS=(); _PK_WK=(); _PK_SRT=(); _PK_WRT=(); _PK_ERR=()
+    _PK_AUTO=""; _PK_ACTIVE=""
+
+    [ -f "$CL_STATE_FILE" ] && _PK_ACTIVE=$(jq -r '.active // empty' "$CL_STATE_FILE" 2>/dev/null)
+
+    # Build the row list from on-disk creds dirs (this avoids picking accounts
+    # whose .credentials.json is missing). For each, look up cache fields.
+    local now; now=$(date -u +%s)
+    local d name row
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        name="${d##*/}"; name="${name#.claude-}"
+        if [ -f "$cache" ]; then
+            row=$(jq -r --arg n "$name" --argjson now "$now" '
+                def parse_ts:
+                  if . == null or . == "" then null
+                  else (. | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z"))
+                    | try fromdateiso8601
+                  end;
+                (.[$n] // {}) as $e
+                | (.[$n].session_pct  // null) as $ss
+                | (.[$n].week_all_pct // null) as $wk
+                | (.[$n].session_resets | parse_ts) as $srt
+                | ((.[$n].week_resets // .[$n].week_all_resets) | parse_ts) as $wrt
+                | (.[$n].error // "") as $err
+                | "\($ss // "-")|\($wk // "-")|\($srt // "")|\($wrt // "")|\($err)"
+            ' "$cache" 2>/dev/null)
+        else
+            row="-|-|||"
+        fi
+        _PK_NAMES+=("$name")
+        IFS='|' read -r ss wk srt wrt err <<< "$row"
+        _PK_SS+=("$ss"); _PK_WK+=("$wk"); _PK_SRT+=("$srt"); _PK_WRT+=("$wrt"); _PK_ERR+=("$err")
+    done < <(_emit_accounts)
+
+    # Auto-pick: lowest wk among (err == "" AND wk < 95 AND wk numeric).
+    local i best_i=-1 best_wk=999 wk_int
+    for i in "${!_PK_NAMES[@]}"; do
+        [ -z "${_PK_ERR[$i]}" ] || continue
+        [[ "${_PK_WK[$i]}" =~ ^[0-9.]+$ ]] || continue
+        wk_int=$(awk -v x="${_PK_WK[$i]}" 'BEGIN{printf "%d", (x+0)}')
+        if [ "$wk_int" -lt 95 ] && [ "$wk_int" -lt "$best_wk" ] 2>/dev/null; then
+            best_wk="$wk_int"; best_i="$i"
+        fi
+    done
+    [ "$best_i" -ge 0 ] && _PK_AUTO="${_PK_NAMES[$best_i]}"
+}
+
+# Build a single rendered frame string into named var.
+# Args: <out_var> <cursor_idx>
+_picker_frame() {
+    local __out=$1 cursor=$2
+    local count=${#_PK_NAMES[@]}
+    local hashes="####################"
+    local dots="...................."
+    local store_label="~/.airgenome"
+    local now; now=$(date -u +%s)
+    local frame=""
+
+    # Header
+    frame+="cl -- pick account    active=${_PK_ACTIVE:-none}    store=${store_label}"$'\n'
+    frame+=$(printf '    %-3s  %-10s  %4s  %-20s  %-7s  %4s  %-20s  %-7s  %s' \
+        "no" "name" "ss%" "[session]" "resets" "wk%" "[week_all]" "resets" "err")
+    frame+=$'\n'
+    frame+="    -----------------------------------------------------------------------------------------------"$'\n'
+
+    local i ss wk srt wrt err num_label act_mark prefix bar_s bar_w rst_s rst_w
+    local ss_col wk_col f
+    for i in "${!_PK_NAMES[@]}"; do
+        ss="${_PK_SS[$i]}"; wk="${_PK_WK[$i]}"; srt="${_PK_SRT[$i]}"; wrt="${_PK_WRT[$i]}"; err="${_PK_ERR[$i]}"
+
+        # Bars
+        if [[ "$ss" =~ ^[0-9]+$ ]]; then
+            f=$(( (ss + 2) / 5 )); [ $f -gt 20 ] && f=20; [ $f -lt 0 ] && f=0
+            bar_s="${hashes:0:f}${dots:0:$((20-f))}"
+        else bar_s="$dots"; fi
+        if [[ "$wk" =~ ^[0-9]+$ ]]; then
+            f=$(( (wk + 2) / 5 )); [ $f -gt 20 ] && f=20; [ $f -lt 0 ] && f=0
+            bar_w="${hashes:0:f}${dots:0:$((20-f))}"
+        else bar_w="$dots"; fi
+
+        rst_s=$(_fmt_until "$srt" "$now")
+        rst_w=$(_fmt_until "$wrt" "$now")
+        if [[ "$ss" =~ ^[0-9]+$ ]]; then ss_col="${ss}%"; else ss_col="-"; fi
+        if [[ "$wk" =~ ^[0-9]+$ ]]; then wk_col="${wk}%"; else wk_col="-"; fi
+
+        if [ "$i" -lt 9 ]; then num_label=$((i+1))
+        elif [ "$i" -eq 9 ]; then num_label="0"
+        else num_label="-"
+        fi
+
+        if [ "${_PK_NAMES[$i]}" = "$_PK_AUTO" ] && [ -n "$_PK_AUTO" ]; then
+            act_mark="*"
+        else
+            act_mark=" "
+        fi
+
+        # Cursor: 4-space indent normally, "  > " when cursor row.
+        if [ "$i" -eq "$cursor" ]; then prefix="  > "; else prefix="    "; fi
+
+        frame+=$(printf '%s%-3s %s%-10s  %4s  %s  %-7s  %4s  %s  %-7s  %s' \
+            "$prefix" "$num_label" "$act_mark" "${_PK_NAMES[$i]}" \
+            "$ss_col" "$bar_s" "$rst_s" \
+            "$wk_col" "$bar_w" "$rst_w" "${err:--}")
+        frame+=$'\n'
+    done
+
+    # Footer
+    frame+=$'\n'
+    frame+="  ↑↓ move  Enter→${_PK_NAMES[$cursor]}  1-9/0 jump  q cancel"$'\n'
+
+    printf -v "$__out" '%s' "$frame"
+}
+
+# Read one key into global _PK_KEY. Handles ESC sequences (arrows).
+_PK_KEY=""
+_picker_read_key() {
+    local key rest
+    IFS= read -rsn1 key
+    if [[ "$key" == $'\x1b' ]]; then
+        rest=""
+        IFS= read -rsn2 -t 1 rest 2>/dev/null || true
+        key+="${rest}"
+    fi
+    _PK_KEY="$key"
+}
+
+# Persist active selection to cl-state.json (best-effort).
+_picker_set_active() {
+    local name="$1"
+    [ -n "$name" ] || return 0
+    mkdir -p "$(dirname "$CL_STATE_FILE")" 2>/dev/null || true
+    local tmp="$CL_STATE_FILE.tmp.$$"
+    if [ -f "$CL_STATE_FILE" ]; then
+        jq --arg n "$name" '. + {active:$n, _ts:(now|floor)}' "$CL_STATE_FILE" > "$tmp" 2>/dev/null \
+            && mv "$tmp" "$CL_STATE_FILE"
+    else
+        jq -n --arg n "$name" '{active:$n, _ts:(now|floor)}' > "$tmp" 2>/dev/null \
+            && mv "$tmp" "$CL_STATE_FILE"
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    chmod 600 "$CL_STATE_FILE" 2>/dev/null || true
+}
+
+# Main interactive loop. Echos selected dir on stdout, exit 0. Cancel → exit 1.
+_interactive_pick() {
+    _picker_load
+    local count=${#_PK_NAMES[@]}
+    if [ "$count" -eq 0 ]; then
+        echo "cl: no accounts found (~/.claude-claude*/.credentials.json)" >&2
+        return 69
+    fi
+
+    # Initial cursor placement: active if usable → auto → 0.
+    local cursor=0 i wk_int
+    if [ -n "$_PK_ACTIVE" ]; then
+        for i in "${!_PK_NAMES[@]}"; do
+            if [ "${_PK_NAMES[$i]}" = "$_PK_ACTIVE" ]; then
+                if [ -z "${_PK_ERR[$i]}" ] && [[ "${_PK_WK[$i]}" =~ ^[0-9.]+$ ]]; then
+                    wk_int=$(awk -v x="${_PK_WK[$i]}" 'BEGIN{printf "%d", (x+0)}')
+                    [ "$wk_int" -lt 95 ] && cursor=$i
+                fi
+                break
+            fi
+        done
+    fi
+    if [ "$cursor" -eq 0 ] && [ -n "$_PK_AUTO" ]; then
+        for i in "${!_PK_NAMES[@]}"; do
+            if [ "${_PK_NAMES[$i]}" = "$_PK_AUTO" ]; then cursor=$i; break; fi
+        done
+    fi
+
+    # 1 header + 1 column + 1 separator + N rows + 1 blank + 1 footer = N+5
+    local total_lines=$(( count + 5 ))
+    local first=1 selected="" frame prefix idx
+
+    # Hide cursor; restore on exit.
+    printf '\033[?25l' >&2
+    trap 'printf "\033[?25h" >&2' EXIT INT TERM
+
+    while true; do
+        if [ "$first" -eq 1 ]; then
+            prefix=""; first=0
+        else
+            printf -v prefix '\033[%dA\r' "$total_lines"
+        fi
+        _picker_frame frame "$cursor"
+        printf '%s%s' "$prefix" "$frame" >&2
+
+        _picker_read_key
+        case "$_PK_KEY" in
+            $'\x1b[A'|$'\x1bOA') cursor=$(( (cursor - 1 + count) % count )) ;;
+            $'\x1b[B'|$'\x1bOB') cursor=$(( (cursor + 1) % count )) ;;
+            "")  selected="${_PK_NAMES[$cursor]}"; break ;;
+            [1-9])
+                idx=$(( _PK_KEY - 1 ))
+                if [ "$idx" -lt "$count" ]; then selected="${_PK_NAMES[$idx]}"; break; fi ;;
+            0)
+                if [ "$count" -ge 10 ]; then selected="${_PK_NAMES[9]}"; break; fi ;;
+            q|Q|$'\x1b')
+                printf '\n  cancelled\n' >&2
+                printf '\033[?25h' >&2
+                trap - EXIT INT TERM
+                return 1 ;;
+        esac
+    done
+
+    printf '\033[?25h' >&2
+    trap - EXIT INT TERM
+    printf '\n  -> %s\n' "$selected" >&2
+
+    _picker_set_active "$selected"
+    echo "$HOME/.claude-$selected"
+    return 0
+}
+
 # --- arg parse ---
 real_mode=0
 forced_dir=""
+mode=""        # "" (default heuristic) | "auto" | "pick"
 declare -a fwd=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --real) real_mode=1; shift ;;
         --dir)  forced_dir="${2:-}"; shift 2 ;;
+        --auto) mode="auto"; shift ;;
+        --pick|pick) mode="pick"; shift ;;
         -h|--help|help)
             sed -n '3,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -u|--usage|usage)
@@ -374,8 +625,17 @@ while [ "$#" -gt 0 ]; do
 done
 
 # --- pick account ---
+# Mode resolution:
+#   --auto             → auto-pick
+#   --pick             → interactive picker
+#   default + TTY + no fwd args → interactive picker
+#   default + (non-TTY OR fwd args) → auto-pick
 if [ -n "$forced_dir" ]; then
     dir="$forced_dir"
+elif [ "$mode" = "pick" ] || { [ -z "$mode" ] && [ -t 0 ] && [ -t 1 ] && [ "${#fwd[@]}" -eq 0 ]; }; then
+    dir=$(_interactive_pick)
+    pick_rc=$?
+    if [ "$pick_rc" -ne 0 ]; then exit "$pick_rc"; fi
 else
     dir=$(_pick_dir)
     if [ -z "$dir" ]; then
