@@ -313,6 +313,25 @@ cmd_report() {
             echo
         fi
 
+        # Trend (temporal dimension)
+        if [[ -f state/ag_health_trend.json ]]; then
+            echo "## Trend"
+            echo
+            local score d24 d7 dir n24
+            score=$(grep -oE '"score": *-?[0-9]+' state/ag_health_trend.json | head -1 | awk -F: '{print $2+0}')
+            d24=$(grep -oE '"delta_24h": *-?[0-9]+' state/ag_health_trend.json | awk -F: '{print $2+0}')
+            d7=$(grep -oE '"delta_7d": *-?[0-9]+' state/ag_health_trend.json | awk -F: '{print $2+0}')
+            dir=$(grep -oE '"direction_24h":"[a-z]+"' state/ag_health_trend.json | awk -F'"' '{print $4}')
+            n24=$(grep -oE '"n_samples_24h": *[0-9]+' state/ag_health_trend.json | awk -F: '{print $2+0}')
+            echo "- score now: \`${score:-?}/100\`"
+            if [[ "${n24:-1}" -ge 2 ]]; then
+                echo "- Δ24h: \`${d24:-0}\` (${dir:-flat})  ·  Δ7d: \`${d7:-0}\`"
+            else
+                echo "- _(single sample; Δ24h / Δ7d will populate after more runs)_"
+            fi
+            echo
+        fi
+
         # ROI findings
         if [[ -f state/ag_roi.json ]]; then
             echo "## ROI opportunities"
@@ -345,6 +364,10 @@ cmd_report() {
         _headline "compute_cost"        state/ag_compute_cost.json       '"seconds_per_genome": *[0-9.]+|"total_genomes": *[0-9]+'
         _headline "dispatch_coverage"   state/ag_dispatch_coverage.json  '"dead_handler_count": *[0-9]+'
         _headline "rule_effect_map"     state/ag_rule_effect_map.json    '"dormant_count": *[0-9]+'
+        _headline "reachability_matrix" state/ag_reachability_matrix.json '"hosts_total": *[0-9]+|"reachable": *[0-9]+|"unreachable": *[0-9]+'
+        _headline "build_size_drift"    state/ag_build_size_drift.json   '"build_kb": *[0-9]+|"drift_pct": *-?[0-9.]+|"alarm": *(true|false)'
+        _headline "scanner_freshness"   state/ag_scanner_freshness.json  '"total_state_files": *[0-9]+|"fresh": *[0-9]+|"stale": *[0-9]+'
+        _headline "health_trend"        state/ag_health_trend.json       '"score": *-?[0-9]+|"delta_24h": *-?[0-9]+|"delta_7d": *-?[0-9]+|"direction_24h":"[a-z]+"'
         echo
 
         # Top motifs — JSON file has 3 ring blocks in order mac, ubu, ubu2.
