@@ -83,6 +83,7 @@ fn main() {
     let bsd = "state/ag_build_size_drift.json"
     let htr = "state/ag_health_trend.json"
     let fre = "state/ag_scanner_freshness.json"
+    let tel = "state/ag_telemetry_audit.json"
 
     let mut blockers = "["
 
@@ -174,6 +175,15 @@ fn main() {
         let sev = "high"
         if stale_n >= 5 { sev = "critical" }
         blockers = _add_blocker(blockers, sev, "scanner_stale", fre, "stale=" + to_string(stale_n))
+    }
+    // high — any scanner that hit rc != 0 in the last 24h silently invalidates
+    // downstream aggregators (blockers, roi, dsl).  errors_24h_total > 0 → high;
+    // ≥ 5 → critical.
+    let tel_err = _peek_num(tel, "errors_24h_total")
+    if tel_err > 0 {
+        let sev = "high"
+        if tel_err >= 5 { sev = "critical" }
+        blockers = _add_blocker(blockers, sev, "scanner_error_24h", tel, "errors_24h_total=" + to_string(tel_err))
     }
 
     blockers = blockers + "]"
