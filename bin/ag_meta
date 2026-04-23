@@ -319,6 +319,7 @@ cmd_fast() {
     _hexa_timed "$(_scanner_path ring_integrity)" || rc=$((rc+1))
     _hexa_timed "$(_scanner_path forge_health)"   || rc=$((rc+1))
     _hexa_timed "$(_scanner_path blockers)"       || rc=$((rc+1))
+    _hexa_timed "$(_scanner_path blocker_persistence)" || rc=$((rc+1))
     # Guard on critical severity in state/ag_blockers.json
     local crit=0
     if [[ -f state/ag_blockers.json ]]; then
@@ -328,7 +329,18 @@ cmd_fast() {
         echo "ag_meta fast: $crit CRITICAL blocker(s) — see state/ag_blockers.json" >&2
         return 1
     fi
-    echo "ag_meta fast: OK (no critical blockers)"
+    # Guard on any chronic blocker — a blocker that has fired ≥ threshold
+    # runs is structural, not transient, and should block the commit.
+    local chronic=0
+    if [[ -f state/ag_blocker_persistence.json ]]; then
+        chronic=$(grep -oE '"chronic_count": *[0-9]+' state/ag_blocker_persistence.json | head -1 | awk -F: '{print $2+0}')
+        chronic="${chronic:-0}"
+    fi
+    if [[ "$chronic" -gt 0 ]]; then
+        echo "ag_meta fast: $chronic CHRONIC blocker(s) — see state/ag_blocker_persistence.json" >&2
+        return 1
+    fi
+    echo "ag_meta fast: OK (no critical or chronic blockers)"
     return $rc
 }
 
