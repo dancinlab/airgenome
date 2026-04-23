@@ -231,17 +231,29 @@ cmd_dsl() {
 
 cmd_doctor() {
     local rc=0
+    # --only <pattern> filters registry entries by key regex (scan + aggr).
+    # Useful for iterative debugging: ag_meta doctor --only 'ring|forge'
+    local only=""
+    local passthrough=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --only) only="$2"; shift 2 ;;
+            *) passthrough+=("$1"); shift ;;
+        esac
+    done
     for entry in "${SCANNERS[@]}" "${AGGREGATORS[@]}"; do
         local key="${entry%%:*}"
         local path="${entry#*:}"
+        if [[ -n "$only" ]] && ! [[ "$key" =~ $only ]]; then continue; fi
         echo "=== $key ==="
-        if ! _hexa_timed "$path" "$@"; then rc=$((rc + 1)); fi
+        if ! _hexa_timed "$path" "${passthrough[@]+"${passthrough[@]}"}"; then rc=$((rc + 1)); fi
     done
     # Post-run summary: show the outcome without requiring a second invocation.
-    # Suppressed in --selftest mode since scores are meaningless there.
+    # Suppressed in --selftest mode (scores meaningless) and in --only mode
+    # (partial run → summary would mislead).
     local is_selftest=0
-    for a in "$@"; do [[ "$a" == "--selftest" ]] && is_selftest=1 && break; done
-    if [[ $is_selftest -eq 0 ]]; then
+    for a in "${passthrough[@]+"${passthrough[@]}"}"; do [[ "$a" == "--selftest" ]] && is_selftest=1 && break; done
+    if [[ $is_selftest -eq 0 && -z "$only" ]]; then
         echo ""
         cmd_summary
     fi
