@@ -6,13 +6,13 @@
 // 구현: nc -U 쉘 우회 (hexa raw socket API 부재). ncat 미설치 → nc 사용.
 //
 // 사용 (ubu1):
-//   cat payload.bin | ~/Dev/hexa-lang/target/release/hexa modules/gate_client.hexa
+//   cat payload.bin | ~/core/hexa-lang/target/release/hexa modules/gate_client.hexa
 //
 // 주의: nc -U 는 stdin EOF 후 종료. 영구 스트리밍 필요 시 nc -q 0 옵션 사용.
 
 fn load_sock() -> str {
     // gate_config.jsonl 에서 ubu_gate_sock 로드 (하드코딩 금지 R2)
-    let cfg_path = try { exec("printenv HOME").trim() } catch e { "" } + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+    let cfg_path = try { exec("printenv HOME").trim() } catch e { "" } + "/core/airgenome/nexus/shared/gate_config.jsonl"
     let exists = try { exec("test -f '" + cfg_path + "' && echo y || echo n").trim() } catch e { "n" }
     if exists == "y" {
         let line = try { exec("grep -m1 ubu_gate_sock '" + cfg_path + "' 2>/dev/null || true").trim() } catch e { "" }

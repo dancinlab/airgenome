@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-23T04:15:07Z",
+  "updated_ts": "2026-04-23T13:28:11Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -131,6 +131,24 @@
       "user_status": "pending",
       "score_priority": 70,
       "submitted_ts": "2026-04-22T15:54:31Z"
+    },
+    {
+      "id": "agm-20260423-001",
+      "kind": "cert",
+      "title": "Stage-1 CLOSED: H100 single-pod P12 resolved (anima 929e30c2, pod uptime 11min)",
+      "from_repo": "anima",
+      "user_status": "pending",
+      "score_priority": 2,
+      "submitted_ts": "2026-04-23T12:09:10Z"
+    },
+    {
+      "id": "agm-20260423-002",
+      "kind": "cert",
+      "title": "Stage-2 substrate_indep=TRUE · Stage-3 AN11(c) REAL USABLE (JSD=1.0 bits) · Mk.VI VERIFIED",
+      "from_repo": "anima",
+      "user_status": "pending",
+      "score_priority": 2,
+      "submitted_ts": "2026-04-23T13:28:11Z"
     }
   ],
   "proposals": [],

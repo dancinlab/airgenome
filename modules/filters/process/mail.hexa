@@ -17,7 +17,7 @@
 //   confidence: 95/100 (not front) | 0 (front, skip)
 
 let HOME = env("HOME")
-let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_mail_state.jsonl"
+let STATE_LOG = HOME + "/core/airgenome/nexus/shared/gate_mail_state.jsonl"
 
 let argv = args()
 let mut state = "cool"

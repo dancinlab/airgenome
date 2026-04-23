@@ -15,7 +15,7 @@
 //   state >= hot  AND  Calendar 가 frontmost 가 아님 → Calendar 본체 + Agent BG
 
 let HOME = env("HOME")
-let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_calendar_state.jsonl"
+let STATE_LOG = HOME + "/core/airgenome/nexus/shared/gate_calendar_state.jsonl"
 
 let argv = args()
 let mut state = "cool"

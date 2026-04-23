@@ -15,7 +15,7 @@
 use "../core/core"
 
 let HOME = env("HOME")
-let INFRA_STATE = HOME + "/Dev/nexus/infra_state.json"
+let INFRA_STATE = HOME + "/core/nexus/infra_state.json"
 
 fn ts_iso() -> str {
     return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()

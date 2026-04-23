@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/ghost/Dev/airgenome/bin/airgenome</string>
+        <string>/Users/ghost/core/airgenome/bin/airgenome</string>
         <string>run</string>
     </array>
 
@@ -28,7 +28,7 @@
     <string>/Users/ghost/.airgenome/supervisor.stderr.log</string>
 
     <key>WorkingDirectory</key>
-    <string>/Users/ghost/Dev/airgenome</string>
+    <string>/Users/ghost/core/airgenome</string>
 
     <key>EnvironmentVariables</key>
     <dict>
@@ -39,9 +39,9 @@
         <key>LANG</key>
         <string>en_US.UTF-8</string>
         <key>AIRGENOME_ROOT</key>
-        <string>/Users/ghost/Dev/airgenome</string>
+        <string>/Users/ghost/core/airgenome</string>
         <key>HEXA</key>
-        <string>/Users/ghost/Dev/hexa-lang/hexa</string>
+        <string>/Users/ghost/core/hexa-lang/hexa</string>
     </dict>
 
     <key>ProcessType</key>

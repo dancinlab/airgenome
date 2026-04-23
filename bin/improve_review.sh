@@ -29,7 +29,7 @@
 
 set -euo pipefail
 
-ROOT="${AIRGENOME_ROOT:-$HOME/Dev/airgenome}"
+ROOT="${AIRGENOME_ROOT:-$HOME/core/airgenome}"
 MAX_LINES=30
 
 RED=$(printf '\033[0;31m')

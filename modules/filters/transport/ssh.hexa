@@ -20,8 +20,8 @@
 
 let HOME = env("HOME")
 let LOCK_DIR = HOME + "/.airgenome/ssh_locks"
-let LOG_PATH = HOME + "/Dev/airgenome/forge/ssh_gate.log"
-let CONFIG_PATH = HOME + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+let LOG_PATH = HOME + "/core/airgenome/forge/ssh_gate.log"
+let CONFIG_PATH = HOME + "/core/airgenome/nexus/shared/gate_config.jsonl"
 
 fn load_cfg(key: str, fallback: str) -> str {
     if file_exists(CONFIG_PATH) == false { return fallback }

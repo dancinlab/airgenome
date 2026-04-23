@@ -23,8 +23,16 @@ use "tool/ag_common"
 
 // _scan returns pipe-delimited "path|count" lines for files matching the
 // stale-path regex.  Result is newline-delimited.
+//
+// Self-excludes known doc/comment/test-fixture files that legitimately
+// contain the pattern strings (scanner source itself, help text, the
+// migration-incident commit messages baked into history).  Those aren't
+// runtime path hazards — listing them in the blocker noise drowns out
+// real residue.
 fn _scan(dirs: string, pattern: string) -> string {
-    let cmd = "grep -rlE " + _sh_q(pattern) + " " + dirs + " 2>/dev/null | while read -r f; do "
+    let cmd = "grep -rlE " + _sh_q(pattern) + " " + dirs + " 2>/dev/null | "
+        + "grep -vE '(ag_path_migration_audit\\.hexa|ag_blockers\\.hexa$|ag_meta$|menubar\\.hexa$|core\\.hexa$)' | "
+        + "while read -r f; do "
         + "c=$(grep -cE " + _sh_q(pattern) + " \"$f\" 2>/dev/null); "
         + "printf '%s|%s\\n' \"$f\" \"$c\"; "
         + "done"

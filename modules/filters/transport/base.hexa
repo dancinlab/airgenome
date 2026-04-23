@@ -15,7 +15,7 @@
 let HOME = env("HOME")
 let STATE_DIR = HOME + "/.airgenome"
 let STATE_FILE = STATE_DIR + "/state.json"
-let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
+let INFRA_STATE = HOME + "/core/nexus/shared/infra_state.json"
 let GATE_LOG = STATE_DIR + "/gate_log.jsonl"
 let MISTAKES_LOG = STATE_DIR + "/mistakes.jsonl"
 

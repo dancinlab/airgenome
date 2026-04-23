@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/ghost/Dev/airgenome/bin/remote_load.sh</string>
+        <string>/Users/ghost/core/airgenome/bin/remote_load.sh</string>
         <string>probe</string>
     </array>
 
@@ -36,7 +36,7 @@
     <string>/Users/ghost/.airgenome/remote-load.stderr.log</string>
 
     <key>WorkingDirectory</key>
-    <string>/Users/ghost/Dev/airgenome</string>
+    <string>/Users/ghost/core/airgenome</string>
 
     <key>EnvironmentVariables</key>
     <dict>

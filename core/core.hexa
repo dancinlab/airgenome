@@ -278,7 +278,9 @@ fn init_default_guard() -> AdaptiveThrottle {
 fn airgenome_root() -> str {
     let custom = env("AIRGENOME_ROOT")
     if custom != "" { return custom }
-    return env("HOME") + "/Dev/airgenome"
+    // Project migrated ~/Dev/airgenome → ~/core/airgenome 2026.  AIRGENOME_ROOT
+    // env still wins so deployments pinning the old path keep working.
+    return env("HOME") + "/core/airgenome"
 }
 
 fn forge_dir() -> str {
@@ -358,7 +360,7 @@ fn self_test() -> void {
 
     // Verify runtime paths — default fallback (AIRGENOME_ROOT 미설정 가정)
     let home = env("HOME")
-    let expected_root = home + "/Dev/airgenome"
+    let expected_root = home + "/core/airgenome"
     chk_true("forge_dir contains /forge", forge_dir() == expected_root + "/forge")
     chk_true("ring_path joins name", ring_path("genomes.ring") == expected_root + "/forge/genomes.ring")
     chk_true("default_ring_path fallback", default_ring_path() == expected_root + "/forge/genomes.ring")

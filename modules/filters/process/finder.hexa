@@ -22,7 +22,7 @@
 // 안전: 한 줄도 안 BG 하는 게 정상 (helper 가 활동 중일 때만 매칭)
 
 let HOME = env("HOME")
-let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_finder_state.jsonl"
+let STATE_LOG = HOME + "/core/airgenome/nexus/shared/gate_finder_state.jsonl"
 
 let argv = args()
 let mut state = "cool"

@@ -15,7 +15,7 @@
 
 let VERSION = "0.2.0"
 let mut AG_HOME = env("AIRGENOME_HOME")
-if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
+if AG_HOME == "" { AG_HOME = env("HOME") + "/core/airgenome" }
 let GENOMES_LOG = AG_HOME + "/genomes.log"
 let STATE_PATH = try { exec("echo ${TMPDIR:-/tmp}").trim() } catch e { "/tmp" } + "/airgenome-state.json"
 let ANOMALY_OUT = AG_HOME + "/forge/anomaly_gate.json"

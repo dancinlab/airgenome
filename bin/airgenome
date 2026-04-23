@@ -18,8 +18,8 @@
 
 set -eu
 
-AIRGENOME_ROOT="${AIRGENOME_ROOT:-/Users/ghost/Dev/airgenome}"
-HEXA="${HEXA:-/Users/ghost/Dev/hexa-lang/hexa}"
+AIRGENOME_ROOT="${AIRGENOME_ROOT:-/Users/ghost/core/airgenome}"
+HEXA="${HEXA:-/Users/ghost/core/hexa-lang/hexa}"
 LOG_DIR="$HOME/.airgenome"
 PLIST_SRC="$AIRGENOME_ROOT/shared/launchagents/com.airgenome.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/com.airgenome.plist"
@@ -319,8 +319,8 @@ cmd_status() {
     echo "=== 산출물 freshness ==="
     local f
     for f in \
-        "$HOME/Dev/nexus/infra_state.json" \
-        "$HOME/Dev/nexus/dispatch_state.json" \
+        "$HOME/core/nexus/infra_state.json" \
+        "$HOME/core/nexus/dispatch_state.json" \
         "$AIRGENOME_ROOT/forge/genomes.ring" \
         "$AIRGENOME_ROOT/forge/forecast.jsonl"
     do
@@ -723,8 +723,8 @@ usage: airgenome <command>
   guard-loop     guard 만 독립 실행 (디버그)
 
 env:
-  AIRGENOME_ROOT=/Users/ghost/Dev/airgenome
-  HEXA=/Users/ghost/Dev/hexa-lang/hexa
+  AIRGENOME_ROOT=/Users/ghost/core/airgenome
+  HEXA=/Users/ghost/core/hexa-lang/hexa
   AIRG_OFFLOAD_TIMEOUT=5    offload ssh ConnectTimeout
   AIRG_OFFLOAD_FORCE=1      offload offline pre-check 우회
 

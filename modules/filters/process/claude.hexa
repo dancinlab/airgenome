@@ -27,7 +27,7 @@
 let HOME = env("HOME")
 let SESSION_NOW = HOME + "/.airgenome/session_now.json"
 let CLAUDE_PROJECTS = HOME + "/.claude-claude4/projects"
-let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_claude_state.jsonl"
+let STATE_LOG = HOME + "/core/airgenome/nexus/shared/gate_claude_state.jsonl"
 
 // argv[0]=hexa argv[1]=script_path argv[2]=state argv[3]=hid_idle (auto_dispatch 컨벤션)
 let argv = args()

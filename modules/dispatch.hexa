@@ -18,8 +18,8 @@
 use "../core/core"
 
 let HOME = env("HOME")
-let INFRA_STATE = HOME + "/Dev/nexus/infra_state.json"
-let DISPATCH_STATE = HOME + "/Dev/nexus/dispatch_state.json"
+let INFRA_STATE = HOME + "/core/nexus/infra_state.json"
+let DISPATCH_STATE = HOME + "/core/nexus/dispatch_state.json"
 
 // 공백 안전 jq 추출 — 누락 필드는 빈 문자열 반환
 fn jqx(expr: str, path: str) -> str {

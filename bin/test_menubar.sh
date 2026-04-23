@@ -25,7 +25,7 @@
 
 set -euo pipefail
 
-ROOT="${AIRGENOME_ROOT:-$HOME/Dev/airgenome}"
+ROOT="${AIRGENOME_ROOT:-$HOME/core/airgenome}"
 BIN="${1:-$ROOT/build/artifacts/airgenome-menubar}"
 TIMEOUT_SEC=10
 MIN_ITEMS=15

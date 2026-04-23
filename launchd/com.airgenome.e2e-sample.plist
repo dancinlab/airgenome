@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/ghost/Dev/airgenome/shared/scripts/e2e_sample.sh</string>
+        <string>/Users/ghost/core/airgenome/shared/scripts/e2e_sample.sh</string>
     </array>
     <key>StartInterval</key>
     <integer>1800</integer>
@@ -18,7 +18,7 @@
     <key>StandardErrorPath</key>
     <string>/Users/ghost/.airgenome/e2e_sample.stderr.log</string>
     <key>WorkingDirectory</key>
-    <string>/Users/ghost/Dev/airgenome</string>
+    <string>/Users/ghost/core/airgenome</string>
     <key>ProcessType</key>
     <string>Background</string>
     <key>Nice</key>

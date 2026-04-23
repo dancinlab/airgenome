@@ -3,7 +3,7 @@
 #
 # 아키텍처 (3-layer):  mac (this) → lb.sh → { ubu1, ubu2, htz }
 # 데이터 소스:         ~/.airgenome/remote_load.jsonl  (remote_load.sh 30s 폴 JSONL)
-# 상태 출력:           ~/Dev/nexus/lb_state.json (atomic write per pick)
+# 상태 출력:           ~/core/nexus/lb_state.json (atomic write per pick)
 # 실행 로그:           ~/.airgenome/lb.jsonl  (1 line per run)
 # 호스트 레지스트리:    shared/config/hosts.json  (kind != self, enabled == true)
 #
@@ -27,7 +27,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REG="${HOSTS_REGISTRY:-$ROOT/shared/config/hosts.json}"
 FEED="${LB_FEED:-$HOME/.airgenome/remote_load.jsonl}"
-STATE="${LB_STATE:-$HOME/Dev/nexus/lb_state.json}"
+STATE="${LB_STATE:-$HOME/core/nexus/lb_state.json}"
 LOG="${LB_LOG:-$HOME/.airgenome/lb.jsonl}"
 FRESH_S="${LB_FRESH_S:-120}"
 

@@ -19,7 +19,7 @@
 //   confidence: foreground 인지 미상이면 0.7, 명확히 background 면 0.95
 
 let HOME = env("HOME")
-let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_telegram_state.jsonl"
+let STATE_LOG = HOME + "/core/airgenome/nexus/shared/gate_telegram_state.jsonl"
 
 let argv = args()
 let mut state = "cool"

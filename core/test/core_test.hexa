@@ -69,7 +69,7 @@ fn main() -> void {
 
     // 9. runtime paths — fallback (AIRGENOME_ROOT 미설정 가정)
     let home = env("HOME")
-    let want_root = home + "/Dev/airgenome"
+    let want_root = home + "/core/airgenome"
     chk("airgenome_root fallback", airgenome_root() == want_root)
     chk("forge_dir fallback", forge_dir() == want_root + "/forge")
     chk("ring_path joins", ring_path("genomes.ring") == want_root + "/forge/genomes.ring")

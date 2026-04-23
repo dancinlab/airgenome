@@ -20,7 +20,7 @@
 // Networking/GPU/Safari 본체 는 절대 BG 안 함 (HARD_NEVER)
 
 let HOME = env("HOME")
-let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_safari_state.jsonl"
+let STATE_LOG = HOME + "/core/airgenome/nexus/shared/gate_safari_state.jsonl"
 
 let argv = args()
 let mut state = "cool"

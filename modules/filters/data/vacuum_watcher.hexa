@@ -13,7 +13,7 @@
 // R1 HEXA-FIRST: .hexa + 인라인 python3 페이로드만.
 
 let STATE_PATH = "/Users/ghost/.airgenome/auto_vacuum.state"
-let REINTERPRET = "/Users/ghost/Dev/airgenome/scripts/sqlite_byte_reinterpret.hexa"
+let REINTERPRET = "/Users/ghost/core/airgenome/scripts/sqlite_byte_reinterpret.hexa"
 
 let SAFARI_DB = "/Users/ghost/Library/Safari/History.db"
 let NOTES_DB  = "/Users/ghost/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite"

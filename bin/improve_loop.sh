@@ -16,7 +16,7 @@
 # 동작:
 #   1) improve_queue.jsonl scan → 첫 pending 항목 선택
 #   2) status=in_progress 로 마킹 + started_at
-#   3) claude -p "<task>" --max-turns 10 --cwd ~/Dev/airgenome 실행
+#   3) claude -p "<task>" --max-turns 10 --cwd ~/core/airgenome 실행
 #      stdout → ~/.airgenome/improve_results/<id>.out
 #   4) 완료시 exit code 기록 + status=done|fail + finished_at + result_path
 #
@@ -32,7 +32,7 @@ set -euo pipefail
 Q="${HOME}/.airgenome/improve_queue.jsonl"
 RESULTS="${HOME}/.airgenome/improve_results"
 LOG="${HOME}/.airgenome/improve_loop.log"
-WORKDIR="${HOME}/Dev/airgenome"
+WORKDIR="${HOME}/core/airgenome"
 
 mkdir -p "$RESULTS" "$(dirname "$Q")"
 touch "$Q"

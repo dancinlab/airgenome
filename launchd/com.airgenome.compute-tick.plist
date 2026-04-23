@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/ghost/Dev/airgenome/bin/compute_tick.sh</string>
+        <string>/Users/ghost/core/airgenome/bin/compute_tick.sh</string>
     </array>
     <key>StartInterval</key>
     <integer>60</integer>
@@ -25,7 +25,7 @@
     <key>StandardErrorPath</key>
     <string>/Users/ghost/.airgenome/compute-tick.stderr.log</string>
     <key>WorkingDirectory</key>
-    <string>/Users/ghost/Dev/airgenome</string>
+    <string>/Users/ghost/core/airgenome</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
