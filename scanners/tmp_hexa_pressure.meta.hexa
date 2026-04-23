@@ -4,7 +4,11 @@
 name=tmp_hexa_pressure
 kind=threshold_abs
 source=glob_count:/tmp/hexa_*
-baseline_bytes=200
+# Calibration 2026-04-23: bin/tmp-hexa-prune hourly LaunchAgent now keeps
+# the directory bounded.  Real APFS-freeze risk begins around 8000+; set
+# threshold above that with headroom.  Active cl-core / AOT sessions
+# legitimately spawn 2000-3000 transient files before the hourly prune.
+baseline_bytes=8000
 alarm_pct=0
 severity=high
-description=/tmp/hexa_* file count pressure (causes hexa_cache_err 'No space')
+description=/tmp/hexa_* file count > 8000 (APFS B-tree degradation risk)

@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-23T15:12:07Z",
+  "updated_ts": "2026-04-23T15:20:33Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -41,9 +41,11 @@
       "kind": "advisory",
       "title": "CONVENTION lang_gap: 모든 repo 세션이 hexa 언어/runtime 제약 (미구현 method, reserved keyword 충돌, AOT bug, primitive 누락 등) 발견 시 → hexa /Users/ghost/core/hexa-lang/bin/proposal_inbox submit --to hexa-lang --category lang_gap --kind cluster --title '...' 로 등록. 자기 repo 에 혼자 쌓지 말고 hexa-lang 에 모일 것. (근거: 2026-04-23 session, rfind/guard/hx_prefix/write_file 등 5건 누적)",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 80,
-      "submitted_ts": "2026-04-22T15:49:12Z"
+      "submitted_ts": "2026-04-22T15:49:12Z",
+      "in_progress_ts": "2026-04-23T15:20:33Z",
+      "done_ts": "2026-04-23T15:20:33Z"
     },
     {
       "id": "agm-20260422-005",
