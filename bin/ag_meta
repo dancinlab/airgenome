@@ -161,15 +161,24 @@ SCANNERS=(
 
 # Aggregator scanners — run *after* Phase 3 scanners so they see fresh state/.
 AGGREGATORS=(
-    "blockers:tool/ag_blockers.hexa"
-    "roi:tool/ag_roi.hexa"
-    "gap_proposals:tool/ag_gap_proposer.hexa"
-    "dsl_runner:tool/ag_dsl_runner.hexa"
-    "scanner_freshness:tool/ag_scanner_freshness.hexa"
+    # Meta-audit layer: must run before blockers so blockers reads fresh
+    # telemetry + freshness state and can emit scanner_error_24h /
+    # scanner_stale blockers without 1-run lag.
     "telemetry_audit:tool/ag_telemetry_audit.hexa"
+    "scanner_freshness:tool/ag_scanner_freshness.hexa"
+    # Core aggregator — reads every scanner + meta-audit outputs.
+    "blockers:tool/ag_blockers.hexa"
+    # Persistence layer: reads blockers; feeds ledger to correlation
+    # and chronic_inbox_submitter.
     "blocker_persistence:tool/ag_blocker_persistence.hexa"
-    "chronic_inbox_submitter:tool/ag_chronic_inbox_submitter.hexa"
     "scanner_correlation:tool/ag_scanner_correlation.hexa"
+    "chronic_inbox_submitter:tool/ag_chronic_inbox_submitter.hexa"
+    # Downstream reports + proposal mining.
+    "gap_proposals:tool/ag_gap_proposer.hexa"
+    "roi:tool/ag_roi.hexa"
+    "dsl_runner:tool/ag_dsl_runner.hexa"
+    # health_trend last — it calls `bin/ag_meta health` which reads every
+    # state/ag_*.json, so it must see them all fresh.
     "health_trend:tool/ag_health_trend.hexa"
 )
 
@@ -228,6 +237,14 @@ cmd_doctor() {
         echo "=== $key ==="
         if ! _hexa_timed "$path" "$@"; then rc=$((rc + 1)); fi
     done
+    # Post-run summary: show the outcome without requiring a second invocation.
+    # Suppressed in --selftest mode since scores are meaningless there.
+    local is_selftest=0
+    for a in "$@"; do [[ "$a" == "--selftest" ]] && is_selftest=1 && break; done
+    if [[ $is_selftest -eq 0 ]]; then
+        echo ""
+        cmd_summary
+    fi
     return $rc
 }
 
