@@ -1,0 +1,95 @@
+// tool/ag_path_migration_audit.hexa — airgenome meta-evolution.
+//
+// Today's menubar incident (2026-04-23): bin/menubar.hexa hardcoded
+// $HOME/Dev/airgenome paths that had silently become orphan 6 months
+// ago after the project moved to $HOME/core/airgenome.  Every state
+// file fetch returned stale or missing → dropdown showed 999999s /
+// blanks / zeros.
+//
+// The meta engine had no way to detect "my own paths are stale".
+// This scanner greps repo source trees for the old prefix so future
+// migrations surface immediately, not six months later.
+//
+// Patterns: any "/Dev/airgenome" or "/Dev/nexus" substring.  Covers the
+// idiomatic concat forms HOME + "/Dev/..." and $HOME/Dev/... and literal
+// /Users/<u>/Dev/... — all of which contain "/Dev/airgenome" verbatim.
+// Scans: tool/ bin/ core/ modules/ scanners/ launchd/ hooks/
+//
+// CLI
+//   hexa run tool/ag_path_migration_audit.hexa --selftest
+//   hexa run tool/ag_path_migration_audit.hexa [--dry-run] [--out PATH]
+
+use "tool/ag_common"
+
+// _scan returns pipe-delimited "path|count" lines for files matching the
+// stale-path regex.  Result is newline-delimited.
+fn _scan(dirs: string, pattern: string) -> string {
+    let cmd = "grep -rlE " + _sh_q(pattern) + " " + dirs + " 2>/dev/null | while read -r f; do "
+        + "c=$(grep -cE " + _sh_q(pattern) + " \"$f\" 2>/dev/null); "
+        + "printf '%s|%s\\n' \"$f\" \"$c\"; "
+        + "done"
+    return to_string(exec(cmd)).trim()
+}
+
+fn _selftest() -> int {
+    let tmpdir = "/tmp/ag_path_migration_audit_selftest"
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
+    write_file(tmpdir + "/a.txt", "HOME + \"/Dev/airgenome/forge\"\n/Users/alice/Dev/airgenome/bin\n")
+    write_file(tmpdir + "/b.txt", "clean content, no old paths here\n")
+    let res = _scan(_sh_q(tmpdir), "/Dev/airgenome|/Dev/nexus")
+    let mut ok = true
+    // Expect a.txt with count 2 (two matching lines).
+    if _index_of(res, "/a.txt|2") < 0 {
+        eprintln("selftest FAIL — expected a.txt|2 in: " + res); ok = false
+    }
+    if _index_of(res, "/b.txt") >= 0 {
+        eprintln("selftest FAIL — b.txt should not appear: " + res); ok = false
+    }
+    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    if ok == false { return 1 }
+    println("ag_path_migration_audit: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+    let dry_run = _arg_flag(args, "--dry-run")
+    let out_path = _arg_value(args, "--out", "state/ag_path_migration_audit.json")
+
+    let dirs = "tool bin core modules scanners launchd hooks"
+    let pattern = "/Dev/airgenome|/Dev/nexus"
+
+    let raw = _scan(dirs, pattern)
+    let mut entries = "["
+    let mut total_files = 0
+    let mut total_hits = 0
+    if len(raw) > 0 {
+        let lines = raw.split("\n")
+        let mut i = 0
+        while i < len(lines) {
+            let line = lines[i].trim()
+            if len(line) > 0 {
+                let parts = line.split("|")
+                let f = parts[0]
+                let c = to_int(parts[1])
+                total_files = total_files + 1
+                total_hits = total_hits + c
+                if total_files > 1 { entries = entries + "," }
+                entries = entries + "{\"path\":\"" + _json_esc(f) + "\",\"hits\":" + to_string(c) + "}"
+            }
+            i = i + 1
+        }
+    }
+    entries = entries + "]"
+
+    let body = "{\n  \"schema\": \"airgenome/ag_path_migration_audit/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"pattern\": \"" + _json_esc(pattern) + "\",\n  \"scanned_dirs\": \"" + _json_esc(dirs) + "\",\n  \"files_with_hits\": " + to_string(total_files) + ",\n  \"total_hits\": " + to_string(total_hits) + ",\n  \"entries\": " + entries + "\n}\n"
+
+    if dry_run { println(body); exit(0) }
+    _ensure_state_dir()
+    try { write_file(out_path, body) } catch e {
+        eprintln("ag_path_migration_audit: write FAIL " + out_path); exit(1)
+    }
+    println("ag_path_migration_audit: wrote " + out_path + " (files=" + to_string(total_files) + " hits=" + to_string(total_hits) + ")")
+    exit(0)
+}

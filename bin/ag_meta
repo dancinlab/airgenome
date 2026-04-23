@@ -20,6 +20,7 @@
 #   audit          forge/*.log reference count (orphan detection)
 #   reach          ssh reachability probe from local → infra_state.json hosts
 #   size           build/ + docker image size drift vs previous run (alarm ≥20%)
+#   paths          scan for stale ~/Dev/airgenome paths (post-migration residue)
 #   trend          health-score time series (24h / 7d deltas)
 #   fresh          state/ag_*.json mtime audit (stale > max_age_sec)
 #   tel-audit      ag_meta_telemetry.jsonl analysis (errors_24h, slowest_3)
@@ -150,6 +151,7 @@ SCANNERS=(
     "log_writer_audit:tool/ag_log_writer_audit.hexa"
     "reachability_matrix:tool/ag_reachability_matrix.hexa"
     "build_size_drift:tool/ag_build_size_drift.hexa"
+    "path_migration_audit:tool/ag_path_migration_audit.hexa"
 )
 
 # Aggregator scanners — run *after* Phase 3 scanners so they see fresh state/.
@@ -190,6 +192,7 @@ cmd_cache()      { _hexa_timed "$(_scanner_path hexa_cache_scan)" "$@"; }
 cmd_audit()      { _hexa_timed "$(_scanner_path log_writer_audit)" "$@"; }
 cmd_reach()      { _hexa_timed "$(_scanner_path reachability_matrix)" "$@"; }
 cmd_size()       { _hexa_timed "$(_scanner_path build_size_drift)" "$@"; }
+cmd_paths()      { _hexa_timed "$(_scanner_path path_migration_audit)" "$@"; }
 cmd_trend()      { _hexa_timed "$(_scanner_path health_trend)" "$@"; }
 cmd_fresh()      { _hexa_timed "$(_scanner_path scanner_freshness)" "$@"; }
 cmd_audit_tel()  { _hexa_timed "$(_scanner_path telemetry_audit)" "$@"; }
@@ -791,6 +794,7 @@ main() {
         audit)           cmd_audit "$@" ;;
         reach)           cmd_reach "$@" ;;
         size)            cmd_size "$@" ;;
+        paths)           cmd_paths "$@" ;;
         trend)           cmd_trend "$@" ;;
         fresh)           cmd_fresh "$@" ;;
         tel-audit)       cmd_audit_tel "$@" ;;
