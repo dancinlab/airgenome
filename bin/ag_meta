@@ -35,6 +35,7 @@
 #   verify         registry ↔ filesystem consistency (no scanner execution)
 #   prune [N]      trim state/history/*.jsonl to last N rows (default 1000)
 #   self           meta-engine self-health score (distinct from cmd_health)
+#   new            list blockers that first appeared in latest run (occ==1)
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
 #   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
 #   fast           fast-subset for pre-commit (ring + forge + blockers)
@@ -564,6 +565,32 @@ cmd_build() {
     return $rc
 }
 
+# cmd_new — list blockers that first appeared in the latest doctor run
+# (persistence entries with occurrences_total == 1).  Reuses existing
+# state/ag_blocker_persistence.json — no new data plumbing.  Empty list
+# on a stable system; populated when a real regression lands.
+cmd_new() {
+    local f="state/ag_blocker_persistence.json"
+    if [[ ! -f "$f" ]]; then
+        echo "ag_meta new: $f absent — run 'ag_meta persist' first" >&2
+        return 1
+    fi
+    # Single awk pass: filter occurrences_total==1 entries, print + count.
+    awk '
+        BEGIN { FS=""; RS="\\},\\{"; hits=0 }
+        /"occurrences_total":1[^0-9]/ {
+            kind=""; sev=""
+            if (match($0, /"kind":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"kind":"/,"",s); sub(/".*/,"",s); kind=s }
+            if (match($0, /"severity":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"severity":"/,"",s); sub(/".*/,"",s); sev=s }
+            if (kind != "") { printf "  %-12s %s\n", sev, kind; hits++ }
+        }
+        END {
+            if (hits == 0) print "ag_meta new: no new blockers in the latest run (all chronic or absent)"
+            else printf "ag_meta new: %d blocker(s) first-seen in this run\n", hits
+        }
+    ' "$f"
+}
+
 # cmd_prune — keep last N rows (default 1000) per state/history/*.jsonl.
 # Without this, blocker_ledger / health_trend / build_size grow unbounded
 # (6 rows × every doctor run each in the blocker ledger's case).  Safe:
@@ -809,6 +836,7 @@ main() {
         verify)          cmd_verify ;;
         prune)           cmd_prune "$@" ;;
         self)            cmd_self ;;
+        new)             cmd_new ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
         telemetry)       cmd_telemetry "$@" ;;
         fast)            cmd_fast "$@" ;;
