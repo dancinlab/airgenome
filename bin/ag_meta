@@ -163,25 +163,29 @@ SCANNERS=(
 
 # Aggregator scanners — run *after* Phase 3 scanners so they see fresh state/.
 AGGREGATORS=(
-    # Meta-audit layer: must run before blockers so blockers reads fresh
-    # telemetry + freshness state and can emit scanner_error_24h /
-    # scanner_stale blockers without 1-run lag.
+    # Telemetry first — reads telemetry log only, no state/ag_*.json deps.
     "telemetry_audit:tool/ag_telemetry_audit.hexa"
-    "scanner_freshness:tool/ag_scanner_freshness.hexa"
-    # Core aggregator — reads every scanner + meta-audit outputs.
+    # Core aggregator — reads every scanner + telemetry_audit output.
+    # (freshness runs AFTER; blockers consumes *previous-run* freshness
+    # signal to avoid the "freshness self-falsely-flags own snapshot age"
+    # bug.  1-run lag is acceptable because freshness is a hygiene check.)
     "blockers:tool/ag_blockers.hexa"
-    # Persistence layer: reads blockers; feeds ledger to correlation
-    # and chronic_inbox_submitter.
+    "roi:tool/ag_roi.hexa"
+    "dsl_runner:tool/ag_dsl_runner.hexa"
+    # Persistence layer: reads blockers; feeds ledger downstream.
     "blocker_persistence:tool/ag_blocker_persistence.hexa"
     "scanner_correlation:tool/ag_scanner_correlation.hexa"
     "chronic_inbox_submitter:tool/ag_chronic_inbox_submitter.hexa"
-    # Downstream reports + proposal mining.
+    # Proposal mining reads persistence (1-run lag — see gap_proposer
+    # comment).
     "gap_proposals:tool/ag_gap_proposer.hexa"
-    "roi:tool/ag_roi.hexa"
-    "dsl_runner:tool/ag_dsl_runner.hexa"
-    # health_trend last — it calls `bin/ag_meta health` which reads every
-    # state/ag_*.json, so it must see them all fresh.
+    # health_trend last — calls `bin/ag_meta health` which reads every
+    # state/ag_*.json, so it must see them all final.
     "health_trend:tool/ag_health_trend.hexa"
+    # scanner_freshness absolute last — so it reports the accurate
+    # end-of-run state.  Downstream consumers (blockers, cmd_self) read
+    # yesterday's snapshot on purpose.
+    "scanner_freshness:tool/ag_scanner_freshness.hexa"
 )
 
 _scanner_path() {

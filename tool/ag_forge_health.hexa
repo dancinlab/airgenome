@@ -102,7 +102,10 @@ fn _check_log(name: string, path: string, kind: string, stall_sec: int) -> strin
     let size = to_int(to_string(exec("wc -c < " + qp + " | tr -d ' '")).trim())
     let lines = to_int(to_string(exec("wc -l < " + qp + " | tr -d ' '")).trim())
     let age = _file_age_seconds(path)
-    let stalled = age > stall_sec
+    // A quiet stderr (no recent writes) is HEALTHY — it means the daemon
+    // isn't spewing errors.  Only stdout staleness signals daemon death.
+    let stale_mtime = age > stall_sec
+    let stalled = stale_mtime && kind == "stdout"
     let mut events = "{}"
     let mut keyword_hits = 0
     if kind == "stdout" {
