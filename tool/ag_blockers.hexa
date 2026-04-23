@@ -20,9 +20,11 @@
 use "tool/ag_common"
 
 // _peek_num extracts an integer-valued JSON field (with optional whitespace).
+// Uses awk colon-split so digits embedded in the field name (e.g. "delta_24h")
+// don't leak into the final numeric capture.
 fn _peek_num(path: string, field: string) -> int {
     if file_exists(path) == false { return -1 }
-    let cmd = "grep -oE '\"" + field + "\": *[0-9]+' " + _sh_q(path) + " | head -1 | grep -oE '[0-9]+'"
+    let cmd = "grep -oE '\"" + field + "\": *-?[0-9]+' " + _sh_q(path) + " | head -1 | awk -F: '{gsub(/[^0-9-]/,\"\",$2); print $2}'"
     let out = to_string(exec(cmd)).trim()
     if len(out) == 0 { return -1 }
     return to_int(out)
@@ -79,6 +81,7 @@ fn main() {
     let rm_ = "state/ag_rule_effect_map.json"
     let rch = "state/ag_reachability_matrix.json"
     let bsd = "state/ag_build_size_drift.json"
+    let htr = "state/ag_health_trend.json"
 
     let mut blockers = "["
 
@@ -150,6 +153,17 @@ fn main() {
         if len(alarm) > 0 {
             let pct = to_string(exec("grep -oE '\"drift_pct\": *-?[0-9.]+' " + _sh_q(bsd) + " | head -1 | grep -oE '\\-?[0-9.]+$'")).trim()
             blockers = _add_blocker(blockers, "med", "build_size_drift", bsd, "drift_pct=" + pct)
+        }
+    }
+    // high / critical — health regression vs 24h ago (delta_24h ≤ -20 is critical,
+    // -10 is high).  Requires ≥2 samples so n_samples_24h == 2.
+    if file_exists(htr) {
+        let d24 = _peek_num(htr, "delta_24h")
+        let n24 = _peek_num(htr, "n_samples_24h")
+        if n24 >= 2 && d24 <= -20 {
+            blockers = _add_blocker(blockers, "critical", "health_regression", htr, "delta_24h=" + to_string(d24))
+        } else if n24 >= 2 && d24 <= -10 {
+            blockers = _add_blocker(blockers, "high", "health_regression", htr, "delta_24h=" + to_string(d24))
         }
     }
 
