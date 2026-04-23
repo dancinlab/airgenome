@@ -25,6 +25,7 @@
 #   fresh          state/ag_*.json mtime audit (stale > max_age_sec)
 #   tel-audit      ag_meta_telemetry.jsonl analysis (errors_24h, slowest_3)
 #   persist        blocker persistence ledger (chronic ≥3 runs)
+#   inbox-submit   route chronic blockers to proposal_inbox (--submit opt-in)
 #   blockers       Phase 1    aggregated prioritized blocker inventory
 #   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
 #   gap            Phase 6.2  mine git log + stderr patterns → scanner proposals
@@ -166,6 +167,7 @@ AGGREGATORS=(
     "scanner_freshness:tool/ag_scanner_freshness.hexa"
     "telemetry_audit:tool/ag_telemetry_audit.hexa"
     "blocker_persistence:tool/ag_blocker_persistence.hexa"
+    "chronic_inbox_submitter:tool/ag_chronic_inbox_submitter.hexa"
     "health_trend:tool/ag_health_trend.hexa"
 )
 
@@ -200,6 +202,7 @@ cmd_trend()      { _hexa_timed "$(_scanner_path health_trend)" "$@"; }
 cmd_fresh()      { _hexa_timed "$(_scanner_path scanner_freshness)" "$@"; }
 cmd_audit_tel()  { _hexa_timed "$(_scanner_path telemetry_audit)" "$@"; }
 cmd_persist()    { _hexa_timed "$(_scanner_path blocker_persistence)" "$@"; }
+cmd_inbox_sub()  { _hexa_timed "$(_scanner_path chronic_inbox_submitter)" "$@"; }
 cmd_blockers()   { _hexa_timed "$(_scanner_path blockers)" "$@"; }
 cmd_roi()        { _hexa_timed "$(_scanner_path roi)" "$@"; }
 cmd_gap()        { _hexa_timed "$(_scanner_path gap_proposals)" "$@"; }
@@ -917,6 +920,7 @@ main() {
         fresh)           cmd_fresh "$@" ;;
         tel-audit)       cmd_audit_tel "$@" ;;
         persist)         cmd_persist "$@" ;;
+        inbox-submit)    cmd_inbox_sub "$@" ;;
         blockers)        cmd_blockers "$@" ;;
         roi)             cmd_roi "$@" ;;
         gap)             cmd_gap "$@" ;;

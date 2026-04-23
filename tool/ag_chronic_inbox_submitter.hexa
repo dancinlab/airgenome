@@ -1,0 +1,124 @@
+// tool/ag_chronic_inbox_submitter.hexa — airgenome meta-evolution.
+//
+// Closes the final detect→queue loop: ag_blocker_persistence identifies
+// chronic blockers (occurrences_total ≥ threshold); this scanner routes
+// them to the cross-repo proposal_inbox so fixes get prioritized
+// alongside inbound work, instead of sitting inside state/*.json forever.
+//
+// Dedup: state/ag_chronic_submitted.jsonl records each submitted sig so
+// repeated runs don't spam the inbox.  Submission only happens with
+// --submit (opt-in); default is dry-run and writes candidates-only output.
+//
+// CLI
+//   hexa run tool/ag_chronic_inbox_submitter.hexa --selftest
+//   hexa run tool/ag_chronic_inbox_submitter.hexa           # dry-run
+//   hexa run tool/ag_chronic_inbox_submitter.hexa --submit  # actually POST
+//   [--threshold N]  (default 10)
+//   [--out PATH]
+
+use "tool/ag_common"
+
+fn _already_submitted(ledger: string, sig: string) -> bool {
+    if file_exists(ledger) == false { return false }
+    let cmd = "grep -cE '\"sig\":\"" + sig + "\"' " + _sh_q(ledger) + " 2>/dev/null || true"
+    let n = to_int(to_string(exec(cmd)).trim())
+    return n > 0
+}
+
+fn _submit_to_inbox(kind: string, occ: int, severity: string) -> int {
+    let prio = 85
+    if severity == "critical" { prio = 95 }
+    let title = "chronic blocker '" + kind + "' fired " + to_string(occ) + " runs — permanent fix overdue"
+    let cmd = "$HEXA_LANG/bin/proposal_inbox submit"
+        + " --to airgenome"
+        + " --category infra_gap"
+        + " --kind cluster"
+        + " --priority " + to_string(prio)
+        + " --title " + _sh_q(title)
+        + " 2>&1"
+    let out = to_string(exec(cmd)).trim()
+    if _index_of(out, "ok ") >= 0 || _index_of(out, "submitted") >= 0 { return 0 }
+    eprintln("submit failed for " + kind + ": " + out)
+    return 1
+}
+
+fn _selftest() -> int {
+    let tmpdir = "/tmp/ag_chronic_inbox_submitter_selftest"
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
+    let ledger = tmpdir + "/s.jsonl"
+    let mut ok = true
+    if _already_submitted(ledger, "abc") != false { eprintln("missing file → false"); ok = false }
+    write_file(ledger, "{\"sig\":\"abc\",\"kind\":\"x\"}\n{\"sig\":\"def\",\"kind\":\"y\"}\n")
+    if _already_submitted(ledger, "abc") != true { eprintln("present → true"); ok = false }
+    if _already_submitted(ledger, "zzz") != false { eprintln("absent → false"); ok = false }
+    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    if ok == false { return 1 }
+    println("ag_chronic_inbox_submitter: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+    let submit = _arg_flag(args, "--submit")
+    let threshold = to_int(_arg_value(args, "--threshold", "10"))
+    let out_path = _arg_value(args, "--out", "state/ag_chronic_inbox_submitter.json")
+    let bp = "state/ag_blocker_persistence.json"
+    let sub_log = "state/ag_chronic_submitted.jsonl"
+
+    let mut candidates = "["
+    let mut cand_n = 0
+    let mut submitted_n = 0
+    let mut skipped_dup = 0
+    let mut failed = 0
+
+    if file_exists(bp) {
+        let rows = to_string(exec("grep -oE '\\{[^}]*\"occurrences_total\":[0-9]+[^}]*\\}' " + _sh_q(bp))).trim()
+        if len(rows) > 0 {
+            let rs = rows.split("\n")
+            let mut i = 0
+            while i < len(rs) {
+                let r = rs[i]
+                let occ = to_int(to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"occurrences_total\":[0-9]+' | head -1 | awk -F: '{print $2+0}'")).trim())
+                if occ >= threshold {
+                    let sig = to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"sig\":\"[^\"]+\"' | head -1 | awk -F'\"' '{print $4}'")).trim()
+                    let kind = to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"kind\":\"[^\"]+\"' | head -1 | awk -F'\"' '{print $4}'")).trim()
+                    let sev = to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"severity\":\"[^\"]+\"' | head -1 | awk -F'\"' '{print $4}'")).trim()
+                    let dup = _already_submitted(sub_log, sig)
+                    let mut action = "candidate"
+                    if dup {
+                        action = "skipped_dup"
+                        skipped_dup = skipped_dup + 1
+                    } else if submit {
+                        let rc = _submit_to_inbox(kind, occ, sev)
+                        if rc == 0 {
+                            action = "submitted"
+                            submitted_n = submitted_n + 1
+                            let row = "{\"ts\":\"" + _iso_now() + "\",\"sig\":\"" + sig + "\",\"kind\":\"" + _json_esc(kind) + "\",\"occ_at_submit\":" + to_string(occ) + "}\n"
+                            let _ = exec("printf '%s' " + _sh_q(row) + " >> " + _sh_q(sub_log))
+                        } else {
+                            action = "failed"
+                            failed = failed + 1
+                        }
+                    }
+                    if cand_n > 0 { candidates = candidates + "," }
+                    candidates = candidates + "{\"sig\":\"" + sig + "\",\"kind\":\"" + _json_esc(kind) + "\",\"severity\":\"" + _json_esc(sev) + "\",\"occurrences_total\":" + to_string(occ) + ",\"action\":\"" + action + "\"}"
+                    cand_n = cand_n + 1
+                }
+                i = i + 1
+            }
+        }
+    }
+    candidates = candidates + "]"
+
+    let mode = "dry_run"
+    if submit { mode = "submit" }
+    let body = "{\n  \"schema\": \"airgenome/ag_chronic_inbox_submitter/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"mode\": \"" + mode + "\",\n  \"threshold\": " + to_string(threshold) + ",\n  \"candidate_count\": " + to_string(cand_n) + ",\n  \"submitted\": " + to_string(submitted_n) + ",\n  \"skipped_dup\": " + to_string(skipped_dup) + ",\n  \"failed\": " + to_string(failed) + ",\n  \"candidates\": " + candidates + "\n}\n"
+
+    _ensure_state_dir()
+    try { write_file(out_path, body) } catch e {
+        eprintln("ag_chronic_inbox_submitter: write FAIL " + out_path); exit(1)
+    }
+    println("ag_chronic_inbox_submitter: wrote " + out_path + " (mode=" + mode + " cands=" + to_string(cand_n) + " submitted=" + to_string(submitted_n) + " dup=" + to_string(skipped_dup) + " fail=" + to_string(failed) + ")")
+    exit(0)
+}
