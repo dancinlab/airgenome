@@ -45,11 +45,7 @@
 //      hooks/airgenome_hooks.json as a shared resource so any consumer
 //      (claude-code / hive / nexus / future) can discover the hook guide.
 //
-//   8. Call bin/cl-settings to converge ~/.claude/settings.json onto the
-//      canonical shape (wildcard allow + git-push-force deny + additional-
-//      Directories ["/"]). cl-settings is the L0 CORE SSOT normalizer
-//      (chflags uchg); airgenome-init invokes it but never modifies it.
-//   9. Install L1+L2 settings.json drift defense (ensure_settings_guard):
+//   8. Install L1+L2 settings.json drift defense (ensure_settings_guard):
 //      apply chflags uchg and bootstrap com.airgenome.settings-guard.plist
 //      (WatchPaths → tool/settings_guard.hexa). Pairs with H-BYPASS-DRIFT
 //      in hexa-lang/gate/enforcement_registry.json (L4 declarative layer).
@@ -382,8 +378,7 @@ fn ensure_claude_bootstrap() -> void {
     // (permissions.defaultMode + permissions.deny + skipDangerousModePermissionPrompt)
     // loaded from rules/claude_settings_shape.json. --slurpfile wraps the
     // file in a 1-element array so we unwrap with [0] and strip _ssot before
-    // use. Any edit to deny patterns / bypass flags happens in that file
-    // alone — cl-settings reads the same SSOT.
+    // use.
     let jq_expr = "($shape_arr[0] | del(._ssot)) as $s |" +
                   "{env:{WS:$ws}," +
                   "statusLine:{type:\"command\",command:$sl,padding:0}," +
@@ -517,32 +512,6 @@ fn ensure_settings_guard() -> void {
         println("[airgenome-init] launchctl bootstrap " + settings_guard_label() + " ok")
     } else {
         println("[airgenome-init] launchctl: " + out)
-    }
-}
-
-// bin/cl-settings — L0 CORE (chflags uchg) drift-defense normalizer.
-// Scope narrowed 2026-04-22 to be a strict subset of
-// ensure_claude_bootstrap()'s output so cl-settings is a no-op after init
-// (mutual idempotence). Enforces only:
-//   - permissions.deny  ⊇  5 git-push-force patterns
-//   - strips permissions.defaultMode == "bypassPermissions"
-//   - strips skipDangerousModePermissionPrompt
-// Does NOT manage allow / additionalDirectories / env / hooks / statusLine
-// — those are owned by ensure_claude_bootstrap. cl-settings is not invoked
-// from main() on the global file (init already writes it whole); it is the
-// tool users run manually with --sweep / --accounts / --project to propagate
-// drift defense across other settings.json files.
-fn ensure_cl_settings() -> void {
-    let bin = root() + "/bin/cl-settings"
-    if file_exists(bin) == false {
-        println("[airgenome-init] WARN bin/cl-settings missing — skipping settings.json convergence")
-        return
-    }
-    let out = exec("'" + bin + "' 2>&1").trim()
-    if out == "" {
-        println("[airgenome-init] cl-settings: no output")
-    } else {
-        println("[airgenome-init] " + out)
     }
 }
 

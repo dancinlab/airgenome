@@ -1,5 +1,5 @@
 {
-  "_ssot": "Static portion of ~/.claude/settings.json enforced by both airgenome_init (whole-renderer) and bin/cl-settings (drift-defense merger). Edit deny patterns / bypass flags here and both tools converge. Dynamic parts (env.WS, statusLine command, hooks commands) are added by airgenome_init at render time since they depend on the install path.",
+  "_ssot": "Static portion of ~/.claude/settings.json enforced by airgenome_init (whole-renderer). Edit deny patterns / bypass flags here. Dynamic parts (env.WS, statusLine command, hooks commands) are added by airgenome_init at render time since they depend on the install path.",
   "permissions": {
     "defaultMode": "bypassPermissions",
     "deny": [

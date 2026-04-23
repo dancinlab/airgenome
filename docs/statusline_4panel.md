@@ -349,7 +349,7 @@ airgenome-init
 [x] per-panel timeout                     # CONTEXT 150ms, EMERGENCE 150ms, bundle 200ms
 [~] fixture × golden 테스트               # smoke harness landed (test/t_statusline_4panel.hexa); golden-file level deferred (needs frozen clock)
 [x] A/B env var swap                      # STATUSLINE_V=legacy|4panel
-[x] init tool 연동 + uchg 재잠금          # tool/airgenome_init.hexa + bin/cl-settings
+[x] init tool 연동 + uchg 재잠금          # tool/airgenome_init.hexa
 [x] 롤백 1-step                           # STATUSLINE_V=legacy airgenome-init
 [ ] dogfood 1주                           # time-based (starts post-merge)
 [x] linear stack renderer demotion        # claude_statusline.jq → EMERGENCE fallback (spec §26 step 5)
