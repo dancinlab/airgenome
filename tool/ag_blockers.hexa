@@ -82,6 +82,7 @@ fn main() {
     let rch = "state/ag_reachability_matrix.json"
     let bsd = "state/ag_build_size_drift.json"
     let htr = "state/ag_health_trend.json"
+    let fre = "state/ag_scanner_freshness.json"
 
     let mut blockers = "["
 
@@ -165,6 +166,14 @@ fn main() {
         } else if n24 >= 2 && d24 <= -10 {
             blockers = _add_blocker(blockers, "high", "health_regression", htr, "delta_24h=" + to_string(d24))
         }
+    }
+    // high — any stale scanner output (mtime > max_age_sec) means the health
+    // score is being computed from yesterday's signals.
+    let stale_n = _peek_num(fre, "stale")
+    if stale_n > 0 {
+        let sev = "high"
+        if stale_n >= 5 { sev = "critical" }
+        blockers = _add_blocker(blockers, sev, "scanner_stale", fre, "stale=" + to_string(stale_n))
     }
 
     blockers = blockers + "]"
