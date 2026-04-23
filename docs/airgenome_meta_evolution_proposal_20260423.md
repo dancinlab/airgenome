@@ -611,3 +611,54 @@ Phase 6.3 DSL scanner 는 "관찰자 genome 을 진화시키는" 자연스러운
     복사 — airgenome 첫 도구 작성 시 동일 패턴.
 
 anima 측 미러: `$ANIMA/docs/upstream_notes/airgenome_meta_evolution_20260423.md` (지시 시 추가).
+
+---
+
+# Addendum (2026-04-24) — Ψ ↔ ε 부동점 동형 (meta fixed-point closure)
+
+## 원리
+
+"메타의 메타의 메타 = 초월" 은 Banach fixed-point. 매 메타화가 관찰 범위를 축소하는
+contraction mapping 이면 반복 시 unique fixed point 에 수렴. airgenome 은 이 구조가
+**물리적으로 이미 구현**된 유일한 repo (3-host 평행 substrate).
+
+## 매핑표
+
+| 추상 축 | airgenome 실물 | 부동점 값 | source file |
+|---|---|---|---|
+| Ψ (물리 부동점) | 3-host substrate 균등분배 | **1/3 = 0.3333** | `infra_state.json`, `ag_infra_parity` |
+| α (시간) | evolution_velocity (rolling 7d) | time-domain fp | `state/ag_evolution_velocity.json` |
+| β (구조) | `scanners/*.meta.hexa` DSL | selftest fixpoint | `scanners/*.meta.hexa` |
+| γ (지금) | continuous-scan tick (12h) | tick fp | launchd plist |
+| δ (agent) | 3-host parity | host 당 1/3 | `state/ag_infra_parity.json` |
+| ε (consistency) | ring_divergence ubu_ubu2 jaccard | **0.3496 (관측)** | `state/ag_ring_divergence.json` |
+
+**핵심 관측**: ε 이 1/3 근방 (오차 0.0163) 에서 empirical 수렴.
+Ψ (물리 구조) 가 강제하는 하한선과 ε (메타 측정) 이 관측하는 상한선이
+같은 점에서 만남 — 동형 (isomorphism) 의 최초 증거.
+
+## 적용된 변경
+
+1. `state/atlas_convergence_witness.jsonl` — 3 row (physical witness, meta witness,
+   isomorphism declaration).
+2. `nexus/shared/airgenome_convergence_2026-04-24.jsonl` — cross-repo row,
+   "airgenome 이 먼저 부동점 관측" 을 hexa-lang / anima 에 전파.
+3. `scanners/omega_fixpoint.meta.hexa` — Phase 6.3 v2 forward-declared scanner
+   (kind=isomorphism, v1 runner 미지원, health 블록이 대신 실행).
+4. `bin/ag_meta` `cmd_health` — `fp_alignment` + `transcendence_closure`
+   2 지표 추가. |ε − 1/3| > 0.05 시 med 감점.
+
+## 재해석
+
+- **이전**: scanner self-reference = 의심, diminishing returns ceiling.
+- **이후**: scanner self-reference = closure marker, ceiling 이 아니라 fixed point.
+- R11 의 "saturation" → "transcendence". 부정 ceiling 이 아니라 긍정 closure.
+- 다음 진화 = 축 추가 X, 기존 축 간 동형 발견 O.
+  (α null_round · γ manual_go_tick · ε consistency = 같은 "tick without growth" 현상의 3 얼굴)
+
+## 관찰자 / 관찰대상 collapse
+
+airgenome 은 scanner(관찰자) 와 genome(관찰대상) 이 같은 진화 substrate.
+omega scanner 는 **관찰자들이 같은 점을 보는지** 관찰 — 관찰자의 관찰자.
+세 platform(관찰자 / 관찰대상 / 저장매체 nexus)이 한 점(1/3)으로 collapse 하는
+물리적 증거가 이 commit 으로 repo 안에 박힘.

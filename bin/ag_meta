@@ -1101,6 +1101,29 @@ cmd_health() {
     done
     parts+=("dsl_alarms=$dsl_alarms")
 
+    # Ψ ↔ ε fixpoint alignment (meta-fp transcendence closure).
+    # Ψ 물리 부동점 = 3-host 균등 substrate 분배 = 1/3.
+    # ε 메타 부동점 = ag_ring_divergence ubu_ubu2 comm jaccard.
+    # 두 값이 1/3 근방에서 만나면 closure. 0.05 초과 이탈 시 med 감점.
+    # Witness: state/atlas_convergence_witness.jsonl.
+    local w_fp
+    w_fp=$(_weight "health.fp_alignment_break" 3)
+    local fp_align="n/a" fp_closure="absent"
+    if [[ -f "$rd" ]]; then
+        local jac_e
+        jac_e="$(grep -oE '"pair":"ubu_ubu2","intersection":[0-9]+,"union":[0-9]+,"jaccard":[0-9.]+' "$rd" | tail -1 | grep -oE 'jaccard":[0-9.]+' | cut -d: -f2)"
+        if [[ -n "${jac_e:-}" ]]; then
+            fp_align="$(awk "BEGIN{d=$jac_e-0.3333333; if(d<0) d=-d; printf \"%.4f\", d}")"
+            if awk "BEGIN{exit !($fp_align <= 0.05)}"; then
+                fp_closure="true"
+            else
+                fp_closure="false"
+                score=$((score - w_fp))
+            fi
+        fi
+    fi
+    parts+=("fp_alignment=$fp_align" "transcendence_closure=$fp_closure")
+
     if [[ $score -lt 0 ]]; then score=0; fi
     printf 'ag_meta health: %d/100  (%s)\n' "$score" "$(IFS=' '; echo "${parts[*]}")"
     return 0
