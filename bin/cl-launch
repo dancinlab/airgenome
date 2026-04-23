@@ -12,8 +12,52 @@
 #
 # Policy (2026-04-21): no bypass injection. CLAUDX_BYPASS env is accepted
 # for backwards-compat but ignored — permissions live in settings.json.
+#
+# Pre-exec token refresh (2026-04-23): right before exec'ing claude, we call
+# `pool-refresh --refresh-token <name>` so the chosen account has a fresh
+# OAuth access token for the upcoming TUI session. Bounded by CL_PRE_REFRESH_TIMEOUT
+# (default 6s) so a slow/down OAuth provider can't make `cl` feel sluggish.
+# Set CL_PRE_REFRESH=0 to disable entirely (debugging only).
 
 set -uo pipefail
+
+: "${CL_PRE_REFRESH:=1}"
+: "${CL_PRE_REFRESH_TIMEOUT:=6}"
+
+# _pre_exec_refresh — best-effort single-account token refresh before exec.
+# Never blocks longer than $CL_PRE_REFRESH_TIMEOUT, never fails the launch.
+# Logs only on diagnostic conditions (not steady-state success).
+_pre_exec_refresh() {
+    [ "$CL_PRE_REFRESH" = "1" ] || return 0
+    local dir="$1"
+    local b="${dir##*/}"             # basename, e.g. ".claude-claude5"
+    local name="${b#.claude-}"       # → "claude5"
+    [ -n "$name" ] && [ "$name" != "$b" ] || return 0
+    local self_dir pr
+    self_dir=$(cd "$(dirname "$0")" && pwd)
+    pr="$self_dir/pool-refresh"
+    [ -x "$pr" ] || return 0
+    # `timeout` may be /opt/homebrew/bin/gtimeout or `timeout`. Probe.
+    local to
+    if command -v timeout >/dev/null 2>&1; then to="timeout"
+    elif command -v gtimeout >/dev/null 2>&1; then to="gtimeout"
+    else to=""
+    fi
+    local rc=0
+    if [ -n "$to" ]; then
+        "$to" "$CL_PRE_REFRESH_TIMEOUT" "$pr" --refresh-token "$name" >/dev/null 2>&1 || rc=$?
+    else
+        "$pr" --refresh-token "$name" >/dev/null 2>&1 || rc=$?
+    fi
+    case "$rc" in
+        0)   ;;  # refreshed or already valid
+        2)   printf '\033[0;33m[cl-launch] %s: OAuth refresh rate-limited; using existing token\033[0m\n' "$name" >&2 ;;
+        3)   printf '\033[1;31m[cl-launch] %s: refresh token invalid — re-auth needed\033[0m\n' "$name" >&2 ;;
+        124) printf '\033[0;33m[cl-launch] %s: refresh exceeded %ss timeout; using existing token\033[0m\n' "$name" "$CL_PRE_REFRESH_TIMEOUT" >&2 ;;
+        *)   printf '\033[0;33m[cl-launch] %s: refresh failed (rc=%d); using existing token\033[0m\n' "$name" "$rc" >&2 ;;
+    esac
+    return 0
+}
 
 _resolve_real_claude() {
     # PATH 순회 — airgenome/bin/claude shim 은 skip. CL_CORE_REAL_CLAUDE override.
@@ -58,6 +102,9 @@ _launch() {
         return 0
     fi
     export CLAUDE_CONFIG_DIR="$dir"
+    # Pre-exec token refresh — guarantees the OAuth access token is valid for
+    # the TUI session about to start. See _pre_exec_refresh comment above.
+    _pre_exec_refresh "$dir"
     # NOTE: The previous CLAUDX_BYPASS → --dangerously-skip-permissions path
     # was removed 2026-04-21. airgenome policy is "no bypass anywhere" —
     # permissions are governed by settings.json allow/deny only. If someone

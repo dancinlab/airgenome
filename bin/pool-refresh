@@ -251,12 +251,17 @@ merge_cache() {
     local base='{}' acc name entry f
     [ -f "$USAGE" ] && base=$(jq 'del(._ts)' "$USAGE" 2>/dev/null || echo '{}')
     acc="$base"
+    local now_s; now_s=$(date -u +%s)
     for name in "$@"; do
         f="$td/$name.json"
         [ -f "$f" ] || continue
         entry=$(cat "$f")
         if [ "$(jq -r '.error // "null"' <<< "$entry")" = "null" ]; then
-            acc=$(jq --arg n "$name" --argjson v "$entry" '.[$n] = $v' <<< "$acc")
+            # Successful fetch — stamp _last_ok_ts so cl-quota can detect
+            # per-entry staleness even when the global _ts keeps advancing
+            # under permanent error conditions (OAuth usage endpoint dead).
+            acc=$(jq --arg n "$name" --argjson v "$entry" --argjson t "$now_s" \
+                '.[$n] = ($v + {_last_ok_ts:$t})' <<< "$acc")
         else
             acc=$(jq --arg n "$name" --argjson v "$entry" '.[$n] = ((.[$n] // {}) + $v)' <<< "$acc")
         fi
@@ -276,6 +281,51 @@ cmd_verify() {
     jq -r 'to_entries | map(select(.key != "_ts")) | sort_by(.key) | .[]
         | "\(.key)\t\(.value.week_all_pct // "?")%\t\(.value.session_pct // "?")%\t\(.value.error // "ok")"' \
         "$USAGE" | column -t -s $'\t'
+}
+
+# ── --refresh-token (single-account, token-only, no usage fetch) ──────
+# Used by cl-launch right before exec'ing claude, so that whichever account
+# we just rotated into has a token guaranteed valid for the upcoming TUI
+# session. Touches ONLY ~/.claude-$name/.credentials.json — never reads/
+# writes usage-cache.json (so cl-quota state stays untouched and a TUI
+# launch can't cascade into rate-limit penalties on the cache).
+#
+# Exit codes:
+#   0 ok (token already valid OR refreshed)
+#   1 net/unknown error
+#   2 rate-limited by OAuth provider (try again later)
+#   3 invalid_grant — refresh token revoked, re-auth needed
+#   4 missing creds / bad blob
+#   5 no name given
+cmd_refresh_token() {
+    require jq; require curl
+    local name="${1:-}"
+    [ -n "$name" ] || { err "refresh-token: account name required"; return 5; }
+    local creds="$HOME/.claude-$name/.credentials.json"
+    [ -f "$creds" ] || { err "refresh-token: $name has no credentials"; return 4; }
+
+    local blob at rt ea now_ms
+    blob=$(cat "$creds" 2>/dev/null)
+    [ -n "$blob" ] || { err "refresh-token: empty creds for $name"; return 4; }
+    at=$(jq -r '.claudeAiOauth.accessToken // empty'  <<< "$blob" 2>/dev/null)
+    rt=$(jq -r '.claudeAiOauth.refreshToken // empty' <<< "$blob" 2>/dev/null)
+    ea=$(jq -r '.claudeAiOauth.expiresAt // 0'        <<< "$blob" 2>/dev/null)
+    [ -n "$at" ] || { err "refresh-token: no access token in $name"; return 4; }
+
+    # Skip if comfortably valid (>5 min remaining).
+    now_ms=$(($(date -u +%s) * 1000))
+    if [ "$ea" -gt "$((now_ms + 300000))" ] 2>/dev/null; then
+        return 0
+    fi
+    [ -n "$rt" ] || { err "refresh-token: no refresh token in $name"; return 4; }
+
+    local new_blob direct_rc
+    new_blob=$(refresh_token "$rt" "$blob"); direct_rc=$?
+    if [ -n "$new_blob" ]; then
+        write_creds_file "$name" "$new_blob" || { err "refresh-token: write failed"; return 1; }
+        return 0
+    fi
+    return "$direct_rc"
 }
 
 cmd_dry_run() {
@@ -630,6 +680,9 @@ Usage:
   pool-refresh --dry-run    no network, no writes — list accounts + expiry
   pool-refresh --verify     summarize current cache
   pool-refresh --converge   fixpoint driver (iterate until E=0 or stable)
+  pool-refresh --refresh-token <name>
+                            single account, token-only refresh (no usage call,
+                            no cache write). Used by cl-launch pre-exec.
   pool-refresh self-test    unit checks (no network, no creds)
   pool-refresh help
 EOF
@@ -640,6 +693,7 @@ case "${1:-}" in
     --dry-run)      cmd_dry_run ;;
     --verify)       cmd_verify ;;
     --converge)     cmd_converge ;;
+    --refresh-token) shift; cmd_refresh_token "${1:-}"; exit $? ;;
     self-test)      _self_test; exit $? ;;
     help|-h|--help) usage ;;
     -*)             err "unknown option: $1"; exit 64 ;;

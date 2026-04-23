@@ -12,9 +12,16 @@
 # emit all stdin unchanged (quota unknown → let cl-rotate see everything).
 #
 # Env:
-#   CL_QUOTA_CACHE       path to usage-cache.json (default ~/.airgenome/usage-cache.json)
-#   CL_QUOTA_MAX         drop threshold pct inclusive (default 95)
-#   CL_QUOTA_STALE_SECS  fail-open window (default 86400 = 24h)
+#   CL_QUOTA_CACHE          path to usage-cache.json (default ~/.airgenome/usage-cache.json)
+#   CL_QUOTA_MAX            drop threshold pct inclusive (default 95)
+#   CL_QUOTA_STALE_SECS     global cache fail-open window (default 86400 = 24h)
+#   CL_QUOTA_ENTRY_STALE    per-entry "trust this wk%" window in seconds
+#                           (default 14400 = 4h). If a row has any error AND
+#                           its _last_ok_ts is older than this window, the
+#                           cached wk% is treated as unknown (kept). Designed
+#                           for the OAuth usage-fetch endpoint deprecation
+#                           (2026-02-20+) — frozen 100% values must NOT
+#                           permanently sideline accounts.
 #
 # Map from dir → account name: basename strip "^.claude-" prefix.
 #   /Users/ghost/.claude-claude3  →  claude3
@@ -26,6 +33,7 @@ set -uo pipefail
 : "${CL_QUOTA_CACHE:=$HOME/.airgenome/usage-cache.json}"
 : "${CL_QUOTA_MAX:=95}"
 : "${CL_QUOTA_STALE_SECS:=86400}"
+: "${CL_QUOTA_ENTRY_STALE:=14400}"
 
 _dir_to_name() {
     local b="${1##*/}"      # basename
@@ -53,15 +61,16 @@ _filter() {
     fi
 
     # jq doesn't need the cache re-read — slurp once.
-    local dir name wk err
+    local dir name wk err last_ok
     while IFS= read -r dir; do
         [ -n "$dir" ] || continue
         name=$(_dir_to_name "$dir")
-        # Read both fields in one jq invocation per line.
-        IFS=$'\t' read -r wk err < <(jq -r --arg n "$name" '
+        # Read three fields in one jq invocation per line.
+        IFS=$'\t' read -r wk err last_ok < <(jq -r --arg n "$name" '
             (.[$n].week_all_pct // "null") as $w
             | (.[$n].error // "null") as $e
-            | "\($w)\t\($e)"' "$cache" 2>/dev/null)
+            | (.[$n]._last_ok_ts // 0) as $lo
+            | "\($w)\t\($e)\t\($lo)"' "$cache" 2>/dev/null)
         # token_refresh_failed → drop, so broken-refresh accounts don't rotate in.
         if [ "$err" = "token_refresh_failed" ]; then
             continue
@@ -69,6 +78,16 @@ _filter() {
         # unknown pct → keep (fail-open per entry).
         if [ "$wk" = "null" ] || [ -z "$wk" ]; then
             echo "$dir"; continue
+        fi
+        # Per-entry staleness: if the row has ANY error and the last successful
+        # fetch is older than CL_QUOTA_ENTRY_STALE seconds, distrust the cached
+        # wk% (it's frozen because the OAuth usage endpoint is gone). Keep.
+        if [ "$err" != "null" ]; then
+            local lo_age
+            lo_age=$(( now - ${last_ok%.*} ))
+            if [ "${last_ok%.*}" = "0" ] || [ "$lo_age" -ge "$CL_QUOTA_ENTRY_STALE" ] 2>/dev/null; then
+                echo "$dir"; continue
+            fi
         fi
         # drop if week_all_pct >= CL_QUOTA_MAX (integer compare after floor).
         local wki
@@ -144,6 +163,31 @@ _self_test() {
         echo "  ✓ unknown account kept (per-entry fail-open)"
     else
         echo "  ✗ unknown dropped: '$out'" >&2; rc=1
+    fi
+
+    # 6. entry with frozen wk%=100 but error="usage-fetch" + stale _last_ok_ts → keep.
+    #    Models the OAuth deprecation case: cached value is permanently 100 but
+    #    nobody can refresh it, so don't sideline the account forever.
+    mkdir -p "$tmp/.claude-claudefrozen"
+    jq -n --argjson t "$now" --argjson lo "$(( now - 99999 ))" \
+        '{claudefrozen:{week_all_pct:100,error:"usage-fetch",_last_ok_ts:$lo},_ts:$t}' > "$cache"
+    out=$(printf '%s\n' "$tmp/.claude-claudefrozen" \
+        | CL_QUOTA_CACHE="$cache" CL_QUOTA_MAX=95 CL_QUOTA_ENTRY_STALE=14400 "$0" | tr '\n' ' ')
+    if [ "$out" = "$tmp/.claude-claudefrozen " ]; then
+        echo "  ✓ frozen wk% with error+stale _last_ok_ts → kept (OAuth deprecation)"
+    else
+        echo "  ✗ frozen-stale should pass: '$out'" >&2; rc=1
+    fi
+
+    # 7. entry with frozen wk%=100, error present, but _last_ok_ts within window → still drop.
+    jq -n --argjson t "$now" --argjson lo "$(( now - 60 ))" \
+        '{claudefrozen:{week_all_pct:100,error:"usage-fetch",_last_ok_ts:$lo},_ts:$t}' > "$cache"
+    out=$(printf '%s\n' "$tmp/.claude-claudefrozen" \
+        | CL_QUOTA_CACHE="$cache" CL_QUOTA_MAX=95 CL_QUOTA_ENTRY_STALE=14400 "$0" | tr '\n' ' ')
+    if [ -z "$out" ] || [ "$out" = " " ]; then
+        echo "  ✓ fresh entry with error+wk%=100 → still dropped (data trustworthy)"
+    else
+        echo "  ✗ fresh entry should drop: '$out'" >&2; rc=1
     fi
 
     rm -rf "$tmp"
