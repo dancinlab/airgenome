@@ -38,6 +38,7 @@
 #   prune [N]      trim state/history/*.jsonl to last N rows (default 1000)
 #   self           meta-engine self-health score (distinct from cmd_health)
 #   new            list blockers that first appeared in latest run (occ==1)
+#   stats          per-tool p50/p90 runtime table (from telemetry log)
 #   resolved       list blockers that cleared since previous run (ledger diff)
 #   summary        condensed single-screen status (health + self + trend + diff)
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
@@ -732,6 +733,44 @@ cmd_summary() {
     cmd_resolved | sed 's/^/  /'
 }
 
+# cmd_stats — per-tool runtime stats from $TELEMETRY_LOG.  Complements
+# cmd_telemetry (which dumps mean + last 10 entries) by showing p50/p90
+# percentiles — which tell you about tail latency, the real driver of
+# doctor wall-time.  Tools sorted by p90 desc so outliers surface first.
+cmd_stats() {
+    if [[ ! -f "$TELEMETRY_LOG" ]]; then
+        echo "ag_meta stats: $TELEMETRY_LOG absent — run a scanner first" >&2
+        return 1
+    fi
+    awk '
+        {
+            tool=""; ms=0
+            if (match($0, /"tool":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"tool":"/,"",s); sub(/".*/,"",s); tool=s }
+            if (match($0, /"runtime_ms":[0-9]+/)) { s=substr($0,RSTART,RLENGTH); sub(/"runtime_ms":/,"",s); ms=s+0 }
+            if (tool == "") next
+            key=tool "|" (++seq[tool])
+            val[key]=ms
+            if (!(tool in tools_seen)) { tools_seen[tool]=1; tool_list[++ntools]=tool }
+        }
+        END {
+            printf "%-28s  %6s  %7s  %7s\n", "tool", "n", "p50_ms", "p90_ms"
+            printf "%-28s  %6s  %7s  %7s\n", "----", "-", "------", "------"
+            for (t=1; t<=ntools; t++) {
+                tool = tool_list[t]
+                n = seq[tool]
+                # collect into simple array
+                for (i=1; i<=n; i++) arr[i] = val[tool "|" i]
+                # insertion sort (n is small per tool, tens-hundreds)
+                for (i=2; i<=n; i++) { v=arr[i]; j=i-1; while (j>=1 && arr[j]>v) { arr[j+1]=arr[j]; j-- } arr[j+1]=v }
+                p50 = arr[int(n * 0.5 + 0.5)]
+                p90 = arr[int(n * 0.9 + 0.5)]
+                printf "%-28s  %6d  %7d  %7d\n", tool, n, p50, p90
+                delete arr
+            }
+        }
+    ' "$TELEMETRY_LOG" | (read -r header; read -r sep; echo "$header"; echo "$sep"; sort -k4 -rn)
+}
+
 cmd_new() {
     local f="state/ag_blocker_persistence.json"
     if [[ ! -f "$f" ]]; then
@@ -1016,6 +1055,7 @@ main() {
         prune)           cmd_prune "$@" ;;
         self)            cmd_self ;;
         new)             cmd_new ;;
+        stats)           cmd_stats ;;
         resolved)        cmd_resolved ;;
         summary)         cmd_summary ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
