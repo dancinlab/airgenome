@@ -1,0 +1,148 @@
+// tool/ag_blocker_persistence.hexa — airgenome meta-evolution temporal v2.
+//
+// ag_blockers re-emits the same blocker kind every run if the underlying
+// condition hasn't been fixed.  Until now there was no way to tell "this
+// fired once" from "this has been firing for a week".  One-offs deserve a
+// glance; chronic blockers deserve a proposal_inbox entry.
+//
+// This scanner:
+//   1. Reads the current blocker list from state/ag_blockers.json.
+//   2. Appends one ledger row per current blocker, signed by
+//      md5(kind + "|" + source), into state/history/blocker_ledger.jsonl.
+//   3. Counts same-signature rows already in the ledger (occurrences_total)
+//      and first-seen epoch.
+//   4. Writes state/ag_blocker_persistence.json: per-kind
+//      {sig, occurrences_total, first_seen_epoch, age_hours, severity}.
+//
+// Downstream: ag_blockers / ag_gap_proposer can elevate any
+// occurrences_total ≥ N into a chronic_blocker proposal.
+//
+// CLI
+//   hexa run tool/ag_blocker_persistence.hexa --selftest
+//   hexa run tool/ag_blocker_persistence.hexa [--dry-run] [--out PATH]
+
+use "tool/ag_common"
+
+// _sig computes a short stable signature from (kind, source).  md5 via
+// the shell keeps the implementation portable and avoids pulling in a
+// hash primitive at the hexa layer.
+fn _sig(kind: string, source: string) -> string {
+    let cmd = "printf '%s' " + _sh_q(kind + "|" + source) + " | md5 -q 2>/dev/null || printf '%s' " + _sh_q(kind + "|" + source) + " | md5sum 2>/dev/null | cut -c1-32"
+    return to_string(exec(cmd)).trim()
+}
+
+// _current_blockers parses state/ag_blockers.json and returns an array of
+// "kind|source|severity" strings (one per current blocker, pipe-delimited
+// to keep the split simple).
+fn _current_blockers(path: string) -> array {
+    let mut out = []
+    if file_exists(path) == false { return out }
+    let raw = to_string(exec("grep -oE '\"severity\":\"[^\"]+\",\"kind\":\"[^\"]+\",\"source\":\"[^\"]+\"' " + _sh_q(path))).trim()
+    if len(raw) == 0 { return out }
+    let rows = raw.split("\n")
+    let mut i = 0
+    while i < len(rows) {
+        let r = rows[i].trim()
+        if len(r) > 0 {
+            let sev = to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"severity\":\"[^\"]+\"' | head -1 | awk -F'\"' '{print $4}'")).trim()
+            let knd = to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"kind\":\"[^\"]+\"' | head -1 | awk -F'\"' '{print $4}'")).trim()
+            let src = to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"source\":\"[^\"]+\"' | head -1 | awk -F'\"' '{print $4}'")).trim()
+            if len(knd) > 0 { out.push(knd + "|" + src + "|" + sev) }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn _count_in_ledger(ledger: string, sig: string) -> int {
+    if file_exists(ledger) == false { return 0 }
+    let out = to_string(exec("grep -cE '\"sig\":\"" + sig + "\"' " + _sh_q(ledger) + " 2>/dev/null || true")).trim()
+    if len(out) == 0 { return 0 }
+    return to_int(out)
+}
+
+fn _first_seen_epoch(ledger: string, sig: string) -> int {
+    if file_exists(ledger) == false { return -1 }
+    let cmd = "grep -E '\"sig\":\"" + sig + "\"' " + _sh_q(ledger) + " 2>/dev/null | head -1 | grep -oE '\"epoch\":[0-9]+' | head -1 | awk -F: '{print $2+0}'"
+    let out = to_string(exec(cmd)).trim()
+    if len(out) == 0 { return -1 }
+    return to_int(out)
+}
+
+fn _ensure_history_dir() { let _ = exec("mkdir -p state/history") }
+
+fn _selftest() -> int {
+    let tmpdir = "/tmp/ag_blocker_persistence_selftest"
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
+    let bj = tmpdir + "/b.json"
+    write_file(bj, "{\"blockers\":[{\"severity\":\"high\",\"kind\":\"foo\",\"source\":\"x.json\",\"evidence\":\"e1\"},{\"severity\":\"med\",\"kind\":\"bar\",\"source\":\"y.json\",\"evidence\":\"e2\"}]}")
+    let cb = _current_blockers(bj)
+    let mut ok = true
+    if len(cb) != 2 { eprintln("current expected 2 got " + to_string(len(cb))); ok = false }
+    // ledger counting
+    let ledger = tmpdir + "/l.jsonl"
+    let s1 = _sig("foo", "x.json")
+    if len(s1) == 0 { eprintln("sig empty"); ok = false }
+    write_file(ledger, "{\"ts\":\"a\",\"epoch\":100,\"sig\":\"" + s1 + "\",\"kind\":\"foo\"}\n{\"ts\":\"b\",\"epoch\":200,\"sig\":\"" + s1 + "\",\"kind\":\"foo\"}\n{\"ts\":\"c\",\"epoch\":300,\"sig\":\"other\",\"kind\":\"bar\"}\n")
+    let n1 = _count_in_ledger(ledger, s1)
+    if n1 != 2 { eprintln("count expected 2 got " + to_string(n1)); ok = false }
+    let fs1 = _first_seen_epoch(ledger, s1)
+    if fs1 != 100 { eprintln("first_seen expected 100 got " + to_string(fs1)); ok = false }
+    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    if ok == false { return 1 }
+    println("ag_blocker_persistence: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+    let dry_run = _arg_flag(args, "--dry-run")
+    let out_path = _arg_value(args, "--out", "state/ag_blocker_persistence.json")
+
+    let bj = "state/ag_blockers.json"
+    let ledger = "state/history/blocker_ledger.jsonl"
+    _ensure_history_dir()
+
+    let cb = _current_blockers(bj)
+    let ts = _iso_now()
+    let epoch = _epoch_now()
+
+    // Compute per-blocker stats BEFORE appending this run's rows.
+    let mut entries = "["
+    let mut chronic = 0
+    let mut i = 0
+    let chronic_threshold = 3
+    while i < len(cb) {
+        let parts = cb[i].split("|")
+        let knd = parts[0]
+        let src = parts[1]
+        let sev = parts[2]
+        let sig = _sig(knd, src)
+        let occ = _count_in_ledger(ledger, sig)
+        let fse = _first_seen_epoch(ledger, sig)
+        let age_hours = 0
+        let mut ah = 0
+        if fse > 0 { ah = (epoch - fse) / 3600 }
+        // occurrences_total AFTER this run (we're about to append one row).
+        let occ_after = occ + 1
+        if occ_after >= chronic_threshold { chronic = chronic + 1 }
+        if i > 0 { entries = entries + "," }
+        entries = entries + "{\"sig\":\"" + sig + "\",\"kind\":\"" + _json_esc(knd) + "\",\"source\":\"" + _json_esc(src) + "\",\"severity\":\"" + _json_esc(sev) + "\",\"occurrences_total\":" + to_string(occ_after) + ",\"first_seen_epoch\":" + to_string(fse) + ",\"age_hours\":" + to_string(ah) + "}"
+        // Append ledger row.
+        let row = "{\"ts\":\"" + ts + "\",\"epoch\":" + to_string(epoch) + ",\"sig\":\"" + sig + "\",\"kind\":\"" + _json_esc(knd) + "\",\"severity\":\"" + _json_esc(sev) + "\"}\n"
+        let _ = exec("printf '%s' " + _sh_q(row) + " >> " + _sh_q(ledger))
+        i = i + 1
+    }
+    entries = entries + "]"
+
+    let body = "{\n  \"schema\": \"airgenome/ag_blocker_persistence/1\",\n  \"ts\": \"" + ts + "\",\n  \"ledger_file\": \"" + _json_esc(ledger) + "\",\n  \"chronic_threshold\": " + to_string(chronic_threshold) + ",\n  \"current_blocker_count\": " + to_string(len(cb)) + ",\n  \"chronic_count\": " + to_string(chronic) + ",\n  \"entries\": " + entries + "\n}\n"
+
+    if dry_run { println(body); exit(0) }
+    _ensure_state_dir()
+    try { write_file(out_path, body) } catch e {
+        eprintln("ag_blocker_persistence: write FAIL " + out_path); exit(1)
+    }
+    println("ag_blocker_persistence: wrote " + out_path + " (current=" + to_string(len(cb)) + " chronic=" + to_string(chronic) + ")")
+    exit(0)
+}

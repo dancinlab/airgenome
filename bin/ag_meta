@@ -23,6 +23,7 @@
 #   trend          health-score time series (24h / 7d deltas)
 #   fresh          state/ag_*.json mtime audit (stale > max_age_sec)
 #   tel-audit      ag_meta_telemetry.jsonl analysis (errors_24h, slowest_3)
+#   persist        blocker persistence ledger (chronic ≥3 runs)
 #   blockers       Phase 1    aggregated prioritized blocker inventory
 #   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
 #   gap            Phase 6.2  mine git log + stderr patterns → scanner proposals
@@ -145,6 +146,7 @@ AGGREGATORS=(
     "dsl_runner:tool/ag_dsl_runner.hexa"
     "scanner_freshness:tool/ag_scanner_freshness.hexa"
     "telemetry_audit:tool/ag_telemetry_audit.hexa"
+    "blocker_persistence:tool/ag_blocker_persistence.hexa"
     "health_trend:tool/ag_health_trend.hexa"
 )
 
@@ -177,6 +179,7 @@ cmd_size()       { _hexa_timed "$(_scanner_path build_size_drift)" "$@"; }
 cmd_trend()      { _hexa_timed "$(_scanner_path health_trend)" "$@"; }
 cmd_fresh()      { _hexa_timed "$(_scanner_path scanner_freshness)" "$@"; }
 cmd_audit_tel()  { _hexa_timed "$(_scanner_path telemetry_audit)" "$@"; }
+cmd_persist()    { _hexa_timed "$(_scanner_path blocker_persistence)" "$@"; }
 cmd_blockers()   { _hexa_timed "$(_scanner_path blockers)" "$@"; }
 cmd_roi()        { _hexa_timed "$(_scanner_path roi)" "$@"; }
 cmd_gap()        { _hexa_timed "$(_scanner_path gap_proposals)" "$@"; }
@@ -371,6 +374,7 @@ cmd_report() {
         _headline "build_size_drift"    state/ag_build_size_drift.json   '"build_kb": *[0-9]+|"drift_pct": *-?[0-9.]+|"alarm": *(true|false)'
         _headline "scanner_freshness"   state/ag_scanner_freshness.json  '"total_state_files": *[0-9]+|"fresh": *[0-9]+|"stale": *[0-9]+'
         _headline "health_trend"        state/ag_health_trend.json       '"score": *-?[0-9]+|"delta_24h": *-?[0-9]+|"delta_7d": *-?[0-9]+|"direction_24h":"[a-z]+"'
+        _headline "blocker_persistence" state/ag_blocker_persistence.json '"current_blocker_count": *[0-9]+|"chronic_count": *[0-9]+|"chronic_threshold": *[0-9]+'
         echo
 
         # Top motifs — JSON file has 3 ring blocks in order mac, ubu, ubu2.
@@ -550,6 +554,16 @@ cmd_health() {
         fi
     fi
 
+    # chronic blockers (persisted ≥ threshold runs) — -2 each
+    local bp_file="state/ag_blocker_persistence.json"
+    if [[ -f "$bp_file" ]]; then
+        local chronic
+        chronic="$(grep -oE '"chronic_count": *[0-9]+' "$bp_file" | head -1 | awk -F: '{print $2+0}')"
+        chronic="${chronic:-0}"
+        score=$((score - 2 * chronic))
+        parts+=("chronic_blockers=$chronic")
+    fi
+
     # Phase 6.3 DSL alarms — each alarm_high/low subtracts by severity weight
     local dsl_alarms=0
     for f in state/ag_dsl_*.json; do
@@ -596,6 +610,7 @@ main() {
         trend)           cmd_trend "$@" ;;
         fresh)           cmd_fresh "$@" ;;
         tel-audit)       cmd_audit_tel "$@" ;;
+        persist)         cmd_persist "$@" ;;
         blockers)        cmd_blockers "$@" ;;
         roi)             cmd_roi "$@" ;;
         gap)             cmd_gap "$@" ;;
