@@ -358,6 +358,30 @@ cmd_report() {
             echo
         fi
 
+        # Chronic blockers (persisted ≥ threshold runs)
+        if [[ -f state/ag_blocker_persistence.json ]]; then
+            local chronic_n
+            chronic_n=$(grep -oE '"chronic_count": *[0-9]+' state/ag_blocker_persistence.json | head -1 | awk -F: '{print $2+0}')
+            if [[ "${chronic_n:-0}" -gt 0 ]]; then
+                echo "## Chronic blockers"
+                echo
+                # Extract entries where occurrences_total ≥ chronic_threshold.
+                local thresh
+                thresh=$(grep -oE '"chronic_threshold": *[0-9]+' state/ag_blocker_persistence.json | head -1 | awk -F: '{print $2+0}')
+                thresh="${thresh:-3}"
+                grep -oE '\{[^}]*"occurrences_total":[0-9]+[^}]*\}' state/ag_blocker_persistence.json |
+                    awk -v t="$thresh" '{
+                        occ=0; kind=""; sev=""; ah=0
+                        if (match($0, /"occurrences_total":[0-9]+/)) { s=substr($0,RSTART,RLENGTH); sub(/"occurrences_total":/,"",s); occ=s+0 }
+                        if (match($0, /"kind":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"kind":"/,"",s); sub(/".*/,"",s); kind=s }
+                        if (match($0, /"severity":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"severity":"/,"",s); sub(/".*/,"",s); sev=s }
+                        if (match($0, /"age_hours":[0-9]+/)) { s=substr($0,RSTART,RLENGTH); sub(/"age_hours":/,"",s); ah=s+0 }
+                        if (occ >= t) printf "  - **%s** — %s — occurrences=%d — age=%dh\n", sev, kind, occ, ah
+                    }' | sort
+                echo
+            fi
+        fi
+
         # ROI findings
         if [[ -f state/ag_roi.json ]]; then
             echo "## ROI opportunities"
