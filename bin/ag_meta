@@ -335,6 +335,26 @@ cmd_report() {
             else
                 echo "- _(single sample; Δ24h / Δ7d will populate after more runs)_"
             fi
+            # Sparkline: last 20 scores mapped to 8-level unicode blocks.
+            # 0..12 → ▁, 13..25 → ▂, 26..37 → ▃, 38..50 → ▄, 51..62 → ▅,
+            # 63..75 → ▆, 76..87 → ▇, 88..100 → █ (fixed 0-100 domain).
+            local trend_file="state/history/health_trend.jsonl"
+            if [[ -f "$trend_file" ]]; then
+                local spark
+                spark="$(tail -20 "$trend_file" \
+                    | grep -oE '"score": *-?[0-9]+' \
+                    | awk -F: '{print $2+0}' \
+                    | awk '{
+                        v=$1; if (v<0) v=0; if (v>100) v=100
+                        b=int(v/12.5); if (b>7) b=7
+                        blocks[0]="▁"; blocks[1]="▂"; blocks[2]="▃"; blocks[3]="▄"
+                        blocks[4]="▅"; blocks[5]="▆"; blocks[6]="▇"; blocks[7]="█"
+                        printf "%s", blocks[b]
+                      }')"
+                if [[ -n "$spark" ]]; then
+                    echo "- last-20 sparkline: \`${spark}\`"
+                fi
+            fi
             echo
         fi
 
