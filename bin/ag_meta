@@ -20,6 +20,7 @@
 #   audit          forge/*.log reference count (orphan detection)
 #   reach          ssh reachability probe from local → infra_state.json hosts
 #   size           build/ + docker image size drift vs previous run (alarm ≥20%)
+#   trend          health-score time series (24h / 7d deltas)
 #   blockers       Phase 1    aggregated prioritized blocker inventory
 #   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
 #   gap            Phase 6.2  mine git log + stderr patterns → scanner proposals
@@ -140,6 +141,7 @@ AGGREGATORS=(
     "roi:tool/ag_roi.hexa"
     "gap_proposals:tool/ag_gap_proposer.hexa"
     "dsl_runner:tool/ag_dsl_runner.hexa"
+    "health_trend:tool/ag_health_trend.hexa"
 )
 
 _scanner_path() {
@@ -168,6 +170,7 @@ cmd_cache()      { _hexa_timed "$(_scanner_path hexa_cache_scan)" "$@"; }
 cmd_audit()      { _hexa_timed "$(_scanner_path log_writer_audit)" "$@"; }
 cmd_reach()      { _hexa_timed "$(_scanner_path reachability_matrix)" "$@"; }
 cmd_size()       { _hexa_timed "$(_scanner_path build_size_drift)" "$@"; }
+cmd_trend()      { _hexa_timed "$(_scanner_path health_trend)" "$@"; }
 cmd_blockers()   { _hexa_timed "$(_scanner_path blockers)" "$@"; }
 cmd_roi()        { _hexa_timed "$(_scanner_path roi)" "$@"; }
 cmd_gap()        { _hexa_timed "$(_scanner_path gap_proposals)" "$@"; }
@@ -561,6 +564,7 @@ main() {
         audit)           cmd_audit "$@" ;;
         reach)           cmd_reach "$@" ;;
         size)            cmd_size "$@" ;;
+        trend)           cmd_trend "$@" ;;
         blockers)        cmd_blockers "$@" ;;
         roi)             cmd_roi "$@" ;;
         gap)             cmd_gap "$@" ;;

@@ -1,0 +1,119 @@
+// tool/ag_health_trend.hexa — airgenome meta-evolution temporal layer.
+//
+// Every scanner in state/ag_*.json is a snapshot.  The meta engine had no
+// time dimension until this file — doctor runs were independent, and a
+// slowly-rotting system looked identical to a stable one.  This scanner
+// appends the current 0-100 health score (from `bin/ag_meta health`) to a
+// history log and computes deltas vs ~24h / ~7d ago.
+//
+// History log: state/history/health_trend.jsonl (append-only).
+// Deltas select the first sample whose age ≥ target-window.  If no such
+// sample exists (fresh install), the delta is reported as 0 with n<2 flag.
+//
+// CLI
+//   hexa run tool/ag_health_trend.hexa --selftest
+//   hexa run tool/ag_health_trend.hexa [--dry-run] [--out PATH]
+
+use "tool/ag_common"
+
+// _read_score invokes `bin/ag_meta health` and parses the "N/100" score.
+fn _read_score() -> int {
+    let out = to_string(exec("bin/ag_meta health 2>/dev/null | grep -oE '[0-9]+/100' | head -1 | cut -d/ -f1")).trim()
+    if len(out) == 0 { return -1 }
+    return to_int(out)
+}
+
+fn _ensure_history_dir() { let _ = exec("mkdir -p state/history") }
+
+// _score_at_or_before returns the score from the newest row whose ts is at
+// or more than `age_sec` ago. -1 if no such row or file missing.
+fn _score_at_or_before(path: string, age_sec: int) -> int {
+    if file_exists(path) == false { return -1 }
+    let cutoff = _epoch_now() - age_sec
+    // Walk rows, pick the highest-epoch row whose epoch ≤ cutoff.
+    let cmd = "awk -v c=" + to_string(cutoff) + " '\n"
+        + "match($0, /\"epoch\":[0-9]+/) {\n"
+        + "  e = substr($0, RSTART+8, RLENGTH-8) + 0\n"
+        + "  if (e <= c) {\n"
+        + "    match($0, /\"score\":[0-9]+/)\n"
+        + "    if (RSTART > 0) { s = substr($0, RSTART+8, RLENGTH-8); last = s }\n"
+        + "  }\n"
+        + "}\n"
+        + "END { print (last==\"\") ? -1 : last }' " + _sh_q(path)
+    let out = to_string(exec(cmd)).trim()
+    if len(out) == 0 { return -1 }
+    return to_int(out)
+}
+
+fn _selftest() -> int {
+    let tmpdir = "/tmp/ag_health_trend_selftest"
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
+    let f = tmpdir + "/h.jsonl"
+    // Three rows: 2h ago=80, 25h ago=40, 8d ago=10
+    let now = _epoch_now()
+    let r1 = "{\"ts\":\"a\",\"epoch\":" + to_string(now - 2*3600) + ",\"score\":80}\n"
+    let r2 = "{\"ts\":\"b\",\"epoch\":" + to_string(now - 25*3600) + ",\"score\":40}\n"
+    let r3 = "{\"ts\":\"c\",\"epoch\":" + to_string(now - 8*86400) + ",\"score\":10}\n"
+    // Write chronologically ascending (oldest first) to match append semantics.
+    write_file(f, r3 + r2 + r1)
+    let mut ok = true
+    // at-or-before(24h) should pick row2 (25h ago) not row1 (2h ago).
+    let s24 = _score_at_or_before(f, 24 * 3600)
+    if s24 != 40 { eprintln("24h expected 40 got " + to_string(s24)); ok = false }
+    // at-or-before(7d) → row3
+    let s7 = _score_at_or_before(f, 7 * 86400)
+    if s7 != 10 { eprintln("7d expected 10 got " + to_string(s7)); ok = false }
+    // at-or-before(1h) → no row ≥ 1h? row1 is 2h, so yes → 80
+    let s1 = _score_at_or_before(f, 3600)
+    if s1 != 80 { eprintln("1h expected 80 got " + to_string(s1)); ok = false }
+    // at-or-before(30d) → none → -1
+    let s30 = _score_at_or_before(f, 30 * 86400)
+    if s30 != -1 { eprintln("30d expected -1 got " + to_string(s30)); ok = false }
+    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    if ok == false { return 1 }
+    println("ag_health_trend: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+    let dry_run = _arg_flag(args, "--dry-run")
+    let out_path = _arg_value(args, "--out", "state/ag_health_trend.json")
+
+    let history = "state/history/health_trend.jsonl"
+    _ensure_history_dir()
+
+    let score = _read_score()
+    let ts = _iso_now()
+    let epoch = _epoch_now()
+
+    // Read deltas BEFORE appending current row so "24h ago" means
+    // strictly-before this run, not circular reference to self.
+    let s24 = _score_at_or_before(history, 24 * 3600)
+    let s7d = _score_at_or_before(history, 7 * 86400)
+
+    let row = "{\"ts\":\"" + ts + "\",\"epoch\":" + to_string(epoch) + ",\"score\":" + to_string(score) + "}\n"
+    let _ = exec("printf '%s' " + _sh_q(row) + " >> " + _sh_q(history))
+
+    let mut delta_24h = 0
+    let mut delta_7d = 0
+    let mut n_samples_24h = 1
+    let mut n_samples_7d = 1
+    if s24 >= 0 { delta_24h = score - s24; n_samples_24h = 2 }
+    if s7d >= 0 { delta_7d = score - s7d; n_samples_7d = 2 }
+
+    let mut direction = "flat"
+    if delta_24h < 0 { direction = "down" }
+    if delta_24h > 0 { direction = "up" }
+
+    let body = "{\n  \"schema\": \"airgenome/ag_health_trend/1\",\n  \"ts\": \"" + ts + "\",\n  \"history_file\": \"" + _json_esc(history) + "\",\n  \"score\": " + to_string(score) + ",\n  \"score_24h_ago\": " + to_string(s24) + ",\n  \"score_7d_ago\": " + to_string(s7d) + ",\n  \"delta_24h\": " + to_string(delta_24h) + ",\n  \"delta_7d\": " + to_string(delta_7d) + ",\n  \"n_samples_24h\": " + to_string(n_samples_24h) + ",\n  \"n_samples_7d\": " + to_string(n_samples_7d) + ",\n  \"direction_24h\": \"" + direction + "\"\n}\n"
+
+    if dry_run { println(body); exit(0) }
+    _ensure_state_dir()
+    try { write_file(out_path, body) } catch e {
+        eprintln("ag_health_trend: write FAIL " + out_path); exit(1)
+    }
+    println("ag_health_trend: wrote " + out_path + " (score=" + to_string(score) + " d24=" + to_string(delta_24h) + " d7=" + to_string(delta_7d) + " " + direction + ")")
+    exit(0)
+}
