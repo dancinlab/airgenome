@@ -1,0 +1,111 @@
+// tool/ag_scanner_correlation.hexa — airgenome meta-evolution.
+//
+// Blockers rarely fire in isolation: forge_stalled and stderr_critical
+// tend to co-occur (same root cause); scanner_error_24h correlates with
+// host_unreachable (network flap kills ssh probe).  The meta engine had
+// no way to surface these co-occurrences.
+//
+// Scans state/history/blocker_ledger.jsonl, buckets rows by epoch//120
+// (2-min window = one doctor run's back-to-back appends), and counts
+// co-occurrences per unordered kind pair.  Output: top N pairs with
+// count + marginals, so any cascade pattern becomes visible.
+//
+// CLI
+//   hexa run tool/ag_scanner_correlation.hexa --selftest
+//   hexa run tool/ag_scanner_correlation.hexa [--dry-run] [--out PATH] [--top N]
+
+use "tool/ag_common"
+
+fn _correlate(ledger: string, top: int) -> string {
+    if file_exists(ledger) == false { return "[]" }
+    // awk: bucket rows by epoch//120, collect distinct kinds per bucket,
+    // accumulate pair counts in a nested assoc.  Final pass prints
+    // "countA|countB|countAB|A|B" lines; we keep top-N by countAB.
+    let cmd = "awk '\n"
+        + "BEGIN { FS=\"\" }\n"
+        + "{ epoch=0; kind=\"\"\n"
+        + "  if (match($0, /\"epoch\":[0-9]+/)) { s=substr($0,RSTART,RLENGTH); sub(/\"epoch\":/,\"\",s); epoch=s+0 }\n"
+        + "  if (match($0, /\"kind\":\"[^\"]+\"/)) { s=substr($0,RSTART,RLENGTH); sub(/\"kind\":\"/,\"\",s); sub(/\".*/,\"\",s); kind=s }\n"
+        + "  if (kind == \"\") next\n"
+        + "  b = int(epoch/120)\n"
+        + "  if (!((b SUBSEP kind) in seenbk)) { seenbk[b SUBSEP kind]=1; bkinds[b] = bkinds[b] SUBSEP kind; kcount[kind]++; ntotal[b]=1 }\n"
+        + "}\n"
+        + "END {\n"
+        + "  for (b in bkinds) {\n"
+        + "    n = split(bkinds[b], arr, SUBSEP); delete arr[1]\n"
+        + "    for (i=2; i<=n; i++) for (j=i+1; j<=n; j++) {\n"
+        + "      a1 = arr[i]; a2 = arr[j]\n"
+        + "      if (a1 > a2) { t=a1; a1=a2; a2=t }\n"
+        + "      pair[a1 SUBSEP a2]++\n"
+        + "    }\n"
+        + "  }\n"
+        + "  for (p in pair) {\n"
+        + "    split(p, ab, SUBSEP)\n"
+        + "    printf \"%d|%d|%d|%s|%s\\n\", kcount[ab[1]], kcount[ab[2]], pair[p], ab[1], ab[2]\n"
+        + "  }\n"
+        + "}' " + _sh_q(ledger) + " | sort -t'|' -k3 -rn | head -" + to_string(top)
+    let raw = to_string(exec(cmd)).trim()
+    if len(raw) == 0 { return "[]" }
+    let lines = raw.split("\n")
+    let mut out = "["
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i]
+        let f = line.split("|")
+        if len(f) >= 5 {
+            if i > 0 { out = out + "," }
+            out = out + "{\"a\":\"" + _json_esc(f[3]) + "\",\"b\":\"" + _json_esc(f[4]) + "\",\"count_a\":" + f[0] + ",\"count_b\":" + f[1] + ",\"count_ab\":" + f[2] + "}"
+        }
+        i = i + 1
+    }
+    out = out + "]"
+    return out
+}
+
+fn _selftest() -> int {
+    let tmpdir = "/tmp/ag_scanner_correlation_selftest"
+    let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
+    let f = tmpdir + "/l.jsonl"
+    // Three runs, 120s apart: r1 has (A,B), r2 has (A,B,C), r3 has (A,C)
+    // Expected pair counts: A-B=2, A-C=2, B-C=1
+    write_file(f,
+        "{\"epoch\":1000,\"kind\":\"A\"}\n" +
+        "{\"epoch\":1000,\"kind\":\"B\"}\n" +
+        "{\"epoch\":1200,\"kind\":\"A\"}\n" +
+        "{\"epoch\":1200,\"kind\":\"B\"}\n" +
+        "{\"epoch\":1200,\"kind\":\"C\"}\n" +
+        "{\"epoch\":1400,\"kind\":\"A\"}\n" +
+        "{\"epoch\":1400,\"kind\":\"C\"}\n"
+    )
+    let res = _correlate(f, 10)
+    let mut ok = true
+    // Must include A-B with count_ab=2 and B-C with count_ab=1
+    if _index_of(res, "\"a\":\"A\",\"b\":\"B\"") < 0 { eprintln("missing A-B: " + res); ok = false }
+    if _index_of(res, "\"count_ab\":1") < 0 { eprintln("missing count=1 pair (B-C): " + res); ok = false }
+    let _ = exec("rm -rf " + _sh_q(tmpdir))
+    if ok == false { return 1 }
+    println("ag_scanner_correlation: selftest PASS")
+    return 0
+}
+
+fn main() {
+    let args = _user_args()
+    if _arg_flag(args, "--selftest") { exit(_selftest()) }
+    let dry_run = _arg_flag(args, "--dry-run")
+    let out_path = _arg_value(args, "--out", "state/ag_scanner_correlation.json")
+    let top = to_int(_arg_value(args, "--top", "10"))
+    let ledger = "state/history/blocker_ledger.jsonl"
+
+    let pairs = _correlate(ledger, top)
+    let pair_count = to_int(to_string(exec("printf '%s' " + _sh_q(pairs) + " | grep -oE '\"count_ab\"' | wc -l | tr -d ' '")).trim())
+
+    let body = "{\n  \"schema\": \"airgenome/ag_scanner_correlation/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"ledger\": \"" + _json_esc(ledger) + "\",\n  \"bucket_window_sec\": 120,\n  \"top\": " + to_string(top) + ",\n  \"pair_count\": " + to_string(pair_count) + ",\n  \"pairs\": " + pairs + "\n}\n"
+
+    if dry_run { println(body); exit(0) }
+    _ensure_state_dir()
+    try { write_file(out_path, body) } catch e {
+        eprintln("ag_scanner_correlation: write FAIL " + out_path); exit(1)
+    }
+    println("ag_scanner_correlation: wrote " + out_path + " (pairs=" + to_string(pair_count) + ")")
+    exit(0)
+}
