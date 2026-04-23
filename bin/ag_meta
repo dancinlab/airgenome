@@ -36,6 +36,7 @@
 #   prune [N]      trim state/history/*.jsonl to last N rows (default 1000)
 #   self           meta-engine self-health score (distinct from cmd_health)
 #   new            list blockers that first appeared in latest run (occ==1)
+#   resolved       list blockers that cleared since previous run (ledger diff)
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
 #   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
 #   fast           fast-subset for pre-commit (ring + forge + blockers)
@@ -582,6 +583,50 @@ cmd_build() {
 # (persistence entries with occurrences_total == 1).  Reuses existing
 # state/ag_blocker_persistence.json — no new data plumbing.  Empty list
 # on a stable system; populated when a real regression lands.
+# cmd_resolved — list blockers present in previous run but absent in latest.
+# Symmetric with cmd_new: detects fixes landing between doctor runs.
+# Buckets rows by epoch // 120 (2-min window) to group a single doctor
+# run's back-to-back appends; compares the last two distinct buckets.
+cmd_resolved() {
+    local ledger="state/history/blocker_ledger.jsonl"
+    if [[ ! -f "$ledger" ]]; then
+        echo "ag_meta resolved: $ledger absent — run 'ag_meta persist' first" >&2
+        return 1
+    fi
+    awk '
+        BEGIN { FS="" }
+        {
+            epoch=0; sig=""; kind=""; sev=""
+            if (match($0, /"epoch":[0-9]+/))      { s=substr($0,RSTART,RLENGTH); sub(/"epoch":/,"",s); epoch=s+0 }
+            if (match($0, /"sig":"[^"]+"/))       { s=substr($0,RSTART,RLENGTH); sub(/"sig":"/,"",s); sub(/".*/,"",s); sig=s }
+            if (match($0, /"kind":"[^"]+"/))      { s=substr($0,RSTART,RLENGTH); sub(/"kind":"/,"",s); sub(/".*/,"",s); kind=s }
+            if (match($0, /"severity":"[^"]+"/))  { s=substr($0,RSTART,RLENGTH); sub(/"severity":"/,"",s); sub(/".*/,"",s); sev=s }
+            if (sig == "") next
+            bucket = int(epoch / 120)
+            if (!(bucket in seen)) { order[++nbuckets] = bucket; seen[bucket] = 1 }
+            key = bucket "|" sig
+            row[key] = kind "|" sev
+        }
+        END {
+            if (nbuckets < 2) { print "ag_meta resolved: not enough history (need ≥ 2 distinct runs)"; exit 0 }
+            cur  = order[nbuckets]
+            prev = order[nbuckets - 1]
+            hits = 0
+            for (k in row) {
+                split(k, p, "|")
+                b = p[1]; s = p[2]
+                if (b != prev) continue
+                if ((cur "|" s) in row) continue  # still present
+                split(row[k], kv, "|")
+                printf "  %-12s %s\n", kv[2], kv[1]
+                hits++
+            }
+            if (hits == 0) print "ag_meta resolved: no blockers cleared since previous run"
+            else printf "ag_meta resolved: %d blocker(s) cleared since previous run\n", hits
+        }
+    ' "$ledger"
+}
+
 cmd_new() {
     local f="state/ag_blocker_persistence.json"
     if [[ ! -f "$f" ]]; then
@@ -850,6 +895,7 @@ main() {
         prune)           cmd_prune "$@" ;;
         self)            cmd_self ;;
         new)             cmd_new ;;
+        resolved)        cmd_resolved ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
         telemetry)       cmd_telemetry "$@" ;;
         fast)            cmd_fast "$@" ;;
