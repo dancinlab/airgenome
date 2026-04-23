@@ -30,7 +30,8 @@
 #   dsl            Phase 6.3  run every scanners/*.meta.hexa declarative spec
 #   doctor         aggregate: run all Phase 3 scanners in sequence
 #   health         aggregate: print 0-100 score from state/ag_*.json
-#   selftest       run --selftest on every scanner
+#   selftest       run --selftest on every scanner (prefixed by verify)
+#   verify         registry ↔ filesystem consistency (no scanner execution)
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
 #   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
 #   fast           fast-subset for pre-commit (ring + forge + blockers)
@@ -205,8 +206,45 @@ cmd_doctor() {
     return $rc
 }
 
+# cmd_verify — registry ↔ filesystem consistency check (no scanner execution).
+#   1. Every SCANNERS/AGGREGATORS entry → file must exist.
+#   2. Every tool/ag_*.hexa file → must appear in a registry (else orphan).
+# Exits non-zero on any mismatch.  Called at the top of cmd_selftest so
+# registry drift is caught before the 20 individual selftests run.
+cmd_verify() {
+    local rc=0
+    local all=("${SCANNERS[@]}" "${AGGREGATORS[@]}")
+    # 1. Registry entries point to real files?
+    for entry in "${all[@]}"; do
+        local path="${entry#*:}"
+        if [[ ! -f "$path" ]]; then
+            echo "ag_meta verify: dangling registry entry '$entry' (file $path missing)" >&2
+            rc=$((rc + 1))
+        fi
+    done
+    # 2. tool/ag_*.hexa not mentioned in any registry entry?
+    for f in tool/ag_*.hexa; do
+        [[ -e "$f" ]] || continue
+        # Ignore the shared header.
+        [[ "$f" == "tool/ag_common.hexa" ]] && continue
+        local found=0
+        for entry in "${all[@]}"; do
+            if [[ "${entry#*:}" == "$f" ]]; then found=1; break; fi
+        done
+        if [[ $found -eq 0 ]]; then
+            echo "ag_meta verify: orphaned scanner '$f' (not in SCANNERS or AGGREGATORS)" >&2
+            rc=$((rc + 1))
+        fi
+    done
+    if [[ $rc -eq 0 ]]; then
+        echo "ag_meta verify: registry OK (${#all[@]} entries, all files present, no orphans)"
+    fi
+    return $rc
+}
+
 cmd_selftest() {
     local rc=0
+    cmd_verify || rc=$((rc + 1))
     local all=("${SCANNERS[@]}" "${AGGREGATORS[@]}")
     for entry in "${all[@]}"; do
         local key="${entry%%:*}"
@@ -662,6 +700,7 @@ main() {
         doctor)          cmd_doctor "$@" ;;
         health)          cmd_health "$@" ;;
         selftest)        cmd_selftest ;;
+        verify)          cmd_verify ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
         telemetry)       cmd_telemetry "$@" ;;
         fast)            cmd_fast "$@" ;;
