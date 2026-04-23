@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-23T02:41:41Z",
+  "updated_ts": "2026-04-23T04:15:07Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -95,20 +95,24 @@
       "kind": "cluster",
       "title": "Docker image size drift — 빌드 산출물 크기가 직전 빌드 대비 20%+ 증가 시 자동 alarm 필요 (airgenome 제안서 Phase 2 dup cleanup)",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 85,
       "submitted_ts": "2026-04-22T15:50:43Z",
-      "category": "resource_gap"
+      "category": "resource_gap",
+      "in_progress_ts": "2026-04-23T04:13:04Z",
+      "done_ts": "2026-04-23T04:15:07Z"
     },
     {
       "id": "agm-20260422-010",
       "kind": "cluster",
       "title": "ssh ControlMaster / key rotation 경로 — network reachability matrix (N×N ping) 자동 검증 scanner (airgenome 제안서 C-07)",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 88,
       "submitted_ts": "2026-04-22T15:50:44Z",
-      "category": "resource_gap"
+      "category": "resource_gap",
+      "in_progress_ts": "2026-04-23T04:06:08Z",
+      "done_ts": "2026-04-23T04:09:17Z"
     },
     {
       "id": "agm-20260422-011",

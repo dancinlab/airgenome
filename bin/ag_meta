@@ -18,6 +18,8 @@
 #   panic          self-proposed: cluster stderr lines by severity
 #   cache          hexa AOT cache + /tmp/hexa_* hygiene
 #   audit          forge/*.log reference count (orphan detection)
+#   reach          ssh reachability probe from local → infra_state.json hosts
+#   size           build/ + docker image size drift vs previous run (alarm ≥20%)
 #   blockers       Phase 1    aggregated prioritized blocker inventory
 #   roi            Phase 2    loss-free ROI (stale_forecast, log_oversize, ...)
 #   gap            Phase 6.2  mine git log + stderr patterns → scanner proposals
@@ -128,6 +130,8 @@ SCANNERS=(
     "panic_pattern_scan:tool/ag_panic_pattern_scan.hexa"
     "hexa_cache_scan:tool/ag_hexa_cache_scan.hexa"
     "log_writer_audit:tool/ag_log_writer_audit.hexa"
+    "reachability_matrix:tool/ag_reachability_matrix.hexa"
+    "build_size_drift:tool/ag_build_size_drift.hexa"
 )
 
 # Aggregator scanners — run *after* Phase 3 scanners so they see fresh state/.
@@ -162,6 +166,8 @@ cmd_motif()      { _hexa_timed "$(_scanner_path mutation_motif)" "$@"; }
 cmd_panic()      { _hexa_timed "$(_scanner_path panic_pattern_scan)" "$@"; }
 cmd_cache()      { _hexa_timed "$(_scanner_path hexa_cache_scan)" "$@"; }
 cmd_audit()      { _hexa_timed "$(_scanner_path log_writer_audit)" "$@"; }
+cmd_reach()      { _hexa_timed "$(_scanner_path reachability_matrix)" "$@"; }
+cmd_size()       { _hexa_timed "$(_scanner_path build_size_drift)" "$@"; }
 cmd_blockers()   { _hexa_timed "$(_scanner_path blockers)" "$@"; }
 cmd_roi()        { _hexa_timed "$(_scanner_path roi)" "$@"; }
 cmd_gap()        { _hexa_timed "$(_scanner_path gap_proposals)" "$@"; }
@@ -534,6 +540,8 @@ main() {
         panic)           cmd_panic "$@" ;;
         cache)           cmd_cache "$@" ;;
         audit)           cmd_audit "$@" ;;
+        reach)           cmd_reach "$@" ;;
+        size)            cmd_size "$@" ;;
         blockers)        cmd_blockers "$@" ;;
         roi)             cmd_roi "$@" ;;
         gap)             cmd_gap "$@" ;;
