@@ -39,6 +39,7 @@
 #   self           meta-engine self-health score (distinct from cmd_health)
 #   new            list blockers that first appeared in latest run (occ==1)
 #   stats          per-tool p50/p90 runtime table (from telemetry log)
+#   ack            acknowledge chronic blocker (list|add <kind> <reason>|remove)
 #   resolved       list blockers that cleared since previous run (ledger diff)
 #   summary        condensed single-screen status (health + self + trend + diff)
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
@@ -759,6 +760,93 @@ cmd_summary() {
 # cmd_telemetry (which dumps mean + last 10 entries) by showing p50/p90
 # percentiles — which tell you about tail latency, the real driver of
 # doctor wall-time.  Tools sorted by p90 desc so outliers surface first.
+# cmd_ack — acknowledge a blocker kind so it stops counting against
+# cmd_self's chronic_blocker penalty.  Doesn't suppress the entry from
+# cmd_report / blockers list (visibility preserved) — only the score.
+#
+# Storage: state/ag_blocker_acks.jsonl, append-only.  Latest row per
+# kind wins; set reason="" to un-ack.
+#
+# Usage:
+#   ag_meta ack list
+#   ag_meta ack add <kind> <reason>
+#   ag_meta ack remove <kind>
+cmd_ack() {
+    local ack_log="state/ag_blocker_acks.jsonl"
+    local sub="${1:-list}"
+    case "$sub" in
+        list)
+            if [[ ! -f "$ack_log" ]]; then
+                echo "ag_meta ack: no acknowledgements yet"
+                return 0
+            fi
+            # Reduce to latest status per kind (acked if reason != "").
+            awk '
+                {
+                    if (match($0, /"kind":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"kind":"/,"",s); sub(/".*/,"",s); k=s }
+                    if (match($0, /"reason":"[^"]*"/)) { s=substr($0,RSTART,RLENGTH); sub(/"reason":"/,"",s); sub(/".*/,"",s); r=s }
+                    if (match($0, /"ts":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"ts":"/,"",s); sub(/".*/,"",s); ts=s }
+                    latest_kind[k] = r; latest_ts[k] = ts
+                }
+                END {
+                    for (k in latest_kind) if (latest_kind[k] != "") printf "  %-28s %s  (%s)\n", k, latest_kind[k], latest_ts[k]
+                }
+            ' "$ack_log"
+            ;;
+        add)
+            local kind="${2:?kind required}"
+            local reason="${3:?reason required}"
+            mkdir -p state
+            printf '{"ts":"%s","kind":"%s","reason":"%s"}\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$kind" "$reason" >> "$ack_log"
+            echo "ag_meta ack: added '$kind' — $reason"
+            ;;
+        remove)
+            local kind="${2:?kind required}"
+            mkdir -p state
+            printf '{"ts":"%s","kind":"%s","reason":""}\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$kind" >> "$ack_log"
+            echo "ag_meta ack: removed '$kind'"
+            ;;
+        *)
+            echo "ag_meta ack: unknown subcommand '$sub'; try list|add|remove" >&2
+            return 2
+            ;;
+    esac
+}
+
+# _acked_chronic_count returns the number of chronic blockers whose kind
+# appears as currently-acked in state/ag_blocker_acks.jsonl.  Used by
+# cmd_self to discount acked kinds.
+_acked_chronic_count() {
+    local bp="state/ag_blocker_persistence.json"
+    local ack_log="state/ag_blocker_acks.jsonl"
+    [[ -f "$bp" && -f "$ack_log" ]] || { echo 0; return; }
+    local thresh
+    thresh=$(grep -oE '"chronic_threshold": *[0-9]+' "$bp" | head -1 | awk -F: '{print $2+0}')
+    thresh="${thresh:-3}"
+    # Build acked-kind set from ack log (latest row per kind with reason != "").
+    local acked_kinds
+    acked_kinds=$(awk '
+        {
+            if (match($0, /"kind":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"kind":"/,"",s); sub(/".*/,"",s); k=s }
+            if (match($0, /"reason":"[^"]*"/)) { s=substr($0,RSTART,RLENGTH); sub(/"reason":"/,"",s); sub(/".*/,"",s); r=s }
+            latest[k]=r
+        }
+        END { for (k in latest) if (latest[k] != "") print k }
+    ' "$ack_log" | tr '\n' '|')
+    # Count chronic entries whose kind is in acked set.
+    awk -v t="$thresh" -v aks="$acked_kinds" 'BEGIN{RS="\\},\\{"}
+        {
+            occ=0; k=""
+            if (match($0, /"occurrences_total":[0-9]+/)) { s=substr($0,RSTART,RLENGTH); sub(/"occurrences_total":/,"",s); occ=s+0 }
+            if (match($0, /"kind":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"kind":"/,"",s); sub(/".*/,"",s); k=s }
+            if (occ >= t && k != "") {
+                n = split(aks, arr, "|")
+                for (i=1; i<=n; i++) if (arr[i] != "" && arr[i] == k) { hits++; break }
+            }
+        }
+        END { print hits+0 }' "$bp"
+}
+
 cmd_stats() {
     if [[ ! -f "$TELEMETRY_LOG" ]]; then
         echo "ag_meta stats: $TELEMETRY_LOG absent — run a scanner first" >&2
@@ -1055,14 +1143,21 @@ cmd_self() {
         score=$((score - ws_err * tel_err - ws_anom * anom))
     fi
     parts+=("errors_24h=$tel_err" "anomalies=$anom")
-    # chronic persistence
-    local chronic=0
+    # chronic persistence — subtract acknowledged kinds before penalty.
+    local chronic=0 acked=0 counted=0
     if [[ -f state/ag_blocker_persistence.json ]]; then
         chronic=$(grep -oE '"chronic_count": *[0-9]+' state/ag_blocker_persistence.json | head -1 | awk -F: '{print $2+0}')
         chronic="${chronic:-0}"
-        score=$((score - ws_chr * chronic))
+        acked=$(_acked_chronic_count)
+        counted=$((chronic - acked))
+        [[ $counted -lt 0 ]] && counted=0
+        score=$((score - ws_chr * counted))
     fi
-    parts+=("chronic=$chronic")
+    if [[ $acked -gt 0 ]]; then
+        parts+=("chronic=${chronic}-ack${acked}")
+    else
+        parts+=("chronic=$chronic")
+    fi
     # native-build staleness: scanners with source newer than build/ag_<tool>
     # fall back to interp mode (2-3× slower), so each stale binary is a
     # meta-engine efficiency hit.  Missing binary counted as stale.
@@ -1119,6 +1214,7 @@ main() {
         self)            cmd_self ;;
         new)             cmd_new ;;
         stats)           cmd_stats ;;
+        ack)             cmd_ack "$@" ;;
         resolved)        cmd_resolved ;;
         summary)         cmd_summary ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
