@@ -84,11 +84,11 @@ fn main() {
     let mut findings = "["
     let mut icount = 0
 
-    // stale_forecast
+    // stale_forecast — NOT loss-free: discarding may lose useful baselines.
     let fc_age = _forecast_last_ts_age_sec()
     if fc_age > 86400 {
         if icount > 0 { findings = findings + "," }
-        findings = findings + "{\"kind\":\"stale_forecast\",\"age_sec\":" + to_string(fc_age) + ",\"threshold_sec\":86400}"
+        findings = findings + "{\"kind\":\"stale_forecast\",\"category\":\"conditional\",\"age_sec\":" + to_string(fc_age) + ",\"threshold_sec\":86400}"
         icount = icount + 1
     }
 
@@ -104,7 +104,7 @@ fn main() {
         let sz = _file_size_bytes(log_names[i])
         if sz > log_threshold {
             if icount > 0 { findings = findings + "," }
-            findings = findings + "{\"kind\":\"log_oversize\",\"path\":\"" + _json_esc(log_names[i]) + "\",\"bytes\":" + to_string(sz) + ",\"threshold_bytes\":" + to_string(log_threshold) + "}"
+            findings = findings + "{\"kind\":\"log_oversize\",\"category\":\"loss_free_roi\",\"path\":\"" + _json_esc(log_names[i]) + "\",\"bytes\":" + to_string(sz) + ",\"threshold_bytes\":" + to_string(log_threshold) + "}"
             icount = icount + 1
         }
         i = i + 1
@@ -114,7 +114,7 @@ fn main() {
     let dup = _dup_ring_line_count()
     if dup > 0 {
         if icount > 0 { findings = findings + "," }
-        findings = findings + "{\"kind\":\"dup_ring_line\",\"count\":" + to_string(dup) + "}"
+        findings = findings + "{\"kind\":\"dup_ring_line\",\"category\":\"loss_free_roi\",\"count\":" + to_string(dup) + "}"
         icount = icount + 1
     }
 
@@ -122,7 +122,7 @@ fn main() {
     let imb = _ring_imbalance_pct()
     if imb > 50 {
         if icount > 0 { findings = findings + "," }
-        findings = findings + "{\"kind\":\"ring_size_imbalance\",\"pct\":" + to_string(imb) + "}"
+        findings = findings + "{\"kind\":\"ring_size_imbalance\",\"category\":\"conditional\",\"pct\":" + to_string(imb) + "}"
         icount = icount + 1
     }
 

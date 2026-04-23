@@ -1,27 +1,31 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-23T15:20:33Z",
+  "updated_ts": "2026-04-23T15:26:12Z",
   "entries": [
     {
       "id": "agm-20260422-001",
       "kind": "tool",
       "title": "own_stack bootstrap — airgenome 자체 proposal-inventory 체계",
       "from_repo": "anima",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 70,
       "submitted_ts": "2026-04-22T15:26:48Z",
-      "prompt_ref": "docs/upstream_notes/own_stack_bootstrap_airgenome.md"
+      "prompt_ref": "docs/upstream_notes/own_stack_bootstrap_airgenome.md",
+      "in_progress_ts": "2026-04-23T15:24:44Z",
+      "done_ts": "2026-04-23T15:24:45Z"
     },
     {
       "id": "agm-20260422-002",
       "kind": "cluster",
       "title": "ROI 항목 '무손실 ROI' 카테고리 재태깅 audit (forge 측 ROI entries)",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 60,
       "submitted_ts": "2026-04-22T15:26:50Z",
-      "category": "loss_free_roi"
+      "category": "loss_free_roi",
+      "in_progress_ts": "2026-04-23T15:26:11Z",
+      "done_ts": "2026-04-23T15:26:11Z"
     },
     {
       "id": "agm-20260422-003",
@@ -122,36 +126,44 @@
       "kind": "advisory",
       "title": "void repo 가 proposal_inbox 체계에 합류 (2026-04-23) — SSH terminal 전문. airgenome compute_filter 와 별개. sister_repos 5 개와 상호 advisory/proposal 교환 가능.",
       "from_repo": "void",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 70,
-      "submitted_ts": "2026-04-22T15:52:11Z"
+      "submitted_ts": "2026-04-22T15:52:11Z",
+      "in_progress_ts": "2026-04-23T15:24:51Z",
+      "done_ts": "2026-04-23T15:24:51Z"
     },
     {
       "id": "agm-20260422-012",
       "kind": "advisory",
       "title": "10-repo proposal_inbox 확장 완료 (2026-04-23): hexa-os / papers / secret / contact 4 repo 신규 합류. .workspace member 에도 등록. sister_repos 매핑 전체 갱신.",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 70,
-      "submitted_ts": "2026-04-22T15:54:31Z"
+      "submitted_ts": "2026-04-22T15:54:31Z",
+      "in_progress_ts": "2026-04-23T15:24:57Z",
+      "done_ts": "2026-04-23T15:24:58Z"
     },
     {
       "id": "agm-20260423-001",
       "kind": "cert",
       "title": "Stage-1 CLOSED: H100 single-pod P12 resolved (anima 929e30c2, pod uptime 11min)",
       "from_repo": "anima",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 2,
-      "submitted_ts": "2026-04-23T12:09:10Z"
+      "submitted_ts": "2026-04-23T12:09:10Z",
+      "in_progress_ts": "2026-04-23T15:26:11Z",
+      "done_ts": "2026-04-23T15:26:11Z"
     },
     {
       "id": "agm-20260423-002",
       "kind": "cert",
       "title": "Stage-2 substrate_indep=TRUE · Stage-3 AN11(c) REAL USABLE (JSD=1.0 bits) · Mk.VI VERIFIED",
       "from_repo": "anima",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 2,
-      "submitted_ts": "2026-04-23T13:28:11Z"
+      "submitted_ts": "2026-04-23T13:28:11Z",
+      "in_progress_ts": "2026-04-23T15:26:11Z",
+      "done_ts": "2026-04-23T15:26:12Z"
     }
   ],
   "proposals": [],
