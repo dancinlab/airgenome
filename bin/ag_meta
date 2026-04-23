@@ -83,10 +83,21 @@ _hexa_timed() {
     if [[ "$start_ns" == "N" || "$start_ns" == "0" ]]; then
         start_ns=$(python3 -c 'import time; print(int((time.time()%1)*1e9))' 2>/dev/null || echo 0)
     fi
+    # Optional per-scanner timeout: prevents a single hang (e.g. ssh probe
+    # over a dead VPN) from stalling the whole doctor pipeline.  Uses
+    # timeout/gtimeout if present; falls back to a plain invocation
+    # otherwise.  AG_SCANNER_TIMEOUT=0 disables entirely.
+    local ag_to="${AG_SCANNER_TIMEOUT:-120}"
+    local to_bin=""
+    if [[ "$ag_to" != "0" ]]; then
+        if command -v timeout >/dev/null 2>&1; then to_bin=timeout
+        elif command -v gtimeout >/dev/null 2>&1; then to_bin=gtimeout
+        fi
+    fi
     if [[ $use_native -eq 1 ]]; then
-        "$native_bin" "$@"
+        if [[ -n "$to_bin" ]]; then "$to_bin" "${ag_to}s" "$native_bin" "$@"; else "$native_bin" "$@"; fi
     else
-        _hexa "$script" "$@"
+        if [[ -n "$to_bin" ]]; then "$to_bin" "${ag_to}s" "$HEXA_BIN" run "$script" "$@" 2> >(grep -v '^security warning: exec() argument contains shell metacharacters' >&2); else _hexa "$script" "$@"; fi
     fi
     rc=$?
     end_s=$(date -u +%s)
