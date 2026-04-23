@@ -182,23 +182,22 @@ fn main() {
         if stale_n >= 5 { sev = "critical" }
         blockers = _add_blocker(blockers, sev, "scanner_stale", fre, "stale=" + to_string(stale_n))
     }
-    // Scanner errors: 1h window = active breakage; only 24h = transient tail
-    // that's aging out.  Don't treat an error from 23h ago with a green last
-    // hour as critical.
-    //   errors_1h  >= 3 → critical       (live cascade)
-    //   errors_1h  >= 1 → high           (something just broke)
-    //   errors_24h >= 5 → med            (history of flakiness)
-    //   errors_24h >= 1 → low            (single historical blip)
+    // Scanner errors: 3-tier ladder by time + heal state.
+    //   errors_1h   >= 3             → critical (live cascade)
+    //   errors_1h   >= 1             → high     (just broke)
+    //   errors_open >= 1             → med      (still failing across runs)
+    //   else                         → no blocker — historical tail, all tools
+    //                                  have recovered.  errors_24h still
+    //                                  reported for visibility but not gated.
     let tel_err_1h = _peek_num(tel, "errors_1h_total")
+    let tel_err_open = _peek_num(tel, "errors_open_total")
     let tel_err_24h = _peek_num(tel, "errors_24h_total")
     if tel_err_1h >= 3 {
-        blockers = _add_blocker(blockers, "critical", "scanner_error_24h", tel, "errors_1h=" + to_string(tel_err_1h) + ",errors_24h=" + to_string(tel_err_24h))
+        blockers = _add_blocker(blockers, "critical", "scanner_error_24h", tel, "errors_1h=" + to_string(tel_err_1h) + ",errors_open=" + to_string(tel_err_open) + ",errors_24h=" + to_string(tel_err_24h))
     } else if tel_err_1h >= 1 {
-        blockers = _add_blocker(blockers, "high", "scanner_error_24h", tel, "errors_1h=" + to_string(tel_err_1h) + ",errors_24h=" + to_string(tel_err_24h))
-    } else if tel_err_24h >= 5 {
-        blockers = _add_blocker(blockers, "med", "scanner_error_24h", tel, "errors_1h=0,errors_24h=" + to_string(tel_err_24h))
-    } else if tel_err_24h >= 1 {
-        blockers = _add_blocker(blockers, "low", "scanner_error_24h", tel, "errors_1h=0,errors_24h=" + to_string(tel_err_24h))
+        blockers = _add_blocker(blockers, "high", "scanner_error_24h", tel, "errors_1h=" + to_string(tel_err_1h) + ",errors_open=" + to_string(tel_err_open) + ",errors_24h=" + to_string(tel_err_24h))
+    } else if tel_err_open >= 1 {
+        blockers = _add_blocker(blockers, "med", "scanner_error_24h", tel, "errors_open=" + to_string(tel_err_open) + ",errors_24h=" + to_string(tel_err_24h))
     }
     // med — runtime anomaly (last run > 3× mean) signals environmental drift
     // (e.g. reach suddenly 10× slower → VPN hiccup).

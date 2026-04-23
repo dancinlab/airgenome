@@ -62,6 +62,22 @@ fn _tool_last_ms(path: string, tool: string) -> int {
     return to_int(out)
 }
 
+// _tool_errors_open: count of rc!=0 rows AFTER the tool's most recent
+// success (rc==0).  0 means "last run succeeded and all earlier failures
+// are healed"; >0 means the tool is still actively failing.
+// This separates historical tail (errored 20h ago, passed N times since)
+// from live breakage.
+fn _tool_errors_open(path: string, tool: string) -> int {
+    if file_exists(path) == false { return 0 }
+    let cmd = "grep -E '\"tool\":\"" + tool + "\"' " + _sh_q(path) + " 2>/dev/null | awk '\n"
+        + "  { rc=0; if (match($0, /\"rc\":[0-9]+/)) { s=substr($0,RSTART,RLENGTH); sub(/\"rc\":/,\"\",s); rc=s+0 }\n"
+        + "    if (rc == 0) { open = 0 } else { open++ } }\n"
+        + "  END { print open+0 }'"
+    let out = to_string(exec(cmd)).trim()
+    if len(out) == 0 { return 0 }
+    return to_int(out)
+}
+
 fn _selftest() -> int {
     let tmpdir = "/tmp/ag_telemetry_audit_selftest"
     let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
@@ -103,6 +119,7 @@ fn main() {
     let mut entries = "["
     let mut error_total = 0
     let mut error_1h_total = 0
+    let mut error_open_total = 0
     let mut anomaly_total = 0
     let mut i = 0
     while i < len(tools) {
@@ -125,6 +142,8 @@ fn main() {
         }
         error_total = error_total + errs
         error_1h_total = error_1h_total + errs_1h
+        let errs_open = _tool_errors_open(log, t)
+        error_open_total = error_open_total + errs_open
         // Anomaly: last runtime > 3× mean (and n >= 3 so mean is stable).
         let last_ms = _tool_last_ms(log, t)
         let mut anomaly = false
@@ -133,7 +152,7 @@ fn main() {
             anomaly_total = anomaly_total + 1
         }
         if i > 0 { entries = entries + "," }
-        entries = entries + "{\"tool\":\"" + _json_esc(t) + "\",\"runs_24h\":" + to_string(n) + ",\"mean_ms_24h\":" + to_string(mean_ms) + ",\"errors_24h\":" + to_string(errs) + ",\"errors_1h\":" + to_string(errs_1h) + ",\"last_ms\":" + to_string(last_ms) + ",\"anomaly\":" + to_string(anomaly) + "}"
+        entries = entries + "{\"tool\":\"" + _json_esc(t) + "\",\"runs_24h\":" + to_string(n) + ",\"mean_ms_24h\":" + to_string(mean_ms) + ",\"errors_24h\":" + to_string(errs) + ",\"errors_1h\":" + to_string(errs_1h) + ",\"errors_open\":" + to_string(errs_open) + ",\"last_ms\":" + to_string(last_ms) + ",\"anomaly\":" + to_string(anomaly) + "}"
         i = i + 1
     }
     entries = entries + "]"
@@ -149,13 +168,13 @@ fn main() {
         + "  if (t != \"\") print m \" \" t\n"
         + "}' | sort -rn | head -3 | awk '{printf \"%s\\\"%s:%sms\\\"\", sep, $2, $1; sep=\",\"}'")).trim()
 
-    let body = "{\n  \"schema\": \"airgenome/ag_telemetry_audit/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"log_file\": \"" + _json_esc(log) + "\",\n  \"window_hours\": 24,\n  \"tools_with_activity\": " + to_string(len(tools)) + ",\n  \"errors_24h_total\": " + to_string(error_total) + ",\n  \"errors_1h_total\": " + to_string(error_1h_total) + ",\n  \"anomaly_count\": " + to_string(anomaly_total) + ",\n  \"slowest_3\": [" + slowest + "],\n  \"entries\": " + entries + "\n}\n"
+    let body = "{\n  \"schema\": \"airgenome/ag_telemetry_audit/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"log_file\": \"" + _json_esc(log) + "\",\n  \"window_hours\": 24,\n  \"tools_with_activity\": " + to_string(len(tools)) + ",\n  \"errors_24h_total\": " + to_string(error_total) + ",\n  \"errors_1h_total\": " + to_string(error_1h_total) + ",\n  \"errors_open_total\": " + to_string(error_open_total) + ",\n  \"anomaly_count\": " + to_string(anomaly_total) + ",\n  \"slowest_3\": [" + slowest + "],\n  \"entries\": " + entries + "\n}\n"
 
     if dry_run { println(body); exit(0) }
     _ensure_state_dir()
     try { write_file(out_path, body) } catch e {
         eprintln("ag_telemetry_audit: write FAIL " + out_path); exit(1)
     }
-    println("ag_telemetry_audit: wrote " + out_path + " (tools=" + to_string(len(tools)) + " errors_24h=" + to_string(error_total) + " errors_1h=" + to_string(error_1h_total) + " anomalies=" + to_string(anomaly_total) + ")")
+    println("ag_telemetry_audit: wrote " + out_path + " (tools=" + to_string(len(tools)) + " errors_24h=" + to_string(error_total) + " errors_1h=" + to_string(error_1h_total) + " errors_open=" + to_string(error_open_total) + " anomalies=" + to_string(anomaly_total) + ")")
     exit(0)
 }
