@@ -122,16 +122,26 @@ _usage_table() {
           else (. | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z"))
             | try fromdateiso8601
           end;
+        # If quota reset epoch is past or absent, fall back to _retry_at
+        # (rate-limit cooldown) so the resets column shows a meaningful
+        # future event instead of the perpetual "now" caused by the OAuth
+        # usage endpoint deprecation.
+        def best(quota_t; retry_t):
+          if quota_t != null and quota_t > $now then quota_t
+          elif retry_t != null and retry_t > $now then retry_t
+          else quota_t
+          end;
         to_entries
         | map(select(.key != "_ts"))
-        | map({
-            name: .key,
-            ss:   (.value.session_pct  // null),
-            wk:   (.value.week_all_pct // null),
-            srt:  (.value.session_resets | parse_ts),
-            wrt:  ((.value.week_resets // .value.week_all_resets) | parse_ts),
-            err:  (.value.error // "")
-          })
+        | map(.value._retry_at as $rt
+            | {
+                name: .key,
+                ss:   (.value.session_pct  // null),
+                wk:   (.value.week_all_pct // null),
+                srt:  best((.value.session_resets | parse_ts); $rt),
+                wrt:  best(((.value.week_resets // .value.week_all_resets) | parse_ts); $rt),
+                err:  (.value.error // "")
+              })
         | sort_by(.name
             | capture("^(?<p>[^0-9]*)(?<n>[0-9]+)?(?<s>.*)$")
             | [.p, (.n // "0" | tonumber), .s])
@@ -412,11 +422,23 @@ _picker_load() {
                   else (. | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z"))
                     | try fromdateiso8601
                   end;
+                # If the OAuth quota reset epoch is past or absent, fall back
+                # to _retry_at (rate-limit cooldown) — the only meaningful
+                # future-event we can still observe under the OAuth usage
+                # endpoint deprecation.
+                def best(quota_t; retry_t):
+                  if quota_t != null and quota_t > $now then quota_t
+                  elif retry_t != null and retry_t > $now then retry_t
+                  else quota_t
+                  end;
                 (.[$n] // {}) as $e
                 | (.[$n].session_pct  // null) as $ss
                 | (.[$n].week_all_pct // null) as $wk
-                | (.[$n].session_resets | parse_ts) as $srt
-                | ((.[$n].week_resets // .[$n].week_all_resets) | parse_ts) as $wrt
+                | (.[$n].session_resets | parse_ts) as $srt0
+                | ((.[$n].week_resets // .[$n].week_all_resets) | parse_ts) as $wrt0
+                | (.[$n]._retry_at // null) as $rt
+                | best($srt0; $rt) as $srt
+                | best($wrt0; $rt) as $wrt
                 | (.[$n].error // "") as $err
                 | (if $ss == null then "-" else "\($ss|floor)" end) as $ss_s
                 | (if $wk == null then "-" else "\($wk|floor)" end) as $wk_s

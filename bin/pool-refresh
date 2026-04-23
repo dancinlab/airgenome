@@ -333,12 +333,55 @@ cmd_refresh_token() {
     fi
     # Rate-limited (rc=2): user explicitly picked this account, so the existing
     # access token is what they're about to use. Clear the dashboard label so
-    # `cl -u` doesn't keep accusing the account of being broken — but preserve
-    # _retry_at/_backoff so pool-refresh's main loop still honors the cool-down.
+    # `cl -u` doesn't keep accusing the account of being broken — and stash a
+    # fresh _retry_at so the resets column has a meaningful future timestamp
+    # (cmd_refresh's main loop sets these too; mirror its formula here).
     if [ "$direct_rc" = "2" ]; then
+        _cache_record_backoff "$name"
         _cache_clear_error "$name" "rate-limit-but-user-picked"
     fi
     return "$direct_rc"
+}
+
+# _cache_record_backoff <name>
+# Compute next _retry_at using the same exponential-backoff formula as
+# cmd_refresh's rate-limit branch and write it into the cache. Always
+# mirrors current backoff scheme: BACKOFF_INIT first hit, double on each
+# subsequent, capped at BACKOFF_MAX. Best-effort, lock-light.
+_cache_record_backoff() {
+    local name="$1"
+    [ -f "$USAGE" ] || mkdir -p "$AG_HOME" 2>/dev/null && [ -d "$AG_HOME" ] || return 0
+    if [ -f "$LOCK" ]; then
+        local lpid; lpid=$(cat "$LOCK" 2>/dev/null || echo)
+        [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null && return 0
+    fi
+    local prev_bo cur_bo now_s retry_at
+    now_s=$(date -u +%s)
+    if [ -f "$USAGE" ]; then
+        prev_bo=$(jq -r --arg n "$name" '(.[$n]._backoff // 0) | tonumber' "$USAGE" 2>/dev/null)
+    fi
+    [ -z "$prev_bo" ] || [ "$prev_bo" = "null" ] && prev_bo=0
+    if [ "$prev_bo" -lt "$BACKOFF_INIT" ] 2>/dev/null; then
+        cur_bo=$BACKOFF_INIT
+    elif [ "$prev_bo" -ge "$BACKOFF_MAX" ] 2>/dev/null; then
+        cur_bo=$BACKOFF_MAX
+    else
+        cur_bo=$((prev_bo * 2))
+        [ "$cur_bo" -gt "$BACKOFF_MAX" ] && cur_bo=$BACKOFF_MAX
+    fi
+    retry_at=$((now_s + cur_bo))
+    local tmp="$USAGE.tmp.$$"
+    if [ -f "$USAGE" ]; then
+        jq --arg n "$name" --argjson ra "$retry_at" --argjson bo "$cur_bo" --argjson bat "$now_s" '
+            .[$n] = ((.[$n] // {}) + {_retry_at:$ra, _backoff:$bo, _backoff_at:$bat})
+        ' "$USAGE" > "$tmp" 2>/dev/null && mv "$tmp" "$USAGE"
+    else
+        jq -n --arg n "$name" --argjson ra "$retry_at" --argjson bo "$cur_bo" --argjson bat "$now_s" '
+            {($n): {_retry_at:$ra, _backoff:$bo, _backoff_at:$bat}, _ts:0}
+        ' > "$tmp" 2>/dev/null && mv "$tmp" "$USAGE"
+    fi
+    chmod 600 "$USAGE" 2>/dev/null || true
+    rm -f "$tmp" 2>/dev/null || true
 }
 
 # _cache_clear_error <name> <why>
