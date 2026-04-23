@@ -185,6 +185,12 @@ fn main() {
         if tel_err >= 5 { sev = "critical" }
         blockers = _add_blocker(blockers, sev, "scanner_error_24h", tel, "errors_24h_total=" + to_string(tel_err))
     }
+    // med — runtime anomaly (last run > 3× mean) signals environmental drift
+    // (e.g. reach suddenly 10× slower → VPN hiccup).
+    let tel_anom = _peek_num(tel, "anomaly_count")
+    if tel_anom > 0 {
+        blockers = _add_blocker(blockers, "med", "scanner_runtime_anomaly", tel, "anomaly_count=" + to_string(tel_anom))
+    }
 
     blockers = blockers + "]"
 

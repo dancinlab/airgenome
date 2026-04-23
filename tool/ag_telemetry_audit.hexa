@@ -53,6 +53,15 @@ fn _tool_stats(path: string, tool: string, since_epoch: int) -> string {
     return to_string(exec(cmd)).trim()
 }
 
+// _tool_last_ms returns the most recent runtime_ms for a given tool, or -1.
+fn _tool_last_ms(path: string, tool: string) -> int {
+    if file_exists(path) == false { return -1 }
+    let cmd = "grep -E '\"tool\":\"" + tool + "\"' " + _sh_q(path) + " 2>/dev/null | tail -1 | grep -oE '\"runtime_ms\":[0-9]+' | head -1 | awk -F: '{print $2+0}'"
+    let out = to_string(exec(cmd)).trim()
+    if len(out) == 0 { return -1 }
+    return to_int(out)
+}
+
 fn _selftest() -> int {
     let tmpdir = "/tmp/ag_telemetry_audit_selftest"
     let _ = exec("rm -rf " + _sh_q(tmpdir) + " && mkdir -p " + _sh_q(tmpdir))
@@ -92,6 +101,7 @@ fn main() {
 
     let mut entries = "["
     let mut error_total = 0
+    let mut anomaly_total = 0
     let mut i = 0
     while i < len(tools) {
         let t = tools[i]
@@ -106,8 +116,15 @@ fn main() {
             errs = to_int(fields[2])
         }
         error_total = error_total + errs
+        // Anomaly: last runtime > 3× mean (and n >= 3 so mean is stable).
+        let last_ms = _tool_last_ms(log, t)
+        let mut anomaly = false
+        if n >= 3 && mean_ms > 0 && last_ms > mean_ms * 3 {
+            anomaly = true
+            anomaly_total = anomaly_total + 1
+        }
         if i > 0 { entries = entries + "," }
-        entries = entries + "{\"tool\":\"" + _json_esc(t) + "\",\"runs_24h\":" + to_string(n) + ",\"mean_ms_24h\":" + to_string(mean_ms) + ",\"errors_24h\":" + to_string(errs) + "}"
+        entries = entries + "{\"tool\":\"" + _json_esc(t) + "\",\"runs_24h\":" + to_string(n) + ",\"mean_ms_24h\":" + to_string(mean_ms) + ",\"errors_24h\":" + to_string(errs) + ",\"last_ms\":" + to_string(last_ms) + ",\"anomaly\":" + to_string(anomaly) + "}"
         i = i + 1
     }
     entries = entries + "]"
@@ -123,13 +140,13 @@ fn main() {
         + "  if (t != \"\") print m \" \" t\n"
         + "}' | sort -rn | head -3 | awk '{printf \"%s\\\"%s:%sms\\\"\", sep, $2, $1; sep=\",\"}'")).trim()
 
-    let body = "{\n  \"schema\": \"airgenome/ag_telemetry_audit/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"log_file\": \"" + _json_esc(log) + "\",\n  \"window_hours\": 24,\n  \"tools_with_activity\": " + to_string(len(tools)) + ",\n  \"errors_24h_total\": " + to_string(error_total) + ",\n  \"slowest_3\": [" + slowest + "],\n  \"entries\": " + entries + "\n}\n"
+    let body = "{\n  \"schema\": \"airgenome/ag_telemetry_audit/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"log_file\": \"" + _json_esc(log) + "\",\n  \"window_hours\": 24,\n  \"tools_with_activity\": " + to_string(len(tools)) + ",\n  \"errors_24h_total\": " + to_string(error_total) + ",\n  \"anomaly_count\": " + to_string(anomaly_total) + ",\n  \"slowest_3\": [" + slowest + "],\n  \"entries\": " + entries + "\n}\n"
 
     if dry_run { println(body); exit(0) }
     _ensure_state_dir()
     try { write_file(out_path, body) } catch e {
         eprintln("ag_telemetry_audit: write FAIL " + out_path); exit(1)
     }
-    println("ag_telemetry_audit: wrote " + out_path + " (tools=" + to_string(len(tools)) + " errors_24h=" + to_string(error_total) + ")")
+    println("ag_telemetry_audit: wrote " + out_path + " (tools=" + to_string(len(tools)) + " errors_24h=" + to_string(error_total) + " anomalies=" + to_string(anomaly_total) + ")")
     exit(0)
 }
