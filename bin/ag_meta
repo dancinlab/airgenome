@@ -37,6 +37,7 @@
 #   self           meta-engine self-health score (distinct from cmd_health)
 #   new            list blockers that first appeared in latest run (occ==1)
 #   resolved       list blockers that cleared since previous run (ledger diff)
+#   summary        condensed single-screen status (health + self + trend + diff)
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
 #   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
 #   fast           fast-subset for pre-commit (ring + forge + blockers)
@@ -627,6 +628,38 @@ cmd_resolved() {
     ' "$ledger"
 }
 
+# cmd_summary — condensed single-screen status.  Combines cmd_health
+# top line, cmd_self, Δ24h from health_trend, new count, chronic count,
+# resolved count.  No data plumbing — all readers.
+cmd_summary() {
+    printf '── airgenome meta-engine summary ──\n'
+    cmd_health
+    cmd_self
+    local trend="state/ag_health_trend.json"
+    if [[ -f "$trend" ]]; then
+        local d24 dir n24
+        d24=$(grep -oE '"delta_24h": *-?[0-9]+' "$trend" | head -1 | awk -F: '{print $2+0}')
+        dir=$(grep -oE '"direction_24h":"[a-z]+"' "$trend" | head -1 | awk -F'"' '{print $4}')
+        n24=$(grep -oE '"n_samples_24h": *[0-9]+' "$trend" | head -1 | awk -F: '{print $2+0}')
+        if [[ "${n24:-1}" -ge 2 ]]; then
+            printf 'trend:  Δ24h=%s  (%s)\n' "${d24:-0}" "${dir:-flat}"
+        else
+            printf 'trend:  (single sample)\n'
+        fi
+    fi
+    local bp="state/ag_blocker_persistence.json"
+    if [[ -f "$bp" ]]; then
+        local cur chr
+        cur=$(grep -oE '"current_blocker_count": *[0-9]+' "$bp" | head -1 | awk -F: '{print $2+0}')
+        chr=$(grep -oE '"chronic_count": *[0-9]+' "$bp" | head -1 | awk -F: '{print $2+0}')
+        printf 'blockers: current=%s  chronic=%s\n' "${cur:-0}" "${chr:-0}"
+    fi
+    printf '── new since last run ──\n'
+    cmd_new | sed 's/^/  /'
+    printf '── resolved since last run ──\n'
+    cmd_resolved | sed 's/^/  /'
+}
+
 cmd_new() {
     local f="state/ag_blocker_persistence.json"
     if [[ ! -f "$f" ]]; then
@@ -896,6 +929,7 @@ main() {
         self)            cmd_self ;;
         new)             cmd_new ;;
         resolved)        cmd_resolved ;;
+        summary)         cmd_summary ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
         telemetry)       cmd_telemetry "$@" ;;
         fast)            cmd_fast "$@" ;;
