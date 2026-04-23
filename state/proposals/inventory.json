@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-22T17:01:04Z",
+  "updated_ts": "2026-04-23T01:51:23Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -28,11 +28,13 @@
       "kind": "advisory",
       "title": "hexa_v2 baseline binary 는 Mac ARM64 compiled — Linux pod 에서 'Exec format error'. pod bootstrap 은 cross-compile 또는 pod-내 rebuild 필요",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 95,
       "submitted_ts": "2026-04-22T15:30:10Z",
       "category": "resource_gap",
-      "priority_reason": "cross_repo_blocker floor (pod bootstrap blocker across repos)"
+      "priority_reason": "cross_repo_blocker floor (pod bootstrap blocker across repos)",
+      "done_ts": "2026-04-23T01:51:23Z",
+      "done_note": "Linux x86_64 binary 배포됨 — hexa-lang dist/linux-x86_64/hexa_v2 (SHA256 3ff995fc8b68e3a5b9e46a803a269e03204ff0b439a668a6dfadc58acc01d496). zig cc -target x86_64-linux-musl static build, 5.5MB ELF. commit 1fdc0100. 사용: ./dist/linux-x86_64/hexa_v2 <source.hexa> <out.c>. README at dist/linux-x86_64/README.md."
     },
     {
       "id": "agm-20260422-004",
@@ -58,11 +60,13 @@
       "kind": "cluster",
       "title": "Linux x86_64 binary 미제공 — macOS ARM64 만 빌드됨 → pod bootstrap 영구 block. cross-compile 또는 Docker 레시피 필요",
       "from_repo": "hexa-lang",
-      "user_status": "in_progress",
+      "user_status": "done",
       "score_priority": 95,
       "submitted_ts": "2026-04-22T15:50:41Z",
       "category": "resource_gap",
-      "in_progress_ts": "2026-04-22T16:38:02Z"
+      "in_progress_ts": "2026-04-22T16:38:02Z",
+      "done_ts": "2026-04-23T01:51:23Z",
+      "done_note": "Linux x86_64 binary 배포됨 — hexa-lang dist/linux-x86_64/hexa_v2 (SHA256 3ff995fc8b68e3a5b9e46a803a269e03204ff0b439a668a6dfadc58acc01d496). zig cc -target x86_64-linux-musl static build, 5.5MB ELF. commit 1fdc0100. 사용: ./dist/linux-x86_64/hexa_v2 <source.hexa> <out.c>. README at dist/linux-x86_64/README.md."
     },
     {
       "id": "agm-20260422-007",
