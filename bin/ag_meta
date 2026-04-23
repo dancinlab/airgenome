@@ -1134,15 +1134,20 @@ cmd_self() {
         score=$((score - ws_stale * stale))
     fi
     parts+=("stale=$stale")
-    # telemetry errors + anomalies
-    local tel_err=0 anom=0
+    # telemetry errors + anomalies — use errors_1h for the main penalty
+    # (active breakage) and discount errors_24h to 1/5 weight so an aging
+    # tail doesn't pin the score.
+    local tel_err_24h=0 tel_err_1h=0 anom=0
     if [[ -f state/ag_telemetry_audit.json ]]; then
-        tel_err=$(grep -oE '"errors_24h_total": *[0-9]+' state/ag_telemetry_audit.json | head -1 | awk -F: '{print $2+0}')
+        tel_err_24h=$(grep -oE '"errors_24h_total": *[0-9]+' state/ag_telemetry_audit.json | head -1 | awk -F: '{print $2+0}')
+        tel_err_1h=$(grep -oE '"errors_1h_total": *[0-9]+' state/ag_telemetry_audit.json | head -1 | awk -F: '{print $2+0}')
         anom=$(grep -oE '"anomaly_count": *[0-9]+' state/ag_telemetry_audit.json | head -1 | awk -F: '{print $2+0}')
-        tel_err="${tel_err:-0}"; anom="${anom:-0}"
-        score=$((score - ws_err * tel_err - ws_anom * anom))
+        tel_err_24h="${tel_err_24h:-0}"; tel_err_1h="${tel_err_1h:-0}"; anom="${anom:-0}"
+        # Live errors count fully; tail errors count at 1/5.
+        local tail_penalty=$(( (tel_err_24h - tel_err_1h) * ws_err / 5 ))
+        score=$((score - ws_err * tel_err_1h - tail_penalty - ws_anom * anom))
     fi
-    parts+=("errors_24h=$tel_err" "anomalies=$anom")
+    parts+=("errors_1h=$tel_err_1h" "errors_24h=$tel_err_24h" "anomalies=$anom")
     # chronic persistence — subtract acknowledged kinds before penalty.
     local chronic=0 acked=0 counted=0
     if [[ -f state/ag_blocker_persistence.json ]]; then
