@@ -75,8 +75,10 @@ fn _count_events(path: string) -> string {
     return out
 }
 
-// _count_keyword_hits returns the total number of stderr lines matching
-// any keyword in _stderr_keywords (case-insensitive substring).
+// _count_keyword_hits returns the number of stderr lines in the **last 200
+// lines** matching any keyword in _stderr_keywords (case-insensitive
+// substring).  Tail-only so a one-off error from hours ago stops dragging
+// the blocker state once enough benign lines have scrolled past it.
 fn _count_keyword_hits(path: string) -> int {
     if file_exists(path) == false { return 0 }
     let kws = _stderr_keywords()
@@ -87,7 +89,7 @@ fn _count_keyword_hits(path: string) -> int {
         pattern = pattern + kws[i]
         i = i + 1
     }
-    let cmd = "grep -ciE " + _sh_q(pattern) + " " + _sh_q(path) + " 2>/dev/null || true"
+    let cmd = "tail -200 " + _sh_q(path) + " 2>/dev/null | grep -ciE " + _sh_q(pattern) + " 2>/dev/null || true"
     let out = to_string(exec(cmd)).trim()
     if len(out) == 0 { return 0 }
     return to_int(out)
@@ -197,10 +199,9 @@ fn main() {
     kinds.push("stderr")
     stalls.push(stall_cf)
 
-    names.push("load_balancer")
-    paths.push("forge/load_balancer.log")
-    kinds.push("stdout")
-    stalls.push(stall_lb)
+    // load_balancer.log: bin/lb.sh now writes to ~/.airgenome/lb.jsonl
+    // directly; forge/load_balancer.log is a legacy path nothing populates.
+    // Removing the stale check — re-add with the real path if LB is revived.
 
     names.push("settings_guard.stdout")
     paths.push("forge/settings_guard.stdout.log")

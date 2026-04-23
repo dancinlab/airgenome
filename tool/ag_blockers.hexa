@@ -136,8 +136,13 @@ fn main() {
     if file_exists(fhr) {
         let fc = _peek_num(fhr, "forecasts")
         let mk = _peek_num(fhr, "matched_keys")
-        if fc > 0 && mk == 0 {
-            blockers = _add_blocker(blockers, "med", "forecast_disconnected", fhr, "forecasts=" + to_string(fc) + ",matched=0")
+        // Only emit if forecast data is live (file < 7d old).  An archive
+        // from weeks ago with zero matches isn't a current problem.
+        let fcst_path = "forge/forecast.jsonl"
+        let fcst_age = _file_age_seconds(fcst_path)
+        let live_window = 7 * 86400
+        if fc > 0 && mk == 0 && fcst_age >= 0 && fcst_age < live_window {
+            blockers = _add_blocker(blockers, "med", "forecast_disconnected", fhr, "forecasts=" + to_string(fc) + ",matched=0,age_h=" + to_string(fcst_age / 3600))
         }
     }
     // low — ubu_ubu2 comm drift

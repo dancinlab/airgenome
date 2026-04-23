@@ -58,6 +58,7 @@
     },
     {
       "id": "AG6",
+      "log_tracked": true,
       "rule": "원격(ubu1/htz/hetzner) 자원 1개 이상 가용 시 Mac heavy compute 절대 0 — blowup/시드/탐색 등 compute 프로세스 즉시 강제 종료. Mac 은 오케스트레이션/UI/모니터링 전용",
       "level": "⛔⛔⛔",
       "enforcement": "modules/filters/process/compute.hexa 가 30s 주기 launchd (com.airgenome.compute-filter) 로 실행. (1) check_remote(ubu1/htz/hetzner) — alive 1+ 시 (2) pgrep -af hexa → BLACKLIST 필터 (3) TERM 3s → KILL 잔존. BLACKLIST 는 2026-04-22 복귀 시 emptied — dry-run + enforce 검증 후 blowup/seed 엔트리 복원 예정. WHITELIST: launcher_cap/menubar/sampler/ag3_*/infra_probe/auto_dispatch/resource_*/detector/growth_bus/genome_*/session_*/usage_refresh/ramdisk/sync_remote/forge_sync_hetzner/cl.hexa/log_rotate/auto_vacuum/compute_filter/ubu_hexa_guard/ubu_bridge/implant/guard/gate_*. unknown 은 log only (보수). remote 전부 down 시에도 strict 모드 (R-MAC-01) 유지 — 배터리/열 보호.",

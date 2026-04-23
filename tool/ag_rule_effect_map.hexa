@@ -3,7 +3,10 @@
 // Maps rules declared in rules/airgenome.json (IDs AG1, AG2, ...) to
 // their observed fire count in forge/compute_filter.log.
 //
-// A rule with 0 fires in 30d ⇒ dormant_rule (issue).
+// A rule with 0 fires in 30d ⇒ dormant_rule (issue) — but only if the
+// rule is flagged `"log_tracked": true` in the JSON.  Policy-only rules
+// (hook enforcement, lint, documentation) don't emit log events and
+// should not be measured against fires.
 //
 // CLI
 //   hexa run tool/ag_rule_effect_map.hexa --selftest
@@ -25,6 +28,16 @@ fn _extract_rule_ids(path: string) -> array {
         i = i + 1
     }
     return out
+}
+
+// _is_log_tracked: rule has `"log_tracked": true` within 8 lines after its id.
+// Greps the id line and the trailing window together — robust to JSON pretty
+// formatting without requiring a full parser at the hexa layer.
+fn _is_log_tracked(path: string, id: string) -> bool {
+    if file_exists(path) == false { return false }
+    let cmd = "awk '/\"id\": *\"" + id + "\"/{p=1} p && /\"log_tracked\": *true/{print \"yes\"; exit} p && /\\}/{p=0}' " + _sh_q(path)
+    let out = to_string(exec(cmd)).trim()
+    return out == "yes"
 }
 
 fn _count_in_log(log_path: string, token: string) -> int {
@@ -68,18 +81,22 @@ fn main() {
 
     let mut rules_json = "["
     let mut dormant = 0
+    let mut tracked_count = 0
     let mut i = 0
     while i < len(ids) {
         let id = ids[i]
+        let tracked = _is_log_tracked(rules_path, id)
         let fires = _count_in_log(log_path, id)
+        let dorm = tracked && fires == 0
         if i > 0 { rules_json = rules_json + "," }
-        rules_json = rules_json + "{\"id\":\"" + _json_esc(id) + "\",\"fires\":" + to_string(fires) + ",\"dormant\":" + to_string(fires == 0) + "}"
-        if fires == 0 { dormant = dormant + 1 }
+        rules_json = rules_json + "{\"id\":\"" + _json_esc(id) + "\",\"fires\":" + to_string(fires) + ",\"log_tracked\":" + to_string(tracked) + ",\"dormant\":" + to_string(dorm) + "}"
+        if tracked { tracked_count = tracked_count + 1 }
+        if dorm { dormant = dormant + 1 }
         i = i + 1
     }
     rules_json = rules_json + "]"
 
-    let body = "{\n  \"schema\": \"airgenome/ag_rule_effect_map/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"rules_file\": \"" + _json_esc(rules_path) + "\",\n  \"log_file\": \"" + _json_esc(log_path) + "\",\n  \"total_rules\": " + to_string(len(ids)) + ",\n  \"dormant_count\": " + to_string(dormant) + ",\n  \"rules\": " + rules_json + "\n}\n"
+    let body = "{\n  \"schema\": \"airgenome/ag_rule_effect_map/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"rules_file\": \"" + _json_esc(rules_path) + "\",\n  \"log_file\": \"" + _json_esc(log_path) + "\",\n  \"total_rules\": " + to_string(len(ids)) + ",\n  \"tracked_rules\": " + to_string(tracked_count) + ",\n  \"dormant_count\": " + to_string(dormant) + ",\n  \"rules\": " + rules_json + "\n}\n"
 
     if dry_run { println(body); exit(0) }
     _ensure_state_dir()

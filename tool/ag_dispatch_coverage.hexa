@@ -22,6 +22,19 @@ fn _declared_handlers() -> array {
     return out
 }
 
+// _optional_handlers return categories that are declared in modules/dispatch.hexa
+// but aren't expected to fire on every node — e.g. gpu only fires if a GPU host
+// is active, heavy only if oversubscribed, mac_only if a mac-host workload is
+// routed.  Treating these as "dead" generates false-positive blockers on a
+// single-compute-category deployment.  dead_handler_count excludes them; they
+// still appear in the handlers[] detail with dead=true for visibility.
+fn _is_optional(name: string) -> bool {
+    if name == "gpu" { return true }
+    if name == "heavy" { return true }
+    if name == "mac_only" { return true }
+    return false
+}
+
 fn _count_in_log(log_path: string, token: string) -> int {
     if file_exists(log_path) == false { return 0 }
     let out = to_string(exec("grep -cwF " + _sh_q(token) + " " + _sh_q(log_path) + " 2>/dev/null || true")).trim()
@@ -69,10 +82,14 @@ fn main() {
         let name = decls[i]
         let declared = _declared_in_dispatch_source(dispatch_src, name)
         let fires = _count_in_log(log_path, name)
+        let optional = _is_optional(name)
         if i > 0 { handlers_json = handlers_json + "," }
         let dead = declared && fires == 0
-        handlers_json = handlers_json + "{\"name\":\"" + _json_esc(name) + "\",\"declared\":" + to_string(declared) + ",\"fires\":" + to_string(fires) + ",\"dead\":" + to_string(dead) + "}"
-        if dead { dead_count = dead_count + 1 }
+        handlers_json = handlers_json + "{\"name\":\"" + _json_esc(name) + "\",\"declared\":" + to_string(declared) + ",\"fires\":" + to_string(fires) + ",\"dead\":" + to_string(dead) + ",\"optional\":" + to_string(optional) + "}"
+        // Optional handlers (gpu/heavy/mac_only) don't count toward the
+        // dead_handler_count — their absence is expected on single-category
+        // deployments.  Still visible in handlers[] with dead=true.
+        if dead && optional == false { dead_count = dead_count + 1 }
         i = i + 1
     }
     handlers_json = handlers_json + "]"
