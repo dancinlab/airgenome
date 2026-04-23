@@ -859,12 +859,30 @@ cmd_continuous_scan() {
     echo "ag_meta: continuous-scan wrote snapshot to $date_dir"
 }
 
+# _weight — look up a deduction weight from config/health_weights.json.
+# Path argument is dotted, e.g. "health.ring_integrity_issue".  Falls back
+# to the numeric default passed as 2nd arg if the config file or key is
+# missing, so earlier behavior is preserved on untouched trees.
+_weight() {
+    local path="$1" default="$2"
+    local cfg="config/health_weights.json"
+    [[ -f "$cfg" ]] || { echo "$default"; return; }
+    local section="${path%%.*}"
+    local key="${path#*.}"
+    # Extract the relevant section block, then grep the key.  Tolerates
+    # both "key":N and "key": N formatting.
+    local v
+    v=$(awk -v sec="$section" '
+        BEGIN { in_sec=0 }
+        $0 ~ "\"" sec "\":" { in_sec=1; next }
+        in_sec && /^  \}/ { in_sec=0 }
+        in_sec { print }
+    ' "$cfg" | grep -oE "\"$key\": *-?[0-9]+" | head -1 | awk -F: '{print $2+0}')
+    echo "${v:-$default}"
+}
+
 # cmd_health — parse state/ag_*.json and compute a health score.
-#   Start 100. Subtract:
-#     -20 per ring_integrity issue
-#     -15 per forge stalled_log
-#     -10 per forge stderr_critical hit (aggregate)
-#     -5  if any comm Jaccard < 0.05 between Ubuntu hosts (drift)
+# Weights live in config/health_weights.json; see _weight() for lookup.
 cmd_health() {
     local score=100
     local ri="state/ag_ring_integrity.json"
@@ -873,12 +891,19 @@ cmd_health() {
     local dc="state/ag_dispatch_coverage.json"
     local rm_="state/ag_rule_effect_map.json"
     local parts=()
+    local w_ring w_forge w_stderr w_drift w_dead w_dormant
+    w_ring=$(_weight "health.ring_integrity_issue" 20)
+    w_forge=$(_weight "health.forge_stalled_log" 15)
+    w_stderr=$(_weight "health.stderr_critical_hit" 10)
+    w_drift=$(_weight "health.ubu_drift_penalty" 5)
+    w_dead=$(_weight "health.dead_handler" 3)
+    w_dormant=$(_weight "health.dormant_rule" 2)
 
     if [[ -f "$ri" ]]; then
         local issues
         issues="$(grep -oE '"total_issues": *[0-9]+' "$ri" | head -1 | grep -oE '[0-9]+')"
         issues="${issues:-0}"
-        score=$((score - 20 * issues))
+        score=$((score - w_ring * issues))
         parts+=("ring_integrity_issues=$issues")
     else
         parts+=("ring_integrity=absent")
@@ -888,11 +913,11 @@ cmd_health() {
         local stalled
         stalled="$(grep -oE '"stalled_logs": *[0-9]+' "$fh" | head -1 | grep -oE '[0-9]+')"
         stalled="${stalled:-0}"
-        score=$((score - 15 * stalled))
+        score=$((score - w_forge * stalled))
         local crit
         crit="$(grep -oE '"stderr_keyword_hits":[0-9]+' "$fh" | awk -F: '{s+=$2} END{print s+0}')"
         crit="${crit:-0}"
-        score=$((score - 10 * crit))
+        score=$((score - w_stderr * crit))
         parts+=("stalled_logs=$stalled" "stderr_crit=$crit")
     else
         parts+=("forge_health=absent")
@@ -904,7 +929,7 @@ cmd_health() {
         jac="$(grep -oE '"pair":"ubu_ubu2","intersection":[0-9]+,"union":[0-9]+,"jaccard":[0-9.]+' "$rd" | tail -1 | grep -oE 'jaccard":[0-9.]+' | cut -d: -f2)"
         parts+=("ubu_ubu2_comm_jaccard=${jac:-?}")
         if [[ -n "${jac:-}" ]] && awk "BEGIN{exit !($jac < 0.05)}"; then
-            score=$((score - 5))
+            score=$((score - w_drift))
             parts+=("ubu_drift!")
         fi
     else
@@ -915,7 +940,7 @@ cmd_health() {
         local dead
         dead="$(grep -oE '"dead_handler_count": *[0-9]+' "$dc" | head -1 | grep -oE '[0-9]+')"
         dead="${dead:-0}"
-        score=$((score - 3 * dead))
+        score=$((score - w_dead * dead))
         parts+=("dead_handlers=$dead")
     fi
 
@@ -923,17 +948,21 @@ cmd_health() {
         local dormant
         dormant="$(grep -oE '"dormant_count": *[0-9]+' "$rm_" | head -1 | grep -oE '[0-9]+')"
         dormant="${dormant:-0}"
-        score=$((score - 2 * dormant))
+        score=$((score - w_dormant * dormant))
         parts+=("dormant_rules=$dormant")
     fi
 
     # reachability: each unreachable host is a SPOF precursor (agm-20260422-008)
+    local w_unreach w_bsd w_chr
+    w_unreach=$(_weight "health.unreachable_host" 12)
+    w_bsd=$(_weight "health.build_size_alarm" 4)
+    w_chr=$(_weight "health.chronic_blocker" 2)
     local rch_file="state/ag_reachability_matrix.json"
     if [[ -f "$rch_file" ]]; then
         local unreach
         unreach="$(grep -oE '"unreachable": *[0-9]+' "$rch_file" | head -1 | grep -oE '[0-9]+')"
         unreach="${unreach:-0}"
-        score=$((score - 12 * unreach))
+        score=$((score - w_unreach * unreach))
         parts+=("unreachable_hosts=$unreach")
     fi
 
@@ -941,18 +970,18 @@ cmd_health() {
     local bsd_file="state/ag_build_size_drift.json"
     if [[ -f "$bsd_file" ]]; then
         if grep -qE '"alarm": *true' "$bsd_file"; then
-            score=$((score - 4))
+            score=$((score - w_bsd))
             parts+=("build_size_alarm")
         fi
     fi
 
-    # chronic blockers (persisted ≥ threshold runs) — -2 each
+    # chronic blockers (persisted ≥ threshold runs)
     local bp_file="state/ag_blocker_persistence.json"
     if [[ -f "$bp_file" ]]; then
         local chronic
         chronic="$(grep -oE '"chronic_count": *[0-9]+' "$bp_file" | head -1 | awk -F: '{print $2+0}')"
         chronic="${chronic:-0}"
-        score=$((score - 2 * chronic))
+        score=$((score - w_chr * chronic))
         parts+=("chronic_blockers=$chronic")
     fi
 
@@ -966,11 +995,16 @@ cmd_health() {
         dsl_alarms=$((dsl_alarms + 1))
         local sev
         sev="$(grep -oE '"severity": *"[^"]+"' "$f" | head -1 | awk -F'"' '{print $(NF-1)}')"
+        local w_crit w_hi w_med w_lo
+        w_crit=$(_weight "health.dsl_alarm_critical" 15)
+        w_hi=$(_weight "health.dsl_alarm_high" 7)
+        w_med=$(_weight "health.dsl_alarm_med" 3)
+        w_lo=$(_weight "health.dsl_alarm_low" 1)
         case "${sev:-med}" in
-            critical) score=$((score - 15)) ;;
-            high)     score=$((score - 7))  ;;
-            med)      score=$((score - 3))  ;;
-            low)      score=$((score - 1))  ;;
+            critical) score=$((score - w_crit)) ;;
+            high)     score=$((score - w_hi))  ;;
+            med)      score=$((score - w_med))  ;;
+            low)      score=$((score - w_lo))  ;;
         esac
     done
     parts+=("dsl_alarms=$dsl_alarms")
@@ -991,18 +1025,25 @@ cmd_health() {
 cmd_self() {
     local score=100
     local parts=()
+    local ws_drift ws_stale ws_err ws_anom ws_chr ws_build
+    ws_drift=$(_weight "self.registry_drift"        20)
+    ws_stale=$(_weight "self.stale_state_file"      10)
+    ws_err=$(  _weight "self.telemetry_error_24h"    5)
+    ws_anom=$( _weight "self.runtime_anomaly"        5)
+    ws_chr=$(  _weight "self.chronic_blocker"        3)
+    ws_build=$(_weight "self.build_stale"            2)
     # Registry drift: cmd_verify returns non-zero count of problems; capture via stderr word count.
     local verify_err
     verify_err=$(cmd_verify 2>&1 >/dev/null | grep -cE '(dangling|orphaned)')
     verify_err="${verify_err:-0}"
-    score=$((score - 20 * verify_err))
+    score=$((score - ws_drift * verify_err))
     parts+=("registry_drift=$verify_err")
     # scanner_freshness
     local stale=0
     if [[ -f state/ag_scanner_freshness.json ]]; then
         stale=$(grep -oE '"stale": *[0-9]+' state/ag_scanner_freshness.json | head -1 | awk -F: '{print $2+0}')
         stale="${stale:-0}"
-        score=$((score - 10 * stale))
+        score=$((score - ws_stale * stale))
     fi
     parts+=("stale=$stale")
     # telemetry errors + anomalies
@@ -1011,7 +1052,7 @@ cmd_self() {
         tel_err=$(grep -oE '"errors_24h_total": *[0-9]+' state/ag_telemetry_audit.json | head -1 | awk -F: '{print $2+0}')
         anom=$(grep -oE '"anomaly_count": *[0-9]+' state/ag_telemetry_audit.json | head -1 | awk -F: '{print $2+0}')
         tel_err="${tel_err:-0}"; anom="${anom:-0}"
-        score=$((score - 5 * tel_err - 5 * anom))
+        score=$((score - ws_err * tel_err - ws_anom * anom))
     fi
     parts+=("errors_24h=$tel_err" "anomalies=$anom")
     # chronic persistence
@@ -1019,7 +1060,7 @@ cmd_self() {
     if [[ -f state/ag_blocker_persistence.json ]]; then
         chronic=$(grep -oE '"chronic_count": *[0-9]+' state/ag_blocker_persistence.json | head -1 | awk -F: '{print $2+0}')
         chronic="${chronic:-0}"
-        score=$((score - 3 * chronic))
+        score=$((score - ws_chr * chronic))
     fi
     parts+=("chronic=$chronic")
     # native-build staleness: scanners with source newer than build/ag_<tool>
@@ -1034,7 +1075,7 @@ cmd_self() {
             build_stale=$((build_stale + 1))
         fi
     done
-    score=$((score - 2 * build_stale))
+    score=$((score - ws_build * build_stale))
     parts+=("build_stale=$build_stale")
     if [[ $score -lt 0 ]]; then score=0; fi
     printf 'ag_meta self: %d/100  (%s)\n' "$score" "$(IFS=' '; echo "${parts[*]}")"
