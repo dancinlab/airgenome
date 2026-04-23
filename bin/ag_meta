@@ -499,6 +499,25 @@ cmd_health() {
         parts+=("dormant_rules=$dormant")
     fi
 
+    # reachability: each unreachable host is a SPOF precursor (agm-20260422-008)
+    local rch_file="state/ag_reachability_matrix.json"
+    if [[ -f "$rch_file" ]]; then
+        local unreach
+        unreach="$(grep -oE '"unreachable": *[0-9]+' "$rch_file" | head -1 | grep -oE '[0-9]+')"
+        unreach="${unreach:-0}"
+        score=$((score - 12 * unreach))
+        parts+=("unreachable_hosts=$unreach")
+    fi
+
+    # build size drift: alarm = med hit
+    local bsd_file="state/ag_build_size_drift.json"
+    if [[ -f "$bsd_file" ]]; then
+        if grep -qE '"alarm": *true' "$bsd_file"; then
+            score=$((score - 4))
+            parts+=("build_size_alarm")
+        fi
+    fi
+
     # Phase 6.3 DSL alarms — each alarm_high/low subtracts by severity weight
     local dsl_alarms=0
     for f in state/ag_dsl_*.json; do

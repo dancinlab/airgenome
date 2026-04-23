@@ -77,6 +77,8 @@ fn main() {
     let ip = "state/ag_infra_parity.json"
     let dc = "state/ag_dispatch_coverage.json"
     let rm_ = "state/ag_rule_effect_map.json"
+    let rch = "state/ag_reachability_matrix.json"
+    let bsd = "state/ag_build_size_drift.json"
 
     let mut blockers = "["
 
@@ -136,6 +138,19 @@ fn main() {
     let drift = _peek_float_lt(rd, "\"pair\":\"ubu_ubu2\"[^}]*\"jaccard\":[0-9.]+", "0.05")
     if drift == 1 {
         blockers = _add_blocker(blockers, "low", "ubu_comm_drift", rd, "jaccard<0.05")
+    }
+    // critical — reachability: any unreachable host is a SPOF precursor
+    let unreach = _peek_num(rch, "unreachable")
+    if unreach > 0 {
+        blockers = _add_blocker(blockers, "critical", "host_unreachable", rch, "unreachable=" + to_string(unreach))
+    }
+    // med — build size drift alarm (≥ threshold vs previous build)
+    if file_exists(bsd) {
+        let alarm = to_string(exec("grep -oE '\"alarm\": *true' " + _sh_q(bsd) + " | head -1")).trim()
+        if len(alarm) > 0 {
+            let pct = to_string(exec("grep -oE '\"drift_pct\": *-?[0-9.]+' " + _sh_q(bsd) + " | head -1 | grep -oE '\\-?[0-9.]+$'")).trim()
+            blockers = _add_blocker(blockers, "med", "build_size_drift", bsd, "drift_pct=" + pct)
+        }
     }
 
     blockers = blockers + "]"
