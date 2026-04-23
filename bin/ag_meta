@@ -406,18 +406,28 @@ cmd_report() {
             summary="$(grep -oE '"summary": *\{[^}]*\}' state/ag_blockers.json | head -1 | sed 's/"summary": *//')"
             echo "- summary: \`${summary:-none}\`"
             echo
-            # Tag [NEW] any kind whose occurrences_total==1 in persistence.
-            # Extract the set of "new" kinds once, then mark rows as we print.
-            local new_kinds
+            # Tag [NEW] if occurrences_total==1, [CHRONIC] if ≥ threshold.
+            local new_kinds chronic_kinds chronic_thresh=3
             if [[ -f state/ag_blocker_persistence.json ]]; then
+                chronic_thresh=$(grep -oE '"chronic_threshold": *[0-9]+' state/ag_blocker_persistence.json | head -1 | awk -F: '{print $2+0}')
+                chronic_thresh="${chronic_thresh:-3}"
                 new_kinds="$(awk 'BEGIN{RS="\\},\\{"} /"occurrences_total":1[^0-9]/ { if (match($0, /"kind":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"kind":"/,"",s); sub(/".*/,"",s); print s } }' state/ag_blocker_persistence.json | tr '\n' '|')"
+                chronic_kinds="$(awk -v t="$chronic_thresh" 'BEGIN{RS="\\},\\{"} {
+                    occ=0
+                    if (match($0, /"occurrences_total":[0-9]+/)) { s=substr($0,RSTART,RLENGTH); sub(/"occurrences_total":/,"",s); occ=s+0 }
+                    if (occ >= t && match($0, /"kind":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"kind":"/,"",s); sub(/".*/,"",s); print s }
+                }' state/ag_blocker_persistence.json | tr '\n' '|')"
             fi
             grep -oE '"severity":"[^"]+","kind":"[^"]+","source":"[^"]+","evidence":"[^"]+"' state/ag_blockers.json |
-                awk -F'"' -v nks="$new_kinds" '{
+                awk -F'"' -v nks="$new_kinds" -v cks="$chronic_kinds" '{
                     tag=""
                     if (nks != "") {
                         n = split(nks, arr, "|")
                         for (i=1; i<=n; i++) if (arr[i] != "" && arr[i] == $8) { tag=" [NEW]"; break }
+                    }
+                    if (tag == "" && cks != "") {
+                        n = split(cks, arr, "|")
+                        for (i=1; i<=n; i++) if (arr[i] != "" && arr[i] == $8) { tag=" [CHRONIC]"; break }
                     }
                     printf "  - **%s**%s — %s — evidence: %s — source: %s\n", $4, tag, $8, $16, $12
                 }'
