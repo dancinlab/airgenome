@@ -130,6 +130,35 @@ fn main() {
         pcount = pcount + 1
     }
 
+    // Chronic blocker follow-up proposals — entries in blocker_persistence.json
+    // with occurrences_total ≥ 10 are strong signals that a permanent fix is
+    // overdue.  Reads the previous-run persistence (AGGREGATORS ordering puts
+    // gap_proposals before blocker_persistence); 1-run lag is acceptable since
+    // persistence is inherently historical.
+    let bp = "state/ag_blocker_persistence.json"
+    if file_exists(bp) {
+        let rows_raw = to_string(exec("grep -oE '\\{[^}]*\"occurrences_total\":[0-9]+[^}]*\\}' " + _sh_q(bp))).trim()
+        if len(rows_raw) > 0 {
+            let rows = rows_raw.split("\n")
+            let mut j = 0
+            while j < len(rows) {
+                let r = rows[j]
+                let occ_str = to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"occurrences_total\":[0-9]+' | head -1 | awk -F: '{print $2+0}'")).trim()
+                let occ = to_int(occ_str)
+                if occ >= 10 {
+                    let knd = to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"kind\":\"[^\"]+\"' | head -1 | awk -F'\"' '{print $4}'")).trim()
+                    let sev = to_string(exec("printf '%s' " + _sh_q(r) + " | grep -oE '\"severity\":\"[^\"]+\"' | head -1 | awk -F'\"' '{print $4}'")).trim()
+                    let mut prio = 85
+                    if sev == "critical" { prio = 95 }
+                    if pcount > 0 { proposals = proposals + "," }
+                    proposals = proposals + "{\"kind\":\"chronic_blocker_followup\",\"rationale\":\"blocker '" + _json_esc(knd) + "' fired " + to_string(occ) + " runs — permanent fix overdue\",\"evidence_count\":" + to_string(occ) + ",\"category\":\"infra_gap\",\"priority\":" + to_string(prio) + ",\"suggested_name\":\"fix_" + _json_esc(knd) + "\"}"
+                    pcount = pcount + 1
+                }
+                j = j + 1
+            }
+        }
+    }
+
     proposals = proposals + "]"
 
     let body = "{\n  \"schema\": \"airgenome/ag_gap_proposals/1\",\n  \"ts\": \"" + _iso_now() + "\",\n  \"days\": " + to_string(days) + ",\n  \"git_keywords\": {\"workaround\":" + to_string(workaround) + ",\"hotfix\":" + to_string(hotfix) + ",\"sed_i\":" + to_string(sed_i) + ",\"no_verify\":" + to_string(no_verify) + ",\"TODO\":" + to_string(todo) + ",\"FIXME\":" + to_string(fixme) + ",\"HACK\":" + to_string(hack) + "},\n  \"stderr_top_prefixes\": " + stderr_prefixes + ",\n  \"proposal_count\": " + to_string(pcount) + ",\n  \"proposals\": " + proposals + "\n}\n"
