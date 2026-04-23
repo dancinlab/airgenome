@@ -33,6 +33,7 @@
 #   selftest       run --selftest on every scanner (prefixed by verify)
 #   verify         registry ↔ filesystem consistency (no scanner execution)
 #   prune [N]      trim state/history/*.jsonl to last N rows (default 1000)
+#   self           meta-engine self-health score (distinct from cmd_health)
 #   continuous-scan  (Phase 5) same as doctor + history/ snapshot
 #   telemetry      (Phase 6.1) summarize state/ag_meta_telemetry.jsonl
 #   fast           fast-subset for pre-commit (ring + forge + blockers)
@@ -725,6 +726,52 @@ cmd_health() {
     return 0
 }
 
+# cmd_self — health score of the meta engine itself (distinct from cmd_health
+# which scores the target system).  Starts 100, deducts for:
+#   -20 per orphan scanner / dangling registry entry (via cmd_verify rc)
+#   -10 per stale state file (ag_scanner_freshness.stale)
+#   -5  per scanner with rc != 0 in last 24h (ag_telemetry_audit.errors_24h_total)
+#   -3  per chronic blocker (ag_blocker_persistence.chronic_count)
+#   -5  per runtime anomaly (ag_telemetry_audit.anomaly_count)
+# Answers: "is the meta engine itself healthy enough that its output is trusted?"
+cmd_self() {
+    local score=100
+    local parts=()
+    # Registry drift: cmd_verify returns non-zero count of problems; capture via stderr word count.
+    local verify_err
+    verify_err=$(cmd_verify 2>&1 >/dev/null | grep -cE '(dangling|orphaned)')
+    verify_err="${verify_err:-0}"
+    score=$((score - 20 * verify_err))
+    parts+=("registry_drift=$verify_err")
+    # scanner_freshness
+    local stale=0
+    if [[ -f state/ag_scanner_freshness.json ]]; then
+        stale=$(grep -oE '"stale": *[0-9]+' state/ag_scanner_freshness.json | head -1 | awk -F: '{print $2+0}')
+        stale="${stale:-0}"
+        score=$((score - 10 * stale))
+    fi
+    parts+=("stale=$stale")
+    # telemetry errors + anomalies
+    local tel_err=0 anom=0
+    if [[ -f state/ag_telemetry_audit.json ]]; then
+        tel_err=$(grep -oE '"errors_24h_total": *[0-9]+' state/ag_telemetry_audit.json | head -1 | awk -F: '{print $2+0}')
+        anom=$(grep -oE '"anomaly_count": *[0-9]+' state/ag_telemetry_audit.json | head -1 | awk -F: '{print $2+0}')
+        tel_err="${tel_err:-0}"; anom="${anom:-0}"
+        score=$((score - 5 * tel_err - 5 * anom))
+    fi
+    parts+=("errors_24h=$tel_err" "anomalies=$anom")
+    # chronic persistence
+    local chronic=0
+    if [[ -f state/ag_blocker_persistence.json ]]; then
+        chronic=$(grep -oE '"chronic_count": *[0-9]+' state/ag_blocker_persistence.json | head -1 | awk -F: '{print $2+0}')
+        chronic="${chronic:-0}"
+        score=$((score - 3 * chronic))
+    fi
+    parts+=("chronic=$chronic")
+    if [[ $score -lt 0 ]]; then score=0; fi
+    printf 'ag_meta self: %d/100  (%s)\n' "$score" "$(IFS=' '; echo "${parts[*]}")"
+}
+
 main() {
     local sub="${1:-help}"
     shift || true
@@ -757,6 +804,7 @@ main() {
         selftest)        cmd_selftest ;;
         verify)          cmd_verify ;;
         prune)           cmd_prune "$@" ;;
+        self)            cmd_self ;;
         continuous-scan) cmd_continuous_scan "$@" ;;
         telemetry)       cmd_telemetry "$@" ;;
         fast)            cmd_fast "$@" ;;
