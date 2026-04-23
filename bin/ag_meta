@@ -575,6 +575,9 @@ cmd_continuous_scan() {
         [[ -e "$f" ]] || continue
         cp "$f" "$date_dir/"
     done
+    # Prune history *.jsonl after snapshot to prevent unbounded growth.
+    # (Snapshot is independent — it lives in date_dir, not history/*.jsonl.)
+    cmd_prune >/dev/null || true
     echo "ag_meta: continuous-scan wrote snapshot to $date_dir"
 }
 
