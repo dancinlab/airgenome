@@ -228,8 +228,12 @@ _usage_table() {
         if [[ "$wk" =~ ^[0-9]+$ ]]; then wk_col="${wk}%"; else wk_col="-"; fi
 
         # no column.
+        # Hotkey labels: 1-9, 0, a-z (covers 36 accounts).
         if [ "$i" -lt 9 ]; then num_label=$((i+1))
         elif [ "$i" -eq 9 ]; then num_label="0"
+        elif [ "$i" -lt 36 ]; then
+            # 'a'=index 10, 'b'=11, ..., 'z'=35. ASCII 97 = 'a'.
+            num_label=$(printf "\\$(printf '%03o' $(( 97 + i - 10 )))")
         else num_label="-"
         fi
 
@@ -475,8 +479,12 @@ _picker_frame() {
         if [[ "$ss" =~ ^[0-9]+$ ]]; then ss_col="${ss}%"; else ss_col="-"; fi
         if [[ "$wk" =~ ^[0-9]+$ ]]; then wk_col="${wk}%"; else wk_col="-"; fi
 
+        # Hotkey labels: 1-9, 0, a-z (covers 36 accounts).
         if [ "$i" -lt 9 ]; then num_label=$((i+1))
         elif [ "$i" -eq 9 ]; then num_label="0"
+        elif [ "$i" -lt 36 ]; then
+            # 'a'=index 10, 'b'=11, ..., 'z'=35. ASCII 97 = 'a'.
+            num_label=$(printf "\\$(printf '%03o' $(( 97 + i - 10 )))")
         else num_label="-"
         fi
 
@@ -498,7 +506,9 @@ _picker_frame() {
 
     # Footer
     _pf_frame+=$'\n'
-    _pf_frame+="  arrow keys move  Enter→${_PK_NAMES[$cursor]}  Space→${_PK_AUTO:-${_PK_NAMES[$cursor]}}(auto)  1-9/0 jump  q cancel"$'\n'
+    local _jump_hint="1-9/0"
+    [ "$count" -gt 10 ] && _jump_hint="1-9/0/a-z"
+    _pf_frame+="  arrow keys move  Enter→${_PK_NAMES[$cursor]}  Space→${_PK_AUTO:-${_PK_NAMES[$cursor]}}(auto)  ${_jump_hint} jump  q cancel"$'\n'
 
     printf -v "$__out" '%s' "$_pf_frame"
 }
@@ -593,6 +603,10 @@ _interactive_pick() {
                 if [ "$idx" -lt "$count" ]; then selected="${_PK_NAMES[$idx]}"; break; fi ;;
             0)
                 if [ "$count" -ge 10 ]; then selected="${_PK_NAMES[9]}"; break; fi ;;
+            [a-pr-z])
+                # 'a'=10, 'b'=11, ..., 'z'=35. (q reserved for cancel below.)
+                idx=$(( $(printf '%d' "'$_PK_KEY") - 97 + 10 ))
+                if [ "$idx" -lt "$count" ]; then selected="${_PK_NAMES[$idx]}"; break; fi ;;
             q|Q|$'\x1b')
                 printf '\n  cancelled\n' >&2
                 printf '\033[?25h' >&2
