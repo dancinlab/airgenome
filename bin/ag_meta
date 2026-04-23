@@ -381,8 +381,21 @@ cmd_report() {
             summary="$(grep -oE '"summary": *\{[^}]*\}' state/ag_blockers.json | head -1 | sed 's/"summary": *//')"
             echo "- summary: \`${summary:-none}\`"
             echo
+            # Tag [NEW] any kind whose occurrences_total==1 in persistence.
+            # Extract the set of "new" kinds once, then mark rows as we print.
+            local new_kinds
+            if [[ -f state/ag_blocker_persistence.json ]]; then
+                new_kinds="$(awk 'BEGIN{RS="\\},\\{"} /"occurrences_total":1[^0-9]/ { if (match($0, /"kind":"[^"]+"/)) { s=substr($0,RSTART,RLENGTH); sub(/"kind":"/,"",s); sub(/".*/,"",s); print s } }' state/ag_blocker_persistence.json | tr '\n' '|')"
+            fi
             grep -oE '"severity":"[^"]+","kind":"[^"]+","source":"[^"]+","evidence":"[^"]+"' state/ag_blockers.json |
-                awk -F'"' '{printf "  - **%s** — %s — evidence: %s — source: %s\n", $4, $8, $16, $12}'
+                awk -F'"' -v nks="$new_kinds" '{
+                    tag=""
+                    if (nks != "") {
+                        n = split(nks, arr, "|")
+                        for (i=1; i<=n; i++) if (arr[i] != "" && arr[i] == $8) { tag=" [NEW]"; break }
+                    }
+                    printf "  - **%s**%s — %s — evidence: %s — source: %s\n", $4, tag, $8, $16, $12
+                }'
             echo
         fi
 
