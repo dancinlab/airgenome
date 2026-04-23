@@ -727,6 +727,22 @@ cmd_summary() {
         chr=$(grep -oE '"chronic_count": *[0-9]+' "$bp" | head -1 | awk -F: '{print $2+0}')
         printf 'blockers: current=%s  chronic=%s\n' "${cur:-0}" "${chr:-0}"
     fi
+    # Correlation signal: top co-occurring pair if count_ab >= 3 runs.
+    local corr="state/ag_scanner_correlation.json"
+    if [[ -f "$corr" ]]; then
+        local top
+        top=$(grep -oE '\{"a":"[^"]+","b":"[^"]+","count_a":[0-9]+,"count_b":[0-9]+,"count_ab":[0-9]+\}' "$corr" |
+              awk -F'"' '{
+                  a=$4; b=$8
+                  # "count_ab": prefix is 11 chars; sub() strips it so residual is pure digits.
+                  if (match($0, /"count_ab":[0-9]+/)) { s=substr($0,RSTART,RLENGTH); sub(/"count_ab":/,"",s); ab=s+0 }
+                  else ab=0
+                  if (ab >= 3) { printf "%s × %s (co=%d)", a, b, ab; exit }
+              }')
+        if [[ -n "$top" ]]; then
+            printf 'top co-firing: %s\n' "$top"
+        fi
+    fi
     printf '── new since last run ──\n'
     cmd_new | sed 's/^/  /'
     printf '── resolved since last run ──\n'
