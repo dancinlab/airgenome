@@ -43,11 +43,14 @@ fn sel(name: str) -> *Void { return sel_registerName(name) }
 fn nsstr(s: str) -> *Void { return msg1(cls("NSString"), sel("stringWithUTF8String:"), s) }
 
 let HOME = env_var("HOME")
-let THROTTLE_STATE = HOME + "/Dev/airgenome/forge/predictive_throttle_state.json"
-let THROTTLE_HIST  = HOME + "/Dev/airgenome/forge/throttle_history.jsonl"
-let DISPATCH_STATE = HOME + "/Dev/nexus/dispatch_state.json"
-let INFRA_STATE    = HOME + "/Dev/nexus/infra_state.json"
-let FORGE          = HOME + "/Dev/airgenome/forge"
+// 2026-04-23: project moved from ~/Dev/airgenome → ~/core/airgenome (and
+// nexus likewise).  The old paths still exist as stale orphan dirs so
+// fallbacks would silently return old data — must point at core/ directly.
+let THROTTLE_STATE = HOME + "/core/airgenome/forge/predictive_throttle_state.json"
+let THROTTLE_HIST  = HOME + "/core/airgenome/forge/throttle_history.jsonl"
+let DISPATCH_STATE = HOME + "/core/nexus/dispatch_state.json"
+let INFRA_STATE    = HOME + "/core/nexus/infra_state.json"
+let FORGE          = HOME + "/core/airgenome/forge"
 let CONFIG_DIR     = HOME + "/.airgenome"
 let CONFIG_PATH    = HOME + "/.airgenome/menubar_config.json"
 
@@ -365,7 +368,11 @@ fn build_menu() -> *Void {
     menu_add_separator(menu)
 
     // Rings block
-    menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu1=" + ring_count("genomes.ubu1.ring") + "  ubu2=" + ring_count("genomes.ubu2.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
+    // ring filenames track the producing daemon's convention: local mac
+    // writes genomes.ring; ubu/ubu2 write genomes.ubu.ring / genomes.ubu2.ring
+    // (note "ubu", not "ubu1" — daemon predates the ubu1 label in
+    // infra_state.json).  htz has no local ring (remote-only host).
+    menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu1=" + ring_count("genomes.ubu.ring") + "  ubu2=" + ring_count("genomes.ubu2.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
 
     // Recent throttle history
     let hist = exec("tail -3 '" + THROTTLE_HIST + "' 2>/dev/null | awk -F'[,:{}\"]' '{for(i=1;i<=NF;i++)if($i==\"cpu\"){c=$(i+2)}; for(i=1;i<=NF;i++)if($i==\"ram\"){r=$(i+2)}; print \"    cpu=\" c \" ram=\" r}' | tr '\\n' '|'").trim()
