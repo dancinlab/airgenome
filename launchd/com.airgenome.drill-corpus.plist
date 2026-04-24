@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.drill-corpus</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/ghost/core/airgenome/bin/drill_corpus_tick.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>7200</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ThrottleInterval</key>
+    <integer>7200</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/.airgenome/drill_corpus.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/.airgenome/drill_corpus.stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+        <key>AIRGENOME_ROOT</key>
+        <string>/Users/ghost/core/airgenome</string>
+    </dict>
+</dict>
+</plist>
