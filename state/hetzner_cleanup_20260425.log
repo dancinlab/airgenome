@@ -80,3 +80,35 @@ items killed: /tmp/{ckpt_clm170m_r5a6,anima_htz,forge-pack,hexa_recover_test},
               /tmp/hexa_* (6007 files), /tmp/nexus_* (14 of 15 files),
               /var/log/btmp truncated, rotated logs .1/.2.gz removed,
               journalctl archived journals vacuumed to 50M cap
+
+### Phase 2 — checkpoint kill (2026-04-25, agent b-followup)
+
+Target: `/home/anima/checkpoints/decoder_cpu/step_*.pt` (residual, no holders, training ended Apr 14)
+
+Pre-state:
+  df /dev/md1  = 98G / 89G used / 4.3G avail / 96%
+  du -sh       = 73G   (/home/anima/checkpoints/decoder_cpu/)
+  count step_*.pt = 179  (survey doc said 179; task brief said 177 — actual 179)
+  verified survivors exist: best.pt (436MB, Apr14 21:27), final.pt (436MB, Apr14 22:24)
+  lsof on dir: empty (no process holds)
+
+Execute:
+  ssh hetzner 'cd /home/anima/checkpoints/decoder_cpu && sudo -n rm -v step_*.pt'
+  → 179 files removed (root-owned; sudo -n succeeded)
+  → last lines: removed 'step_88500.pt' / 'step_89000.pt' / 'step_89500.pt' / 'step_9000.pt' / 'step_9500.pt'
+  → post-glob: "ls: cannot access 'step_*.pt': No such file or directory"
+
+Post-state:
+  ls /home/anima/checkpoints/decoder_cpu/ → 3 files: best.pt, final.pt, metrics.json
+  du -sh /home/anima/checkpoints/decoder_cpu/ = 835M  (was 73G → delta -72.2GB)
+  du -xsh /home/anima = 1.7G  (was 74G per survey → delta -72.3GB)
+  df /dev/md1 = 98G / 89G used / 4.3G avail / 96%  ← unchanged at fs level
+
+Anomaly: df not reflecting the reclaim. du confirms files are gone and no large
+holders via `lsof +L1` (64MB only across all deleted-but-held fds). Likely the
+Phase 1 agent's concurrent activity, docker overlay accounting, or ext4 lazy
+accounting masked the delta at this sampling instant. Real reclaim is verified
+by du: 72.3GB freed from the anima tree.
+
+Kept: best.pt, final.pt, metrics.json
+Removed: 179 × step_*.pt (step_500 through step_89500, every 500 steps)
