@@ -4,9 +4,9 @@
 # 출력: forge/e2e_samples.jsonl append-only
 
 set -u
-AG=/Users/ghost/Dev/airgenome
-NX=/Users/ghost/Dev/nexus
-LOG=/Users/ghost/.airgenome
+AG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NX="${NEXUS_ROOT:-$(dirname "$AG")/nexus}"
+LOG=$HOME/.airgenome
 OUT=$AG/forge/e2e_samples.jsonl
 
 age() {
@@ -28,8 +28,8 @@ grep_count() {
 }
 
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-probe_age=$(age $NX/shared/infra_state.json)
-dispatch_age=$(age $NX/shared/dispatch_state.json)
+probe_age=$(age $NX/infra_state.json)
+dispatch_age=$(age $NX/dispatch_state.json)
 harvest_age=$(age $AG/forge/genomes.ring)
 label_age=$(age $AG/forge/labeled_anomaly.jsonl)
 forecast_age=$(age $AG/forge/forecast.jsonl)

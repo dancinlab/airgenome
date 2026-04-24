@@ -53,6 +53,7 @@ bin/hook_cli_state
 bin/nx
 infra_state.json
 state/roadmap_progress.json
+state/roadmap_progress_cache.json
 state/rig_trend_history.jsonl
 
 # meta-evolution scanner outputs (Phase 3+, generated)

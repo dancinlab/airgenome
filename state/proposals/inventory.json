@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-24T08:27:32Z",
+  "updated_ts": "2026-04-24T16:15:05Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -182,6 +182,19 @@
       "user_status": "pending",
       "score_priority": 50,
       "submitted_ts": "2026-04-24T06:36:06Z"
+    },
+    {
+      "id": "agm-20260424-002",
+      "kind": "advisory",
+      "title": "airgenome-runaway.service user unit hard-codes Mac paths (/Users/ghost/Dev/airgenome) — ubu1 hotfix landed, deployment script needs fix",
+      "from_repo": "nexus",
+      "user_status": "done",
+      "score_priority": 95,
+      "submitted_ts": "2026-04-24T16:02:12Z",
+      "category": "infra_gap",
+      "priority_reason": "cross_repo_blocker floor >= 95 (auto)",
+      "in_progress_ts": "2026-04-24T16:14:53Z",
+      "done_ts": "2026-04-24T16:15:05Z"
     }
   ],
   "proposals": [],

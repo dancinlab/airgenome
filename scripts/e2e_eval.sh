@@ -1,11 +1,11 @@
 #!/bin/bash
-# M8 e2e soak evaluator — forge/e2e_samples.jsonl + shared/config/e2e_acceptance.jsonl
+# M8 e2e soak evaluator — forge/e2e_samples.jsonl + config/e2e_acceptance.jsonl
 # 24h 경과 후 수동 실행. 출력: PASS/FAIL per criterion + overall verdict
 
 set -u
-AG=/Users/ghost/Dev/airgenome
+AG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SAMPLES=$AG/forge/e2e_samples.jsonl
-CRITERIA=$AG/shared/config/e2e_acceptance.jsonl
+CRITERIA=$AG/config/e2e_acceptance.jsonl
 
 [ -f "$SAMPLES" ] || { echo "FAIL: $SAMPLES missing"; exit 1; }
 [ -f "$CRITERIA" ] || { echo "FAIL: $CRITERIA missing"; exit 1; }
