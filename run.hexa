@@ -9,7 +9,7 @@
 //   airgenome probe          — modules/probe.hexa
 //   airgenome merge          — modules/genome_merge.hexa
 //   airgenome throttle       — modules/predictive_throttle.hexa (Mac 보호)
-//   airgenome menubar        — Mac menubar 부활 (T4)
+//   airgenome menubar        — Ω observer UI launchd agent ensure (built binary 자동 bootstrap)
 //   airgenome watch [sec]    — terminal HUD (status 초단위 refresh, 기본 2초)
 //   airgenome doctor         — 통합 진단 (core/launchd/ring/throttle)
 //   airgenome cli            — 인터랙티브 TUI (숫자 선택)
@@ -106,6 +106,19 @@ fn cmd_status() -> void {
     println("--- predictive_throttle state ---")
     let st = exec("cat '" + ring_path("predictive_throttle_state.json") + "' 2>/dev/null").trim()
     if st == "" { println("  (no state)") } else { println("  " + st) }
+
+    // menubar — Ω 관찰자 UI (2026-04-24 CLI 일체화).
+    println("")
+    println("--- menubar (Ω observer UI) ---")
+    let mb_loaded = exec("launchctl list 2>/dev/null | awk '$3==\"com.airgenome.menubar\"{printf \"pid=%s rc=%s\", $1, $2}'").trim()
+    if mb_loaded == "" { println("  launchd: not loaded  (run `airgenome menubar` to bootstrap)") }
+    else { println("  launchd: " + mb_loaded) }
+    let hb = airgenome_root() + "/state/menubar_heartbeat"
+    let hb_age = exec("[ -f '" + hb + "' ] && echo $(( $(date +%s) - $(stat -f %m '" + hb + "') ))s || echo absent").trim()
+    println("  heartbeat: " + hb_age)
+    let omega = airgenome_root() + "/state/ag_dsl_omega_fixpoint.json"
+    let omega_line = exec("jq -r '\"Ψ=\" + .lhs + \"  ε=\" + .rhs + \"  |Δ|=\" + .alignment + \"  (\" + .verdict + \")\"' '" + omega + "' 2>/dev/null").trim()
+    if omega_line != "" { println("  Ω closure: " + omega_line) }
 }
 
 fn install_set(labels: [str], label: str) -> void {
@@ -175,17 +188,45 @@ fn cmd_self_test_all() -> void {
     println(out)
 }
 
-fn cmd_menubar() -> void {
-    // T4: hexa_v2 transpile 된 native binary. hexa 인터프리터는 @link FFI 미지원이라 build 필요.
+// ensure_menubar — CLI 일체화(2026-04-24): menubar 는 Ω 관찰자 UI 로 승격된
+// airgenome 의 상설 컴포넌트. 별도 foreground 실행이 아니라 launchd agent 로
+// 보장. binary 없으면 build hint, plist 미배치면 bootstrap, 이미 running 이면 OK.
+// 반환: 0=running, 1=bootstrapped, 2=not_built, 3=plist_missing.
+fn ensure_menubar() -> int {
     let bin = airgenome_root() + "/build/artifacts/airgenome-menubar"
-    let chk = exec("[ -x '" + bin + "' ] && echo y || echo n").trim()
-    if chk != "y" {
+    let bin_ok = exec("[ -x '" + bin + "' ] && echo y || echo n").trim() == "y"
+    if !bin_ok { return 2 }
+
+    let loaded = exec("launchctl list 2>/dev/null | awk '$3==\"com.airgenome.menubar\"' | wc -l | tr -d ' '").trim()
+    if loaded != "0" { return 0 }
+
+    let src = airgenome_root() + "/launchd/com.airgenome.menubar.plist"
+    let src_ok = exec("[ -f '" + src + "' ] && echo y || echo n").trim() == "y"
+    if !src_ok { return 3 }
+
+    let dst_dir = env("HOME") + "/Library/LaunchAgents"
+    let dst = dst_dir + "/com.airgenome.menubar.plist"
+    let _ = exec("mkdir -p '" + dst_dir + "'")
+    let _ = exec("cp '" + src + "' '" + dst + "'")
+    let _ = exec("launchctl bootout gui/$(id -u)/com.airgenome.menubar 2>/dev/null || true")
+    let _ = exec("sleep 1")
+    let _ = exec("launchctl bootstrap gui/$(id -u) '" + dst + "' 2>/dev/null || true")
+    return 1
+}
+
+fn cmd_menubar() -> void {
+    let rc = ensure_menubar()
+    if rc == 0 { println("⬡ menubar: already running (launchd agent loaded)"); return }
+    if rc == 1 { println("⬡ menubar: bootstrapped via launchd"); return }
+    if rc == 2 {
         println("airgenome menubar binary 미빌드 — `airgenome build-menubar` 먼저 실행")
         println("  소스: " + airgenome_root() + "/bin/menubar.hexa")
         return
     }
-    println("⬡ launching menubar (foreground, ctrl-C to exit)")
-    let _ = exec("'" + bin + "'")
+    if rc == 3 {
+        println("❌ plist missing: launchd/com.airgenome.menubar.plist")
+        return
+    }
 }
 
 fn cmd_build_menubar() -> void {
@@ -334,6 +375,14 @@ fn cmd_doctor() -> void {
     let th_detail = if st == "" { "no state file" } else { "level=" + lvl }
     fails = fails + doctor_check("throttle sanity", th_ok, th_detail)
 
+    // 6. menubar liveness — Ω 관찰자 UI heartbeat 신선도.
+    let hb = airgenome_root() + "/state/menubar_heartbeat"
+    let hb_exists = exec("[ -f '" + hb + "' ] && echo y || echo n").trim() == "y"
+    let hb_age = if hb_exists { to_int(exec("echo $(( $(date +%s) - $(stat -f %m '" + hb + "') ))").trim()) } else { -1 }
+    let mb_ok = hb_exists && hb_age < 60
+    let mb_detail = if !hb_exists { "heartbeat absent (menubar not run yet)" } else { "heartbeat age=" + to_string(hb_age) + "s" }
+    fails = fails + doctor_check("menubar liveness", mb_ok, mb_detail)
+
     println("")
     if fails == 0 {
         println("⬡ all checks passed.")
@@ -472,7 +521,7 @@ fn print_help() -> void {
     println("  probe               modules/probe.hexa")
     println("  merge               modules/genome_merge.hexa")
     println("  throttle            modules/predictive_throttle.hexa (Mac 보호)")
-    println("  menubar             Mac menubar 실행 (built binary 필요)")
+    println("  menubar             Mac menubar (Ω observer UI) launchd agent ensure")
     println("  build-menubar       bin/menubar.hexa → native binary (hexa_v2 + clang)")
     println("  watch [sec]         terminal HUD — status 초단위 refresh (기본 2초)")
     println("  doctor              통합 진단 (core/launchd/ring/throttle)")
@@ -494,6 +543,10 @@ fn print_help() -> void {
 fn main() -> void {
     let a = args()
     if len(a) < 3 {
+        // CLI 일체화(2026-04-24): 인자 없이 호출 시에도 menubar 는 자동 ensure.
+        // "airgenome 실행 시 별개가 아니라 통합" — 관찰자 UI 가 본체와 분리되지 않도록.
+        // binary 미빌드 / plist 미배치 시엔 조용히 skip (help 에 hint).
+        let _ = ensure_menubar()
         print_help()
         return
     }
