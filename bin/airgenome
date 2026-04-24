@@ -368,30 +368,6 @@ cmd_hook() {
     "$HEXA" run "$shim" "$@"
 }
 
-# airgenome status-line
-#   Single-line active-command summary for Claude Code's statusLine
-#   setting. Renders up to 3 top entries as "<icon> <command>: <seed>"
-#   separated by " · "; empty stack → empty line. jq-only, single fork,
-#   so the statusLine stays snappy.
-cmd_status_line() {
-    local f="$AIRGENOME_ROOT/.hook-commands/active.json"
-    [ -f "$f" ] || { echo ""; return 0; }
-    jq -r '
-      (.stack // [])
-      | if length == 0 then ""
-        else
-          (. [0:3] | map(
-            (if .command == "drill"  then "🔭"
-             elif .command == "scan"   then "🧪"
-             elif .command == "record" then "📜"
-             else "•" end)
-            + " " + (.command // "?") + ": " + (.seed // "?")
-          ) | join(" · "))
-          + (if length > 3 then " · +\(length - 3)" else "" end)
-        end
-    ' "$f" 2>/dev/null
-}
-
 # airgenome hooks {list|show <name>|guide}
 #   list     — one-line-per-hook table (name / kind / purpose)
 #   show N   — full JSON object for a single hook by name
@@ -696,7 +672,6 @@ main() {
         logs)          cmd_logs "${1:-list}" ;;
         hook)          cmd_hook "$@" ;;
         hooks)         cmd_hooks "$@" ;;
-        status-line)   cmd_status_line ;;
         run)           cmd_run ;;
         last-session)  cmd_last_session ;;
         list|ls)       cmd_list "$@" ;;

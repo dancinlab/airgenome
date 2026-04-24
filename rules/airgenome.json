@@ -168,8 +168,6 @@
         "hexa-lang/gate/lint.hexa",
         "hexa-lang/gate/post_bash.hexa",
         "hexa-lang/gate/post_edit.hexa",
-        "hexa-lang/gate/claude_statusline.hexa",
-        "hexa-lang/gate/claude_statusline.jq",
         "hexa-lang/gate/claude_harness_pointer.hexa",
         "hexa-lang/gate/commands.json",
         "hexa-lang/gate/enforcement_registry.json",
@@ -186,24 +184,10 @@
         }
       },
       "bootstrap_hook": {
-        "note": "AG10 결정적 부트스트랩 예외 — 단 하나의 글로벌 UserPromptSubmit hook (~/.claude/settings.json). 역할은 단순: 매 user prompt 에 hexa gate/entry.hexa prompt 를 호출해서 [CMD]/[AG10]/[H-*] gate 를 발동시킴. 정책 주입·behavior 변경 없음 — 순수 dispatcher trigger. 프로젝트별 hook·skill 은 여전히 금지. statusLine 예외와 같은 논리 (passive read-only + single pointer).",
+        "note": "AG10 결정적 부트스트랩 예외 — 단 하나의 글로벌 UserPromptSubmit hook (~/.claude/settings.json). 역할은 단순: 매 user prompt 에 hexa gate/entry.hexa prompt 를 호출해서 [CMD]/[AG10]/[H-*] gate 를 발동시킴. 정책 주입·behavior 변경 없음 — 순수 dispatcher trigger. 프로젝트별 hook·skill 은 여전히 금지.",
         "global_pointer": "~/.claude/settings.json#hooks.UserPromptSubmit",
         "dispatcher": "hexa run $HEXA_LANG/gate/entry.hexa prompt \"$USER_PROMPT\"",
         "why_hook_not_append_system_prompt": "--append-system-prompt 은 확률적 (Claude 가 무시 가능). hook 은 Claude Code 가 결정적으로 매 prompt 마다 실행 — AG10 gate 가 빠짐없이 발동."
-      },
-      "statusline_pointer": {
-        "note": "statusLine 은 passive read-only 표시라 AG10 예외 — 단 단일 포인터 (~/.claude/settings.json → $HEXA_LANG/gate/claude_statusline.hexa) 만 허용. 프로젝트별 .claude/settings.json 생성 금지 (AG10 purge 유지). 디스패처는 generic — git rev-parse 로 project root 감지 → <root>/.hook-commands/active.json 읽어 공용 jq 렌더러 ($HEXA_LANG/gate/claude_statusline.jq) 로 렌더. 모든 프로젝트가 동일한 SSOT 스키마만 쓰면 statusLine 자동 동작. idle fallback: '📁 <project> · idle'. 2026-04-21 도입, 같은 날 공용으로 일반화.",
-        "ssot_files": [
-          "hexa-lang/gate/claude_statusline.hexa",
-          "hexa-lang/gate/claude_statusline.jq"
-        ],
-        "global_pointer": "~/.claude/settings.json#statusLine",
-        "project_ssot_schema": {
-          "path": "<project_root>/.hook-commands/active.json",
-          "shape": "{\"stack\":[{\"command\":\"drill|scan|record|smash|free|todo|go|keep|diff|trace|compact|...\",\"seed\":\"<string>\"}, ...]}",
-          "rendering": "top 3 entries with command-icon + seed, joined by ' · ', overflow as ' · +N'",
-          "empty_or_missing": "idle fallback with project basename"
-        }
       }
     },
     {

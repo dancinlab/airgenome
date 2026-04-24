@@ -351,8 +351,6 @@ fn ensure_workspace_commands() -> void {
 // permissions.deny keeps git-push-force as a hard stop — deny takes
 // precedence over bypass.
 //   - env.WS                             resolves $WS-templated commands
-//   - statusLine                         hexa gate claude_statusline_4panel.hexa
-//                                        (override: STATUSLINE_V=legacy → claude_statusline.hexa)
 //   - hooks.UserPromptSubmit             hexa gate claude_prompt_hook.hexa
 //   - hooks.PreToolUse[Bash]             hexa gate bash_allow_hook.hexa
 //   - permissions.defaultMode            bypassPermissions (enforced)
@@ -362,11 +360,6 @@ fn ensure_workspace_commands() -> void {
 fn ensure_claude_bootstrap() -> void {
     let p = env("HOME") + "/.claude/settings.json"
     let ws_abs = env("HOME") + "/core"
-    // STATUSLINE_V: "legacy" → original linear-stack renderer. Anything else
-    // (including unset) → 4-panel renderer per airgenome/docs/statusline_4panel.md.
-    let sl_variant = env("STATUSLINE_V")
-    let sl_file = if sl_variant == "legacy" { "claude_statusline.hexa" } else { "claude_statusline_4panel.hexa" }
-    let sl_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/" + sl_file
     let ups_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/claude_prompt_hook.hexa"
     let ptu_cmd = "$WS/hexa-lang/hexa run $WS/hexa-lang/gate/bash_allow_hook.hexa"
     let shape_path = root() + "/rules/claude_settings_shape.json"
@@ -374,21 +367,20 @@ fn ensure_claude_bootstrap() -> void {
         println("[airgenome-init] ERROR missing SSOT " + shape_path)
         return
     }
-    // SSOT merge: dynamic overlay (env/hooks/statusLine) + static shape
+    // SSOT merge: dynamic overlay (env/hooks) + static shape
     // (permissions.defaultMode + permissions.deny + skipDangerousModePermissionPrompt)
     // loaded from rules/claude_settings_shape.json. --slurpfile wraps the
     // file in a 1-element array so we unwrap with [0] and strip _ssot before
     // use.
     let jq_expr = "($shape_arr[0] | del(._ssot)) as $s |" +
                   "{env:{WS:$ws}," +
-                  "statusLine:{type:\"command\",command:$sl,padding:0}," +
                   "hooks:{" +
                   "UserPromptSubmit:[{hooks:[{type:\"command\",command:$ups}]}]," +
                   "PreToolUse:[{matcher:\"Bash\",hooks:[{type:\"command\",command:$ptu}]}]" +
                   "}," +
                   "permissions:($s.permissions)," +
                   "skipDangerousModePermissionPrompt:$s.skipDangerousModePermissionPrompt}"
-    let jq_args = "--arg ws '" + ws_abs + "' --arg sl '" + sl_cmd + "'" +
+    let jq_args = "--arg ws '" + ws_abs + "'" +
                   " --arg ups '" + ups_cmd + "' --arg ptu '" + ptu_cmd + "'" +
                   " --slurpfile shape_arr '" + shape_path + "'"
     let tmp = p + ".tmp"
@@ -423,7 +415,7 @@ fn ensure_claude_bootstrap() -> void {
     if mv_err != "" {
         println("[airgenome-init] ERROR writing " + p + ": " + mv_err)
     } else {
-        println("[airgenome-init] ~/.claude/settings.json ← rendered whole (env + hooks + statusLine + push-force deny)")
+        println("[airgenome-init] ~/.claude/settings.json ← rendered whole (env + hooks + push-force deny)")
     }
 }
 
