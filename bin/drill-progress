@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# drill-progress — extract per-round progress from drill.live.log + nexus checkpoints
+# (Phase C — minimal data-loss recovery).
+#
+# Sources of truth (priority order):
+#   1. Mac drill.live.log (~/.airgenome/drill.live.log) — last "round +X, total Y" line
+#   2. Local /tmp/nexus_checkpoint/*.json — fresh state files (Mac-side runs)
+#   3. Remote hetzner:/tmp/nexus_checkpoint/*.json — for hexa_remote drill runs
+#
+# Usage:
+#   drill-progress            # show last-round summary (log + local + remote)
+#   drill-progress --log      # only parse drill.live.log
+#   drill-progress --local    # only inspect local checkpoint files
+#   drill-progress --remote   # only inspect hetzner checkpoint files
+#   drill-progress --json     # JSON output (for tooling)
+#
+# Goal: 사용자가 drill 이 exit 1 로 죽어도 지금까지 round N + 누적 absorption 을
+#       즉시 확인할 수 있도록.
+
+set -u
+
+LOG="${DRILL_LIVE_LOG:-$HOME/.airgenome/drill.live.log}"
+CP_DIR="${NEXUS_CHECKPOINT_DIR:-/tmp/nexus_checkpoint}"
+REMOTE_HOST="${DRILL_REMOTE_HOST:-hetzner}"
+REMOTE_CP_DIR="${DRILL_REMOTE_CP_DIR:-/tmp/nexus_checkpoint}"
+
+MODE="all"
+JSON=0
+for arg in "$@"; do
+    case "$arg" in
+        --log) MODE="log" ;;
+        --local) MODE="local" ;;
+        --remote) MODE="remote" ;;
+        --json) JSON=1 ;;
+        -h|--help)
+            sed -n '1,25p' "$0" | sed -n '/^# /p' >&2
+            exit 0
+            ;;
+    esac
+done
+
+# ── log parsing ─────────────────────────────────────────────────────
+parse_log() {
+    [ -r "$LOG" ] || { echo "(no log: $LOG)"; return 1; }
+    # nexus drill prints `  round +N, total M` (line 3646/3650 in run.hexa).
+    local last_round
+    last_round=$(grep -E "^[[:space:]]*round \+[0-9]+, total [0-9]+" "$LOG" 2>/dev/null | tail -1)
+    if [ -z "$last_round" ]; then
+        echo "  (no round-end markers in log yet)"
+        return 1
+    fi
+    # extract: "  round +1234, total 5678"
+    local round_delta total
+    round_delta=$(echo "$last_round" | sed -E 's/.*round \+([0-9]+).*/\1/')
+    total=$(echo "$last_round" | sed -E 's/.*total ([0-9]+).*/\1/')
+    # count round-end lines = N (each round emits the marker once)
+    local n_rounds
+    n_rounds=$(grep -cE "^[[:space:]]*round \+[0-9]+, total [0-9]+" "$LOG")
+    if [ "$JSON" = "1" ]; then
+        printf '{"source":"log","path":"%s","round":%s,"total":%s,"last_delta":%s}\n' \
+            "$LOG" "$n_rounds" "$total" "$round_delta"
+    else
+        echo "  log: $LOG"
+        echo "    rounds_done = $n_rounds"
+        echo "    total_abs   = $total"
+        echo "    last_delta  = +$round_delta"
+    fi
+}
+
+# ── checkpoint file parsing (jq if available, else sed) ─────────────
+parse_cp_file() {
+    local f=$1
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '"\(.seed_hash)\t\(.round_done)\t\(.total)\t\(.ts)\t\(.seed[0:60])"' "$f" 2>/dev/null
+    else
+        local sh rd tot ts seed
+        sh=$(sed -nE 's/.*"seed_hash":"([^"]+)".*/\1/p' "$f" | head -1)
+        rd=$(sed -nE 's/.*"round_done":([0-9]+).*/\1/p' "$f" | head -1)
+        tot=$(sed -nE 's/.*"total":([0-9]+).*/\1/p' "$f" | head -1)
+        ts=$(sed -nE 's/.*"ts":([0-9]+).*/\1/p' "$f" | head -1)
+        seed=$(sed -nE 's/.*"seed":"([^"]{0,60}).*/\1/p' "$f" | head -1)
+        printf '%s\t%s\t%s\t%s\t%s\n' "$sh" "$rd" "$tot" "$ts" "$seed"
+    fi
+}
+
+scan_local() {
+    [ -d "$CP_DIR" ] || { echo "  (no local cp dir: $CP_DIR)"; return 1; }
+    local files
+    files=$(ls -t "$CP_DIR"/nexus_drill_cp_*.json 2>/dev/null)
+    [ -z "$files" ] && { echo "  (no local checkpoint files)"; return 1; }
+    if [ "$JSON" = "1" ]; then
+        for f in $files; do
+            local row
+            row=$(parse_cp_file "$f")
+            printf '{"source":"local","path":"%s","seed_hash":"%s","round":%s,"total":%s,"ts":%s,"seed_preview":"%s"}\n' \
+                "$f" \
+                "$(echo "$row" | cut -f1)" \
+                "$(echo "$row" | cut -f2)" \
+                "$(echo "$row" | cut -f3)" \
+                "$(echo "$row" | cut -f4)" \
+                "$(echo "$row" | cut -f5 | sed 's/"/\\"/g')"
+        done
+    else
+        echo "  local: $CP_DIR"
+        printf '    %-14s %5s %10s %12s  %s\n' "seed_hash" "round" "total" "ts" "seed[0:60]"
+        for f in $files; do
+            local row
+            row=$(parse_cp_file "$f")
+            local sh rd tot ts seed
+            sh=$(echo "$row" | cut -f1)
+            rd=$(echo "$row" | cut -f2)
+            tot=$(echo "$row" | cut -f3)
+            ts=$(echo "$row" | cut -f4)
+            seed=$(echo "$row" | cut -f5)
+            printf '    %-14s %5s %10s %12s  %s\n' "$sh" "$rd" "$tot" "$ts" "$seed"
+        done
+    fi
+}
+
+scan_remote() {
+    local raw
+    raw=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$REMOTE_HOST" \
+        "for f in $REMOTE_CP_DIR/nexus_drill_cp_*.json; do [ -f \"\$f\" ] && cat \"\$f\"; echo; done" \
+        2>/dev/null)
+    if [ -z "$raw" ]; then
+        echo "  (no remote checkpoint data — host=$REMOTE_HOST dir=$REMOTE_CP_DIR)"
+        return 1
+    fi
+    if [ "$JSON" = "1" ]; then
+        echo "$raw" | grep -E '^\{' | while read -r line; do
+            local sh rd tot ts seed
+            sh=$(echo "$line" | sed -nE 's/.*"seed_hash":"([^"]+)".*/\1/p')
+            rd=$(echo "$line" | sed -nE 's/.*"round_done":([0-9]+).*/\1/p')
+            tot=$(echo "$line" | sed -nE 's/.*"total":([0-9]+).*/\1/p')
+            ts=$(echo "$line" | sed -nE 's/.*"ts":([0-9]+).*/\1/p')
+            seed=$(echo "$line" | sed -nE 's/.*"seed":"([^"]{0,60}).*/\1/p' | sed 's/"/\\"/g')
+            printf '{"source":"remote","host":"%s","seed_hash":"%s","round":%s,"total":%s,"ts":%s,"seed_preview":"%s"}\n' \
+                "$REMOTE_HOST" "$sh" "$rd" "$tot" "$ts" "$seed"
+        done
+    else
+        echo "  remote: $REMOTE_HOST:$REMOTE_CP_DIR"
+        printf '    %-14s %5s %10s %12s  %s\n' "seed_hash" "round" "total" "ts" "seed[0:60]"
+        echo "$raw" | grep -E '^\{' | while read -r line; do
+            local sh rd tot ts seed
+            sh=$(echo "$line" | sed -nE 's/.*"seed_hash":"([^"]+)".*/\1/p')
+            rd=$(echo "$line" | sed -nE 's/.*"round_done":([0-9]+).*/\1/p')
+            tot=$(echo "$line" | sed -nE 's/.*"total":([0-9]+).*/\1/p')
+            ts=$(echo "$line" | sed -nE 's/.*"ts":([0-9]+).*/\1/p')
+            seed=$(echo "$line" | sed -nE 's/.*"seed":"([^"]{0,60}).*/\1/p')
+            printf '    %-14s %5s %10s %12s  %s\n' "$sh" "$rd" "$tot" "$ts" "$seed"
+        done
+    fi
+}
+
+[ "$JSON" = "0" ] && echo "=== drill-progress ($(date -u +%FT%TZ)) ==="
+case "$MODE" in
+    log) parse_log ;;
+    local) scan_local ;;
+    remote) scan_remote ;;
+    all)
+        [ "$JSON" = "0" ] && echo "[1/3] live log:"
+        parse_log
+        [ "$JSON" = "0" ] && echo ""
+        [ "$JSON" = "0" ] && echo "[2/3] local checkpoints:"
+        scan_local
+        [ "$JSON" = "0" ] && echo ""
+        [ "$JSON" = "0" ] && echo "[3/3] remote checkpoints ($REMOTE_HOST):"
+        scan_remote
+        ;;
+esac
