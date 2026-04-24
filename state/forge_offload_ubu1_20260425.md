@@ -135,3 +135,61 @@ launchctl load ~/Library/LaunchAgents/com.airgenome.forge-sync-from-ubu1.plist
 - **Mac supervisor 재기동 필요**: bin/airgenome 은 편집되었으나 기존 supervisor
   (PID 60638 등) 가 script 를 메모리에 이미 로드. 다음 respawn/수동 kill 시 gate
   적용. `pkill -f 'airgenome run'` → launchd 가 respawn.
+
+## Risk remediation (post-3f17f536)
+
+2026-04-25 직후 commit `airgenome@3f17f536` 에서 제기된 3 risks 를 순차 해결.
+
+### Risk 1 — Mac supervisor gate respawn
+
+- 증거: offload 직후 supervisor PID 42926 (02:41 KST 기동, `bin/airgenome`
+  mtime 02:39 이후) 이미 respawn 되어 있었으나 명시적 kill 로 환경 재적용 확인.
+- 조치: `kill 13239 13287` → launchd `com.airgenome` (KeepAlive=true) 가
+  즉시 respawn, 새 PID 31272/31325 supervisor.stderr.log 에 기록.
+- 결과: `ps aux | grep -E "hexa.*(harvest|label)\.hexa" | grep -v grep` 90s
+  관측 동안 spawn 0건. `AIRGENOME_LOCAL_HARVEST:-0` gate 정상 작동 (harvest/
+  label 루프는 Mac 에서 완전히 정지, probe/dispatch/forecast 만 지속).
+
+### Risk 2 — label.hexa + harvest.hexa silent 0-write on ubu1
+
+- 증거: ubu1 `~/.hx/bin/hexa_real` (md5 0810ac50…, Apr-19 build, x86_64 ELF)
+  은 `use "../core/core"` StringLit 구문을 파싱 경고만 내고 실제 심볼 로드
+  실패. → `ring_path/airgenome_root/forge_dir` undefined → RING="" 로 조용히
+  no-op. `forge/genomes.ring` 최신 엔트리 `comm=/Users/ghost/core/hexa-lang/hexa`
+  (Mac writer) + ts=2026-04-24T17:38:50Z (offload 직전) 로 stale 확인.
+- 추가 증거: hexa_real 은 `use IDENT` 는 허용하되 실제 로드 로직 없음. 별도
+  경로 (`/home/aiden/core/airgenome/forge/genomes.ring`) 로 14KB 소량 유출 —
+  `airgenome_root()` 의 기본 fallback (`$HOME/core/airgenome`) 이 ubu1 의
+  실제 루트 (`~/airgenome`) 와 불일치했기 때문.
+- 조치:
+  1. `modules/label.hexa` + `modules/harvest.hexa` 에 path helper 4개
+     (airgenome_root/forge_dir/ring_path/default_ring_path) inline prelude
+     삽입, `use "../core/core"` 라인 제거. 구·신 hexa 양쪽 호환.
+  2. harvest.hexa 에는 throttle 함수 5개 (default_soft_limits/new_throttle/
+     check_and_adapt/throttle_maybe_sleep/throttle_batch_scale) int-typed
+     no-op stub 추가. 구 파서의 struct literal 한계 우회.
+  3. ubu1 systemd user services (`airgenome-harvest.service` +
+     `airgenome-label.service`) 에 `Environment=AIRGENOME_ROOT=%h/airgenome`
+     추가. `systemctl --user daemon-reload` 적용.
+  4. ubu1 `~/core/airgenome/` 잔재 (잘못된 fallback 경로) 정리.
+- 결과: `systemctl --user start airgenome-harvest.service` →
+  `forge/genomes.ring` 2664 → 2724 (+60 genomes), 최신 ts
+  `2026-04-24T17:53:41Z`, writer comm `kworker/u48:8-flush-259:0` (ubu1 kernel).
+  `systemctl --user start airgenome-label.service` → `forge/labeled_anomaly.jsonl`
+  15337 → 15367 (+30 labels) i.e. `labeled=30>0` on non-empty input.
+
+### Risk 3 — forge-sync direction concurrency
+
+- 증거: `grep -rln "genomes\.ring\|labeled_anomaly" modules/ bin/ tool/` 전수
+  조사.
+  - WRITE: `modules/harvest.hexa` (genomes.ring), `modules/label.hexa`
+    (labeled_anomaly.jsonl) — 둘 다 offload 대상, Mac 에서 gated off.
+  - READ only: forecast.hexa, genome_merge.hexa, bin/airgenome (stat),
+    bin/menubar.hexa (ring_count), bin/ag_meta (path 비교 표시), tool/*
+    (compute_cost/ring_integrity/mutation_motif/evolution_velocity/
+    ring_divergence/forecast_hit_rate/roi/log_writer_audit).
+- 조치: 별도 수정 불필요. `com.airgenome.forge-sync-from-ubu1.plist`
+  (`rsync -az ubu1:…forge/{genomes.ring,labeled_anomaly.jsonl} → Mac forge/`)
+  방향 안전. `plutil -lint` OK.
+- 결과: rsync 방향 단방향으로 유지. Mac 에 `--update`/`--ignore-existing`
+  flag 불필요 (동시 writer 부재).

@@ -9,14 +9,31 @@
 //   3. match → forge/labeled_anomaly.jsonl 에 append (host 보존)
 //
 // 제약:
-//   - use "../core/core" 만
+//   - core/core.hexa 의존 — 과거 `use "../core/core"` 로 불러왔으나 구(舊)
+//     hexa_real (Linux Apr-19 빌드) 는 StringLit 인자 형태의 use 를 파싱만 경고하고
+//     실제 심볼을 로드하지 않아 airgenome_root()/ring_path() 등이 undefined 가 되어
+//     label=0, forge/labeled_anomaly.jsonl 업데이트 실패 현상이 발생. 본 모듈은
+//     이 문제를 회피하기 위해 core.hexa 의 path helper 4개를 인라인 prelude 로
+//     내장한다. Mac 쪽 신형 hexa 에서도 동일하게 동작 (use 제거로 중복 정의 회피).
 //   - 하드코딩 금지 — 모든 임계치/라벨은 label_rules.jsonl SSOT
 //   - try/catch 미사용
 //
 // 라벨 (예시 rule, 확장 가능):
 //   CPU_SPIKE / MEM_LEAK / FORK_BOMB / IO_STORM / GPU_HOG / REMOTE_CPU_SPIKE
 
-use "../core/core"
+// ── inline prelude (core/core.hexa 의 runtime-paths 블록 동형) ──────────────
+fn airgenome_root() -> str {
+    let custom = env("AIRGENOME_ROOT")
+    if custom != "" { return custom }
+    return env("HOME") + "/core/airgenome"
+}
+fn forge_dir() -> str { return airgenome_root() + "/forge" }
+fn ring_path(name: str) -> str { return forge_dir() + "/" + name }
+fn default_ring_path() -> str {
+    let n = env("AIRGENOME_RING_NAME")
+    if n != "" { return ring_path(n) }
+    return ring_path("genomes.ring")
+}
 
 let RING = default_ring_path()
 let RULES = airgenome_root() + "/config/label_rules.jsonl"

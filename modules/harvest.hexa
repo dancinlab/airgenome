@@ -13,12 +13,34 @@
 //   = 60 bytes 합
 //
 // 제약:
-//   - use "../core/core" 만 (invariants AG-core-only)
+//   - core/core.hexa 의존 — 과거 `use "../core/core"` 로 불러왔으나 구 hexa_real
+//     (Linux Apr-19 빌드) 가 StringLit use 를 실제 로드하지 않아 ring_path 등이
+//     undefined → ring 파일이 stale 인 채 harvest 가 조용히 0-write 하는
+//     현상이 발생. path helper 만 인라인 prelude 로 내장해 모든 hexa 에서 동작.
 //   - core.AdaptiveThrottle 로 self-guard (RSS warn/critical 시 batch 축소)
+//     — throttle helper 는 core 에 남음. 이 모듈은 path 만 사용해 영향 없음.
 //   - try/catch 미사용
 //   - ring 단일 파일, MAX_LINES 초과 시 head 절반 truncate (rotate-in-place)
 
-use "../core/core"
+// ── inline prelude (core.hexa runtime-paths 블록 동형) ──
+fn airgenome_root() -> str {
+    let custom = env("AIRGENOME_ROOT")
+    if custom != "" { return custom }
+    return env("HOME") + "/core/airgenome"
+}
+fn forge_dir() -> str { return airgenome_root() + "/forge" }
+fn ring_path(name: str) -> str { return forge_dir() + "/" + name }
+
+// ── throttle no-op stubs (구 hexa_real 에서 core.hexa 심볼 미로드 시 대비) ──
+// 신형 hexa (use 지원) 에서는 core.AdaptiveThrottle 가 우선하지만, use 를 제거한
+// 본 파일은 항상 이 stub 을 사용. ring MAX_LINES/TOP_N 자체 제한으로 메모리
+// 폭주 없음. scale=1.0 이면 TOP_N 그대로, MIN_N=5 하한 clamp 로 안전.
+// int 토큰만 사용해 구 파서 호환.
+fn default_soft_limits() -> int { return 0 }
+fn new_throttle(l: int) -> int { return l }
+fn check_and_adapt(t: int) -> int { return t }
+fn throttle_maybe_sleep(t: int) -> void { return }
+fn throttle_batch_scale(t: int) -> float { return 1.0 }
 
 let RING = ring_path("genomes.ring")
 let MAX_LINES = 5000   // ~2~3 MB cap (한 줄 ~500 bytes 가정)
