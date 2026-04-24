@@ -1,0 +1,15 @@
+#!/bin/bash
+# drill-live — nexus drill with always-tail-able live log
+# Usage: drill-live --seed '...' [other nexus drill args]
+# Log: ~/.airgenome/drill.live.log (overwrites each invocation)
+# Watch from another terminal: tail -F ~/.airgenome/drill.live.log
+set -u
+LOG="${DRILL_LIVE_LOG:-$HOME/.airgenome/drill.live.log}"
+mkdir -p "$(dirname "$LOG")"
+echo "=== drill-live started: $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" > "$LOG"
+echo "  args: $*" >> "$LOG"
+echo "  pid:  $$" >> "$LOG"
+echo "  log:  $LOG" >&2
+echo "  watch: tail -F $LOG" >&2
+# stdbuf -oL -eL = line-buffered so tee flushes per line for live tail
+exec stdbuf -oL -eL ~/.hx/bin/nexus drill "$@" 2>&1 | stdbuf -oL tee -a "$LOG"
