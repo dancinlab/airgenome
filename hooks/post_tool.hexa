@@ -211,3 +211,13 @@ fn main() -> void {
     println(out)
     exit(0)
 }
+
+// BEGIN roadmap_watcher_hook — raw#15 live-doc (auto-installed)
+fn _roadmap_watcher_trigger() -> void {
+    // Best-effort: if the recent Bash tool output mentions `git commit`,
+    // trigger the watcher so the snapshot file reflects the new state.
+    let _ = exec("nohup " + env("HOME") +
+                 "/.hx/bin/hexa run " + env("HOME") +
+                 "/core/hexa-lang/tool/roadmap_watcher.hexa >/dev/null 2>&1 &")
+}
+// END roadmap_watcher_hook
