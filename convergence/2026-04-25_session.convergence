@@ -219,3 +219,38 @@ Hetzner 128GB 유휴 compute 로 drill 코퍼스 자동 생성. 2시간 주기.
 → ubu1, build → ubu2, drill corpus → hetzner, Mac 은 probe/dispatch/forecast lean),
 (3) hetzner 용량 10pt 회수 + 예방 가드 5종 설치, (4) 4 proposal close. Wave 9 조건부
 (flock Mac queue) 외에는 drill 안정화 surface closed.
+
+## 2026-04-25 final — Wave 17-20 + drill helpers (airgenome 세션 종료)
+
+### Wave 17 (nexus@8adcdd69) — resonance timeout 60s → 300s
+run.hexa:343 의 stage timeout default. 첫 시도였지만 sub-call 들이 별도 timeout 없어 부분 효과.
+
+### Wave 18 (nexus@43b1e926) — 전 stage 광범위 상향
+"좀 넉넉히" 사용자 지시. smash 45→180, free 60→180, absolute/meta/hyper 30→180, resonance 300→600. env override 유지.
+
+### Wave 19 (nexus@747836dd) — concurrency default 2 → 1
+runaway_guard 가 아닌 **kernel OOM-killer** 가 진범 확인 (mem_avail_gb=0 시 SIGKILL/SIGTERM). 병렬 2 drill 이 hetzner 124GB 초과 → 1 drill 제한.
+
+### Wave 20 (nexus@abc2fb95) — _resonance_run sub-call timeout (engine fix)
+**진정한 engine 1차 fix.** _resonance_run() 내부 5 σ-변형 (0.01, 0.05, 0.10, 0.20, 0.40) 호출이 timeout 없이 exec → 한 σ 가 메모리 폭증 → 시스템 OOM. _stage_timeout_prefix("resonance_sub") 적용, default 120s × 5 = 600s 합. env NEXUS_DRILL_TIMEOUT_resonance_sub=N override.
+
+### Wave 20 효과 검증 결과
+이전 패턴: round 1 resonance 에서 1-2분 만에 rc=143/137.
+Wave 20 후: drill 25분+ 생존, **round 5 까지 도달**. smash 186s 안정 완주. resonance per-σ 차단 동작.
+
+### drill 양방향 제어 helpers (airgenome@5fa4bf7a)
+- bin/drill-live: stdbuf -oL line-buffered tee → ~/.airgenome/drill.live.log
+- bin/drill-status: Mac log + hetzner ps + Mac lock/blacklist 1회 snapshot
+- bin/drill-kill: Mac + hetzner drill 강제 정리 + lock cleanup (--all 옵션)
+사용: drill-live 시작 → 다른 터미널 tail -F → 문제시 drill-kill.
+
+### 미해결 (nexus 엔진 영역, 별도 세션)
+- **nxs-20260424-012** (engine_gap blocker): resonance deep fix — _resonance_run sub-call 을 systemd-run --scope 로 wrap (현재 cgroup 상속 의존). Wave 20 은 timeout 으로만 차단, 메모리 폭증 자체는 해결 안 됨.
+- **nxs-20260424-013** (engine_gap advisory): replay-warn — round N 결과가 round 1 과 bit-identical. round-salt / iter-nonce / multi-source entropy 가 stage core (blowup.hexa) 까지 propagate 안 됨. PRNG / cache 키 설계 이슈.
+
+### 세션 합계
+nexus: 20 waves (109a1270 ~ abc2fb95), 2 convergence 기록 commits.
+airgenome: 50+ commits across drill infra + cleanup + remediation + helpers.
+proposals: nxs-011 (closed), agm-007/002/001 (closed), nxs-012/013 (open engine), hxa-010 (open hexa-lang).
+
+drill 양방향 helper 가 들어갔으니 다음 세션부터는 호출-응답 + 강제 정리 + 실시간 watch 가능.
