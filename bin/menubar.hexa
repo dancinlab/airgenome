@@ -284,15 +284,6 @@ let mut spark_ubu = []
 let mut spark_ubu2 = []
 let mut spark_htz = []
 
-// ───── launcher-shared state (ObjC launcher 경로용) ──────────────
-// menubar_setup() 이 채우고 menubar_tick() 이 재사용. 기존 main() 도 로컬 대신
-// 이 globals 를 쓰면 두 경로(직접 exec / ObjC launcher) 가 일관.
-// g_item 은 *Void (NSStatusItem*) — any 로 받아 FFI msg_send 에 그대로 전달.
-let mut g_item: any = 0
-let mut g_prev_sig = ""
-let mut g_prev_level = ""
-let mut g_prev_compute = ""
-
 fn spark_push(buf: any, v: int) -> any {
     let nb = buf + [v]
     let cap = cfg_spark_cap
@@ -445,86 +436,13 @@ fn post_notification(title: str, subtitle: str, info: str) -> void {
     msg1(center, sel("deliverNotification:"), note)
 }
 
-// ───── ObjC launcher 경로 (NSApplicationMain + NSTimer) ─────────
-// menubar_setup(): launcher 의 applicationDidFinishLaunching 에서 호출. NSApp
-// 은 launcher 가 이미 생성 — 여기서는 statusItem 만. g_item 전역에 저장.
-// menubar_tick(): launcher NSTimer 가 tick 당 호출. main 루프 body 와 동일.
-
-// set_item_ptr — ObjC launcher 가 NSStatusItem* 를 int64 로 캐스팅해 전달.
-// hexa 쪽이 HexaVal struct layout 에 의존하지 않고 안전하게 주입받는 경로.
-fn set_item_ptr(p: int) -> void {
-    g_item = p
-}
-
-// NOTE (2026-04-24, #2 부분성공): ObjC launcher 가 NSStatusItem 을 만들어
-// menubar 에 성공적으로 register — 하지만 여기 hexa FFI 경로에서 msg0 호출이
-// 0 반환/SIGSEGV. ObjC launcher context 하에서 hexa_ffi_dlsym("objc_msgSend")
-// 가 올바른 심볼을 찾지 못하는 것으로 추정 (autogen_main 의 dlsym 초기화가
-// launcher main 에서 직접 호출된 경우 runtime state 충돌 가능성).
-// 현재 launcher 는 이 함수를 호출하지 않음 (주석처리) — ObjC 단독으로 기본
-// menubar 만 렌더. 이 refactor 는 FFI 이슈 해결 후 activation 예정.
-fn menubar_setup() -> void {
-    let _fr = ensure_config_exists()
-    load_config()
-    cfg_mtime_cached = config_mtime()
-
-    let item = g_item
-
-    refresh_snapshot()
-    spark_mac = spark_push(spark_mac, snap_mac_pct)
-    spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
-    spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
-    spark_htz = spark_push(spark_htz, snap_htz_pct)
-    let _hb0 = exec("touch '" + HEARTBEAT_PATH + "' 2>/dev/null")
-
-    let button = msg0(item, sel("button"))
-    if button != 0 { msg1(button, sel("setAttributedTitle:"), compose_title_attr()) }
-    msg1(item, sel("setMenu:"), build_menu())
-
-    g_prev_sig = state_signature()
-    g_prev_level = snap_level
-    g_prev_compute = snap_compute
-}
-
-fn menubar_tick() -> void {
-    let mt = config_mtime()
-    if mt != cfg_mtime_cached {
-        load_config()
-        cfg_mtime_cached = mt
-        println("airgenome menubar: config reloaded")
-    }
-
-    refresh_snapshot()
-    spark_mac = spark_push(spark_mac, snap_mac_pct)
-    spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
-    spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
-    spark_htz = spark_push(spark_htz, snap_htz_pct)
-
-    let _hb = exec("touch '" + HEARTBEAT_PATH + "' 2>/dev/null")
-
-    if snap_level != g_prev_level {
-        post_notification("airgenome",
-            "throttle " + g_prev_level + " → " + snap_level,
-            "pred cpu=" + snap_pred_cpu + "% ram=" + snap_pred_ram + "%")
-        g_prev_level = snap_level
-    }
-    if snap_compute != g_prev_compute && snap_compute != "" {
-        post_notification("airgenome",
-            "dispatch target " + g_prev_compute + " → " + snap_compute, "")
-        g_prev_compute = snap_compute
-    }
-
-    let btn = msg0(g_item, sel("button"))
-    if btn != 0 { msg1(btn, sel("setAttributedTitle:"), compose_title_attr()) }
-
-    let sig = state_signature()
-    if sig != g_prev_sig {
-        msg1(g_item, sel("setMenu:"), build_menu())
-        g_prev_sig = sig
-    }
-}
-
 // ───── main loop ────────────────────────────────────────────────
+// NOTE (2026-04-24 V5): menubar UI 는 bin/menubar_launcher.m (ObjC) 가 담당.
+// 이 fn main() 은 더 이상 정상 진입 경로가 아님 — hexa_v2 가 emit 하는
+// `int main` 은 build_menubar.sh 의 perl post-process 가 `hexa_autogen_main`
+// 으로 rename + `u_main();` 호출 제거 → init only. 본 fn main() body 는
+// 1) `hexa run bin/menubar.hexa` 로 직접 인터프리터 실행 시 (FFI 미작동) 만
+//    의미 있고 2) build_menubar.sh 의 일관 transpile 을 위해 보존.
 fn main() -> void {
     // [Phase 0] config 부트
     let first_run = ensure_config_exists()

@@ -14,15 +14,15 @@ if [ ! -x "$BIN_SRC" ] || [ "$ROOT/bin/menubar.hexa" -nt "$BIN_SRC" ]; then
     "$ROOT/bin/build_menubar.sh"
 fi
 
-# 1.5. 강제 harness gate — 테스트 실패시 bundle 생성 중단
-echo "[2/4] test_menubar — 강제 gate (AIRGENOME_MENUBAR_TEST=1)"
+# 1.5. 강제 harness gate — V5 (ObjC launcher) 스모크: heartbeat refresh 검증.
+echo "[2/5] test_menubar smoke gate"
 if ! "$ROOT/bin/test_menubar.sh" "$BIN_SRC"; then
     echo "❌ harness FAIL — bundle/deploy 중단" >&2
     exit 1
 fi
 
 # 2. .app bundle 구조 생성
-echo "[3/4] bundle → $APP"
+echo "[3/5] bundle → $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -50,9 +50,31 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 # 3. ad-hoc codesign (macOS Gatekeeper 허용)
-echo "[4/4] codesign --force --deep -s -"
+echo "[4/5] codesign --force --deep -s -"
 codesign --force --deep --sign - "$APP" 2>&1 | tail -3 || true
 xattr -cr "$APP" 2>/dev/null || true
+
+# 4. /Applications/Airgenome.app 으로 deploy + launchd 재bootstrap.
+# DEPLOY=skip 환경변수로 bypass 가능 (CI / hexa 단독 검증 등).
+if [ "${DEPLOY:-do}" = "skip" ]; then
+    echo "[5/5] deploy SKIP (DEPLOY=skip)"
+else
+    echo "[5/5] deploy → /Applications + launchd rebootstrap"
+    DEST="/Applications/Airgenome.app"
+    pkill -9 -f "$DEST" 2>/dev/null || true
+    sleep 1
+    rm -rf "$DEST"
+    cp -R "$APP" "$DEST"
+    # cp 후 bundle hash 가 변하므로 destination 에서 재서명 필요.
+    codesign --force --deep --sign - "$DEST" 2>&1 | tail -1 || true
+    UID_=$(id -u)
+    AGENT="$HOME/Library/LaunchAgents/com.airgenome.menubar.plist"
+    if [ -f "$AGENT" ]; then
+        launchctl bootout "gui/$UID_/com.airgenome.menubar" 2>/dev/null || true
+        sleep 1
+        launchctl bootstrap "gui/$UID_" "$AGENT" 2>/dev/null || true
+    fi
+fi
 
 echo "✅ built: $APP"
 ls -la "$APP/Contents/MacOS/"

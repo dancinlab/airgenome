@@ -94,6 +94,34 @@ cp config/launchd/com.airgenome.meta_continuous_scan.plist ~/Library/LaunchAgent
 launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.airgenome.meta_continuous_scan.plist
 ```
 
+## Menubar (V5, ObjC launcher)
+
+macOS menubar 가 meta-evolution 의 관찰자 UI surface (Ω fixpoint + host bars).
+
+**구조 (2026-04-24)**
+- `bin/menubar_launcher.m` — ObjC NSApplicationMain 진입. `[NSApp run]` 로
+  LaunchServices/WindowServer 정상 check-in. NSStatusItem 생성 + NSTimer(5s)
+  로 `state/*.json` 직접 read → title `▃ ▂▁▂` (mac/ubu1/ubu2/htz bars,
+  부하별 green/yellow/red) + dropdown menu (Ω closure, throttle, hosts).
+- `bin/menubar.hexa` — hexa 진입은 `hexa_autogen_main` (init only). 본 main
+  은 dead path (V4 호환 보존).
+- `bin/build_menubar.sh` — hexa_v2 transpile → C → perl post-process (FFI
+  TAG_STR marshalling 보정, u_main 호출 제거) → ObjC launcher 와 link.
+- `bin/build_app.sh` — bundle 생성 + adhoc codesign + (DEPLOY=do 기본)
+  /Applications/Airgenome.app 자동 deploy + launchd rebootstrap.
+- `bin/test_menubar.sh` — V5 스모크 게이트 (binary spawn → heartbeat refresh).
+- `scanners/menubar_liveness.meta.hexa` — heartbeat age threshold 60s 로 UI
+  liveness 자가 관찰. `ag_meta dsl` 자동 수집.
+- `airgenome menubar` (run.hexa) — launchd agent ensure (bootstrap if 미실행).
+
+```bash
+bin/build_app.sh                  # 빌드 + codesign + deploy + 재기동
+DEPLOY=skip bin/build_app.sh      # 빌드만 (deploy/launch 생략)
+bin/test_menubar.sh               # 스모크 (Aqua 세션이면 heartbeat 검증)
+airgenome menubar                 # launchd ensure
+airgenome doctor                  # menubar liveness 포함 6 체크
+```
+
 ## Archive
 
 v1 의 모든 코드는 [`archive/v1/`](archive/v1/) 에 동결. 부활 절차는 [`archive/v1/README.md`](archive/v1/README.md).

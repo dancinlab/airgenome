@@ -71,7 +71,20 @@ state/history/
 .hook-dispatch.jsonl
 .hook-watch.stdout.log
 .hook-watch.stderr.log
+.hook-watch.*.bak-*
 .hook-advice.md
+.hook-advice.ready.md
+.hook-ui-title
 .hook-ui-title.sh
+.hook-verdict-queue.jsonl
 .hook-commands/
 hooks/.hook-audit
+
+# menubar V5 runtime (touched every tick, not source-of-truth)
+state/menubar_heartbeat
+state/cross_repo_links.jsonl
+
+# scratch files (top-level one-off debug)
+.raw
+/b
+/baseline
