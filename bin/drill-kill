@@ -1,45 +1,121 @@
 #!/bin/bash
-# drill-kill — Mac 측 nexus drill + 원격 hetzner drill + lock/blacklist 강제 정리
-# Usage: drill-kill [--all]    (--all: ubu1/ubu2 도 정리)
+# drill-kill — Mac + remote drill cleanup. covers hexa_real / hexa_stage0 chain.
+# Usage:
+#   drill-kill                   drill 만 청소 (supervisor/runaway/drilld 보존)
+#   drill-kill --all             ubu1/ubu2 도 포함
+#   drill-kill --zombie          단독 hexa_real / hexa_stage0 좀비도 kill
+#   drill-kill --protect <pat>   추가 보호 패턴 (정규식, 반복 가능)
+#   drill-kill --dry-run         kill 안 하고 후보만 표시
 set -u
-ALL=0
-[ "${1:-}" = "--all" ] && ALL=1
+ALL=0; ZOMBIE=0; DRY=0
+EXTRA_PROTECT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --all) ALL=1 ;;
+    --zombie) ZOMBIE=1 ;;
+    --dry-run) DRY=1 ;;
+    --protect) shift; EXTRA_PROTECT="${EXTRA_PROTECT}|$1" ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
 
-echo "=== killing Mac-side nexus drill ==="
-pkill -f "nexus drill --seed" 2>/dev/null && echo "  pkilled nexus drill" || echo "  (no Mac drill found)"
-pkill -f "drill-live" 2>/dev/null
-pkill -f "hexa_remote.*run.hexa" 2>/dev/null
-sleep 1
+# 보호 패턴 — 절대 kill 금지 (drill 외 데몬/감시자/supervisor)
+PROTECT_RE='runaway_guard\.hexa|nexus_drilld\.hexa|airgenome run|/\.hx/bin/hexa[^/]*$'
+[ -n "$EXTRA_PROTECT" ] && PROTECT_RE="${PROTECT_RE}${EXTRA_PROTECT}"
+
+# drill chain 패턴 — kill 대상 (active drill)
+DRILL_RE='hexa_real .*(drill|blowup|blowup_core|run\.hexa)|hexa_stage0 .*(blowup|run\.hexa)|nexus drill --seed|drill-live|hexa_remote.*run\.hexa'
+# 좀비 패턴 — --zombie 시 추가 (단독 hexa_real/stage0, drill 키워드 없는 것)
+ZOMBIE_RE='hexa_real( |$)|hexa_stage0( |$)'
+
+remote_kill() {
+  local host="$1"
+  ssh -o ConnectTimeout=5 -o BatchMode=yes "$host" "
+    DRILL_RE='$DRILL_RE'
+    PROTECT_RE='$PROTECT_RE'
+    ZOMBIE_RE='$ZOMBIE_RE'
+    ZOMBIE=$ZOMBIE
+    DRY=$DRY
+    BEFORE=\$(free -m 2>/dev/null | awk '/Mem:/{print \$3\"M used / \"\$2\"M\"}')
+    declare -a ACTIVE PROTECTED ZOMB
+    while IFS= read -r line; do
+      pid=\$(echo \"\$line\" | awk '{print \$1}')
+      cmd=\$(echo \"\$line\" | cut -d' ' -f2-)
+      [ -z \"\$pid\" ] && continue
+      if echo \"\$cmd\" | grep -Eq \"\$PROTECT_RE\"; then
+        PROTECTED+=(\"\$pid \$cmd\"); continue
+      fi
+      if echo \"\$cmd\" | grep -Eq \"\$DRILL_RE\"; then
+        ACTIVE+=(\"\$pid \$cmd\")
+      elif [ \"\$ZOMBIE\" = \"1\" ] && echo \"\$cmd\" | grep -Eq \"\$ZOMBIE_RE\"; then
+        ZOMB+=(\"\$pid \$cmd\")
+      fi
+    done < <(ps axo pid=,args= | grep -E 'hexa_real|hexa_stage0|nexus drill|drill-live|hexa_remote' | grep -v grep)
+    echo \"  [host=\$(hostname -s)] before: \$BEFORE\"
+    if [ \${#ACTIVE[@]} -gt 0 ]; then
+      echo \"  active drill (\${#ACTIVE[@]}):\"
+      for e in \"\${ACTIVE[@]}\"; do echo \"    \$e\" | cut -c1-140; done
+    fi
+    if [ \${#ZOMB[@]} -gt 0 ]; then
+      echo \"  zombie (\${#ZOMB[@]}):\"
+      for e in \"\${ZOMB[@]}\"; do echo \"    \$e\" | cut -c1-140; done
+    fi
+    if [ \${#PROTECTED[@]} -gt 0 ]; then
+      echo \"  protected (\${#PROTECTED[@]}, kept):\"
+      for e in \"\${PROTECTED[@]}\"; do echo \"    \$e\" | cut -c1-140; done
+    fi
+    K=0
+    if [ \"\$DRY\" != \"1\" ]; then
+      for e in \"\${ACTIVE[@]}\" \"\${ZOMB[@]}\"; do
+        p=\$(echo \"\$e\" | awk '{print \$1}')
+        kill -9 \"\$p\" 2>/dev/null && K=\$((K+1))
+      done
+    fi
+    AFTER=\$(free -m 2>/dev/null | awk '/Mem:/{print \$3\"M used / \"\$2\"M\"}')
+    echo \"  killed: \$K  after: \$AFTER\"
+  " 2>&1
+}
+
+echo "=== [Mac] local cleanup ==="
+MAC_HITS=0
+for re in "nexus drill --seed" "drill-live" "hexa_remote.*run\.hexa"; do
+  pids=$(pgrep -f "$re" 2>/dev/null || true)
+  for p in $pids; do
+    cmd=$(ps -o command= -p "$p" 2>/dev/null || true)
+    if echo "$cmd" | grep -Eq "$PROTECT_RE"; then
+      echo "  protected: $p $cmd" | cut -c1-140
+      continue
+    fi
+    if [ "$DRY" = "1" ]; then
+      echo "  would-kill: $p $cmd" | cut -c1-140
+    else
+      kill -9 "$p" 2>/dev/null && MAC_HITS=$((MAC_HITS+1))
+    fi
+  done
+done
+echo "  Mac killed: $MAC_HITS"
 
 echo ""
-echo "=== killing hetzner drill processes ==="
-ssh -o ConnectTimeout=5 hetzner '
-  K=0
-  for p in $(ps axo pid,cmd | grep -E "hexa_real run.*(drill|blowup)" | grep -v grep | awk "{print \$1}"); do
-    kill -9 "$p" 2>/dev/null && K=$((K+1))
-  done
-  echo "  killed: $K processes"
-  free -h | head -2
-' 2>&1 | head -8
+echo "=== [hetzner] ==="
+remote_kill hetzner | head -40
 
 if [ "$ALL" = "1" ]; then
   for h in ubu1 ubu2; do
     echo ""
-    echo "=== killing $h drill processes ==="
-    ssh -o ConnectTimeout=5 -o BatchMode=yes "$h" '
-      K=0
-      for p in $(ps axo pid,cmd | grep -E "hexa_real run.*(drill|blowup)" | grep -v grep | awk "{print \$1}"); do
-        kill -9 "$p" 2>/dev/null && K=$((K+1))
-      done
-      echo "  killed: $K"
-    ' 2>&1 | head -3
+    echo "=== [$h] ==="
+    remote_kill "$h" | head -40
   done
 fi
 
 echo ""
 echo "=== Mac state cleanup ==="
-rm -rf /tmp/nexus_heavy_dispatch.slot*.lock 2>/dev/null && echo "  locks: cleared"
-rm -f /tmp/hexa_remote.blacklist.* 2>/dev/null && echo "  blacklists: cleared"
+if [ "$DRY" != "1" ]; then
+  rm -rf /tmp/nexus_heavy_dispatch.slot*.lock 2>/dev/null && echo "  locks: cleared"
+  rm -f /tmp/hexa_remote.blacklist.* 2>/dev/null && echo "  blacklists: cleared"
+else
+  echo "  (dry-run: skipped)"
+fi
 
 echo ""
-echo "✅ done. drill-status 로 확인 가능."
+echo "done. drill-status 로 확인."
