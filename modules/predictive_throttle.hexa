@@ -30,6 +30,11 @@ let MAX_HISTORY = 30           // 마지막 30 sample (~ 30분 if 60s 주기)
 let HORIZON_STEPS = 1          // 1-step ahead = 60s ahead
 let CPU_PRED_CRIT = 80         // pred_cpu > 80 → throttle
 let RAM_PRED_CRIT = 75         // pred_ram > 75 → throttle
+// [2026-04-24 fix #3] Reactive guard — Holt 예측이 history lag 으로 spike 미감지하는
+// 케이스 (예: 외부 컴파일러 chain 이 갑자기 96%×2 = 192% 점유) 대응. 현재 표본
+// (cur_cpu/cur_ram) 이 이미 임계 초과면 prediction 무시하고 즉시 발화.
+let CPU_REACTIVE_CRIT = 80     // cur_cpu > 80 → 즉시 throttle (reactive)
+let RAM_REACTIVE_CRIT = 80     // cur_ram > 80 → 즉시 throttle (reactive)
 let TTL_SEC = 90               // throttle 발화 후 90s 유지 → 자동 만료
 
 let ALPHA_NUM = 50
@@ -174,21 +179,21 @@ fn run_throttle() -> int {
     let mut pred_ram = 0
     if to_string(pred_ram_raw) != "void" { pred_ram = pred_ram_raw }
 
-    // 3. 임계 검사
-    if pred_cpu <= CPU_PRED_CRIT {
-        if pred_ram <= RAM_PRED_CRIT {
-            write_state("CALM", 0, pred_cpu, pred_ram, "none")
-            println("predictive_throttle: CALM (pred cpu=" + to_string(pred_cpu) + " ram=" + to_string(pred_ram) + ")")
-            return 0
-        }
+    // 3. 임계 검사 — predicted OR current 둘 중 하나라도 초과 시 발화.
+    let pred_over = pred_cpu > CPU_PRED_CRIT || pred_ram > RAM_PRED_CRIT
+    let cur_over  = cur_cpu  > CPU_REACTIVE_CRIT || cur_ram > RAM_REACTIVE_CRIT
+    if !pred_over && !cur_over {
+        write_state("CALM", 0, pred_cpu, pred_ram, "none")
+        println("predictive_throttle: CALM (pred cpu=" + to_string(pred_cpu) + " ram=" + to_string(pred_ram) + " cur cpu=" + to_string(cur_cpu) + ")")
+        return 0
     }
 
-    // 4. 발화 — bootout + state 기록
+    // 4. 발화 — bootout + state 기록. reason 에 trigger 종류 기록.
     let booted = gentle_bootout_mac()
     let until = ts_epoch() + TTL_SEC
-    write_state("THROTTLE", until, pred_cpu, pred_ram, "bootout=" + to_string(booted))
-    println("predictive_throttle: 🔴 THROTTLE (pred cpu=" + to_string(pred_cpu)
-          + " ram=" + to_string(pred_ram) + ") — booted_out=" + to_string(booted)
+    let trigger = if cur_over { "reactive cur cpu=" + to_string(cur_cpu) + " ram=" + to_string(cur_ram) } else { "predictive cpu=" + to_string(pred_cpu) + " ram=" + to_string(pred_ram) }
+    write_state("THROTTLE", until, pred_cpu, pred_ram, trigger + " bootout=" + to_string(booted))
+    println("predictive_throttle: 🔴 THROTTLE (" + trigger + ") booted_out=" + to_string(booted)
           + " until_epoch=" + to_string(until))
     return booted
 }
