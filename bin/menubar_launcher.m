@@ -150,20 +150,8 @@ static NSColor *pctColor(int pct) {
     return s;
 }
 
-- (NSString *)levelIcon:(NSString *)lvl {
-    if ([lvl isEqualToString:@"CALM"]) return @"🟢";
-    if ([lvl isEqualToString:@"WARM"]) return @"🟡";
-    if ([lvl isEqualToString:@"STRESS"]) return @"🔴";
-    if ([lvl isEqualToString:@"THROTTLE"]) return @"🟠";
-    return @"⚫";
-}
-
 - (NSAttributedString *)composeTitle:(NSDictionary *)s {
     NSMutableAttributedString *out = [[NSMutableAttributedString alloc] initWithString:@""];
-    NSString *lvl = s[@"throttle_level"] ?: @"?";
-    [out appendAttributedString:[[NSAttributedString alloc]
-                                 initWithString:[NSString stringWithFormat:@"%@ ", [self levelIcon:lvl]]]];
-
     int mac = [s[@"mac_cpu"] intValue];
     int ubu1 = [s[@"ubu1_pct"] intValue];
     int ubu2 = [s[@"ubu2_pct"] intValue];
@@ -187,10 +175,6 @@ static NSColor *pctColor(int pct) {
 
 - (NSMenu *)buildMenu:(NSDictionary *)s {
     NSMenu *m = [[NSMenu alloc] initWithTitle:@""];
-
-    [[m addItemWithTitle:@"Legend:  🟢 CALM   🟡 WARM   🔴 STRESS   ⚫ unknown"
-                  action:nil keyEquivalent:@""] setEnabled:NO];
-    [m addItem:[NSMenuItem separatorItem]];
 
     NSString *thrLine = [NSString stringWithFormat:@"Throttle:  %@   pred cpu=%@%%  ram=%@%%",
                          s[@"throttle_level"] ?: @"?",
