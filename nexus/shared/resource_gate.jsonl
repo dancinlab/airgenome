@@ -1,7 +1,7 @@
 {"_meta":"resource_coordinator 룰 — L3(mac CPU/RAM) + L5(외부 outbound) 통합. 처음 등록 2026-04-10."}
 {"layer":"L3","cat":"never","patterns":["iTerm2","WindowServer","Finder","Dock","kernel_task","loginwindow","launchd","coreservicesd","hidd","opendirectoryd"],"hot_action":"none","critical_action":"none","note":"UI/시스템 핵심 — 절대 안 건드림"}
 {"layer":"L3","cat":"airgenome","patterns":["airgenome","com.airgenome","sampler.hexa","ag3_","auto_dispatch","session_snapshot","session_resume","resource_coordinator"],"hot_action":"none","critical_action":"none","note":"자기 자신은 게이트 안 함"}
-{"layer":"L3","cat":"chat","patterns":["Telegram","Kotatogram","Discord","Slack"],"hot_action":"taskpolicy_bg","critical_action":"taskpolicy_bg","note":"E-core 로 보내도 알림은 정상"}
+{"layer":"L3","cat":"chat","patterns":["Discord","Slack"],"hot_action":"taskpolicy_bg","critical_action":"taskpolicy_bg","note":"E-core 로 보내도 알림은 정상"}
 {"layer":"L3","cat":"media","patterns":["Spotify","Music","Photos","Filmora"],"hot_action":"taskpolicy_bg","critical_action":"taskpolicy_bg","note":"오디오 재생 중 아니면 BG"}
 {"layer":"L3","cat":"browser","patterns":["Google Chrome","Safari","Firefox","Arc"],"hot_action":"renice","critical_action":"taskpolicy_bg","note":"foreground 탭 외 BG fetch 감속"}
 {"layer":"L3","cat":"ide","patterns":["Cursor","Code Helper","Xcode"],"hot_action":"renice","critical_action":"taskpolicy_bg","note":"백그라운드 LSP/index 감속"}

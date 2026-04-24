@@ -51,7 +51,6 @@
           "scripts/pipeline_watchdog.hexa",
           "scripts/auto_vacuum_watcher.hexa",
           "scripts/claude_profile_dedup.hexa",
-          "scripts/telegram_media_cleanup.hexa",
           "scripts/forge_remote_pack.hexa"
         ]
       }
@@ -246,7 +245,6 @@
         "pattern": "ps census → context reinterpret → JSONL recommendation",
         "implementations": [
           "safari_gate",
-          "telegram_gate",
           "claude_gate",
           "memo_gate",
           "finder_gate",
