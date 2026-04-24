@@ -460,6 +460,49 @@ claude_snapshot_tick() {
     sync 2>/dev/null || true
 }
 
+# ============================================================
+# forge pull from ubu1 (2026-04-25 bypass — 원래 com.airgenome.forge-sync-from-ubu1
+# launchd plist 를 user 가 load 하지 않으려 해서, 동일 기능을 supervisor tick 안에
+# in-line 으로 얹음. 15min cadence. env AIRGENOME_FORGE_PULL_UBU1=0 으로 off.)
+# ============================================================
+FORGE_PULL_LAST="$LOG_DIR/forge_pull.last"
+FORGE_PULL_INTERVAL="${AIRGENOME_FORGE_PULL_INTERVAL:-900}"
+
+forge_pull_from_ubu1() {
+    [ "${AIRGENOME_FORGE_PULL_UBU1:-1}" = "1" ] || return 0
+
+    # cadence gate: skip if last pull < interval
+    local now last age
+    now=$(date +%s)
+    last=0
+    [ -s "$FORGE_PULL_LAST" ] && last="$(cat "$FORGE_PULL_LAST" 2>/dev/null || echo 0)"
+    age=$((now - last))
+    if [ "$age" -lt "$FORGE_PULL_INTERVAL" ]; then
+        return 0
+    fi
+
+    # local harvest/label 가 (롤백 모드) 돌고 있으면 skip — 파일 잡고 있을 수 있음.
+    if [ "${AIRGENOME_LOCAL_HARVEST:-0}" = "1" ]; then
+        return 0
+    fi
+
+    # rsync — BatchMode: key 없으면 즉시 fail (hang 방지)
+    local dst="$AIRGENOME_ROOT/forge"
+    local rc=0
+    /usr/bin/rsync -az \
+        -e '/usr/bin/ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlMaster=no -o ControlPath=none' \
+        ubu1:airgenome/forge/genomes.ring \
+        ubu1:airgenome/forge/labeled_anomaly.jsonl \
+        "$dst/" >>"$LOG_DIR/forge_pull.stdout.log" 2>>"$LOG_DIR/forge_pull.stderr.log" || rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        echo "$now" > "$FORGE_PULL_LAST"
+        log "forge_pull_from_ubu1 ok (age_was=${age}s)"
+    else
+        log "forge_pull_from_ubu1 FAIL rc=$rc (age_was=${age}s)"
+    fi
+}
+
 cmd_last_session() {
     if [ -s "$CLAUDE_LATEST_PTR" ]; then
         cat "$CLAUDE_LATEST_PTR"
@@ -534,6 +577,10 @@ cmd_run() {
 
         # 매 tick: claude 세션 latest pointer + fs sync (크래시 내성)
         claude_snapshot_tick
+
+        # 15min cadence: forge/genomes.ring + labeled_anomaly.jsonl ubu1 → Mac pull.
+        # (com.airgenome.forge-sync-from-ubu1.plist 대체 경로 — 2026-04-25)
+        forge_pull_from_ubu1
 
         tick=$((tick + 1))
         _isleep 60
