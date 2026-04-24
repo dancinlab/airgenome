@@ -1,0 +1,45 @@
+#!/bin/bash
+# drill-kill — Mac 측 nexus drill + 원격 hetzner drill + lock/blacklist 강제 정리
+# Usage: drill-kill [--all]    (--all: ubu1/ubu2 도 정리)
+set -u
+ALL=0
+[ "${1:-}" = "--all" ] && ALL=1
+
+echo "=== killing Mac-side nexus drill ==="
+pkill -f "nexus drill --seed" 2>/dev/null && echo "  pkilled nexus drill" || echo "  (no Mac drill found)"
+pkill -f "drill-live" 2>/dev/null
+pkill -f "hexa_remote.*run.hexa" 2>/dev/null
+sleep 1
+
+echo ""
+echo "=== killing hetzner drill processes ==="
+ssh -o ConnectTimeout=5 hetzner '
+  K=0
+  for p in $(ps axo pid,cmd | grep -E "hexa_real run.*(drill|blowup)" | grep -v grep | awk "{print \$1}"); do
+    kill -9 "$p" 2>/dev/null && K=$((K+1))
+  done
+  echo "  killed: $K processes"
+  free -h | head -2
+' 2>&1 | head -8
+
+if [ "$ALL" = "1" ]; then
+  for h in ubu1 ubu2; do
+    echo ""
+    echo "=== killing $h drill processes ==="
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "$h" '
+      K=0
+      for p in $(ps axo pid,cmd | grep -E "hexa_real run.*(drill|blowup)" | grep -v grep | awk "{print \$1}"); do
+        kill -9 "$p" 2>/dev/null && K=$((K+1))
+      done
+      echo "  killed: $K"
+    ' 2>&1 | head -3
+  done
+fi
+
+echo ""
+echo "=== Mac state cleanup ==="
+rm -rf /tmp/nexus_heavy_dispatch.slot*.lock 2>/dev/null && echo "  locks: cleared"
+rm -f /tmp/hexa_remote.blacklist.* 2>/dev/null && echo "  blacklists: cleared"
+
+echo ""
+echo "✅ done. drill-status 로 확인 가능."
