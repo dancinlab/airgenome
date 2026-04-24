@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 2026-04-25: harvest (M4) + label (M5) 를 ubu1 systemd --user 로 offload 한 이후,
+         결과물 (genomes.ring / labeled_anomaly.jsonl) 을 15min 주기로 Mac forge/ 로 복귀. -->
+    <key>Label</key>
+    <string>com.airgenome.forge-sync-from-ubu1</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>/usr/bin/rsync -az ubu1:airgenome/forge/genomes.ring ubu1:airgenome/forge/labeled_anomaly.jsonl /Users/ghost/core/airgenome/forge/</string>
+    </array>
+
+    <!-- 15min 주기. harvest (*:00/15) + label (*:07/15) 완료 직후를 노림. -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>900</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/.airgenome/forge-sync-from-ubu1.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/.airgenome/forge-sync-from-ubu1.stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost/core/airgenome</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <key>LowPriorityIO</key>
+    <true/>
+</dict>
+</plist>

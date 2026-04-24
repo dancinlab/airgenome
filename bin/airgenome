@@ -518,8 +518,14 @@ cmd_run() {
         else
             run_hexa_mod probe
             run_hexa_mod dispatch
-            run_hexa_mod harvest
-            run_hexa_mod label
+            # harvest/label offloaded to ubu1 systemd --user timers (2026-04-25).
+            # forge/genomes.ring + forge/labeled_anomaly.jsonl 결과는 15min 주기
+            # com.airgenome.forge-sync-from-ubu1 launchd 로 Mac 으로 복귀.
+            # 롤백: AIRGENOME_LOCAL_HARVEST=1 으로 Mac 에서 재활성.
+            if [ "${AIRGENOME_LOCAL_HARVEST:-0}" = "1" ]; then
+                run_hexa_mod harvest
+                run_hexa_mod label
+            fi
 
             if [ $((tick % 5)) -eq 0 ] && [ "$tick" -gt 0 ]; then
                 run_hexa_mod forecast
