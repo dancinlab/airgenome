@@ -1,7 +1,7 @@
 {
   "schema": "airgenome.proposal_inventory.v1",
   "id_prefix": "agm",
-  "updated_ts": "2026-04-24T16:15:05Z",
+  "updated_ts": "2026-04-24T16:23:49Z",
   "entries": [
     {
       "id": "agm-20260422-001",
@@ -179,9 +179,11 @@
       "kind": "other",
       "title": "hexa-lang 세션 완료 — executor.sh/AG6 관련 처리 + .raw dispatch_tag metadata",
       "from_repo": "hexa-lang",
-      "user_status": "pending",
+      "user_status": "done",
       "score_priority": 50,
-      "submitted_ts": "2026-04-24T06:36:06Z"
+      "submitted_ts": "2026-04-24T06:36:06Z",
+      "in_progress_ts": "2026-04-24T16:23:49Z",
+      "done_ts": "2026-04-24T16:23:49Z"
     },
     {
       "id": "agm-20260424-002",
