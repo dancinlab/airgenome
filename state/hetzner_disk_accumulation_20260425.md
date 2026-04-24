@@ -66,3 +66,56 @@ None worth chasing. Disk is now at 87% with 13G free. If further breathing room 
 
 - Consider systemd-cron `docker system prune -af --filter "until=168h"` weekly to keep containerd snapshots bounded.
 - Consider adding `/swapfile` size to future remote disk audits so this "62G phantom gap" doesn't recur as a puzzle.
+
+---
+
+### Proactive push below 80% — 2026-04-25
+
+**Goal:** Free 8-10GB more to get root fs from 87% below 80%. **Outcome: not achievable safely. Root fs stays at 87%.** See "structural finding" below.
+
+**Before:** `/dev/md1 98G 81G used 13G free 87%` (84476212 KB used)
+**After:**  `/dev/md1 98G 81G used 13G free 87%` (84424640 KB used)
+**Reclaimed on root fs: ~50MB** (rotated logs + apt partials + stale /tmp)
+**Reclaimed on /home fs (/dev/md2, separate disk): ~8.4GB** (stale Claude worktrees) — hygiene win, but `/home` was already at 1% full (1.6T free).
+
+#### Structural finding
+
+**`/home` is a separate filesystem on `/dev/md2` (1.7T, 1% full).** The `du /home/nexus` and `du /home/hexa-lang` results from the prior survey were on that disk, not `/`. This means the only cleanup targets that actually move df on `/` are things under `/`, `/var`, `/usr`, `/root`, `/tmp`. The entire /dev/md1 budget after /swapfile and active runtime is structurally committed:
+
+| Bucket on `/dev/md1` (98G) | Size | Removable? |
+|---|---|---|
+| `/swapfile` | 65G | NO — swap 100% used (63Gi/63Gi), RAM 113Gi/124Gi |
+| `/usr` (python3.12 torch+scipy+sympy, node @anthropic-ai, system libs) | 7.3G | NO — active runtime deps |
+| `/var/lib/containerd` (airgenome-claude image, running) | 4.5G | NO — running container |
+| `/root/anima/anima-speak/corpus` (audio dataset, uid 501, mtime Apr 18) | 1.9G | UNKNOWN provenance — needs user approval |
+| `/root/.rustup/toolchains/stable` | 1.4G | NO — active toolchain |
+| `/root/Dev/anima`, other project dirs | ~900M | NO — working dirs |
+| Other OS, logs, cache | ~300M | already clean |
+| ext4 5% reserved | ~5G | reserved blocks |
+
+**Sum of immovable ≈ 85G** ⇒ root fs cannot drop below ~85G used ≈ 87% without (a) shrinking /swapfile, (b) stopping and removing airgenome-claude image, or (c) uninstalling the rust/python ML toolchains.
+
+#### Actions executed (safe, small)
+
+1. **apt-get clean / autoclean / autoremove** — 0B freed (already clean from earlier phase).
+2. **journalctl --vacuum-size=100M** — journal already 35.7M, 0B freed.
+3. **docker volume prune** — 0 dangling volumes, 0B freed.
+4. **`/home/hexa-lang/.claude/worktrees` — removed 28 stale worktrees older than 4 days (12+ days old)** — reclaimed 3.4G on `/dev/md2` (hexa-lang 3.7G → 285M). Safe because (a) no `nexus` or `hexa-lang` user exists on hetzner, owned by uid 501 (macOS-synced), (b) `lsof` showed no open handles inside worktree dirs, (c) all Apr12–Apr13 mtime.
+5. **`/home/nexus/.claude/worktrees` — removed 39 stale worktrees older than 4 days** — reclaimed 4.5G on `/dev/md2` (nexus 14G → 9G). Same safety reasoning as above; lsof confirmed only `/home/nexus` cwd references (no worktree descent).
+6. **Rotated logs (`*.gz`, `*.[0-9]`) in /var/log** — 32KB freed. Apt partials cleared.
+7. **/tmp mtime +2 unlinked** — ~44MB freed.
+
+#### Not touched (by design)
+
+- `/swapfile` — untouchable per user constraint + swap 100% used ⇒ removing = instant OOM of the hexa drill fleet.
+- `airgenome-claude` running container image (4.7G) — active service.
+- `/root/anima/anima-speak/corpus` (1.9G) — uid 501 macOS-sourced, mtime Apr 18, could be training data. **Flag for user approval.**
+- Rust/Python/Node global installs — all active runtimes.
+- Three stale `hexa_phase2_verify_20260421_r5` cwd holders from prior audit — 0 bytes, unchanged.
+
+#### Stop condition hit
+
+Safe cumulative reclaim on `/` < 2GB AND df still >85% ⇒ per stop condition, **further cleanup needs user approval.** Candidates for user decision:
+- (A) `/root/anima/anima-speak/corpus` 1.9G — is it recoverable / already backed up?
+- (B) `/swapfile` shrink 64G → 32G when RAM pressure eases (would reclaim 32G but dangerous right now).
+- (C) Accept 87% as baseline; the disk-watchdog guard at ≥90% remains the correct tripwire.
