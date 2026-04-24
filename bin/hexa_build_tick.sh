@@ -91,6 +91,14 @@ die() {
 # Skips hosts without ~/hexa-lang (e.g. ubu1 which only receives the
 # hexa_real binary, not a full source tree).
 prepare_linux_hexa_v2() {
+    # SAFETY: never rewrite Mac self/native/hexa_v2 — it's the Mach-O canonical,
+    # and $HOME/Dev/hexa-lang is a Dev→core migration symlink that would traverse
+    # to the canonical checkout and clobber the Mach-O with a Linux symlink.
+    if [[ "$(uname -s)" = "Darwin" ]]; then
+        log "prepare_linux_hexa_v2: skip (Darwin host — canonical Mach-O is the source of truth)"
+        return 0
+    fi
+
     local targets=(ubu2-local hetzner)   # ubu2 fixed locally, hetzner via ssh
     # ubu1 skipped: no hexa-lang source checkout (hexa_real binary only)
 
