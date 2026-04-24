@@ -209,6 +209,7 @@ fn main() -> void {
     let out = post_tool_entry(p)
     let _ = exec("rm -f '" + p + "'")
     println(out)
+    _roadmap_watcher_trigger()
     exit(0)
 }
 
