@@ -268,8 +268,7 @@ static NSColor *pctColor(int pct) {
 @end
 
 int main(int argc, const char *argv[]) {
-    // hexa runtime 초기화 — menubar.hexa 의 (현재 dead) menubar_setup/tick 이
-    // 향후 재활성화될 때 globals 상태가 준비되도록 호출 유지.
+    // hexa runtime 초기화 — globals + FFI symbol dlsym table 준비.
     hexa_autogen_main(argc, (char **)argv);
 
     @autoreleasepool {

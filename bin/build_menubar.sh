@@ -28,6 +28,12 @@ echo "[2/4] FFI marshalling post-process (TAG_STR 포인터 + msg_float ABI)"
 #   2) msg_float 은 int64_t arg typedef 로 호출 → ARM64 ABI 에서 d0 아닌 x2 에 전달되어 CGFloat 소실
 #      → __ffi_ftyp_msg_float 시그니처를 double 로, 호출부도 double 로
 perl -i -pe 's/\(([a-zA-Z_]\w*)\.tag==TAG_INT\?\1\.i:\(int64_t\)\1\.f\)/hexa_ffi_marshal_arg($1)/g' "$OUT_C"
+# hexa_v2 신 codegen (macro-based HX_* accessor): FFI arg marshalling 이
+#   (HX_IS_INT(X)?HX_INT_U(X):(int64_t)HX_FLOAT(X))
+# 패턴으로 emit. TAG_STR 일 때 (int64_t)HX_FLOAT(X) = (int64_t).f 로 읽어
+# char* 포인터가 NaN-ish double 로 깨짐. 전 FFI 호출이 empty string 인자를 받음.
+# hexa_ffi_marshal_arg(X) 는 TAG_STR 에서 .s 를 안전하게 int64 로 반환.
+perl -i -pe 's/\(HX_IS_INT\((\w+)\)\?HX_INT_U\(\1\):\(int64_t\)HX_FLOAT\(\1\)\)/hexa_ffi_marshal_arg($1)/g' "$OUT_C"
 # msg_float 특화 — CGFloat ABI 수정
 perl -i -pe 's{typedef int64_t \(\*__ffi_ftyp_msg_float\)\(int64_t, int64_t, int64_t\);}{typedef int64_t (*__ffi_ftyp_msg_float)(int64_t, int64_t, double);}' "$OUT_C"
 perl -i -pe 's{HexaVal msg_float\(HexaVal obj, HexaVal sel, HexaVal a1\) \{\n    int64_t __r = \(\(__ffi_ftyp_msg_float\)__ffi_sym_msg_float\)\(hexa_ffi_marshal_arg\(obj\), hexa_ffi_marshal_arg\(sel\), hexa_ffi_marshal_arg\(a1\)\);}{HexaVal msg_float(HexaVal obj, HexaVal sel, HexaVal a1) \{\n    double _da1 = (a1.tag==TAG_FLOAT?a1.f:(a1.tag==TAG_INT?(double)a1.i:0.0));\n    int64_t __r = ((__ffi_ftyp_msg_float)__ffi_sym_msg_float)(hexa_ffi_marshal_arg(obj), hexa_ffi_marshal_arg(sel), _da1);}s' "$OUT_C"
