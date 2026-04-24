@@ -74,7 +74,79 @@ die() {
     exit "${2:-1}"
 }
 
+# ── prepare_linux_hexa_v2 ─────────────────────────────────────────────
+# Workaround for: /self/native/hexa_v2 is committed as Mac arm64 Mach-O
+# (see hexa-lang proposal hxa-20260424-010 for canonical arch-neutral fix).
+# On Linux hosts the Mach-O binary fails with "Exec format error", which
+# breaks tool/build_stage0.hexa's mainline transpile path when dedup4
+# fallback is unavailable.
+#
+# This helper ensures self/native/hexa_v2 is an ELF x86_64 symlink to
+# build/hexa_v2_linux (which is fresh ELF) on each Linux target that
+# has a hexa-lang source checkout. Auto-reapplies every tick so it
+# remains a no-op once the canonical upstream fix lands.
+#
+# Strategy: per-host via ssh — idempotent, only acts when a Mach-O is
+# detected and an ELF hexa_v2_linux exists in the sibling build/ dir.
+# Skips hosts without ~/hexa-lang (e.g. ubu1 which only receives the
+# hexa_real binary, not a full source tree).
+prepare_linux_hexa_v2() {
+    local targets=(ubu2-local hetzner)   # ubu2 fixed locally, hetzner via ssh
+    # ubu1 skipped: no hexa-lang source checkout (hexa_real binary only)
+
+    for tgt in "${targets[@]}"; do
+        case "$tgt" in
+            ubu2-local)
+                # this tick script runs on ubu2 itself after SSH-jump
+                local local_src="$HOME/Dev/hexa-lang"
+                [[ -d "$local_src" ]] || local_src="$HOME/hexa-lang"
+                if [[ -f "$local_src/self/native/hexa_v2" ]] \
+                    && file "$local_src/self/native/hexa_v2" 2>/dev/null | grep -q "Mach-O" \
+                    && [[ -x "$local_src/build/hexa_v2_linux" ]] \
+                    && file "$local_src/build/hexa_v2_linux" 2>/dev/null | grep -q "ELF"; then
+                    log "prepare_linux_hexa_v2: ubu2 local Mach-O detected; symlinking to build/hexa_v2_linux"
+                    mv "$local_src/self/native/hexa_v2" \
+                       "$local_src/self/native/hexa_v2.macho.bak.$(date +%Y%m%d)" 2>>"$RUN_LOG" || true
+                    ln -sf "../../build/hexa_v2_linux" "$local_src/self/native/hexa_v2" \
+                        2>>"$RUN_LOG" && log "prepare_linux_hexa_v2: ubu2 symlinked"
+                elif [[ -L "$local_src/self/native/hexa_v2" ]]; then
+                    log "prepare_linux_hexa_v2: ubu2 already symlinked (no-op)"
+                else
+                    log "prepare_linux_hexa_v2: ubu2 no action (missing hexa_v2 or non-Mach-O)"
+                fi
+                ;;
+            *)
+                # Remote host: auto-detect ~/hexa-lang path
+                local remote_script
+                remote_script='set -e; \
+                    HL=$(ls -d ~/hexa-lang 2>/dev/null || true); \
+                    [ -z "$HL" ] && { echo "noop:no-hexa-lang"; exit 0; }; \
+                    [ -f "$HL/self/native/hexa_v2" ] || { echo "noop:no-hexa-v2"; exit 0; }; \
+                    if file "$HL/self/native/hexa_v2" | grep -q "Mach-O"; then \
+                        if [ -x "$HL/build/hexa_v2_linux" ] && file "$HL/build/hexa_v2_linux" | grep -q "ELF"; then \
+                            mv "$HL/self/native/hexa_v2" "$HL/self/native/hexa_v2.macho.bak.$(date +%Y%m%d)"; \
+                            ln -s ../../build/hexa_v2_linux "$HL/self/native/hexa_v2"; \
+                            echo "symlinked"; \
+                        else \
+                            echo "skip:no-elf-hexa-v2-linux"; \
+                        fi; \
+                    elif [ -L "$HL/self/native/hexa_v2" ]; then \
+                        echo "already-symlinked"; \
+                    else \
+                        echo "noop:not-mach-o"; \
+                    fi'
+                local out
+                out=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$tgt" "$remote_script" 2>>"$RUN_LOG" || echo "ssh-failed")
+                log "prepare_linux_hexa_v2: $tgt → $out"
+                ;;
+        esac
+    done
+}
+
 log "=== tick start host=$(hostname) pid=$$ ==="
+# Auto-heal Linux hexa_v2 Mach-O → ELF symlink before any build.
+# (Ref: hexa-lang hxa-20260424-010 proposal; remove when canonical fix lands.)
+prepare_linux_hexa_v2
 
 # ── 1. Toolchain preflight ──────────────────────────────────────────
 toolchain_gap=""
@@ -127,6 +199,10 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 fi
 echo $$ > "$LOCK_DIR/pid"
 trap 'rm -rf "$LOCK_DIR"' EXIT
+
+# Re-apply hexa_v2 symlink fixup (git reset --hard above may have restored
+# the Mach-O binary from the canonical repo).
+prepare_linux_hexa_v2
 
 BUILD_START=$(date +%s)
 log "build start"
