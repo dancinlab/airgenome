@@ -2,7 +2,7 @@
   "_meta": {
     "name": "airgenome 프로젝트 규칙",
     "description": "OS 게놈 스캐너 전용 규칙",
-    "updated": "2026-04-23",
+    "updated": "2026-04-25",
     "project": "airgenome"
   },
   "rules": [
@@ -13,22 +13,51 @@
     },
     {
       "id": "AG2",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "hive workload_router + resource_scorer (cross-host offload 책임 이관)",
+        "reason": "airgenome scope-reduce — Ubuntu 오프로드는 본 repo 책임에서 빠짐. CPU 30%+ 감지/디스패치는 hive .resource SSOT + workload_router 가 흡수.",
+        "evidence": "PR #77 + commits e0c644e3/692bfbbd/18370b6e/8acdb23c — bin 의 cross-host plumbing + modules/dispatch.hexa + ubu_bridge 호출자 제거"
+      },
       "rule": "Mac CPU 절약 — 모든 프로세스 CPU 30%+ 자동감지 → Ubuntu 오프로드. 패턴+임계값 감지, 예외만 명시",
       "level": "🔴",
-      "enforcement": "gate_offload.jsonl pattern/exclude 방식. detect_cmd로 전체 탐지, exclude로 Mac 전용만 제외"
+      "enforcement": "[SUPERSEDED 2026-04-25] gate_offload.jsonl 소비자(modules/dispatch.hexa, ubu_bridge) 모두 제거. 동등 정책은 hive workload_router 의 task-type 라우팅이 흡수.",
+      "applies_to": "airgenome (historical) → hive (active)",
+      "ssot": "[migrated] ~/core/hexa-lang/tool/workload_router.hexa",
+      "l0_paths": []
     },
     {
       "id": "AG3",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "hive workload_router + .resource SSOT (heavy compute 라우팅 이관)",
+        "reason": "airgenome scope-reduce — Ubuntu-First 디스패치는 본 repo 책임에서 빠짐. Mac 은 mac-local resource manager 로 축소되었고 cross-host 라우팅은 hive 가 docker-exec 채널로 흡수.",
+        "evidence": "commit 18370b6e — modules/{dispatch,forecast,genome_merge}.hexa + filters/transport/ssh.hexa 제거. ubu_bridge.hexa 호출자 dead."
+      },
       "rule": "Ubuntu-First heavy compute + Ubuntu HEXA-FIRST — 모든 heavy compute는 Ubuntu(ssh:ubu1) 우선. Mac은 오케스트레이션/UI/디스패치 전용. Ubuntu 측도 .hexa 우선, CUDA/PyTorch만 .py 예외(바인딩 레이어 제한)",
       "level": "🔴",
-      "enforcement": "modules/ubu_bridge.hexa 경유 강제. block-forbidden-ext hook 양쪽 .py 차단. 예외: ubu_workers/py/ (pytorch_required)만"
+      "enforcement": "[SUPERSEDED 2026-04-25] ubu_bridge.hexa 경로 dead. 동등 정책은 hive workload_router + lb-dispatch.ts 가 흡수. .py 차단 룰은 hexa-lang gate 의 H-* 룰로 별도 유지.",
+      "applies_to": "airgenome (historical) → hive (active)",
+      "ssot": "[migrated] ~/core/hexa-lang/tool/workload_router.hexa",
+      "l0_paths": []
     },
     {
       "id": "AG4",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "hive lb-dispatch.ts (Hetzner launcher 책임 이관)",
+        "reason": "airgenome scope-reduce — Hetzner cross-host 책임 전부 hive 로 이관. 본 repo 의 launcher cap/SIGTERM 시퀀스는 dead.",
+        "evidence": "commit 692bfbbd — bin/cx-core + drill-* + hexa_build_tick.sh 제거"
+      },
       "rule": "Hetzner 원격 hexa launcher 캡 + 보호 PID 화이트리스트 — 동시 실행 launcher ≤ 8개. 보호 PID 사전검증 → TERM 3초 → KILL 잔존 2단계",
       "level": "⛔⛔",
-      "enforcement": "정리: (1) pgrep -f 타겟 수집, (2) 보호 PID 충돌검사, (3) 충돌 시 abort, (4) SIGTERM, (5) 3초 sleep, (6) 잔존 SIGKILL. R20 예외 — 정확 매치 + 보호 PID 사전검증 필수",
-      "applies_to": "airgenome (Hetzner 32T 서버 한정)"
+      "enforcement": "[SUPERSEDED 2026-04-25] cx-core/drill-* 호출자 제거됨. 동등 정책은 hive load_balancer.hexa concurrency cap + lb-dispatch.ts protected-PID 검증이 흡수.",
+      "applies_to": "airgenome (historical) → hive (active)",
+      "ssot": "[migrated] ~/core/hexa-lang/tool/load_balancer.hexa",
+      "l0_paths": []
     },
     {
       "id": "AG5",
@@ -108,40 +137,38 @@
     },
     {
       "id": "AG8",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "hive docker-exec channel + lb-dispatch (cross-host SSH 책임 이관)",
+        "reason": "airgenome scope-reduce — 본 repo 의 모든 cross-host SSH 호출자 제거됨. ssh_gate 모듈 자체가 dead.",
+        "evidence": "commit 18370b6e — modules/filters/transport/ssh.hexa 제거. e0c644e3 — bin/{host,executor,remote_load,lb,lb_monitor}.sh 제거."
+      },
       "rule": "SSH 게이트 — 모든 원격 SSH 호출은 ssh_gate 경유 의무. 세마포어(동시 4슬롯) + 명령 필터(DENY/WARN) + 패시브 메트릭 수집 + 데이터 재해석 자동 액션",
       "level": "⛔⛔",
-      "enforcement": "nexus/bin/ssh_gate 경유. (1) DENY: rm -rf /, reboot, shutdown, dd, mkfs, chmod 777 — exit 2. (2) WARN: sudo, pkill, killall, systemctl stop/restart — 로그+실행. (3) 세마포어: host별 max 4 동시 접속, stale lock 60s 자동 정리. (4) 메트릭 피기백: /proc/loadavg + /proc/meminfo 매 호출 자동 수집 → ~/.airgenome/ssh_metrics/{host}.json. (5) 재해석: cpu_idle(<20%)→fill_queue 투입, ram_critical(<500MB)→drop_caches, cpu_overload(>90%)→heavy renice",
+      "enforcement": "[SUPERSEDED 2026-04-25] modules/ssh_gate.hexa + nexus/bin/ssh_gate 경로 dead. cross-host 호출은 hive docker-exec channel 로 이관, semaphore/cmd-filter 책임은 hive 측 가 흡수.",
       "ossified": "2026-04-12",
-      "applies_to": "airgenome",
-      "ssot": "modules/ssh_gate.hexa",
-      "l0_paths": [
-        "modules/ssh_gate.hexa",
-        "nexus/bin/ssh_gate"
-      ],
-      "config_keys": [
-        "ssh_gate_max_ubu",
-        "ssh_gate_max_htz",
-        "ssh_gate_timeout"
-      ],
-      "migrated_files": 16,
-      "migrated_ssh_calls": 60,
+      "applies_to": "airgenome (historical) → hive (active)",
+      "ssot": "[migrated] hive docker-exec + lb-dispatch.ts",
+      "l0_paths": [],
       "user_directive": "ssh 접속을 airgenome 게이트가 통제 / 필터도 설치 / 성능자원개선 재해석필터"
     },
     {
       "id": "AG9",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "hive .resource SSOT + resource_scorer (모니터링 정확성 책임 이관)",
+        "reason": "airgenome scope-reduce — infra_state.json 의 cross-host(ubu1/htz) 스키마 dead. mac-only probe 만 남음. resource_ceiling/coordinator/load_balancer/monitor_test/infra_probe 모듈 전부 제거.",
+        "evidence": "commit 18370b6e — modules/{dispatch,forecast,genome_merge}.hexa + cross-host probe 제거. modules/probe.hexa 는 mac-only 로 축약."
+      },
       "rule": "모니터링 데이터 정확성 — infra_state.json 파싱은 실제 스키마(load/ram_avail_mb/gpu_util) 기반. cpu_free 같은 존재하지 않는 필드 참조 금지. resource_ceiling/coordinator/load_balancer 모두 load-based CPU% 산출 의무",
       "level": "⛔⛔",
-      "enforcement": "modules/monitor_test.hexa 로 검증. read_host() 는 load/cores 기반 CPU% 산출. ubu1=12cores, htz=32threads. infra_probe가 60s 주기 갱신. resource_ceiling.hexa MAC_ONLY (Ubuntu 라우팅 금지)",
+      "enforcement": "[SUPERSEDED 2026-04-25] resource_ceiling/coordinator/infra_probe/monitor_test/load_balancer 모듈 전부 dead. cross-host 모니터링 정확성은 hive .resource SSOT + resource_scorer 가 흡수. mac-local infra_state 는 modules/probe.hexa(mac-only) 가 단일 소스.",
       "ossified": "2026-04-12",
-      "applies_to": "airgenome",
-      "ssot": "modules/resource_ceiling.hexa",
-      "l0_paths": [
-        "modules/resource_ceiling.hexa",
-        "modules/resource_coordinator.hexa",
-        "modules/infra_probe.hexa",
-        "modules/monitor_test.hexa",
-        "modules/load_balancer.hexa"
-      ],
+      "applies_to": "airgenome (historical) → hive (active)",
+      "ssot": "[migrated] hive/.resource + ~/core/hexa-lang/tool/resource_scorer.hexa",
+      "l0_paths": [],
       "bugs_fixed": [
         "cpu_free→load 파싱",
         "ubu_cpu_used→ubu1.load",
@@ -276,37 +303,43 @@
         "description": "Mac 프로세스 관찰 → 자원 회수 추천",
         "pattern": "ps census → context reinterpret → JSONL recommendation",
         "implementations": [
-          "safari_gate",
-          "claude_gate",
-          "memo_gate",
-          "finder_gate",
-          "mail_gate",
-          "calendar_gate"
+          "modules/filters/process/safari.hexa",
+          "modules/filters/process/claude.hexa",
+          "modules/filters/process/memo.hexa",
+          "modules/filters/process/finder.hexa",
+          "modules/filters/process/mail.hexa",
+          "modules/filters/process/calendar.hexa"
         ]
       },
       "B_host_balancing": {
+        "status": "superseded",
+        "superseded": {
+          "date": "2026-04-25",
+          "by": "hive .resource SSOT + resource_scorer + workload_router",
+          "reason": "scope-reduce — cross-host balancing 책임 hive 이관"
+        },
         "description": "호스트 간 자원 상태 → 작업 라우팅 결정",
         "pattern": "infra_state → scoring/entanglement → dispatch_state",
-        "implementations": [
-          "load_balancer",
-          "resource_ceiling",
-          "auto_dispatch"
-        ]
+        "implementations": []
       },
       "C_transport": {
+        "status": "superseded",
+        "superseded": {
+          "date": "2026-04-25",
+          "by": "hive docker-exec channel",
+          "reason": "scope-reduce — cross-host SSH 책임 hive 이관"
+        },
         "description": "SSH 트래픽 제어 + 패시브 메트릭 + 재해석 액션",
         "pattern": "SSH call → semaphore + filter + metric piggyback + reinterpret action",
-        "implementations": [
-          "ssh_gate"
-        ]
+        "implementations": []
       },
       "D_genome": {
+        "status": "historical",
+        "note": "구현체는 archive/v1/forge/ 에만 존재. 본 repo 의 활성 forge 디렉토리는 runtime 산출물 보관용.",
         "description": "대화/세션 데이터 → 6축 게놈 투영",
         "pattern": "JSONL messages → 6-axis projection → 60-byte genome signature",
         "implementations": [
-          "forge",
-          "per_source_genome",
-          "per_source_sigdiff"
+          "archive/v1/forge/per_source_genome.jsonl"
         ]
       }
     },
