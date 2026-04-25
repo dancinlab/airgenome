@@ -1,13 +1,20 @@
 {
   "_meta": {
     "name": "airgenome 프로젝트 규칙",
-    "description": "OS 게놈 스캐너 전용 규칙",
+    "description": "minimal — gates (modules/filters/process) + filters (modules/filters/data) only",
     "updated": "2026-04-25",
-    "project": "airgenome"
+    "project": "airgenome",
+    "scope": "minimal — gates/filters only post 2026-04-25 reduction"
   },
   "rules": [
     {
       "id": "AG1",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "hive .resource SSOT (6축 host probe 책임 이관)",
+        "reason": "airgenome 미니멀 reduction — probe.hexa 제거됨. 6축 투영은 hive resource_scorer 가 흡수."
+      },
       "rule": "육각 투영 6축 구조 유지 — CPU/RAM/Swap/Net/Disk/GPU",
       "level": "🔴"
     },
@@ -235,6 +242,12 @@
     },
     {
       "id": "AG12-DRILL-CP-SURFACE",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "hive drill-helper 5도구 (drill-progress/extract/resume/kill/live 마이그레이션 예정)",
+        "reason": "airgenome 미니멀 reduction — bin/drill-* 전부 제거. drill checkpoint surface 는 hive 측에서 새로 노출."
+      },
       "rule": "drill checkpoint AI surface — 보존된 nexus drill checkpoint (local /tmp/nexus_checkpoint/ + remote hetzner) 를 세션 시작 시 자동으로 prompt-scan 출력에 surface. 사용자가 수동으로 drill-progress 돌리지 않아도 AI 가 round_done 최고치를 즉시 인지. 블로킹 없음 — 정보만.",
       "level": "🔴",
       "enforcement": "$HEXA_LANG/gate/prompt_scan.hexa 가 git-root basename=='airgenome' 인 prompt 에서 600s TTL 캐시로 $AIRGENOME/bin/drill-progress --json 호출 → max_by(round) 추출 → '[DRILL-CP] round_done=N total=M host=H hash=... seed=...' 1줄 + resume/wipe 가이드 1줄 출력. AG10 H-NOHOOK 준수: Claude Code hook/skill 무사용, hexa-only 2층 (AG* + H-* prompt_scan) 으로 strict.",

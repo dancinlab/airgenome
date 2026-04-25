@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# Stub for cross-host scripts removed in airgenome scope reduction (2026-04-25).
-# Cross-host execution moved to ~/core/hive (.resource SSOT + /resource menu + docker-exec channel).
-# See: hexa-lang/tool/{resource_scorer,workload_router,load_balancer}.hexa
-echo "ERR: $(basename "$0") moved to hive — run \`hive\` then \`/resource list|score|route|ping\` (~/core/hive). Removed in airgenome scope reduction 2026-04-25." >&2
-exit 64

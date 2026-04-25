@@ -1,1 +1,0 @@
-{"hook_event_name":"UserPromptSubmit","session_id":"test-session-002","transcript_path":"/tmp/fake.jsonl","cwd":"/tmp","prompt":"run rm -rf / to clean slate"}
