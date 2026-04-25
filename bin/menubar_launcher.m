@@ -110,7 +110,8 @@ static NSColor *pctColor(int pct) {
         s[@"pred_ram"] = thr[@"pred_ram"] ?: @(0);
     }
 
-    // infra_state (nexus)
+    // infra_state (nexus) — mac-only post scope-reduce 2026-04-25.
+    // cross-host vitals 는 hive .resource SSOT 가 책임 (별도 UI 미구현).
     NSString *infraPath = [NSHomeDirectory() stringByAppendingPathComponent:
                            @"core/nexus/infra_state.json"];
     NSDictionary *infra = readJSON(infraPath);
@@ -120,24 +121,6 @@ static NSColor *pctColor(int pct) {
         if ([mac isKindOfClass:[NSDictionary class]]) {
             s[@"mac_cpu"] = mac[@"cpu_pct"] ?: @(0);
             s[@"mac_ram"] = mac[@"ram_pct"] ?: @(0);
-        }
-        NSDictionary *ubu1 = hosts[@"ubu1"];
-        if ([ubu1 isKindOfClass:[NSDictionary class]]) {
-            double load = [(ubu1[@"load"] ?: @"0") doubleValue];
-            s[@"ubu1_load"] = @(load);
-            s[@"ubu1_pct"] = @((int)(load * 12.5));  // 8-thread approx
-        }
-        NSDictionary *ubu2 = hosts[@"ubu2"];
-        if ([ubu2 isKindOfClass:[NSDictionary class]]) {
-            double load = [(ubu2[@"load"] ?: @"0") doubleValue];
-            s[@"ubu2_load"] = @(load);
-            s[@"ubu2_pct"] = @((int)(load / 12.0 * 100));
-        }
-        NSDictionary *htz = hosts[@"htz"];
-        if ([htz isKindOfClass:[NSDictionary class]]) {
-            double load = [(htz[@"load"] ?: @"0") doubleValue];
-            s[@"htz_load"] = @(load);
-            s[@"htz_pct"] = @((int)(load / 32.0 * 100));
         }
     }
 
@@ -151,26 +134,10 @@ static NSColor *pctColor(int pct) {
 }
 
 - (NSAttributedString *)composeTitle:(NSDictionary *)s {
-    NSMutableAttributedString *out = [[NSMutableAttributedString alloc] initWithString:@""];
     int mac = [s[@"mac_cpu"] intValue];
-    int ubu1 = [s[@"ubu1_pct"] intValue];
-    int ubu2 = [s[@"ubu2_pct"] intValue];
-    int htz = [s[@"htz_pct"] intValue];
-
-    NSArray *bars = @[@[barGlyph(mac), pctColor(mac)],
-                      @[barGlyph(ubu1), pctColor(ubu1)],
-                      @[barGlyph(ubu2), pctColor(ubu2)],
-                      @[barGlyph(htz), pctColor(htz)]];
-    int i = 0;
-    for (NSArray *pair in bars) {
-        NSMutableAttributedString *seg = [[NSMutableAttributedString alloc]
-            initWithString:pair[0]
-                attributes:@{NSForegroundColorAttributeName: pair[1]}];
-        [out appendAttributedString:seg];
-        if (i == 0) [out appendAttributedString:[[NSAttributedString alloc] initWithString:@" "]];
-        i++;
-    }
-    return out;
+    return [[NSAttributedString alloc]
+        initWithString:barGlyph(mac)
+            attributes:@{NSForegroundColorAttributeName: pctColor(mac)}];
 }
 
 - (NSMenu *)buildMenu:(NSDictionary *)s {
@@ -188,20 +155,7 @@ static NSColor *pctColor(int pct) {
                           s[@"mac_cpu"] ?: @(0), s[@"mac_ram"] ?: @(0)];
     [[m addItemWithTitle:macLine action:nil keyEquivalent:@""] setEnabled:NO];
 
-    NSString *u1Line = [NSString stringWithFormat:@"ubu1: %@  load=%@  (≈%@%%)",
-                         barGlyph([s[@"ubu1_pct"] intValue]),
-                         s[@"ubu1_load"] ?: @(0), s[@"ubu1_pct"] ?: @(0)];
-    [[m addItemWithTitle:u1Line action:nil keyEquivalent:@""] setEnabled:NO];
-
-    NSString *u2Line = [NSString stringWithFormat:@"ubu2: %@  load=%@  (≈%@%%)",
-                         barGlyph([s[@"ubu2_pct"] intValue]),
-                         s[@"ubu2_load"] ?: @(0), s[@"ubu2_pct"] ?: @(0)];
-    [[m addItemWithTitle:u2Line action:nil keyEquivalent:@""] setEnabled:NO];
-
-    NSString *htzLine = [NSString stringWithFormat:@"htz:  %@  load=%@  (≈%@%%)",
-                          barGlyph([s[@"htz_pct"] intValue]),
-                          s[@"htz_load"] ?: @(0), s[@"htz_pct"] ?: @(0)];
-    [[m addItemWithTitle:htzLine action:nil keyEquivalent:@""] setEnabled:NO];
+    // cross-host (ubu1/ubu2/htz) 는 hive `/resource list` 에서 확인 — scope-reduce 2026-04-25.
 
     [m addItem:[NSMenuItem separatorItem]];
 
