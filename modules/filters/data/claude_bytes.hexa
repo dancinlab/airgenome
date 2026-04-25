@@ -134,13 +134,13 @@ fn run() {
     }
 
     // Python 페이로드를 임시 파일에 기록 후 단일 호출
-    let tmp = "/tmp/claude_byte_reinterpret_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    let tmp = "/tmp/claude_byte_reinterpret_" + exec("date +%s%N").trim() + ".py"
     write_file(tmp, PAYLOAD)
 
     let report_flag = if report_only { "1" } else { "0" }
     let cmd = "python3 '" + tmp + "' '" + target + "' " + report_flag + " 2>&1; rm -f '" + tmp + "'"
     // R17: timeout 120s — prevent hang on large data processing
-    let result = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
+    let result = exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'")
     print(result)
 }
 

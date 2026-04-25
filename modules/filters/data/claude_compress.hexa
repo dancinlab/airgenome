@@ -19,11 +19,11 @@
 let MIN_SIZE = 1048576
 
 fn ts() -> str {
-    return try { exec("date '+%Y-%m-%dT%H:%M:%S'").trim() } catch e { "?" }
+    return exec("date '+%Y-%m-%dT%H:%M:%S'").trim()
 }
 
 fn fmt_mb(b: int) -> str {
-    return try { exec("awk 'BEGIN{printf \"%.1f MB\", " + str(b) + "/1048576}'").trim() } catch e { str(b) + " B" }
+    return exec("awk 'BEGIN{printf \"%.1f MB\", " + str(b) + "/1048576}'").trim()
 }
 
 fn run() {
@@ -42,14 +42,12 @@ fn run() {
     }
 
     // 활성 jsonl 목록 (lsof) — 한번에 수집
-    let active_list = try {
-        exec("perl -e 'alarm 30; exec @ARGV' /bin/sh -c 'lsof 2>/dev/null | awk \"/\\.jsonl$/ {print \\$NF}\" | sort -u'")
-    } catch e { "" }
+    let active_list = exec("perl -e 'alarm 30; exec @ARGV' /bin/sh -c 'lsof 2>/dev/null | awk \"/\\.jsonl$/ {print \\$NF}\" | sort -u'")
 
     // find 대상 파일 목록
     let find_cmd = "perl -e 'alarm 60; exec @ARGV' find " + env("HOME") + "/.claude*/projects -name '*.jsonl' " +
                    "-mtime +" + str(age_days) + " -type f 2>/dev/null"
-    let files_str = try { exec(find_cmd) } catch e { "" }
+    let files_str = exec(find_cmd)
     let files = files_str.split("\n")
 
     let mut total_files = 0
@@ -70,7 +68,7 @@ fn run() {
             continue
         }
 
-        let sz_s = try { exec("stat -f %z '" + f + "' 2>/dev/null").trim() } catch e { "0" }
+        let sz_s = exec("stat -f %z '" + f + "' 2>/dev/null").trim()
         let sz = to_int(sz_s)
         if sz < MIN_SIZE {
             skipped_small = skipped_small + 1
@@ -81,11 +79,9 @@ fn run() {
         total_bytes = total_bytes + sz
 
         if apply_mode {
-            let ok = try {
-                exec("gzip -9 '" + f + "' 2>/dev/null && echo ok").trim()
-            } catch e { "" }
+            let ok = exec("gzip -9 '" + f + "' 2>/dev/null && echo ok").trim()
             if ok == "ok" {
-                let gz_sz = to_int(try { exec("stat -f %z '" + f + ".gz' 2>/dev/null").trim() } catch e { "0" })
+                let gz_sz = to_int(exec("stat -f %z '" + f + ".gz' 2>/dev/null").trim())
                 compressed_bytes = compressed_bytes + gz_sz
             }
         }

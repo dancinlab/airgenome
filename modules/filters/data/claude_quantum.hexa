@@ -201,7 +201,7 @@ fn run() {
         a = sample
     }
 
-    let tmp = "/tmp/claude_quantum_filter_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    let tmp = "/tmp/claude_quantum_filter_" + exec("date +%s%N").trim() + ".py"
     write_file(tmp, PAYLOAD)
 
     let mut cmd = "python3 '" + tmp + "' " + mode
@@ -210,7 +210,7 @@ fn run() {
     cmd = cmd + " 2>&1; rm -f '" + tmp + "'"
 
     // R17: timeout 120s — prevent hang on large JSONL processing
-    let result = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
+    let result = exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'")
     print(result)
 }
 
