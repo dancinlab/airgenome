@@ -1,13 +1,16 @@
 #!/bin/bash
-# bin/airgenome — 단일 진입점 (M14) + inline runtime-guard (M13)
+# bin/airgenome — mac-local resource manager (단일 진입점 + inline runtime-guard)
 #
 # 책임:
 #   1. 서브커맨드: init / start / stop / status / arm / disarm / logs / run
 #   2. run = supervisor:
 #      - guard_loop() 백그라운드 fork (2s 샘플 CPU/RSS watchdog, bash native)
-#      - probe/dispatch/harvest/label 60s 주기 실행 (hexa)
-#      - forecast 300s 주기 실행 (hexa)
+#      - probe/harvest/label 60s 주기 실행 (mac-local hexa)
 #   3. LaunchAgent 하나만 (com.airgenome.plist) → launchd 가 'airgenome run' 호출
+#
+# Cross-host execution (dispatch / forecast / drill / cx-core 등) 은 hive 로
+# 이관됨 (~/core/hive: .resource SSOT + /resource menu + docker-exec channel).
+# scope-reduce 2026-04-25.
 #
 # guard 설계 (bash, hexa_stage0 lock 우회):
 #   CPU ≥ 85% × 15s → WARN / × 30s → SIGTERM / × 45s → SIGKILL
@@ -320,9 +323,8 @@ cmd_status() {
     local f
     for f in \
         "$HOME/core/nexus/infra_state.json" \
-        "$HOME/core/nexus/dispatch_state.json" \
         "$AIRGENOME_ROOT/forge/genomes.ring" \
-        "$AIRGENOME_ROOT/forge/forecast.jsonl"
+        "$AIRGENOME_ROOT/forge/labeled_anomaly.jsonl"
     do
         if [ -e "$f" ]; then
             stat -f '  %Sm  %N' -t '%Y-%m-%dT%H:%M:%SZ' "$f" 2>/dev/null
@@ -415,10 +417,8 @@ cmd_logs() {
     case "$which" in
         guard)    tail -F "$GUARD_LOG" ;;
         probe)    tail -F "$LOG_DIR/probe.stderr.log" ;;
-        dispatch) tail -F "$LOG_DIR/dispatch.stderr.log" ;;
         harvest)  tail -F "$LOG_DIR/harvest.stderr.log" ;;
         label)    tail -F "$LOG_DIR/label.stderr.log" ;;
-        forecast) tail -F "$LOG_DIR/forecast.stderr.log" ;;
         super)    tail -F "$SUPER_LOG" ;;
         list|*)
             ls -lat "$LOG_DIR"/*.log "$LOG_DIR"/*.jsonl 2>/dev/null | head -15
@@ -458,49 +458,6 @@ claude_snapshot_tick() {
     fi
     # 파일시스템 버퍼 플러시 — mac 크래시 시 손실 창 최소화
     sync 2>/dev/null || true
-}
-
-# ============================================================
-# forge pull from ubu1 (2026-04-25 bypass — 원래 com.airgenome.forge-sync-from-ubu1
-# launchd plist 를 user 가 load 하지 않으려 해서, 동일 기능을 supervisor tick 안에
-# in-line 으로 얹음. 15min cadence. env AIRGENOME_FORGE_PULL_UBU1=0 으로 off.)
-# ============================================================
-FORGE_PULL_LAST="$LOG_DIR/forge_pull.last"
-FORGE_PULL_INTERVAL="${AIRGENOME_FORGE_PULL_INTERVAL:-900}"
-
-forge_pull_from_ubu1() {
-    [ "${AIRGENOME_FORGE_PULL_UBU1:-1}" = "1" ] || return 0
-
-    # cadence gate: skip if last pull < interval
-    local now last age
-    now=$(date +%s)
-    last=0
-    [ -s "$FORGE_PULL_LAST" ] && last="$(cat "$FORGE_PULL_LAST" 2>/dev/null || echo 0)"
-    age=$((now - last))
-    if [ "$age" -lt "$FORGE_PULL_INTERVAL" ]; then
-        return 0
-    fi
-
-    # local harvest/label 가 (롤백 모드) 돌고 있으면 skip — 파일 잡고 있을 수 있음.
-    if [ "${AIRGENOME_LOCAL_HARVEST:-0}" = "1" ]; then
-        return 0
-    fi
-
-    # rsync — BatchMode: key 없으면 즉시 fail (hang 방지)
-    local dst="$AIRGENOME_ROOT/forge"
-    local rc=0
-    /usr/bin/rsync -az \
-        -e '/usr/bin/ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlMaster=no -o ControlPath=none' \
-        ubu1:airgenome/forge/genomes.ring \
-        ubu1:airgenome/forge/labeled_anomaly.jsonl \
-        "$dst/" >>"$LOG_DIR/forge_pull.stdout.log" 2>>"$LOG_DIR/forge_pull.stderr.log" || rc=$?
-
-    if [ "$rc" -eq 0 ]; then
-        echo "$now" > "$FORGE_PULL_LAST"
-        log "forge_pull_from_ubu1 ok (age_was=${age}s)"
-    else
-        log "forge_pull_from_ubu1 FAIL rc=$rc (age_was=${age}s)"
-    fi
 }
 
 cmd_last_session() {
@@ -560,153 +517,16 @@ cmd_run() {
             log "hexa_stage0 lock held — tick $tick modules skipped"
         else
             run_hexa_mod probe
-            run_hexa_mod dispatch
-            # harvest/label offloaded to ubu1 systemd --user timers (2026-04-25).
-            # forge/genomes.ring + forge/labeled_anomaly.jsonl 결과는 15min 주기
-            # com.airgenome.forge-sync-from-ubu1 launchd 로 Mac 으로 복귀.
-            # 롤백: AIRGENOME_LOCAL_HARVEST=1 으로 Mac 에서 재활성.
-            if [ "${AIRGENOME_LOCAL_HARVEST:-0}" = "1" ]; then
-                run_hexa_mod harvest
-                run_hexa_mod label
-            fi
-
-            if [ $((tick % 5)) -eq 0 ] && [ "$tick" -gt 0 ]; then
-                run_hexa_mod forecast
-            fi
+            run_hexa_mod harvest
+            run_hexa_mod label
         fi
 
         # 매 tick: claude 세션 latest pointer + fs sync (크래시 내성)
         claude_snapshot_tick
 
-        # 15min cadence: forge/genomes.ring + labeled_anomaly.jsonl ubu1 → Mac pull.
-        # (com.airgenome.forge-sync-from-ubu1.plist 대체 경로 — 2026-04-25)
-        forge_pull_from_ubu1
-
         tick=$((tick + 1))
         _isleep 60
     done
-}
-
-# ============================================================
-# list / offload — .workspace 기반 자원 조회 + 원격 dispatch (2026-04-21)
-# ============================================================
-INFRA_STATE="$HOME/core/nexus/infra_state.json"
-WORKSPACE_SRC="$HOME/core/.workspace"
-
-_offload_ssh_host() {
-    case "$1" in
-        ubu1|ubu)     echo "ubu1" ;;
-        ubu2)         echo "ubu2" ;;
-        htz|hetzner)  echo "hetzner" ;;
-        *)            echo "" ;;
-    esac
-}
-
-_offload_state_key() {
-    case "$1" in
-        ubu1|ubu)     echo "ubu1" ;;
-        ubu2)         echo "ubu2" ;;
-        htz|hetzner)  echo "htz" ;;
-        *)            echo "" ;;
-    esac
-}
-
-cmd_list() {
-    local kind="${1:-hosts}"
-    case "$kind" in
-        hosts|h|"")
-            if [ ! -f "$INFRA_STATE" ]; then
-                echo "[airgenome-list] infra_state.json 부재: $INFRA_STATE" >&2
-                return 1
-            fi
-            printf '%-10s %-10s %-10s %-8s %s\n' HOST STATUS LOAD CPU RAM
-            jq -r '.hosts | to_entries[] | [.key,(.value.status//"?"),((.value.load//((.value.cpu_pct|tostring)+"%"))|tostring),((.value.cpu_threads|tostring)+"T"),((.value.ram_used_mb|tostring)+"/"+(.value.ram_total_mb|tostring)+"MB")] | @tsv' "$INFRA_STATE" 2>/dev/null \
-              | awk -F'\t' '{printf "%-10s %-10s %-10s %-8s %s\n",$1,$2,$3,$4,$5}'
-            local ts
-            ts=$(jq -r '.ts // "?"' "$INFRA_STATE" 2>/dev/null)
-            echo "(probe ts: $ts)"
-            ;;
-        workspace|ws)
-            [ -f "$WORKSPACE_SRC" ] || { echo "[airgenome-list] .workspace 부재: $WORKSPACE_SRC" >&2; return 1; }
-            grep -E '^(resource|command) ' "$WORKSPACE_SRC"
-            ;;
-        projects|p)
-            grep -E '^member ' "$WORKSPACE_SRC" 2>/dev/null || echo "no projects"
-            ;;
-        *)
-            echo "usage: airgenome list [hosts|workspace|projects]" >&2
-            return 2
-            ;;
-    esac
-}
-
-cmd_offload() {
-    # Optional --container / -c : dispatch to airgenome-claude container (ssh :2222 root@host)
-    # instead of host native (ssh :22). fat image L23 경로.
-    local container=0
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --container|-c) container=1; shift ;;
-            --) shift; break ;;
-            *) break ;;
-        esac
-    done
-    local target="${1:-}"
-    shift || true
-    if [ -z "$target" ] || [ $# -eq 0 ]; then
-        cat >&2 <<'HELP'
-usage: airgenome offload [--container|-c] <target> <command...>
-
-targets:
-  ubu1 | ubu    — ssh alias: ubu1    (12T CPU, GPU)
-  ubu2          — ssh alias: ubu2    (12T CPU)
-  htz | hetzner — ssh alias: hetzner (32T CPU)
-
-flags:
-  --container, -c   dispatch to airgenome-claude fat container (ssh :2222, user=root)
-
-env:
-  AIRG_OFFLOAD_TIMEOUT=5   ssh ConnectTimeout seconds
-  AIRG_OFFLOAD_FORCE=1     skip offline-status pre-check
-
-examples:
-  airgenome offload ubu2 'uname -a && free -h'            # host
-  airgenome offload -c ubu1 'hexa_real --version'         # container
-  airgenome offload --container htz 'claude --version'    # container
-HELP
-        return 2
-    fi
-    local ssh_host state_key
-    ssh_host=$(_offload_ssh_host "$target")
-    state_key=$(_offload_state_key "$target")
-    if [ -z "$ssh_host" ]; then
-        echo "[airgenome-offload] unknown target: $target (ubu1|ubu2|htz)" >&2
-        return 2
-    fi
-    if [ -z "${AIRG_OFFLOAD_FORCE:-}" ] && [ -f "$INFRA_STATE" ] && command -v jq >/dev/null 2>&1; then
-        local status reason
-        status=$(jq -r ".hosts[\"$state_key\"].status // \"unknown\"" "$INFRA_STATE" 2>/dev/null)
-        if [ "$status" = "offline" ]; then
-            reason=$(jq -r ".hosts[\"$state_key\"].reason // \"\"" "$INFRA_STATE" 2>/dev/null)
-            echo "[airgenome-offload] REFUSE: $target=offline ($reason) — AIRG_OFFLOAD_FORCE=1 로 우회 가능" >&2
-            return 3
-        fi
-    fi
-    local to="${AIRG_OFFLOAD_TIMEOUT:-5}"
-    # Pass args joined with spaces — remote sh parses shell metacharacters naturally.
-    # Callers quote the full command as a single arg (examples in usage).
-    # ControlMaster/ControlPath=none — sandboxed harnesses (e.g. Claude Code)
-    # block socket link in ~/.ssh/cm/; avoid mux entirely for offload robustness.
-    if [ "$container" = "1" ]; then
-        # ssh:2222 root@ into fat container (port 2222 host-network listen)
-        exec ssh -p 2222 -o ConnectTimeout="$to" -o BatchMode=yes \
-                 -o ControlMaster=no -o ControlPath=none \
-                 -o StrictHostKeyChecking=accept-new \
-                 "root@$ssh_host" "$*"
-    fi
-    exec ssh -o ConnectTimeout="$to" -o BatchMode=yes \
-             -o ControlMaster=no -o ControlPath=none \
-             "$ssh_host" "$*"
 }
 
 # ============================================================
@@ -727,12 +547,10 @@ main() {
         hooks)         cmd_hooks "$@" ;;
         run)           cmd_run ;;
         last-session)  cmd_last_session ;;
-        list|ls)       cmd_list "$@" ;;
-        offload|off)   cmd_offload "$@" ;;
         guard-loop)    guard_loop ;;   # 독립 디버그용
         help|-h|--help)
             cat <<'EOF'
-airgenome — 단일 진입점 (M14) + inline runtime-guard (M13)
+airgenome — mac-local resource manager (단일 진입점 + inline runtime-guard)
 
 usage: airgenome <command>
 
@@ -741,20 +559,18 @@ usage: airgenome <command>
   status       supervisor + guard 모드 + 산출물 freshness
   arm          runtime-guard live-kill on
   disarm       runtime-guard dry-run
-  logs [m]       tail: guard|probe|dispatch|harvest|label|forecast|super|list
+  logs [m]       tail: guard|probe|harvest|label|super|list
   hook <sub>     chain state CLI: status | activate | touch | release | is-active  (MCP tools CLI mirror)
   hooks <sub>    hook guide: list | show <name> | guide  (same SSOT as MCP airgenome://hooks/guide)
   run            supervisor loop (launchd 가 호출)
   last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
-  list [kind]    자원 목록 — hosts (live infra_state) | workspace | projects
-  offload <t> <cmd...>  원격 실행 — t: ubu1|ubu2|htz (ssh alias 경유)
   guard-loop     guard 만 독립 실행 (디버그)
+
+cross-host execution: see hive (~/core/hive) — `/resource list|score|route|ping`
 
 env:
   AIRGENOME_ROOT=/Users/ghost/core/airgenome
   HEXA=/Users/ghost/core/hexa-lang/hexa
-  AIRG_OFFLOAD_TIMEOUT=5    offload ssh ConnectTimeout
-  AIRG_OFFLOAD_FORCE=1      offload offline pre-check 우회
 
 flags:
   ~/.airgenome/guard_armed   — 존재 시 실제 kill
