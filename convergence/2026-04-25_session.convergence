@@ -303,20 +303,30 @@ drill 양방향 helper 가 들어갔으니 다음 세션부터는 호출-응답 
    - load 434 → 9.02 (1m, 5분 내).
    - blowup verify 0개 잔존.
 
-5. **ubu1 NVIDIA — 부분 진행, 명시 boundary 에서 정지** (subagents ae00b0086f519734d → a6b446c995706cb0c)
-   - `dpkg-reconfigure linux-modules-nvidia-580-6.17.0-22-generic` + `depmod -a` 실행. modprobe 검색 우선순위 미변동 — modinfo 여전히 `/updates/dkms/` (rc=stalled).
-   - `dkms remove nvidia/580.126.09 -k 6.17.0-22-generic` 실행 → DKMS .ko.zst 제거. modinfo 가 `/lib/modules/.../kernel/nvidia-580/nvidia.ko` (Canonical signer) 로 정상 점프.
-   - `modprobe nvidia_drm` 성공, 5개 모듈 모두 load (`nvidia, nvidia_modeset, nvidia_drm, nvidia_uvm, nvidia_peermem`).
-   - **그러나 dmesg**: `NVRM: GPU 0000:01:00.0 ... requires use of the NVIDIA open kernel modules. RmInitAdapter failed! (0x22:0x56:884)`. `nvidia-smi` → "No devices were found".
-   - 원인: 하드웨어가 RTX 5xxx (Blackwell, 10de:2f04) — open-flavor 모듈 강제. 현재 load 된 Canonical-signed prebuilt 는 PROPRIETARY flavor. 필요 패키지 `linux-modules-nvidia-580-open-6.17.0-22-generic` 미설치.
-   - 다음 step: `apt remove proprietary` + `apt install open` — 사용자 승인 대기 (apt 레벨 변경은 boundary 외).
+5. **ubu1 NVIDIA — 영구 fix 완료** (subagents ae00b0086f519734d → a6b446c995706cb0c → addcfceb77eba1a5a → a97e0cf6c24ba5577 → a2e8ea817113680b6 → ab690075fc4e4324e → afeb7233bc8a84c67)
+   - 6단계 dry-run gate 연속 통과 패턴. 5번 multi-agent gate 가 잘못된 cascade (driver 자동제거, vendor 채널 mix, 15-package 폭발) 차단.
+   - `dpkg-reconfigure` + `dkms remove -k <ver>` → DKMS `/updates/dkms/` 청소. 그러나 단일 `nvidia-580/` (proprietary) 만 prebuilt 존재 → 처음 load 시 `RmInitAdapter failed (0x22:0x56:884)` (Blackwell GPU 가 open-flavor 강제 거부).
+   - `apt install linux-modules-nvidia-580-open-6.17.0-22-generic` 으로 open prebuilt 추가. 그러나 `nvidia-dkms-580-open` 자동 rebuild → `/updates/dkms/` 에 MOK-signed 모듈 재발 → 같은 문제 재발견.
+   - **최종 영구 path** (afeb7233bc8a84c67):
+     1. `apt remove linux-modules-nvidia-580-6.17.0-22-generic` — proprietary per-kernel + 메타 `linux-modules-nvidia-580-generic-hwe-24.04` 동시 제거 (cascade=2, 안전).
+     2. `depmod -a` → modinfo 가 `/kernel/nvidia-580-open/nvidia.ko` (Canonical-signed) 로 정상 점프.
+     3. `modprobe nvidia_drm` 성공, 5 modules load, dmesg clean.
+     4. `nvidia-smi`: **NVIDIA GeForce RTX 5070, driver 580.126.09, 12227 MiB total, 35°C P5 idle** ✓
+     5. `dkms remove nvidia/580.126.09 --all` — 모든 커널 DKMS source unregister (source 파일은 /usr/src 보존).
+     6. `apt-mark hold nvidia-dkms-580-open` — dkms 패키지 upgrade 차단 → postinst `dkms add` 차단.
+   - **drift 평가 (다음 kernel update 생존)**: open meta `linux-modules-nvidia-580-open-generic-hwe-24.04` 가 새 커널의 prebuilt 자동 pull, proprietary meta 부재로 alphabetical tie-break 충돌 없음, DKMS source unregistered + 패키지 hold 로 자동빌드 차단. 영구.
+   - **잔존 risk**: `apt --allow-change-held-packages` 또는 driver 패키지 강제 upgrade 시 hold 깨질 가능성. 일반 `apt upgrade` 에서는 영향 없음.
+
+5b. **modules/probe.hexa scope-reduce** (사용자 직접 수정, 2026-04-25)
+   - cross-host probe (ubu1/ubu2/htz) 가 hive `.resource` SSOT + docker-exec channel + `hexa-lang resource_scorer.hexa` 로 이관. probe.hexa 는 mac-local vitals 만 담당.
+   - 결과: airgenome local probe 는 ubu1 GPU 회복을 보지 못함 (의도된 분리). dispatch routing 은 hive 측 SSOT 가 담당.
 
 ### 결과
 
 | host | load (1m) | mem | swap | dispatch role |
 |------|-----------|-----|------|---------------|
 | mac | 9.02 | normal | 1.7/3Gi | mac_only (AG6 enforced) |
-| ubu1 | 0.12 | 5.9/30Gi | 0.5/8Gi | compute/gpu(50)/heavy 후보 |
+| ubu1 | 0.12 | 5.9/30Gi | 0.5/8Gi | compute/heavy 후보 + GPU(RTX 5070, 580.126.09, 12GB) 영구 fix |
 | ubu2 | 0.00 | 4.2/30Gi | 5.5/8Gi (식는중) | compute/heavy 후보 |
 | htz | 0.02 | 4.8/124Gi | - | compute/heavy 후보 |
 
@@ -324,11 +334,11 @@ dispatch_state.selection: compute=ubu1, gpu=ubu1, heavy=ubu1 (이전: 전부 htz
 
 ### 남은 과제
 
-- **AG-PROBE-NVIDIA-FIX commit** — `modules/probe.hexa` 단일 라인 변경 (uncommitted).
-- **ubu1 NVIDIA Blackwell open flavor 전환** (apt install/remove, 사용자 승인 필요).
 - **forecast/harvest/label timer 재발 hang regression watch** — backup `.bak.20260425` 보존, 수일 내 재가동 안정성 확인.
 - **drill dispatch fallback 정책 점검** — ubu1 offline 시 Mac 로 fallback 가능했던 경로 차단 (AG6 strict gate 가 작동하지 않은 이유 조사 필요).
 - **hexa-lang stage0 list-concat O(n²)** — airgenome 측 회피 완료, lang 측 근본 fix 는 별도 proposal (hxa).
+- **hive resource_scorer.hexa 가 ubu1 GPU 인식하는지 확인** — probe scope-reduce 후 dispatch SSOT 가 hive 로 이관됨. ubu1 GPU 12GB 가 hive scoring 에 반영되는지 별도 점검.
+- **next kernel upgrade 시 ubu1 GPU 회복 검증** — open meta 자동 pull + DKMS unregistered + apt hold 가 의도대로 동작하는지 실측 (3-month review).
 
 ### 참여 subagents
 
