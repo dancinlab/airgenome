@@ -27,7 +27,7 @@ use "../core/core"
 
 let RING = default_ring_path()
 let OUT  = ring_path("forecast.jsonl")
-let SCAN_LINES = 5000
+let SCAN_LINES = 1500   // 5000→1500: hexa-lang stage0 list-append O(n²) 회피
 let TOP_N_PIDS = 20
 
 let ALPHA_NUM = 50   // alpha = 50/100 — responsive to recent
@@ -114,6 +114,11 @@ fn read_recent_genomes() -> list {
 }
 
 // distinct KEYs (pid string — unified ring 일 때 "host.pid", 단일호스트 일 때 그냥 "pid")
+//
+// 자료 구조 메모: hexa-lang stage0 의 `seen + [key]` 는 list 전체 deep-copy 라
+// O(n²) 폭주 가능. 본 함수는 self-test 합성 입력 (≤10개) 전용으로 남겨두고,
+// 프로덕션 hot-path 는 bulk_extract_keys()/run_forecast 의 shell sort+uniq 경로를
+// 사용한다 (3714 genome × jq subprocess + nested loop = 23min hang 회피).
 fn distinct_keys(genomes: list, cap: int) -> list {
     let seen = []
     let mut i = 0
@@ -134,7 +139,29 @@ fn distinct_keys(genomes: list, cap: int) -> list {
     return seen
 }
 
-// 특정 KEY (pid string) 의 시계열 (axis) 추출
+// ── Bulk extraction (production fast-path) ──────────────────────────────────
+//
+// 단일 jq 호출로 ring 전체에서 (pid, host, cpu, ram) 를 TSV 로 추출. hexa 측
+// 은 split + 정수 파싱만 수행 — 라인당 jq subprocess 폭주 없음.
+//
+// 반환: TSV 텍스트. 각 라인 = "pid\thost\tcpu\tram". 빈 라인 무시.
+fn bulk_extract_tsv() -> str {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
+            + " | jq -r '[(.pid // \"\"|tostring), (.host // \"\"), (.vitals[0] // 0|tostring), (.vitals[1] // 0|tostring)] | @tsv' 2>/dev/null"
+    return exec(cmd)
+}
+
+// "first-seen" semantics 로 distinct pid 를 cap 개까지 추출. shell awk 단일 호출.
+// 반환: 줄바꿈 separated pid 리스트.
+fn bulk_distinct_pids(cap: int) -> str {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
+            + " | jq -r '.pid // \"\"' 2>/dev/null"
+            + " | awk '!seen[$0]++ && $0!=\"\"' | head -" + to_string(cap)
+    return exec(cmd)
+}
+
+// 특정 KEY (pid string) 의 시계열 (axis) 추출 — self-test 합성 입력 전용.
+// 프로덕션은 bulk_series_for_pid() 사용 (단일 jq 호출).
 fn series_for_key(genomes: list, key: str, axis: int) -> list {
     let result = []
     let mut i = 0
@@ -149,7 +176,8 @@ fn series_for_key(genomes: list, key: str, axis: int) -> list {
     return result
 }
 
-// KEY 의 host 추출 — unified ring 의 .host 우선, 없으면 "local"
+// KEY 의 host 추출 — self-test 합성 입력 전용.
+// 프로덕션은 bulk_host_for_pid() 사용.
 fn host_for_key(genomes: list, key: str) -> str {
     let mut i = 0
     while i < len(genomes) {
@@ -163,6 +191,41 @@ fn host_for_key(genomes: list, key: str) -> str {
         i = i + 1
     }
     return "local"
+}
+
+// ── Bulk per-pid extraction (production fast-path) ──────────────────────────
+// 특정 pid 의 axis 시계열을 단일 jq 호출로 추출.
+fn bulk_series_for_pid(pid: str, axis: int) -> list {
+    // pid 는 string (unified) 또는 numeric. jq 에서 tostring 비교로 통일.
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
+            + " | jq -r 'select((.pid // \"\"|tostring) == \"" + pid + "\")"
+            + " | (.vitals[" + to_string(axis) + "] // 0)' 2>/dev/null"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if l != "" {
+            // float-style "10.5" → int "10"
+            let parts = l.split(".")
+            if len(parts) > 0 {
+                if parts[0] != "" { result = result + [to_int(parts[0])] }
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// 특정 pid 의 host 추출 (가장 최근 매칭 라인 기준).
+fn bulk_host_for_pid(pid: str) -> str {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
+            + " | jq -r 'select((.pid // \"\"|tostring) == \"" + pid + "\") | (.host // \"\")' 2>/dev/null"
+            + " | tail -1"
+    let h = exec(cmd).trim()
+    if h == "" { return "local" }
+    return h
 }
 
 // 시리즈 fit + 1-step ahead 예측
@@ -186,28 +249,33 @@ fn ts_iso() -> str {
 
 fn run_forecast() -> int {
     let _ = exec("mkdir -p '" + forge_dir() + "'")
-    let genomes = read_recent_genomes()
-    if len(genomes) == 0 { return 0 }
 
-    let keys = distinct_keys(genomes, TOP_N_PIDS)
+    // 프로덕션 fast-path: ring 의 distinct pid 를 shell awk 로 즉시 추출.
+    // genomes 전체를 hexa 측 list 로 적재하지 않음 (3714개 list-append O(n²) 회피).
+    let pids_raw = bulk_distinct_pids(TOP_N_PIDS)
+    if pids_raw == "" { return 0 }
+
+    let pids_lines = pids_raw.split("\n")
     let ts = ts_iso()
     let mut written = 0
     let mut i = 0
-    while i < len(keys) {
-        let key = keys[i]
-        let s_cpu = series_for_key(genomes, key, 0)
-        let s_ram = series_for_key(genomes, key, 1)
-        if len(s_cpu) >= 2 {
-            let pred_cpu = predict_one_ahead(s_cpu)
-            let pred_ram = predict_one_ahead(s_ram)
-            let host = host_for_key(genomes, key)
-            let line = "{\"ts\":\"" + ts + "\",\"pid\":\"" + key + "\""
-                     + ",\"host\":\"" + host + "\""
-                     + ",\"horizon\":\"1step\",\"pred_cpu\":" + to_string(pred_cpu)
-                     + ",\"pred_ram\":" + to_string(pred_ram)
-                     + ",\"samples\":" + to_string(len(s_cpu)) + "}"
-            append_out(line)
-            written = written + 1
+    while i < len(pids_lines) {
+        let key = pids_lines[i].trim()
+        if key != "" {
+            let s_cpu = bulk_series_for_pid(key, 0)
+            let s_ram = bulk_series_for_pid(key, 1)
+            if len(s_cpu) >= 2 {
+                let pred_cpu = predict_one_ahead(s_cpu)
+                let pred_ram = predict_one_ahead(s_ram)
+                let host = bulk_host_for_pid(key)
+                let line = "{\"ts\":\"" + ts + "\",\"pid\":\"" + key + "\""
+                         + ",\"host\":\"" + host + "\""
+                         + ",\"horizon\":\"1step\",\"pred_cpu\":" + to_string(pred_cpu)
+                         + ",\"pred_ram\":" + to_string(pred_ram)
+                         + ",\"samples\":" + to_string(len(s_cpu)) + "}"
+                append_out(line)
+                written = written + 1
+            }
         }
         i = i + 1
     }

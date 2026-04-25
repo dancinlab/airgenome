@@ -133,6 +133,83 @@ fn rule_match(genome_line: str, r: Rule) -> bool {
     return op_match(v2, r.and_op, r.and_threshold)
 }
 
+// ── Bulk extraction (production fast-path) ──────────────────────────────────
+// 1000 genome × 7 rule × jq subprocess = subprocess 폭주로 stage0 hang. 단일 jq
+// 호출로 (pid, comm, ts, host, v0..v5) TSV 추출 → in-memory 매칭.
+//
+// Pre-extracted record. host_filter / vitals 평가 는 모두 int 비교만 사용.
+struct GExt {
+    pid: str, comm: str, ts: str, host: str,
+    v0: int, v1: int, v2: int, v3: int, v4: int, v5: int
+}
+
+fn parse_int_safe_str(s: str) -> int {
+    // vitals 는 0..100 범위 정수/부동소수 — pre-dot int 만 추출하면 충분.
+    if s == "" { return 0 }
+    let parts = s.split(".")
+    if len(parts) == 0 { return 0 }
+    if parts[0] == "" { return 0 }
+    return to_int(parts[0])
+}
+
+fn bulk_load_genomes() -> list {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
+            + " | jq -r '[(.pid // \"\"|tostring), (.comm // \"\"), (.ts // \"\"), (.host // \"\"),"
+            + " (.vitals[0] // 0|tostring), (.vitals[1] // 0|tostring), (.vitals[2] // 0|tostring),"
+            + " (.vitals[3] // 0|tostring), (.vitals[4] // 0|tostring), (.vitals[5] // 0|tostring)] | @tsv' 2>/dev/null"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" {
+            let f = l.split("\t")
+            if len(f) >= 10 {
+                let g = GExt {
+                    pid: f[0], comm: f[1], ts: f[2], host: f[3],
+                    v0: parse_int_safe_str(f[4]), v1: parse_int_safe_str(f[5]),
+                    v2: parse_int_safe_str(f[6]), v3: parse_int_safe_str(f[7]),
+                    v4: parse_int_safe_str(f[8]), v5: parse_int_safe_str(f[9])
+                }
+                result = result + [g]
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn gext_axis(g: GExt, axis: int) -> int {
+    if axis == 0 { return g.v0 }
+    if axis == 1 { return g.v1 }
+    if axis == 2 { return g.v2 }
+    if axis == 3 { return g.v3 }
+    if axis == 4 { return g.v4 }
+    if axis == 5 { return g.v5 }
+    return 0
+}
+
+fn rule_match_ext(g: GExt, r: Rule) -> bool {
+    if r.host_filter != "" {
+        if g.host != r.host_filter { return false }
+    }
+    let v = gext_axis(g, r.axis)
+    if !op_match(v, r.op, r.threshold) { return false }
+    if !r.has_and { return true }
+    let v2 = gext_axis(g, r.and_axis)
+    return op_match(v2, r.and_op, r.and_threshold)
+}
+
+fn make_labeled_line_ext(g: GExt, label: str) -> str {
+    let safe_label = json_escape(label)
+    let base = "\"ts\":\"" + g.ts + "\",\"pid\":\"" + g.pid + "\",\"comm\":\"" + json_escape(g.comm) + "\""
+    if g.host == "" {
+        return "{" + base + ",\"label\":\"" + safe_label + "\"}"
+    }
+    return "{" + base + ",\"host\":\"" + g.host + "\",\"label\":\"" + safe_label + "\"}"
+}
+
 // pid 가 unified 일 때 string ("mac.123"), 단일호스트 일 때 int — 항상 quote 해서 안전.
 fn extract_meta(genome_line: str) -> str {
     let pid = jq_field(genome_line, ".pid")
@@ -180,7 +257,9 @@ fn run_label() -> int {
     let rules = load_rules()
     if len(rules) == 0 { return 0 }
 
-    let genomes = read_recent_genomes()
+    // 프로덕션 fast-path: 단일 jq 호출로 모든 게놈 메타+vitals 추출 (per-line jq
+    // subprocess 폭주 회피). 1000 genome × 7 rule = 7000 매칭 = pure int 비교.
+    let genomes = bulk_load_genomes()
     let mut labeled = 0
     let mut i = 0
     while i < len(genomes) {
@@ -188,8 +267,8 @@ fn run_label() -> int {
         let mut j = 0
         while j < len(rules) {
             let r = rules[j]
-            if rule_match(g, r) {
-                let out_line = make_labeled_line(g, r.label)
+            if rule_match_ext(g, r) {
+                let out_line = make_labeled_line_ext(g, r.label)
                 append_out(out_line)
                 labeled = labeled + 1
             }

@@ -254,3 +254,87 @@ airgenome: 50+ commits across drill infra + cleanup + remediation + helpers.
 proposals: nxs-011 (closed), agm-007/002/001 (closed), nxs-012/013 (open engine), hxa-010 (open hexa-lang).
 
 drill 양방향 helper 가 들어갔으니 다음 세션부터는 호출-응답 + 강제 정리 + 실시간 watch 가능.
+
+---
+
+## Session B (2026-04-25 09:50~10:20 KST) — 4-host 안정화 + dispatch 정상화
+
+사용자 트리거: "ubu2 안정화 필요". 진단 → ubu2 한 곳에 부하 쏠림 + 다른 호스트 idle 발견 → 4-host 동시 점검.
+
+### 진단 (root causes 4건)
+
+1. **modules/probe.hexa parse_fail (ubu1 풀 제외)**
+   - 증상: ubu1 status="offline", reason="parse_fail" → score=0 → dispatch 가 ubu1 영구 제외
+   - 원인: ubu1 NVIDIA 드라이버 깨진 상태에서 `nvidia-smi` 가 에러를 stderr 가 아닌 **stdout** 으로 출력. `2>/dev/null` 무력화 → CSV `load,total,used,에러문자열...` 4 parts → ubu_json `len(parts) < 6` 에서 parse_fail.
+
+2. **systemd timer chronic hang (ubu2 swap 만재)**
+   - 증상: `airgenome-{forecast,harvest,label}.service` 가 "activating start" 영구 상태. 각 timer 가 재발 → systemd 재spawn → ubu2 RAM 99.8% + swap 100% 만재. load 26.14.
+   - 원인: hexa-lang stage0 evaluator 가 forecast.hexa / label.hexa 의 `distinct_keys()` 함수 평가 중 hang. O(n²) 중첩 루프 + `seen = seen + [key]` 반복 list concatenation → stage0 가 list 를 deep-copy → ~3,714 genomes × ~20 keys 조합에서 VSZ 410GB 폭증. 23분+ 동안 미종료.
+
+3. **Mac AG6 위반 (Wave 21 verify runaway)**
+   - 증상: Mac 에 hexa_stage0 9개 (round=1/2 wave 21 verify), 57min stuck, 각 ~600-700MB RSS, swap 18Gi/19.4Gi (97% 만재). load 1m 434.
+   - 원인: ubu1 가 parse_fail 로 풀에서 빠져있던 시점에 nexus drill 이 dispatch 받지 못하고 Mac 로컬로 fallback → AG6 "compute zero on mac" 위반.
+
+4. **ubu1 NVIDIA Secure Boot 거부 (Blackwell GPU 사용 불가)**
+   - 증상: `nvidia-smi` → "couldn't communicate with the NVIDIA driver". `lsmod | grep nvidia` 비어있음.
+   - 원인: 2026-04-22 kernel 6.17.0-20→22 업그레이드 + 04-25 reboot 이후 lockdown=integrity. DKMS 빌드 산출물이 머신로컬 MOK ("aiden-B650M-K") 로 서명 — MOK 미등록 → "Loading of module with unavailable key is rejected". Canonical-signed prebuilt 는 `/lib/modules/.../kernel/nvidia-580/` 에 있으나 modprobe 검색 우선순위가 `/updates/dkms/` > `/kernel/` 라 거부된 DKMS 버전이 항상 선택됨.
+
+### 조치
+
+1. **probe.hexa fix** — `modules/probe.hexa:25`. ubu1 CSV 의 G 필드에 `| grep -E "^[0-9]" || echo "0,0,0"` 추가. nvidia-smi 가 stdout 으로 누설하는 에러 메시지 차단, GPU 부재 시 정상 fallback 보장. uncommitted (다음 commit 사이클).
+
+2. **forecast.hexa / label.hexa / harvest.hexa stage0 hang fix** (subagent a383c5562a07ecc13)
+   - `bulk_distinct_pids(cap)` 추가 — 단일 shell pipeline (`tail | jq -r .pid | awk '!seen[$0]++' | head -N`) 로 distinct PID 추출. 기존 hexa-level O(n²) 루프 제거.
+   - `bulk_series_for_pid` / `bulk_host_for_pid` 추가 — pid 당 1회 jq invocation (≤20회 총합) 으로 fan-out 차단.
+   - label.hexa: `bulk_load_genomes()` 단일 jq TSV extract → 1000×7×N subprocess 폭발 제거.
+   - forecast.hexa SCAN_LINES 5000→1500 (충분한 ≥8h history 보전).
+   - 자기검증: legacy helpers 보존 (synthetic input self-test 호환).
+   - Mac local 30s timeout test 통과: forecast 17.8s, label 1.9s, harvest 15.3s, peak RSS <200MB.
+
+3. **ubu2 sync + 재가동** (subagent a989bb80973db706a)
+   - ubu2 의 `~/Dev/airgenome/modules/` 는 Apr-19 본 (별도 path). diff 확인 → 3개 모두 Mac 본과 차이 → backup `*.bak.20260425` 생성 → rsync.
+   - ubu2 smoke test (Mac 보다 빠름): forecast 0.66s, label 0.05s, harvest 0.76s, all rc=0.
+   - timer 3개 재가동 + 수동 trigger: airgenome-forecast.service Main exited 0/SUCCESS in <5s.
+   - 최종 ubu2: load 0.00, mem 4.2/30Gi, swap 식는 중, stuck proc 0개.
+
+4. **Mac runaway kill** — direct
+   - PID 6121 (round=1) + 41441 (round=2) + 4 wrapper sh 프로세스 SIGTERM/KILL.
+   - swap 18Gi → 1.7Gi (macOS dynamic swap 자동 축소).
+   - load 434 → 9.02 (1m, 5분 내).
+   - blowup verify 0개 잔존.
+
+5. **ubu1 NVIDIA — 부분 진행, 명시 boundary 에서 정지** (subagents ae00b0086f519734d → a6b446c995706cb0c)
+   - `dpkg-reconfigure linux-modules-nvidia-580-6.17.0-22-generic` + `depmod -a` 실행. modprobe 검색 우선순위 미변동 — modinfo 여전히 `/updates/dkms/` (rc=stalled).
+   - `dkms remove nvidia/580.126.09 -k 6.17.0-22-generic` 실행 → DKMS .ko.zst 제거. modinfo 가 `/lib/modules/.../kernel/nvidia-580/nvidia.ko` (Canonical signer) 로 정상 점프.
+   - `modprobe nvidia_drm` 성공, 5개 모듈 모두 load (`nvidia, nvidia_modeset, nvidia_drm, nvidia_uvm, nvidia_peermem`).
+   - **그러나 dmesg**: `NVRM: GPU 0000:01:00.0 ... requires use of the NVIDIA open kernel modules. RmInitAdapter failed! (0x22:0x56:884)`. `nvidia-smi` → "No devices were found".
+   - 원인: 하드웨어가 RTX 5xxx (Blackwell, 10de:2f04) — open-flavor 모듈 강제. 현재 load 된 Canonical-signed prebuilt 는 PROPRIETARY flavor. 필요 패키지 `linux-modules-nvidia-580-open-6.17.0-22-generic` 미설치.
+   - 다음 step: `apt remove proprietary` + `apt install open` — 사용자 승인 대기 (apt 레벨 변경은 boundary 외).
+
+### 결과
+
+| host | load (1m) | mem | swap | dispatch role |
+|------|-----------|-----|------|---------------|
+| mac | 9.02 | normal | 1.7/3Gi | mac_only (AG6 enforced) |
+| ubu1 | 0.12 | 5.9/30Gi | 0.5/8Gi | compute/gpu(50)/heavy 후보 |
+| ubu2 | 0.00 | 4.2/30Gi | 5.5/8Gi (식는중) | compute/heavy 후보 |
+| htz | 0.02 | 4.8/124Gi | - | compute/heavy 후보 |
+
+dispatch_state.selection: compute=ubu1, gpu=ubu1, heavy=ubu1 (이전: 전부 htz only). 4-host 풀 정상화.
+
+### 남은 과제
+
+- **AG-PROBE-NVIDIA-FIX commit** — `modules/probe.hexa` 단일 라인 변경 (uncommitted).
+- **ubu1 NVIDIA Blackwell open flavor 전환** (apt install/remove, 사용자 승인 필요).
+- **forecast/harvest/label timer 재발 hang regression watch** — backup `.bak.20260425` 보존, 수일 내 재가동 안정성 확인.
+- **drill dispatch fallback 정책 점검** — ubu1 offline 시 Mac 로 fallback 가능했던 경로 차단 (AG6 strict gate 가 작동하지 않은 이유 조사 필요).
+- **hexa-lang stage0 list-concat O(n²)** — airgenome 측 회피 완료, lang 측 근본 fix 는 별도 proposal (hxa).
+
+### 참여 subagents
+
+- a87d8dda9bfcd9379 (ubu1 NVIDIA 진단)
+- a383c5562a07ecc13 (hexa stage0 fix — Mac 측)
+- ae00b0086f519734d (ubu1 NVIDIA dpkg-reconfigure 시도)
+- a989bb80973db706a (ubu2 sync + timer 재가동)
+- a6b446c995706cb0c (ubu1 NVIDIA dkms remove)
+- 그 외 Mac 안정화 진단 + Explore 1회

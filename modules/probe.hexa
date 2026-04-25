@@ -22,7 +22,7 @@ fn ts_iso() -> str {
 }
 
 fn probe_ubu_csv() -> str {
-    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes ubu1 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); M=$(free -m | awk \"/^Mem:/{t=\\$2; a=\\$7; print t \\\",\\\" (t-a)}\"); G=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d \" \"); echo \"$L,$M,$G\"' 2>/dev/null"
+    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes ubu1 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); M=$(free -m | awk \"/^Mem:/{t=\\$2; a=\\$7; print t \\\",\\\" (t-a)}\"); G=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d \" \" | grep -E \"^[0-9]\" || echo \"0,0,0\"); echo \"$L,$M,$G\"' 2>/dev/null"
     return exec(cmd).trim()
 }
 
