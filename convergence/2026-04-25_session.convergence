@@ -348,3 +348,5 @@ dispatch_state.selection: compute=ubu1, gpu=ubu1, heavy=ubu1 (이전: 전부 htz
 - a989bb80973db706a (ubu2 sync + timer 재가동)
 - a6b446c995706cb0c (ubu1 NVIDIA dkms remove)
 - 그 외 Mac 안정화 진단 + Explore 1회
+
+# @convergence date=2026-04-25 event=airgenome_scope_reduction_done keep=mac-local-probes+claude-pool-monitor+local-drill-helpers remove=cross-host-ssh-wrappers+forecast/dispatch/genome_merge+multi-host-roster+docker--H-ssh-paths receiver=hive(.resource+docker-exec+resource_scorer+workload_router+load_balancer) proof=grep_ssh_returns_no_runtime_paths
