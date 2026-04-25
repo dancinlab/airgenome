@@ -1,10 +1,10 @@
 {
   "_meta": {
     "name": "airgenome 프로젝트 규칙",
-    "description": "minimal — gates (modules/filters/process) + filters (modules/filters/data) only",
+    "description": "minimal — data filters only (byte-reinterpret, 상시, no kill)",
     "updated": "2026-04-25",
     "project": "airgenome",
-    "scope": "minimal — gates/filters only post 2026-04-25 reduction"
+    "scope": "minimal — data filters only post 2026-04-25 reduction. process gates 제거 ('no kill' directive). cross-host execution → hive."
   },
   "rules": [
     {
@@ -233,6 +233,12 @@
     },
     {
       "id": "AG11",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "N/A — airgenome inbox 자체 부재 (state/ 디렉토리 minimal reduction 으로 제거)",
+        "reason": "airgenome 미니멀 reduction — state/proposals/inventory.json 삭제. 본 repo 는 외부 작업 수신 책임 없음 (data filter 자체완결)."
+      },
       "rule": "inbox preflight — 모든 [CMD] go 시 자기 repo 의 state/proposals/inventory.json 최상위 pending 1개를 자동 노출. 블로킹 없음 — 정보만. 새 세션에서도 maintainer 가 상대 repo 요청을 즉시 발견하도록.",
       "level": "🔴",
       "enforcement": "$HEXA_LANG/gate/prompt_scan.hexa 에서 matched=='go' 분기 내 proposal_inbox next --repo $(basename $proj_root) 호출. SSOT: $HEXA_LANG/tool/proposal_inbox.hexa",
@@ -313,16 +319,15 @@
         ]
       },
       "A_process_gate": {
+        "status": "superseded",
+        "superseded": {
+          "date": "2026-04-25",
+          "by": "N/A — directive '필터는 상시, no kill, 오로지 데이터 재해석'",
+          "reason": "process gate 는 kill/recall 액션 → 'no kill' directive 위반. modules/filters/process/* 6개 전부 제거."
+        },
         "description": "Mac 프로세스 관찰 → 자원 회수 추천",
         "pattern": "ps census → context reinterpret → JSONL recommendation",
-        "implementations": [
-          "modules/filters/process/safari.hexa",
-          "modules/filters/process/claude.hexa",
-          "modules/filters/process/memo.hexa",
-          "modules/filters/process/finder.hexa",
-          "modules/filters/process/mail.hexa",
-          "modules/filters/process/calendar.hexa"
-        ]
+        "implementations": []
       },
       "B_host_balancing": {
         "status": "superseded",

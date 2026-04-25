@@ -1,16 +1,12 @@
 # airgenome
 
-**Minimal scope — gates + filters only.**
+**Minimal — data filters only (byte-reinterpret, 상시, no kill).**
 
-Mac process gates (`modules/filters/process/*`) + byte-reinterpret filters (`modules/filters/data/*`).
-
-Cross-host execution, supervisor, harvest/label/probe/throttle, drill helpers, governance scanners — all migrated to [hive](https://github.com/need-singularity/hive) (`~/core/hive`, `/resource` menu).
+`modules/filters/data/*` — raw bytes → reencoded bytes. No process kill, no recall, no orchestration. 상시 동작 데이터 재해석 계층만.
 
 ## Layout
 
 ```
-modules/filters/process/   # mac process gates — ps census → recall recommendation
-  safari.hexa  claude.hexa  finder.hexa  memo.hexa  mail.hexa  calendar.hexa
 modules/filters/data/      # byte-reinterpret filters — raw → reencoded
   claude_bytes.hexa        — session-constant extraction (JSONL → reduced JSONL)
   claude_quantum.hexa      — entanglement drop (JSONL → qjsonl.gz)
@@ -21,23 +17,27 @@ modules/filters/data/      # byte-reinterpret filters — raw → reencoded
   sqlite_vacuum.hexa       — VACUUM page repack (sqlite → compacted)
   vacuum_watcher.hexa      — vacuum watcher
   quantum_bench.hexa       — quantum filter bench
-rules/                     # governance SSOT (active: AG5/AG10/AG11)
+rules/                     # governance SSOT (active: AG5, AG10)
 archive/v1/                # frozen — v1 시점 전체 (read-only)
 ```
 
 ## Run
 
 ```bash
-hexa run modules/filters/process/safari.hexa
 hexa run modules/filters/data/claude_bytes.hexa
 ```
 
+## Out of scope
+
+- Process kill / recall (process gates 제거됨 — 'no kill' directive)
+- Cross-host execution → see `~/core/hive` (`/resource list|score|route|ping`)
+- Supervisor / probe / harvest / label / drill — hive 이관
+
 ## History
 
-- 2026-04-25 미니멀 reduction — gates+filters 만 잔존. supervisor/probe/harvest/label/predictive_throttle/scanners/tool/launchd/bin 전체 제거.
-- 2026-04-25 scope-reduce — cross-host (ubu1/ubu2/hetzner) 책임 hive 이관.
-- AG6/AG7/AG2/AG3/AG4/AG8/AG9/AG1/AG12 — superseded (cross-host enforcement 책임 hive 이관).
+- 2026-04-25 데이터 필터 only — process/* 제거 ('no kill' directive). AG11 superseded.
+- 2026-04-25 미니멀 reduction — gates+filters 만 잔존.
+- 2026-04-25 scope-reduce — cross-host 책임 hive 이관.
 
-## Cross-host
-
-See `~/core/hive` → `/resource list|score|route|ping`.
+active rules: AG5 (filter taxonomy), AG10 (no hooks/skills)
+superseded: AG1/AG2/AG3/AG4/AG6/AG7/AG8/AG9/AG11/AG12 (cross-host + inbox 책임 외부 이관)
