@@ -63,10 +63,10 @@
 # - H100 idle pod stopped: $2.99/hr → $0/hr ($143 낭비 회수)
 #
 # ─── airgenome context (MAIN = ops pipeline) ───
-# airgenome 는 hybrid MAIN 의 ops infrastructure (probe/dispatch/harvest/label/forecast) 를
-# 공급하며, MAIN 학습/승급 run 의 관찰·제어 substrate.
-# operational milestones M7-M12 (현재 config/roadmap/airgenome.json) +
-# 연장 M13-M25 가 hybrid P1-P3 에 mapping 된다.
+# airgenome = mac-local resource manager (probe / harvest / label / predictive_throttle).
+# Cross-host ops infrastructure (dispatch / forecast / genome_merge / drill orchestration)
+# 는 ~/core/hive 로 이관됨 (.resource SSOT + /resource menu + docker-exec channel).
+# scope-reduce 2026-04-25 — M2/M3/M6/M7/M8/M9/M10/M11/M14-M25 entries 는 dropped.
 # anima = framework home, hexa-lang = language substrate.
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -82,7 +82,8 @@
 #     depends-on    <id>
 #     reaches       <CPID[,CPID...]>
 #
-# status (locked, 5): planned active done blocked deferred
+# status (locked, 6): planned active done blocked deferred dropped
+# - dropped: 책임 자체가 다른 시스템으로 이관되어 본 repo 에서는 추적하지 않음 (e.g. cross-host → hive)
 
 # ─── checkpoints (ops convergence) ───────────────────────────────────
 
@@ -124,7 +125,7 @@ roadmap 2 done "M1 L0 guard parse-check 추가 — phantom 차단"
   note           원본 l0_guard.hexa 는 2026-04-14 nexus refactor 로 archive/superseded-20260414/l0_guard.hexa 이동 — 기능은 pre_tool_guard/cmd_gate 로 흡수, M1 exit criteria 달성 상태 유지
   depends-on     1
 
-roadmap 3 done "M2 probe — Mac/원격 vitals 수집"
+roadmap 3 dropped "M2 probe — cross-host vitals migrated to hive"
   track          probe
   phase          P1
   eta            2026-04-14
@@ -136,7 +137,7 @@ roadmap 3 done "M2 probe — Mac/원격 vitals 수집"
   depends-on     1,2
   reaches        CP1
 
-roadmap 4 done "M3 dispatch — infra_state 기반 호스트 선택"
+roadmap 4 dropped "M3 dispatch — host selection migrated to hive workload_router"
   track          dispatch
   phase          P1
   eta            2026-04-15
@@ -168,7 +169,7 @@ roadmap 6 done "M5 label — T15 semantic labeling (anomaly → behavior)"
   proof          modules/label.hexa
   depends-on     5
 
-roadmap 7 done "M6 forecasting v3.0 — 7d genome 추세 → 1h 예측"
+roadmap 7 dropped "M6 forecasting v3.0 — 3-host genome 합성 입력 의존; mac-only 재설계는 별도 milestone"
   track          forecast
   phase          P1
   eta            2026-04-19
@@ -181,7 +182,7 @@ roadmap 7 done "M6 forecasting v3.0 — 7d genome 추세 → 1h 예측"
 
 # ─── active milestones (MAIN P1 feed) ─────────────────────────────
 
-roadmap 8 active "M7 launchctl bootstrap — 5 plist 자동화 실가동"
+roadmap 8 dropped "M7 launchctl bootstrap — 5 plist 중 3개 cross-host (probe/dispatch/forecast); mac-only 3 plist 만 잔존"
   track          ops
   phase          P1
   eta            2026-04-25
@@ -192,7 +193,7 @@ roadmap 8 active "M7 launchctl bootstrap — 5 plist 자동화 실가동"
   reaches        CP1
   feeds-main     P1
 
-roadmap 9 active "M8 end-to-end chain 실데이터 검증"
+roadmap 9 dropped "M8 end-to-end chain — 5-stage cross-host pipeline 자체 폐기"
   track          ops
   phase          P1
   eta            2026-04-27
@@ -203,7 +204,7 @@ roadmap 9 active "M8 end-to-end chain 실데이터 검증"
   reaches        CP1
   feeds-main     P1
 
-roadmap 10 planned "M9 per-process axes 실측 (gpu/npu/power/io placeholder 0 제거)"
+roadmap 10 dropped "M9 per-process axes — cross-host gpu/npu/power 측정은 hive resource_scorer 가 흡수"
   track          harvest
   phase          P2
   eta            2026-05-10
@@ -214,7 +215,7 @@ roadmap 10 planned "M9 per-process axes 실측 (gpu/npu/power/io placeholder 0 �
   reaches        CP2
   feeds-main     P2
 
-roadmap 11 planned "M10 forecast real eval — 7d 누적 후 held-out MAE"
+roadmap 11 dropped "M10 forecast real eval — forecast 모듈 자체 dropped (M6 의존)"
   track          forecast
   phase          P2
   eta            2026-05-20
@@ -225,7 +226,7 @@ roadmap 11 planned "M10 forecast real eval — 7d 누적 후 held-out MAE"
   reaches        CP2
   feeds-main     P2
 
-roadmap 12 planned "M11 cross-host genome 합성 (호스트별 ring → 통합 view)"
+roadmap 12 dropped "M11 cross-host genome 합성 — hive .resource SSOT + workload_router 가 cross-host view 책임"
   track          forecast
   phase          P2
   eta            2026-05-25
@@ -258,7 +259,7 @@ roadmap 14 planned "M13 hook framework — self-hosted event bus 확장"
   depends-on     9
   feeds-main     P2
 
-roadmap 15 planned "M14-M20 ops convergence (skeleton)"
+roadmap 15 dropped "M14-M20 ops convergence — cross-host pager/anomaly/ring archive 는 hive 관할"
   track          ops
   phase          P2
   eta            2026-Q3
@@ -268,7 +269,7 @@ roadmap 15 planned "M14-M20 ops convergence (skeleton)"
   depends-on     11,12
   feeds-main     P2
 
-roadmap 16 planned "M21-M25 AGI-ready ops (skeleton)"
+roadmap 16 dropped "M21-M25 AGI-ready ops — L3 collective observer / Φ realtime monitor 등 hive substrate 로 이관"
   track          ops
   phase          P3
   eta            2026-Q4
@@ -278,3 +279,18 @@ roadmap 16 planned "M21-M25 AGI-ready ops (skeleton)"
   depends-on     13,15
   reaches        FINAL
   feeds-main     P3
+
+# ─── scope-reduction milestone (2026-04-25) ───────────────────────────────
+
+roadmap 17 active "M26 mac-local resource manager — scope-reduce-20260425"
+  track          ops
+  phase          P0
+  eta            2026-04-25
+  why            cross-host 책임을 hive 로 이관 (.resource SSOT + /resource menu + docker-exec channel + hexa-lang resource_scorer/workload_router/load_balancer). airgenome 은 mac CPU/RAM/disk/battery/docker/claude-pool 전담.
+  exit_criteria  bin/airgenome --help mac-only + 10 cross-host plist disabled + grep_ssh_returns_no_runtime_paths
+  proof          .convergence event=airgenome_scope_reduction_done
+  reaches        scope-reduce-mac-only
+
+# ─── checkpoint (scope-reduction) ─────────────────────────────────────────
+
+# - done [scope-reduce-mac-only] airgenome reduced to mac-local resource management; cross-host migrated to hive  2026-04-25
