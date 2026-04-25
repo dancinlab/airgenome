@@ -197,6 +197,30 @@
       "applies_to": "전 repo (airgenome/anima/hexa-lang/nexus/n6-architecture)",
       "rationale": "proposal_inbox 체계 도입 후 새 세션에서 'go' 가 바로 동작하지 않던 문제 해결 (2026-04-23). H-NOHOOK 원칙 준수 — Claude Code hook 아닌 hexa-only 2층 구조.",
       "registered": "2026-04-23"
+    },
+    {
+      "id": "AG12-DRILL-CP-SURFACE",
+      "rule": "drill checkpoint AI surface — 보존된 nexus drill checkpoint (local /tmp/nexus_checkpoint/ + remote hetzner) 를 세션 시작 시 자동으로 prompt-scan 출력에 surface. 사용자가 수동으로 drill-progress 돌리지 않아도 AI 가 round_done 최고치를 즉시 인지. 블로킹 없음 — 정보만.",
+      "level": "🔴",
+      "enforcement": "$HEXA_LANG/gate/prompt_scan.hexa 가 git-root basename=='airgenome' 인 prompt 에서 600s TTL 캐시로 $AIRGENOME/bin/drill-progress --json 호출 → max_by(round) 추출 → '[DRILL-CP] round_done=N total=M host=H hash=... seed=...' 1줄 + resume/wipe 가이드 1줄 출력. AG10 H-NOHOOK 준수: Claude Code hook/skill 무사용, hexa-only 2층 (AG* + H-* prompt_scan) 으로 strict.",
+      "applies_to": "airgenome",
+      "ssot": "$AIRGENOME/bin/drill-progress",
+      "l0_paths": [
+        "bin/drill-progress",
+        "bin/drill-live",
+        "bin/drill-extract",
+        "$HEXA_LANG/gate/prompt_scan.hexa#check_drill_cp_surface"
+      ],
+      "trigger_keywords": [
+        "drill checkpoint surface",
+        "AG12-DRILL-CP-SURFACE",
+        "drill cp 자동 알림"
+      ],
+      "bypass": [
+        "env:AIRGENOME_DRILL_CP_QUIET=1"
+      ],
+      "rationale": "Phase C drill checkpoint 보존 mechanism (drill-progress + drill-live --resume) 은 데이터를 잃지 않지만, 새 Claude Code 세션이 그 사실을 모르면 무용지물. 결정적 surface 가 없으면 AI 가 'data lost' 로 오해. 2026-04-25 사용자 directive: AI 가 세션 시작 시 자동 인지 必",
+      "registered": "2026-04-25"
     }
   ],
   "filter_taxonomy": {
