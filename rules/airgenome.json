@@ -57,12 +57,19 @@
     },
     {
       "id": "AG6",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "hive .resource SSOT + workload_router (cross-host execution 책임 이관)",
+        "reason": "airgenome scope-reduce — cross-host alive-check 가 본 repo 책임에서 빠짐. mac compute 절제 정책은 hive 가 docker-exec 채널 + resource_scorer 로 흡수.",
+        "evidence": "PR #77 — modules/filters/process/compute.hexa + scripts/com.airgenome.compute-filter.plist 삭제"
+      },
       "log_tracked": true,
       "rule": "원격(ubu1/htz/hetzner) 자원 1개 이상 가용 시 Mac heavy compute 절대 0 — blowup/시드/탐색 등 compute 프로세스 즉시 강제 종료. Mac 은 오케스트레이션/UI/모니터링 전용",
       "level": "⛔⛔⛔",
-      "enforcement": "modules/filters/process/compute.hexa 가 30s 주기 launchd (com.airgenome.compute-filter) 로 실행. (1) check_remote(ubu1/htz/hetzner) — alive 1+ 시 (2) pgrep -af hexa → BLACKLIST 필터 (3) TERM 3s → KILL 잔존. BLACKLIST 는 2026-04-22 복귀 시 emptied — dry-run + enforce 검증 후 blowup/seed 엔트리 복원 예정. WHITELIST: launcher_cap/menubar/sampler/ag3_*/infra_probe/auto_dispatch/resource_*/detector/growth_bus/genome_*/session_*/usage_refresh/ramdisk/sync_remote/forge_sync_hetzner/cl.hexa/log_rotate/auto_vacuum/compute_filter/ubu_hexa_guard/ubu_bridge/implant/guard/gate_*. unknown 은 log only (보수). remote 전부 down 시에도 strict 모드 (R-MAC-01) 유지 — 배터리/열 보호.",
+      "enforcement": "[SUPERSEDED 2026-04-25] 본 enforcement 경로 (compute.hexa + compute-filter.plist) 는 scope-reduce 로 제거됨. 동등 정책은 hive 의 .resource scoring + workload_router dispatch 가 흡수.",
       "ossified": "2026-04-12",
-      "applies_to": "airgenome",
+      "applies_to": "airgenome (historical) → hive (active)",
       "trigger_keywords": [
         "자원연결된게 있으면",
         "remote available then mac zero",
@@ -70,20 +77,24 @@
         "Mac Compute ZERO",
         "compute filter"
       ],
-      "ssot": "modules/filters/process/compute.hexa",
-      "l0_paths": [
-        "modules/filters/process/compute.hexa",
-        "scripts/com.airgenome.compute-filter.plist"
-      ],
+      "ssot": "[migrated] hive/.resource + ~/core/hexa-lang/tool/resource_scorer.hexa",
+      "l0_paths": [],
       "user_directive": "이부분부터 자원연결된게 있으면 mac 자원은 쓰지 않는다 / 1 규칙으로 등록 / 코어부터 만들고 / L0 스크립트로 고정 / 골화 진행"
     },
     {
       "id": "AG7",
+      "status": "superseded",
+      "superseded": {
+        "date": "2026-04-25",
+        "by": "hive load_balancer.hexa + workload_router.hexa + lb-dispatch.ts",
+        "reason": "airgenome scope-reduce — cross-host scoring/dispatch 책임 이관. modules/load_balancer.hexa 는 사전 세션에서 이미 제거됨, AG7 enforcement 경로 dead.",
+        "evidence": "hive commits 26206bd16 + a3456e668 + 4c4848c19 — .resource SSOT + lb-dispatch + docker-exec channel"
+      },
       "rule": "자원 풀 실시간 로드밸런싱 — infra_state.json (60s fresh) 기반 호스트별 score 계산 → task type(gpu_heavy/cpu_heavy/realtime_gpu/io_heavy) 별 best-fit 호스트 선택 → dispatch_state.json 에 기록. Consumers(auto_dispatch/ubu_bridge) 는 정적 하드코딩 recommendation 대신 dispatch_state.best 참조 의무. AG6 R-MAC-01 준수: Mac 은 host pool 제외.",
       "level": "⛔⛔",
-      "enforcement": "modules/load_balancer.hexa 가 30s 주기 launchd (com.airgenome.load-balancer) 로 실행. Score = cpu_free*w_cpu + ram_free*w_ram + gpu_free*w_gpu + lan_bonus. Weights: gpu_heavy(1,2,5), cpu_heavy(5,2,0), realtime_gpu(1,2,3)+lan30, io_heavy(1,3,0)+lan20. LAN bonus 는 ubu1(local) vs hetzner(WAN) 차별. dispatch_state.json 출력: hosts free% + best{task_type:{host,score}}. 최초 검증 (2026-04-12): 전부 ubu1 선택 — ubu1 idle (load 0.08) vs hetzner busy (load 12.87).",
+      "enforcement": "[SUPERSEDED 2026-04-25] modules/load_balancer.hexa 경로는 dead. 동등 기능은 ~/core/hexa-lang/tool/{resource_scorer,workload_router,load_balancer}.hexa + hive lb-dispatch.ts 가 흡수.",
       "ossified": "2026-04-12",
-      "applies_to": "airgenome",
+      "applies_to": "airgenome (historical) → hive (active)",
       "trigger_keywords": [
         "자원들 연결 로드밸런싱",
         "load balancer",
@@ -91,11 +102,8 @@
         "dispatch_state",
         "best-fit host"
       ],
-      "ssot": "modules/load_balancer.hexa",
-      "l0_paths": [
-        "modules/load_balancer.hexa",
-        "scripts/com.airgenome.load-balancer.plist"
-      ],
+      "ssot": "[migrated] ~/core/hexa-lang/tool/load_balancer.hexa",
+      "l0_paths": [],
       "user_directive": "이제 자원들 연결해줘 로드밸런싱 / 추천순서 (B → A → C)"
     },
     {
