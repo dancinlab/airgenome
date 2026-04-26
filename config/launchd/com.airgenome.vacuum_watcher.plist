@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        com.airgenome.vacuum_watcher
+        ============================
+        airgenome owns mac-only local resource management (post hive
+        cross-host migration). vacuum_watcher polls Safari + Notes
+        sqlite databases and runs sqlite_byte_reinterpret VACUUM when:
+          (1) the source app is NOT running, AND
+          (2) >24h has elapsed since the last VACUUM (state file
+              ~/.airgenome/auto_vacuum.state).
+
+        Cadence: hourly (3600s). The internal 24h cooldown gates
+        whether anything actually happens; hourly tick is just a
+        cheap probe — typical work happens at most once/day per DB.
+
+        Manual bootstrap (sandbox EPERM may block automated load):
+          launchctl bootstrap gui/$(id -u) \
+            /Users/ghost/core/airgenome/config/launchd/com.airgenome.vacuum_watcher.plist
+          launchctl enable gui/$(id -u)/com.airgenome.vacuum_watcher
+          launchctl kickstart -k gui/$(id -u)/com.airgenome.vacuum_watcher
+
+        Unload:
+          launchctl bootout gui/$(id -u)/com.airgenome.vacuum_watcher
+    -->
+
+    <key>Label</key>
+    <string>com.airgenome.vacuum_watcher</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/core/hexa-lang/hexa</string>
+        <string>run</string>
+        <string>/Users/ghost/core/airgenome/modules/filters/data/vacuum_watcher.hexa</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ThrottleInterval</key>
+    <integer>300</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/.airgenome/vacuum_watcher.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/.airgenome/vacuum_watcher.stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost/core/airgenome</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+    </dict>
+
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
