@@ -3,7 +3,7 @@
 # 24h 경과 후 수동 실행. 출력: PASS/FAIL per criterion + overall verdict
 
 set -u
-AG=/Users/ghost/Dev/airgenome
+AG=/Users/ghost/core/airgenome
 SAMPLES=$AG/forge/e2e_samples.jsonl
 CRITERIA=$AG/shared/config/e2e_acceptance.jsonl
 

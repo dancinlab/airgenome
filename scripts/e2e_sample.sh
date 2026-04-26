@@ -4,8 +4,8 @@
 # 출력: forge/e2e_samples.jsonl append-only
 
 set -u
-AG=/Users/ghost/Dev/airgenome
-NX=/Users/ghost/Dev/nexus
+AG=/Users/ghost/core/airgenome
+NX=/Users/ghost/core/nexus
 LOG=/Users/ghost/.airgenome
 OUT=$AG/forge/e2e_samples.jsonl
 
