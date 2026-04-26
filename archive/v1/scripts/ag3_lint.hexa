@@ -1,5 +1,9 @@
 // airgenome/scripts/ag3_lint.hexa — AG3 정적 린터 (pre-commit 훅 대상)
 //
+// @historical 2026-04-21 — replaced by hexa-lang/gate/pre_tool_guard.hexa per resource-mgmt pivot
+//   P1-P7 enforcement now owned by hexa-lang gate (cross-repo SSOT).
+//   This file is preserved for audit; do not invoke from new code paths.
+//
 // ═══════════════════════════════════════════════════════════════════════
 //  금지 패턴 스캐너. 위반 발견 시 exit 1 → 커밋 차단.
 //  스펙: docs/superpowers/specs/2026-04-09-ag3-policy-enforcement-design.md §5
