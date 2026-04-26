@@ -35,29 +35,42 @@ let STATE_PAYLOAD = "import sys,os,json,time\n" +
 "elif op=='dump':\n" +
 "    print(json.dumps(st,indent=2))\n"
 
+fn safe_int(s: string, default: int) -> int {
+    if len(s) == 0 { return default }
+    let mut i = 0
+    while i < len(s) {
+        let ch = s.substring(i, i+1)
+        if ch < "0" || ch > "9" {
+            if !(i == 0 && ch == "-") { return default }
+        }
+        i = i + 1
+    }
+    return to_int(s)
+}
+
 fn state_op(op: string, key: string) -> string {
-    let tmp = "/tmp/av_state_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    let tmp = "/tmp/av_state_" + exec("date +%s%N").trim() + ".py"
     write_file(tmp, STATE_PAYLOAD)
     let cmd = "/usr/bin/python3 '" + tmp + "' '" + STATE_PATH + "' " + op + " '" + key + "' 2>&1; rm -f '" + tmp + "'"
-    return try { exec(cmd).trim() } catch e { "" }
+    return exec(cmd).trim()
 }
 
 fn now_epoch() -> int {
-    let s = try { exec("date +%s").trim() } catch e { "0" }
-    return try { s.to_int() } catch e { 0 }
+    let s = exec("date +%s").trim()
+    return safe_int(s, 0)
 }
 
 fn is_running(proc_name: string) -> bool {
-    let out = try { exec("pgrep -x '" + proc_name + "' 2>/dev/null; true").trim() } catch e { "" }
+    let out = exec("pgrep -x '" + proc_name + "' 2>/dev/null; true").trim()
     return len(out) > 0
 }
 
 fn file_size(path: string) -> string {
-    return try { exec("stat -f%z '" + path + "' 2>/dev/null || echo 0").trim() } catch e { "0" }
+    return exec("stat -f%z '" + path + "' 2>/dev/null || echo 0").trim()
 }
 
 fn fmt_mb(bytes_str: string) -> string {
-    let b = try { bytes_str.to_int() } catch e { 0 }
+    let b = safe_int(bytes_str, 0)
     let mb = b / 1024 / 1024
     return to_string(mb) + " MB"
 }
@@ -76,7 +89,7 @@ fn check_and_vacuum(label: string, proc_name: string, db_path: string, dry: bool
     println("  running=" + to_string(running))
 
     let last_str = state_op("get", label)
-    let last = try { last_str.to_int() } catch e { 0 }
+    let last = safe_int(last_str, 0)
     let age = now_epoch() - last
     println("  last_vacuum_epoch=" + to_string(last) + "  age_sec=" + to_string(age))
 
@@ -97,7 +110,7 @@ fn check_and_vacuum(label: string, proc_name: string, db_path: string, dry: bool
     println("  APPLY: running sqlite_byte_reinterpret --apply …")
     let cmd = "hexa run '" + REINTERPRET + "' '" + db_path + "' --apply 2>&1"
     // R17: timeout 120s — prevent hang on VACUUM operation
-    let out = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
+    let out = exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'")
     print(out)
 
     if out.contains("APPLIED") {
