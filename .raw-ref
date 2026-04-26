@@ -1,0 +1,20 @@
+# .raw-ref — canonical hive .raw mirror pin (raw#0 P4)
+# Created 2026-04-26 in main branch following hive-migration policy.
+# airgenome local 35-rule .raw retired (legacy reservoir; hive 83-rule
+# superset slug-diff confirmed empty airgenome-only). .raw file rm at
+# root after OS-level uchg release; .gitignore line 89 keeps it untracked.
+# Migration commit reference: hive 555fab7b0 ("cross-repo migrate raw#33->hive").
+# Re-sync: ./hexa tool/raw_sync.hexa check (hexa-lang owns the tool).
+
+ref 1 live "hive canonical (airgenome)"
+  source github.com/need-singularity/hive
+  branch main
+  path .raw
+  pinned-hash 555fab7b00a9423317c5f7c963cbf59308f63d75
+  checked-at 2026-04-26T15:35:00Z
+  prev-source github.com/need-singularity/hexa-lang
+  prev-pinned-hash TO_BE_FILLED_ON_FIRST_SYNC
+  prev-checked-at 2026-04-22T15:58:30Z
+  note Earlier .raw-ref existed in branch fix/roadmap-2-note (PR #76) but did
+  note not survive into origin/main; this file restores the follower pin
+  note directly on main with hive as the canonical source.
