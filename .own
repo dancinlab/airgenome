@@ -1,0 +1,124 @@
+# airgenome /.own — L1 project-local (4 rules)
+# SSOT — 프로젝트 고유 절대 규칙. L0(hexa-lang /.raw) 와 병렬, 독립 id namespace.
+# 포맷 스펙: hexa-lang self/raw_loader.hexa (L0 와 동일 문법)
+#
+# Bootstrap 2026-04-28 — a356c461 verdict BLOCKED 해소 (sister-repo /.own
+# mirror propagation 60% 3/5 → 80% 4/5; hexa-lang REJECTED 만 잔여,
+# parser-self-host scope intentional). raw 102 ADD-new disposition.
+# anima own 7/8/9/10 (heredoc-arg-max-guard / HXC content-class topology
+# / try-revert-orthogonality wrapper / placement-axis mandate) 4-rule
+# anima→airgenome mirror with airgenome-tier scope narrowing
+# (gate-cycle = harvest/forecast/label triad). raw 20 own-monotonic
+# compliant — base raw cite + scope narrow only, no universal expansion.
+# raw 95 triad-mandate advisory tier (severity warn) for new bootstrap.
+# raw 47 cross-repo trawl-witness mandate observed.
+# raw 0 root-ssot triad: airgenome /.guide stub deferred (follow-up;
+# .raw-ref already present at airgenome root since 2026-04-26 hive
+# canonical pin).
+
+own 1 new "airgenome-local: heredoc ARG_MAX content-size guard for airgenome/modules + bin (anima own 7 mirror, airgenome scope)"
+  slug airgenome-heredoc-arg-max-guard
+  base raw 9 hexa-only + raw 137b shell-arg-max-content-guard (proposed) + anima own 7 (mirror source)
+  since 2026-04-28 (a356c461 sister-repo bootstrap propagation)
+  scope airgenome git-tracked modules/*.hexa + tool/*.hexa + bin/*.hexa with heredoc-style _write_file pattern
+  rule airgenome 의 harvest / forecast / label / dispatch / probe modules + tool 에서 heredoc `cat > <file> <<EOF + content + EOF` 패턴이 4-KB 이상 dynamic content 작성 시 native `write_file()` 빌트인 사용. Darwin ARG_MAX 1MB / Linux MAX_ARG_STRLEN 128KB cliff 위험. anima Bug 1 verdict (adc2e734) Darwin 1,044,361 bytes 측정 cliff — airgenome capture/forecast/label triad 가 dynamic-size manifest emit 빈번 (rig_trend_history append, e2e_samples.jsonl, hook audit). corpus 성장 시 silent caller-ignore (`let _r = exec(cmd)`) 위험.
+  scope HIGH-priority sites:
+    - modules/harvest.hexa (capture-stage manifest emit)
+    - modules/forecast.hexa (forecast manifest + predictive throttle output)
+    - modules/label.hexa (label-stage classification output)
+    - modules/dispatch.hexa (gate-cycle dispatch trace emit)
+    - hooks/hook_main.hexa (transcript-watcher hook bus, .hook-{observe,tools,audit}.jsonl)
+  enforcement migrate any heredoc + dynamic-content > 4 KiB to native write_file(). CI gate via hexa-lang/tool/heredoc_arg_max_lint.hexa (proposed, cross-repo) for new occurrences. raw 91 honest C3 — current measurement safe but corpus growth risk acknowledged.
+  exception small fixed-content (< 4 KiB) heredoc grandfathered for readability. annotation `// own 1: small-fixed-content` 표시.
+  bans new modules/*.hexa or tool/*.hexa adding heredoc + dynamic-content > 4 KiB without write_file() migration
+  bans assuming 64-128KB threshold without per-OS measurement (raw 91 honest C3 — measure don't guess)
+  why airgenome gate-cycle (harvest → forecast → label) 가 high-frequency manifest emit 사이트. anima Bug 1 family 가 airgenome 에 잠복 가능성 — 동일 hive `_write_file` heredoc 패턴 공유. 본 own 이 airgenome-scope 영구 차단.
+  proof anima/state/format_witness/2026-04-28_bug1_a16_verdicts.jsonl (anima Bug 1 verdict + audit pattern; airgenome inherits Darwin cliff)
+  proof airgenome/.convergence hook-bus-transcript-watcher entry (heredoc-pattern 부재 검증 — 현재 모든 hook write 가 `safe_write_file` inline fallback 경유)
+  severity warn
+  enforce-layer advisory
+  enforce-layer-rationale "advisory tier — airgenome bootstrap cycle, anima own 7 mirror with cross-repo lint as future enforce-layer 1, write_file builtin native invocation as enforce-layer 2; raw 95 triad satisfied via {advisory + future hexa-lang/tool/heredoc_arg_max_lint.hexa + native write_file builtin}"
+  note 2026-04-28 anima own 7 airgenome-mirror. Base raw + anima own cite preserved per raw 20 own-monotonic (no universal rule expansion; airgenome scope narrowing to gate-cycle modules only).
+  follow-up airgenome modules/{harvest,forecast,label,dispatch}.hexa heredoc audit (Phase post-bootstrap)
+  follow-up cross-repo hexa-lang/tool/heredoc_arg_max_lint.hexa 도입 시 airgenome CI gate 통합
+
+own 2 new "airgenome-local: gate-cycle content-class topology declaration (anima own 8 mirror, raw 142 D1, airgenome scope)"
+  slug airgenome-gate-cycle-content-class-topology
+  base raw 142 autonomous-loop-self-improvement-empirical-discoveries D1 + anima own 8 (mirror source)
+  since 2026-04-28 (a356c461 sister-repo bootstrap propagation)
+  scope airgenome 모든 압축 타깃 artifact (state/*.jsonl, forge/*.jsonl, .hook-*.jsonl, rig_trend_history.jsonl)
+  rule airgenome 내 모든 HXC 압축 대상 artifact 가 expected content class 명시 선언. capture / forecast / label 3-stage gate cycle 별 content-class 차이를 명시:
+    - **structured-ledger** (capture stage: rig_trend_history.jsonl, .hook-tools.jsonl, dispatch trace — Phase 8 closure 80% saving 가능; airgenome empirical: rig_trend_history 67% A1+A8 stacked per anima/state/format_witness/2026-04-28_airgenome_cross_repo_sweep.jsonl)
+    - **structured-event** (forecast stage: forecast manifest, predictive throttle decision log — pre-A1 raw + post-A1 stacked candidate)
+    - **mixed** (label stage: classification output + raw transcript context — multi-class window, A19 cross-file dict 후보)
+    - **text-heavy / NL** (.hook-observe.jsonl user_prompt content — A9 BPE-class)
+  enforcement raw 9 hexa-only HXC 마이그레이션 시 gate-cycle stage 별 content-class 메타 (artifact JSON header 또는 sidecar) 명시. raw 142 D1 (content-class topology determines algorithmic ceiling) airgenome-local 적용. capture-stage 는 A1+A8 80%+ 가능 검증; forecast/label 는 stage-specific 알고리즘 선택 mandatory.
+  exception 단발성 measurement / probe artifact / 1회성 dump 면제. continuous gate-cycle ledger 만 mandatory.
+  why raw 142 D1 cross-repo validation 에서 airgenome rig_trend_history 가 67% structured-ledger 자리에서 A1+A8 stacked 검증됨 (anima format_witness 2026-04-28 airgenome sweep ledger). gate-cycle 각 stage 의 content-class 가 다르므로 stage-uniform 알고리즘 선택은 비효율 (capture 66% vs label/forecast 미측정 silent 0pp 위험). content-class declaration 이 stage-specific 알고리즘 dispatch 의 metadata layer.
+  proof anima/state/format_witness/2026-04-28_airgenome_cross_repo_sweep.jsonl (rig_trend_history.jsonl 67% A1+A8, registry.jsonl 2% A1 — empirical class differentiation)
+  proof anima/state/format_witness/2026-04-28_raw142_cross_repo_validation.jsonl (cross-repo D1 surface — airgenome inherits)
+  severity warn
+  enforce-layer advisory
+  enforce-layer-rationale "advisory tier — bootstrap cycle, anima own 8 mirror; raw 95 triad satisfied via {advisory + airgenome cross-repo sweep witness measurement + future stage-tagged HXC dispatch metadata}"
+  note 2026-04-28 raw 142 D1 airgenome-local mirror. raw 47 trawl-witness 갱신 시 본 own 2 cross-reference. anima own 8 universal scope 가 아닌 airgenome gate-cycle scope 로 narrow — raw 20 monotonic compliant.
+  follow-up airgenome state ledger 에 content-class 메타 컬럼 추가 (rig_trend_history append 시 stage + content_class 필드)
+  follow-up forecast manifest + label classification output content-class 측정 (현재 capture-stage 만 측정됨)
+  follow-up Phase 10 P0 A16 도입 후 entropy-bound class 재평가 (n6 verdict 가 entropy-bound label 자체를 falsified — airgenome forecast stage 동일 재평가)
+
+own 3 new "airgenome-local: gate-cycle try-and-revert + orthogonality wrapper mandate (anima own 9 mirror, raw 142 D2/D3, airgenome scope)"
+  slug airgenome-gate-cycle-try-revert-orthogonality
+  base raw 142 D2 try-and-revert + raw 142 D3 orthogonality + anima own 9 (mirror source)
+  since 2026-04-28 (a356c461 sister-repo bootstrap propagation)
+  scope airgenome/modules/*.hexa pipeline-affecting dispatch sites (capture / forecast / label / dispatch / genome_merge / probe / predictive_throttle) + algorithm role-tag declarations
+  rule airgenome 모든 gate-cycle stage transform 적용 dispatch 가 try-and-revert wrapper 적용 + role-tag 선언:
+    - **D2 try-and-revert**: capture / forecast / label / genome_merge 의 transform-applying call 마다 trial output 생성, 비교, no improvement 시 revert. predictive_throttle decision 도 동일 (decision A vs decision B trial).
+    - **D3 orthogonality**: primary-attack roles (capture-side harvest, forecast-side prediction) vs secondary-stacking roles (label-finalizer, genome_merge framing) 분리. airgenome catalog 가 hive raw 142 catalog 와 공유되므로 동일 분리 유지.
+  enforcement modules/*.hexa 신규 dispatch 추가 시 (a) try-and-revert wrapper 패턴 (`if score(trial) > score(pre) { stage = trial }`), (b) role-tag 메타 (`@role(primary-attack | secondary-stacking | always-fire)`) 선언. raw 91 honest C3 — wrapper 없는 dispatch 는 회귀 위험 (anima Phase 8 P7 -2pp regression family).
+  exception design-stage exploration / pure measurement (no transform) artifact 면제. transform 적용 모든 사이트 mandatory.
+  bans gate-cycle algorithm dispatch without try-and-revert wrapper on transform-applying sites
+  bans best-of-N expansion without orthogonality role-tag declaration (Phase 8 P7 retired-hypothesis 재발 위험)
+  why anima own 9 / raw 142 D2+D3 cross-repo validation 에서 airgenome gate-cycle (harvest → forecast → label) 도 동일 catalog 공유 — anima_cmt v3 fallback pattern 의 airgenome-mirror 가 capture/forecast/label 각 stage 의 fallback decision 으로 자연스럽게 매핑. wrapper-less dispatch 는 airgenome 의 silent regression risk (predictive_throttle 잘못된 throttle 결정이 revert 없이 누적 시 supervisor + guard 정책 침식).
+  proof anima/state/format_witness/2026-04-28_raw142_cross_repo_validation.jsonl (cross-repo D2+D3 surface — airgenome inherits)
+  proof anima own 9 (mirror source) + anima_cmt v3 fallback pattern (try-and-revert family)
+  proof airgenome/.convergence hook-bus-transcript-watcher (cursor offset atomic mv = revert-safe pattern, try-and-revert family micro-instance)
+  severity warn
+  enforce-layer advisory
+  enforce-layer-rationale "advisory tier — bootstrap cycle, anima own 9 mirror; raw 95 triad satisfied via {advisory + airgenome modules dispatch self-test + future role-tag CI lint cross-repo}"
+  note 2026-04-28 raw 142 D2+D3 airgenome-local mirror. capture-pre-vs-post / forecast-pre-vs-post / label-pre-vs-post placement axis (own 4) 와 직교 — own 3 = role-axis (primary-attack vs secondary-stacking), own 4 = placement-axis (pre vs post). 동시 적용 시 gate-cycle dispatch dimension 분리 완성.
+  note hive A4/A8/A11/A10/A7 primary vs A12/A13/A14/A15 secondary-stacking 분리가 airgenome modules 에 그대로 적용 — capture A1+A8 stacked 측정 결과 (rig_trend_history 67%) 가 orthogonality preservation 의 empirical evidence.
+  follow-up airgenome modules/*.hexa 신규 추가 시 own 3 review checkpoint 통합
+  follow-up forecast / label stage try-and-revert wrapper audit (현재 capture A1+A8 만 wrapper-applied 검증, forecast/label 별도 측정 필요)
+
+own 4 new "airgenome-local: gate-cycle placement-axis declaration mandate (anima own 10 mirror, raw 142 D5 + raw 156 forward-spec, airgenome scope)"
+  slug airgenome-gate-cycle-placement-axis-orthogonality
+  base raw 142 D5 placement-axis paired discovery + raw 156 algorithm-placement-orthogonality-mandate + anima own 10 (mirror source)
+  since 2026-04-28 (a356c461 sister-repo bootstrap propagation; raw 156 forward-spec airgenome inherit)
+  scope airgenome/modules/*.hexa + tool/*.hexa HXC algorithm catalog dispatch sites (compression / encoding / structural-dedup / entropy-coder / context-model / dictionary / rate-coder) — gate-cycle 3-stage variant
+  rule every algorithm catalog addition / dispatch site at gate-cycle stage MUST declare explicit placement axis AND demonstrate orthogonality preservation via A/B placement saving% measurement BEFORE catalog promotion or registry merge. gate-cycle stage-pair placement mandatory:
+    - **capture-pre-vs-post** (harvest stage: pre-A1-raw vs post-A1 stripped — airgenome capture artifact e.g. rig_trend_history.jsonl)
+    - **forecast-pre-vs-post** (forecast stage: pre-prediction-raw vs post-prediction-encoded)
+    - **label-pre-vs-post** (label stage: pre-classification-raw vs post-classification-stripped)
+  rule placement axes (raw 156 canonical; airgenome inherits + gate-cycle stage variant):
+    - pre-A1-raw (operate on uncompressed input — tokenizer, raw-text BPE, raw-char freq)
+    - post-A1 (operate after structural-strip — entropy-coder, secondary structural dedup)
+    - secondary-stacking (always-fire post-best-of-N winner — finalizer, framing)
+    - cross-file (multi-corpus aggregation — A19 family shared dictionary; airgenome 의 cross-stage gate-cycle aggregation 동일 family)
+  enforcement airgenome/modules/*.hexa + tool/*.hexa new algorithm dispatch sites MUST: (a) `@placement(axis)` annotation at dispatch call site, (b) gate-cycle stage tag (`@stage(capture | forecast | label)`), (c) A/B saving% measurement vs alternative placement before promotion, (d) raw 91 honest C3 — placement-aware-evaluation 미수행 = silent 0pp delta = wasted dispatch budget (anima Phase 9 P1 A9 BPE empirical evidence: A1+A9 post-A1 stacked 13% vs A9 alone 13% = 0pp delta; airgenome 의 capture stage A1+A8 67% 가 rig_trend_history scope 측정 결과 — 다른 stage 미측정 silent risk).
+  exception design-stage prototype < 50 LoC research-only exempt until catalog promotion. pure-data-structure libraries (no placement axis) exempt.
+  bans gate-cycle algorithm catalog promotion without placement-axis declaration
+  bans gate-cycle algorithm catalog promotion without stage tag (capture / forecast / label)
+  bans 'wherever-it-runs' assumption — specific placement + stage spec mandatory
+  why agents a5240ebe + aafff73d 2026-04-28 anima-mirror Phase 9 P1 A9 BPE empirical evidence: A1 stream-prefix strip이 BPE 입력 토큰 분포 평탄화 시 BPE merge gain 소실 (post-A1 placement = silent 0pp delta), pre-A1 raw placement = 6-12pp delta 기대. raw 156 forward-spec universal mandate. airgenome gate-cycle (capture → forecast → label) 가 raw 156 canonical example 그 자체 — 각 stage 의 input 상태 가 다르므로 stage-uniform algorithm placement assumption 은 silent 0pp 위험. capture stage 측정 (rig_trend_history 67%) 만 검증됨 — forecast/label stage 별도 placement-aware 측정 필요.
+  proof anima/state/format_witness/2026-04-28_phase8_p1_anima_sweep.jsonl (anima Phase 9 P1 A9 BPE A1+A9 stacked measurement; airgenome inherits)
+  proof anima/state/format_witness/2026-04-28_airgenome_cross_repo_sweep.jsonl (capture stage rig_trend_history 67% A1+A8 — placement-axis empirical evidence at capture stage)
+  proof hive raw 156 forward-spec mandate (cross-repo universal — airgenome inherits + scope-narrows to gate-cycle)
+  proof anima own 10 (mirror source — anima/tool scope; airgenome 은 gate-cycle scope 변형)
+  severity warn
+  enforce-layer advisory
+  enforce-layer-rationale "advisory tier — bootstrap cycle + raw 156 forward-spec inherit; raw 95 triad satisfied via {advisory + airgenome cross-repo sweep measurement (capture 67%) + future stage-tagged @placement annotation CI lint}"
+  note 2026-04-28 raw 142 D5 paired discovery + raw 156 forward-spec airgenome-local mirror. raw 156 universal mandate; 본 own 4 가 airgenome-tier scope narrowing application (gate-cycle stage variant 추가). monotonic-invariant compliant per raw 20 — base raw cite (raw 142 D5 + raw 156) + anima own 10 mirror cite + scope narrowing only (universal → airgenome gate-cycle 3-stage placement variant).
+  note own 3 D2+D3 wrapper mandate 와 직교 — own 3 = role-axis (primary-attack vs secondary-stacking), own 4 = placement-axis (pre-A1 vs post-A1 vs secondary-stacking vs cross-file) + stage-axis (capture vs forecast vs label). 두 own 동시 적용 시 airgenome gate-cycle dispatch 의 dimension 분리 (role × placement × stage) 완성.
+  note airgenome 가 raw 156 forward-spec canonical example 인 이유: gate-cycle (capture → forecast → label) 자체가 placement-axis 의 frame-of-reference. capture 결과가 forecast input 이고 forecast 결과가 label input — stage 간 placement 가 sequential pipeline 전체에 영향.
+  follow-up airgenome modules/*.hexa algorithm dispatch sites 에 `@placement(axis)` + `@stage(capture/forecast/label)` annotation 일괄 후속 추가
+  follow-up forecast / label stage placement-axis 측정 (capture 만 측정됨; expected delta ranges to be empirically established)
+  follow-up tool/*.hexa algorithm catalog cross-stage placement-axis audit

@@ -278,3 +278,37 @@ roadmap 16 planned "M21-M25 AGI-ready ops (skeleton)"
   depends-on     13,15
   reaches        FINAL
   feeds-main     P3
+
+# ─── P8 — own bootstrap + raw governance paired roadmap (raw 87 mandate) ───
+
+roadmap 17 done "P8.1 airgenome /.own bootstrap — anima own 7/8/9/10 mirror (4 rules) + /.guide stub (raw 0 root-ssot triad)"
+  track          governance
+  phase          P8
+  eta            2026-04-28
+  why            a356c461 verdict BLOCKED 해소. sister-repo /.own mirror propagation 60% (3/5) → 80% (4/5); hexa-lang REJECTED (parser-self-host scope intentional). raw 102 ADD-new disposition. raw 95 triad-mandate advisory tier. raw 0 root-ssot triad — airgenome 의 .raw-ref + .own + .guide 동시 존재 검증.
+  exit_criteria  airgenome /.own (4 rules) + chflags uchg + /.guide stub + raw 47 trawl-witness ledger row + commit
+  raw-paired     raw 0, raw 1, raw 9, raw 20, raw 33, raw 47, raw 87, raw 91, raw 95, raw 102, raw 142 (D1+D2+D3+D5), raw 156
+  own-paired     airgenome own 1 (anima own 7 mirror), own 2 (anima own 8 / raw 142 D1), own 3 (anima own 9 / raw 142 D2/D3), own 4 (anima own 10 / raw 142 D5 / raw 156)
+  proof          /Users/ghost/core/airgenome/.own + /Users/ghost/core/airgenome/.guide + /Users/ghost/core/anima/state/format_witness/2026-04-28_airgenome_own_bootstrap.jsonl
+  reaches        CP3
+  feeds-main     P0
+
+roadmap 18 planned "P8.2 forecast/label stage placement-axis measurement (own 4 follow-up)"
+  track          governance
+  phase          P8
+  eta            2026-05-15
+  why            own 4 enforcement empirical evidence 보완 — capture stage 만 측정됨 (rig_trend_history A1+A8 67%); forecast / label stage 별도 placement-axis A/B 측정 mandatory. raw 156 forward-spec inherit.
+  exit_criteria  forecast.hexa + label.hexa 별 pre-A1-raw vs post-A1 saving% A/B 측정 + format_witness ledger row 기록
+  raw-paired     raw 142 D5, raw 156
+  own-paired     airgenome own 4
+  depends-on     17
+
+roadmap 19 planned "P8.3 modules/*.hexa @placement + @stage annotation 일괄 추가 (own 4 follow-up)"
+  track          governance
+  phase          P8
+  eta            2026-05-31
+  why            own 4 의 enforcement 강화 — gate-cycle algorithm dispatch 마다 @placement(axis) + @stage(capture/forecast/label) annotation 명시. raw 95 triad enforce-layer 1 자동 lint 단계 도달.
+  exit_criteria  airgenome/modules/*.hexa + tool/*.hexa 알고리즘 dispatch 사이트 100% annotated + own_lint cross-repo 통과
+  raw-paired     raw 156
+  own-paired     airgenome own 3, airgenome own 4
+  depends-on     17, 18
