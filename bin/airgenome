@@ -35,6 +35,10 @@ OFF_FLAG="$LOG_DIR/guard_off"
 CLAUDE_SNAPSHOT_DIR="$LOG_DIR/claude-sessions"
 CLAUDE_LATEST_PTR="$CLAUDE_SNAPSHOT_DIR/latest.txt"
 
+# mouse_remap (CGEventTap shim — buttons + scroll-invert for mouse wheel)
+MOUSE_REMAP_ROOT="${MOUSE_REMAP_ROOT:-$HOME/core/mouse_remap}"
+MOUSE_REMAP_LABEL="com.user.mouse-remap"
+
 mkdir -p "$LOG_DIR"
 
 log() {
@@ -642,6 +646,75 @@ HELP
 }
 
 # ============================================================
+# mouse_remap subcommand (CGEventTap shim @ ~/core/mouse_remap)
+# ============================================================
+
+cmd_mouse() {
+    local sub="${1:-status}"
+    shift || true
+    if [ ! -d "$MOUSE_REMAP_ROOT" ]; then
+        echo "[airgenome-mouse] not found: $MOUSE_REMAP_ROOT" >&2
+        echo "  set MOUSE_REMAP_ROOT or check ~/core/mouse_remap exists" >&2
+        return 2
+    fi
+    case "$sub" in
+        build)      ( cd "$MOUSE_REMAP_ROOT" && make build ) ;;
+        install)    ( cd "$MOUSE_REMAP_ROOT" && make install ) ;;
+        uninstall)  ( cd "$MOUSE_REMAP_ROOT" && make uninstall ) ;;
+        status)     ( cd "$MOUSE_REMAP_ROOT" && make status ) ;;
+        logs)       ( cd "$MOUSE_REMAP_ROOT" && make logs ) ;;
+        selftest)   ( cd "$MOUSE_REMAP_ROOT" && make selftest ) ;;
+        restart)    launchctl kickstart -k "gui/$UID_VAL/$MOUSE_REMAP_LABEL" ;;
+        rebuild)
+            ( cd "$MOUSE_REMAP_ROOT" && make build ) || return $?
+            launchctl kickstart -k "gui/$UID_VAL/$MOUSE_REMAP_LABEL" 2>/dev/null || true
+            cat >&2 <<'NOTE'
+
+[airgenome-mouse] rebuild done. NEW BINARY = NEW cdhash → macOS revoked Accessibility.
+  fix: System Settings → Privacy & Security → Accessibility →
+       remove the existing 'mouse_remap' entry → re-add the same path → toggle on
+  then: airgenome mouse restart
+NOTE
+            ;;
+        clean)      ( cd "$MOUSE_REMAP_ROOT" && make clean ) ;;
+        help|-h|--help|"")
+            cat >&2 <<'HELP'
+usage: airgenome mouse <subcommand>
+
+  build        clang → build/mouse_remap
+  install      build + plist 배치 + launchctl bootstrap
+  uninstall    bootout + plist 삭제
+  status       launchctl print → state / pid / last exit
+  logs         tail build/mouse_remap.{log,err}
+  selftest     2s foreground 실행 → sentinel 검증
+  restart      launchctl kickstart -k (Accessibility 재grant 후)
+  rebuild      build + restart (재grant 안내 출력)
+  clean        rm -rf build/
+
+기능:
+  (a) mouse button 4/5 → Cmd+[ / Cmd+]  (Finder/Safari 뒤로/앞으로)
+  (b) 마우스 휠 스크롤 방향 반전 — *마우스만*, 트랙패드는 macOS 기본 (Natural) 유지
+
+env:
+  MOUSE_REMAP_ROOT=$HOME/core/mouse_remap   (기본)
+  MOUSE_REMAP_BUTTONS=1                     button4/5 매핑 (default 1)
+  MOUSE_REMAP_SCROLL=1                      mouse-wheel 반전 (default 1)
+
+examples:
+  airgenome mouse status
+  airgenome mouse rebuild
+  airgenome mouse logs
+HELP
+            ;;
+        *)
+            echo "[airgenome-mouse] unknown: $sub" >&2
+            echo "  airgenome mouse help" >&2
+            return 2
+            ;;
+    esac
+}
+
+# ============================================================
 # entry
 # ============================================================
 
@@ -662,6 +735,7 @@ main() {
         last-session)  cmd_last_session ;;
         list|ls)       cmd_list "$@" ;;
         offload|off)   cmd_offload "$@" ;;
+        mouse|mouse-remap) cmd_mouse "$@" ;;
         guard-loop)    guard_loop ;;   # 독립 디버그용
         help|-h|--help)
             cat <<'EOF'
@@ -681,6 +755,8 @@ usage: airgenome <command>
   last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
   list [kind]    자원 목록 — hosts (live infra_state) | workspace | projects
   offload <t> <cmd...>  원격 실행 — t: ubu1|ubu2|htz (ssh alias 경유)
+  mouse <sub>    mouse_remap (CGEventTap) — build/install/status/logs/rebuild
+                   button4/5 → Cmd+[/], mouse wheel 반전 (trackpad 무관)
   guard-loop     guard 만 독립 실행 (디버그)
 
 env:
