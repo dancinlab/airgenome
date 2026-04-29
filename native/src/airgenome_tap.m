@@ -51,6 +51,9 @@
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 
 // ---------------------------------------------------------------------------
 // Configuration (env-overridable at startup)
@@ -69,9 +72,11 @@ static int g_magnet_on   = 1;
 static int g_disable_native = 1;
 static int g_debug       = 0;   // set via AIRG_TAP_DEBUG=1, logs every event
 
-// Magnet thresholds (pixels)
-static int EDGE_THRESHOLD_PX    = 20;
-static int CORNER_THRESHOLD_PX  = 40;
+// Magnet thresholds (pixels). Generous defaults for multi-monitor and
+// 4K/5K layouts -- a 20px reach feels invisible at high pixel densities.
+// User-overridable via AIRG_TAP_{EDGE,CORNER}_PX env vars.
+static int EDGE_THRESHOLD_PX    = 80;
+static int CORNER_THRESHOLD_PX  = 160;
 static int DRAG_MIN_DISTANCE_PX = 8;
 
 // Top-edge guard: while dragging, clamp the cursor's reported y coordinate
@@ -117,6 +122,44 @@ static int  g_orig_option_accel = -1;
 // Menu-bar status item -- strong reference keeps the item alive for the
 // lifetime of the process. Released in main() after [NSApp run] returns.
 static NSStatusItem *g_status_item = nil;
+
+// Snap-preview overlay -- a borderless transparent window with a white
+// outline + faint fill, shown over the screen rect that the window will
+// snap into if the drag releases right now. Strong reference keeps it
+// alive across drag cycles; orderOut hides without deallocating.
+static NSWindow *g_preview_window = nil;
+
+// Singleton lock -- prevents two airgenome processes from racing both
+// installing a menu-bar status item, which would result in two visible
+// icons in the menu bar. flock() releases automatically on process death,
+// so even SIGKILL leaves no stale lock behind.
+static int g_singleton_fd = -1;
+#define SINGLETON_LOCK_PATH "/tmp/com.airgenome.tap.lock"
+
+// ---------------------------------------------------------------------------
+// Singleton lock -- exclusive flock() on /tmp lockfile.
+// ---------------------------------------------------------------------------
+
+static int acquire_singleton_lock(void) {
+    g_singleton_fd = open(SINGLETON_LOCK_PATH, O_CREAT | O_RDWR, 0644);
+    if (g_singleton_fd < 0) {
+        return 0;
+    }
+    if (flock(g_singleton_fd, LOCK_EX | LOCK_NB) < 0) {
+        close(g_singleton_fd);
+        g_singleton_fd = -1;
+        return 0;
+    }
+    // Write our pid for diagnostic purposes.
+    char buf[32];
+    int n = snprintf(buf, sizeof buf, "%d\n", (int)getpid());
+    if (n > 0) {
+        ftruncate(g_singleton_fd, 0);
+        lseek(g_singleton_fd, 0, SEEK_SET);
+        write(g_singleton_fd, buf, (size_t)n);
+    }
+    return 1;
+}
 
 // ---------------------------------------------------------------------------
 // raw#66 ai-native error trailer + raw#80 sentinel
@@ -302,6 +345,22 @@ static CGRect ns_to_ax_rect(NSRect ns_rect) {
                       ns_rect.size.width, ns_rect.size.height);
 }
 
+// Inverse of ns_to_ax_rect -- AX rect (top-left origin) -> NSWindow rect
+// (bottom-left origin of primary screen). Used to position the snap
+// preview overlay correctly across multi-monitor layouts.
+static NSRect ax_to_ns_rect(CGRect ax_rect) {
+    NSArray<NSScreen *> *screens = [NSScreen screens];
+    if ([screens count] == 0) {
+        return NSMakeRect(ax_rect.origin.x, ax_rect.origin.y,
+                          ax_rect.size.width, ax_rect.size.height);
+    }
+    NSRect primary = [[screens objectAtIndex:0] frame];
+    CGFloat ns_y = primary.size.height
+                 - (ax_rect.origin.y + ax_rect.size.height);
+    return NSMakeRect(ax_rect.origin.x, ns_y,
+                      ax_rect.size.width, ax_rect.size.height);
+}
+
 static CGRect screen_visible_frame_at(CGPoint mouse_ax) {
     NSArray<NSScreen *> *screens = [NSScreen screens];
     for (NSScreen *sc in screens) {
@@ -314,6 +373,55 @@ static CGRect screen_visible_frame_at(CGPoint mouse_ax) {
         return ns_to_ax_rect([[screens objectAtIndex:0] visibleFrame]);
     }
     return CGRectMake(0, 0, 1280, 720);
+}
+
+// ---------------------------------------------------------------------------
+// Snap-preview overlay (white outline rectangle drawn over target zone)
+//
+// Calls into NSWindow are dispatched to the main queue because the event
+// tap callback runs on the CG event-tap thread; UI mutation must happen
+// on the main thread.
+// ---------------------------------------------------------------------------
+
+static void show_snap_preview(CGRect frame_ax) {
+    NSRect ns_frame = ax_to_ns_rect(frame_ax);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_preview_window) {
+            NSWindow *w = [[NSWindow alloc]
+                initWithContentRect:NSMakeRect(0, 0, 100, 100)
+                          styleMask:NSWindowStyleMaskBorderless
+                            backing:NSBackingStoreBuffered
+                              defer:NO];
+            w.opaque               = NO;
+            w.hasShadow            = NO;
+            w.backgroundColor      = [NSColor clearColor];
+            w.ignoresMouseEvents   = YES;
+            w.level                = NSScreenSaverWindowLevel - 1;
+            w.collectionBehavior   = NSWindowCollectionBehaviorCanJoinAllSpaces
+                                   | NSWindowCollectionBehaviorTransient
+                                   | NSWindowCollectionBehaviorIgnoresCycle;
+            w.releasedWhenClosed   = NO;
+            NSView *content = w.contentView;
+            content.wantsLayer = YES;
+            content.layer.borderColor      = [NSColor whiteColor].CGColor;
+            content.layer.borderWidth      = 4.0;
+            content.layer.cornerRadius     = 14.0;
+            content.layer.backgroundColor  = [NSColor colorWithWhite:1.0 alpha:0.08].CGColor;
+            g_preview_window = w;
+        }
+        [g_preview_window setFrame:ns_frame display:YES];
+        if (!g_preview_window.isVisible) {
+            [g_preview_window orderFrontRegardless];
+        }
+    });
+}
+
+static void hide_snap_preview(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_preview_window && g_preview_window.isVisible) {
+            [g_preview_window orderOut:nil];
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -456,6 +564,8 @@ static void magnet_on_left_down(CGEventRef event) {
         CFRelease(g_drag_window);
         g_drag_window = NULL;
     }
+    // Stale preview from a previous cycle, if any.
+    hide_snap_preview();
 }
 
 static void magnet_on_left_dragged(CGEventRef event) {
@@ -472,6 +582,20 @@ static void magnet_on_left_dragged(CGEventRef event) {
         }
     }
 
+    // Live snap-preview: classify against the REAL cursor (not the
+    // y-clamped event we are about to forward to the rest of macOS) so
+    // the user sees feedback even when their cursor is in the very
+    // edge sliver that the SPACES_GUARD_PX clamp covers.
+    if (g_dragging) {
+        CGRect vf = screen_visible_frame_at(p);
+        Zone   z  = classify_zone(p, vf);
+        if (z != ZONE_NONE) {
+            show_snap_preview(zone_to_frame(z, vf));
+        } else {
+            hide_snap_preview();
+        }
+    }
+
     // Top-edge guard: rewrite the event's y so the rest of macOS (the
     // window-drag manager and the Mission Control hover detector) never
     // sees y < SPACES_GUARD_PX. The MouseUp handler still classifies on
@@ -485,6 +609,10 @@ static void magnet_on_left_dragged(CGEventRef event) {
 }
 
 static void magnet_on_left_up(CGEventRef event) {
+    // Always tear the preview down on release, regardless of whether the
+    // snap actually fired (zone == NONE leaves no snap but we still want
+    // the overlay gone).
+    hide_snap_preview();
     if (g_dragging) {
         CGPoint mouse_ax = CGEventGetLocation(event);
         CGRect vf = screen_visible_frame_at(mouse_ax);
@@ -679,6 +807,19 @@ static void install_status_item(void) {
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     @autoreleasepool {
+        // Refuse to start if another airgenome.tap process is already alive.
+        // flock() ensures the menu-bar status item is never duplicated, even
+        // when launchd's KeepAlive tries to respawn during a slow shutdown.
+        if (!acquire_singleton_lock()) {
+            emit_ai_native_error(
+                "singleton-lock-held: another airgenome.tap process is already running",
+                "1) launchctl print gui/$(id -u)/com.airgenome.tap | grep pid  "
+                "2) check pid is alive (ps -p <pid>); if zombie, rm /tmp/com.airgenome.tap.lock  "
+                "3) re-run (no reboot needed)");
+            emit_sentinel("FAIL", "singleton-lock-held");
+            return 75;   // EX_TEMPFAIL
+        }
+
         g_buttons_on        = env_flag("AIRG_TAP_MOUSE_BUTTONS",  g_buttons_on);
         g_scroll_on         = env_flag("AIRG_TAP_MOUSE_SCROLL",   g_scroll_on);
         g_magnet_on         = env_flag("AIRG_TAP_MAGNET",         g_magnet_on);

@@ -28,7 +28,11 @@ FRAMEWORKS    = -framework ApplicationServices -framework Carbon \
                 -framework Cocoa -framework AppKit
 
 .PHONY: all build app icon install uninstall status logs selftest \
-        restart rebuild clean
+        restart rebuild clean setup-signing
+
+# One-time per-user signing cert provisioning. Idempotent.
+setup-signing:
+	@./scripts/setup_signing_cert.sh
 
 all: app
 
@@ -78,7 +82,24 @@ $(LOCAL_APP): $(BIN) $(ICON_ICNS) $(INFO_PLIST)
 	@cp $(INFO_PLIST) $(LOCAL_APP)/Contents/Info.plist
 	@cp $(ICON_ICNS)  $(LOCAL_APP)/Contents/Resources/AppIcon.icns
 	@printf 'APPLairg' > $(LOCAL_APP)/Contents/PkgInfo
-	@codesign --force --deep --sign - $(LOCAL_APP) 2>&1 | tail -1
+	@# Auto-provision a per-user self-signed code-signing cert on first
+	@# build so the .app gets a stable designated requirement (cert chain
+	@# + bundle id) instead of a per-build cdhash. Stable DR = TCC grants
+	@# (Accessibility, Input Monitoring, etc.) survive every rebuild.
+	@./scripts/setup_signing_cert.sh >/dev/null 2>&1 || true
+	@SIGN_ID=$$(security find-identity -p codesigning -v 2>/dev/null \
+	    | grep -o 'airgenome-self-signed' | head -1) ; \
+	  if [ -n "$$SIGN_ID" ]; then \
+	    codesign --force --deep --sign "$$SIGN_ID" \
+	      --identifier com.airgenome.tap \
+	      --options runtime \
+	      $(LOCAL_APP) 2>&1 | tail -1 ; \
+	    echo "  signed with: $$SIGN_ID (stable DR — TCC grant survives rebuilds)" ; \
+	  else \
+	    codesign --force --deep --sign - $(LOCAL_APP) 2>&1 | tail -1 ; \
+	    echo "  WARN: signed ad-hoc (no cert) — TCC grant will reset every rebuild" ; \
+	    echo "        run 'make setup-signing' to provision per-user cert" ; \
+	  fi
 	@xattr -cr $(LOCAL_APP) 2>/dev/null || true
 	@echo "built: $(LOCAL_APP) ($$(du -sh $(LOCAL_APP) | awk '{print $$1}'))"
 
