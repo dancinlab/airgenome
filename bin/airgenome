@@ -822,6 +822,35 @@ HELP
     esac
 }
 
+# ============================================================
+# governance — raw 91 cross-repo cli-coverage parity (2026-04-30)
+# ============================================================
+# Mirrors hive_governance.hexa Tier-A surface via tool/governance.hexa
+# wrapper. backends are cross-repo siblings (../hexa-lang, ../hive) so
+# airgenome owns no local copies. canonical entry: `airgenome governance ...`.
+cmd_governance() {
+    local mod="$AIRGENOME_ROOT/tool/governance.hexa"
+    if [ ! -f "$mod" ]; then
+        # fallback: $HOME/core/airgenome (dev workspace)
+        mod="$HOME/core/airgenome/tool/governance.hexa"
+    fi
+    if [ ! -f "$mod" ]; then
+        echo "[airgenome-governance] tool/governance.hexa missing: $mod" >&2
+        return 1
+    fi
+    # resolve hexa with fallback ($HOME/.hx/bin/hexa is canonical post-2026-04)
+    local hexa_bin="$HEXA"
+    if [ ! -x "$hexa_bin" ]; then
+        if [ -x "$HOME/.hx/bin/hexa" ]; then
+            hexa_bin="$HOME/.hx/bin/hexa"
+        else
+            hexa_bin="$(command -v hexa 2>/dev/null || true)"
+        fi
+    fi
+    [ -x "$hexa_bin" ] || die "hexa binary missing (tried HEXA + ~/.hx/bin/hexa + PATH)"
+    exec "$hexa_bin" run "$mod" "$@"
+}
+
 # Legacy aliases — forward to airgenome tap with a one-line deprecation note.
 # raw#21 deprecation pattern: keep referenceable, point to canonical.
 cmd_mouse() {
@@ -856,6 +885,7 @@ main() {
         list|ls)       cmd_list "$@" ;;
         offload|off)   cmd_offload "$@" ;;
         tap|input)     cmd_tap "$@" ;;
+        governance|gov) cmd_governance "$@" ;;
         mouse|mouse-remap)    cmd_mouse "$@" ;;    # legacy alias → cmd_tap
         magnet|window-magnet) cmd_magnet "$@" ;;   # legacy alias → cmd_tap
         guard-loop)    guard_loop ;;   # 독립 디버그용
@@ -877,6 +907,10 @@ usage: airgenome <command>
   last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
   list [kind]    자원 목록 — hosts (live infra_state) | workspace | projects
   offload <t> <cmd...>  원격 실행 — t: ubu1|ubu2|htz (ssh alias 경유)
+  governance <sub>  raw 91 cross-repo cli-coverage parity:
+                   raw triad / hexa-only / english-only / ai-config-ban /
+                   deprecated-ban (sibling backends ../hexa-lang or ../hive)
+                   --selftest 로 backend reachability 확인
   tap <sub>      airgenome native shim (단일 binary, 1 Accessibility grant):
                    (a) mouse button 4/5 → Cmd+[/]   (b) mouse wheel 반전
                    (c) 8-zone 드래그-스냅 + macOS 기본 tiling 비활성화 (종료 시 복구)
