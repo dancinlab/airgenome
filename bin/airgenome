@@ -851,6 +851,18 @@ cmd_governance() {
     exec "$hexa_bin" run "$mod" "$@"
 }
 
+# ============================================================
+# wake — RETIRED 2026-04-30 per raw 213 (cli-osascript-shell-out-os-escalation-ban-mandate)
+# ============================================================
+# Sleep prevention is now driven from the airgenome.app menubar via in-process
+# IOPMAssertionCreateWithName(kIOPMAssertionTypeNoIdleSleep) — no LaunchAgent,
+# no caffeinate indirection, no admin escalation. The legacy LaunchAgent
+# (com.airgenome.wake running caffeinate -dimsu) is auto-cleaned at first
+# launch of the new airgenome.app binary (bootout + plist rm). The CLI surface
+# `airgenome wake` is retired — use the menubar "Wake (sleep prevention)"
+# toggle. raw 169 surgical: function body + dispatch case + help line removed
+# in the same commit; no fallback shim to reduce drift surface.
+
 # Legacy aliases — forward to airgenome tap with a one-line deprecation note.
 # raw#21 deprecation pattern: keep referenceable, point to canonical.
 cmd_mouse() {
@@ -885,6 +897,7 @@ main() {
         list|ls)       cmd_list "$@" ;;
         offload|off)   cmd_offload "$@" ;;
         tap|input)     cmd_tap "$@" ;;
+        # `wake` retired 2026-04-30 per raw 213 — use airgenome.app menubar.
         governance|gov) cmd_governance "$@" ;;
         mouse|mouse-remap)    cmd_mouse "$@" ;;    # legacy alias → cmd_tap
         magnet|window-magnet) cmd_magnet "$@" ;;   # legacy alias → cmd_tap
@@ -911,6 +924,10 @@ usage: airgenome <command>
                    raw triad / hexa-only / english-only / ai-config-ban /
                    deprecated-ban (sibling backends ../hexa-lang or ../hive)
                    --selftest 로 backend reachability 확인
+  wake (RETIRED) sleep 방지 토글은 airgenome.app menubar 의 'Wake (sleep prevention)'
+                 / 'Wake when lid closed' 토글로 이전 (raw 213, 2026-04-30).
+                 in-process IOPMAssertionCreateWithName 사용 — admin auth dialog 없음.
+                 legacy LaunchAgent (com.airgenome.wake) 는 새 binary 첫 launch 시 자동 정리.
   tap <sub>      airgenome native shim (단일 binary, 1 Accessibility grant):
                    (a) mouse button 4/5 → Cmd+[/]   (b) mouse wheel 반전
                    (c) 8-zone 드래그-스냅 + macOS 기본 tiling 비활성화 (종료 시 복구)

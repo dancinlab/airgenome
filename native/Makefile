@@ -25,7 +25,7 @@ LOG_DIR       = $(HOME)/Library/Logs/$(APP_NAME).app
 
 CFLAGS        = -O2 -Wall -Wextra -ObjC
 FRAMEWORKS    = -framework ApplicationServices -framework Carbon \
-                -framework Cocoa -framework AppKit
+                -framework Cocoa -framework AppKit -framework IOKit
 
 .PHONY: all build app icon install uninstall status logs selftest \
         restart rebuild clean setup-signing
