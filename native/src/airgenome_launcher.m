@@ -71,25 +71,66 @@ void airgenome_launcher_restore_state(void);
 
 // MARK: - Stub implementations (scaffold only, raw 168 minimum-viable)
 
-// Default hotkey: ctrl+s (kVK_ANSI_S = 0x01, kCGEventFlagMaskControl).
-// Future: read from ~/Library/Application Support/airgenome/launcher.jsonl
-// for user-configurable override (raw 49 additive sister axis hotkey-binder).
-#define AIRG_LAUNCHER_HOTKEY_KEYCODE 0x01
-#define AIRG_LAUNCHER_HOTKEY_FLAGS   kCGEventFlagMaskControl
+// Default hotkey: ctrl+s. Override via env AIRG_TAP_LAUNCHER_HOTKEY.
+// Format: "modifier+letter" where modifier ∈ {ctrl,cmd,alt,shift} and letter
+// is a-z (lowercase). Examples: "cmd+space", "alt+l", "ctrl+s" (default).
+// Parse once at first hotkey check; cached for session lifetime.
+static int g_launcher_hotkey_keycode = 0x01;            // S
+static CGEventFlags g_launcher_hotkey_flags = kCGEventFlagMaskControl;
+static int g_launcher_hotkey_parsed = 0;
+
+// Map a-z lowercase letter to macOS keycode (kVK_ANSI_*). Subset only;
+// non-letter keys (space/tab/enter) deferred to future polish.
+static int airgenome_launcher_letter_to_keycode(char c) {
+    static const int map[26] = {
+        0x00, 0x0B, 0x08, 0x02, 0x0E, 0x03, 0x05, 0x04,  // a b c d e f g h
+        0x22, 0x26, 0x28, 0x25, 0x2E, 0x2D, 0x1F, 0x23,  // i j k l m n o p
+        0x0C, 0x0F, 0x01, 0x11, 0x20, 0x09, 0x0D, 0x07,  // q r s t u v w x
+        0x10, 0x06                                        // y z
+    };
+    if (c < 'a' || c > 'z') return -1;
+    return map[c - 'a'];
+}
+
+static void airgenome_launcher_parse_hotkey_env(void) {
+    if (g_launcher_hotkey_parsed) return;
+    g_launcher_hotkey_parsed = 1;
+    const char *env = getenv("AIRG_TAP_LAUNCHER_HOTKEY");
+    if (!env || !*env) return;  // keep defaults
+    NSString *spec = [[NSString stringWithUTF8String:env] lowercaseString];
+    CGEventFlags flags = 0;
+    if ([spec rangeOfString:@"ctrl"].location  != NSNotFound) flags |= kCGEventFlagMaskControl;
+    if ([spec rangeOfString:@"cmd"].location   != NSNotFound) flags |= kCGEventFlagMaskCommand;
+    if ([spec rangeOfString:@"alt"].location   != NSNotFound) flags |= kCGEventFlagMaskAlternate;
+    if ([spec rangeOfString:@"opt"].location   != NSNotFound) flags |= kCGEventFlagMaskAlternate;
+    if ([spec rangeOfString:@"shift"].location != NSNotFound) flags |= kCGEventFlagMaskShift;
+    // Last char of spec is the letter (after final '+').
+    NSRange last = [spec rangeOfString:@"+" options:NSBackwardsSearch];
+    NSString *keyPart = last.location == NSNotFound
+        ? spec
+        : [spec substringFromIndex:last.location + 1];
+    if (keyPart.length == 0 || flags == 0) return;
+    int kc = airgenome_launcher_letter_to_keycode([keyPart characterAtIndex:0]);
+    if (kc < 0) return;
+    g_launcher_hotkey_flags = flags;
+    g_launcher_hotkey_keycode = kc;
+    NSLog(@"[airgenome_launcher] hotkey override: %@ (flags=0x%llx keycode=0x%02x)",
+          spec, (unsigned long long)flags, kc);
+}
 
 BOOL airgenome_launcher_handle_keydown(CGEventRef event) {
     if (!event) return NO;
     if (CGEventGetType(event) != kCGEventKeyDown) return NO;
+    airgenome_launcher_parse_hotkey_env();
     CGEventFlags flags = CGEventGetFlags(event);
     int64_t keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
-    // Match ctrl+s exactly: control flag set, keycode = S.
     // Mask out lock/numlock/caps so we ignore irrelevant modifier state.
     CGEventFlags relevant = flags & (kCGEventFlagMaskControl
                                      | kCGEventFlagMaskCommand
                                      | kCGEventFlagMaskAlternate
                                      | kCGEventFlagMaskShift);
-    if (relevant == AIRG_LAUNCHER_HOTKEY_FLAGS
-        && keycode == AIRG_LAUNCHER_HOTKEY_KEYCODE) {
+    if (relevant == g_launcher_hotkey_flags
+        && keycode == g_launcher_hotkey_keycode) {
         airgenome_launcher_show_overlay();
         return YES;
     }
@@ -101,6 +142,7 @@ BOOL airgenome_launcher_handle_keydown(CGEventRef event) {
 static NSPanel *g_launcher_panel = nil;
 static NSTextField *g_launcher_search_field = nil;
 static NSTextField *g_launcher_status_label = nil;
+static NSImageView *g_launcher_status_icon = nil;
 static NSArray<NSURL *> *g_launcher_current_results = nil;
 static NSUInteger g_launcher_selection_index = 0;
 // App enumeration cache - populated on each show_overlay, invalidated on hide.
@@ -115,11 +157,13 @@ static void airgenome_launcher_refresh_status(NSString *query) {
     if (!g_launcher_status_label) return;
     if (query.length == 0) {
         [g_launcher_status_label setStringValue:@""];
+        if (g_launcher_status_icon) [g_launcher_status_icon setImage:nil];
         return;
     }
     NSUInteger n = g_launcher_current_results.count;
     if (n == 0) {
         [g_launcher_status_label setStringValue:@"No matches"];
+        if (g_launcher_status_icon) [g_launcher_status_icon setImage:nil];
         return;
     }
     if (g_launcher_selection_index >= n) g_launcher_selection_index = 0;
@@ -130,6 +174,14 @@ static void airgenome_launcher_refresh_status(NSString *query) {
          name,
          (unsigned long)(g_launcher_selection_index + 1),
          (unsigned long)n]];
+    // App icon preview: NSWorkspace iconForFile gives bundle icon (cached
+    // by AppKit). raw 168 minimum-viable: synchronous on main thread, OK
+    // for ≤24×24 size (iconForFile is fast for installed apps).
+    if (g_launcher_status_icon) {
+        NSImage *icon = [[NSWorkspace sharedWorkspace] iconForFile:sel.path];
+        if (icon) [icon setSize:NSMakeSize(24, 24)];
+        [g_launcher_status_icon setImage:icon];
+    }
 }
 
 // Tiny delegate that bridges NSTextField text-change + Enter-key events
@@ -227,8 +279,12 @@ void airgenome_launcher_show_overlay(void) {
         [g_launcher_search_field setAction:@selector(launcherEnterAction:)];
         [g_launcher_panel setDelegate:g_launcher_delegate];
         [[g_launcher_panel contentView] addSubview:g_launcher_search_field];
-        // Status label below search field — visual feedback on Enter target.
-        NSRect statusFrame = NSMakeRect(20, 12, 560, 22);
+        // Status row: icon (left) + label (right).
+        NSRect iconFrame = NSMakeRect(20, 10, 24, 24);
+        g_launcher_status_icon = [[NSImageView alloc] initWithFrame:iconFrame];
+        [g_launcher_status_icon setImageScaling:NSImageScaleProportionallyDown];
+        [[g_launcher_panel contentView] addSubview:g_launcher_status_icon];
+        NSRect statusFrame = NSMakeRect(50, 12, 530, 22);
         g_launcher_status_label = [[NSTextField alloc] initWithFrame:statusFrame];
         [g_launcher_status_label setBezeled:NO];
         [g_launcher_status_label setDrawsBackground:NO];
