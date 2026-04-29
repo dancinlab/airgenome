@@ -58,6 +58,8 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
 #import <IOKit/pwr_mgt/IOPMLib.h>
+#import <IOKit/ps/IOPowerSources.h>
+#import <IOKit/ps/IOPSKeys.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1113,6 +1115,31 @@ static void update_menu_states(void);
     update_menu_states();
 }
 
+// Returns 1 if the system is currently powered by AC, 0 if on battery, -1 if
+// undetermined (e.g., desktop Mac with no battery — treat as AC).
+static int query_on_ac_power(void) {
+    CFTypeRef ps_info = IOPSCopyPowerSourcesInfo();
+    if (!ps_info) return -1;
+    CFArrayRef sources = IOPSCopyPowerSourcesList(ps_info);
+    if (!sources) { CFRelease(ps_info); return -1; }
+    int on_ac = -1;
+    CFIndex n = CFArrayGetCount(sources);
+    for (CFIndex i = 0; i < n; i++) {
+        CFTypeRef src = CFArrayGetValueAtIndex(sources, i);
+        CFDictionaryRef desc = IOPSGetPowerSourceDescription(ps_info, src);
+        if (!desc) continue;
+        CFStringRef state = (CFStringRef)CFDictionaryGetValue(desc, CFSTR(kIOPSPowerSourceStateKey));
+        if (state && CFStringCompare(state, CFSTR(kIOPSACPowerValue), 0) == kCFCompareEqualTo) {
+            on_ac = 1; break;
+        } else if (state && CFStringCompare(state, CFSTR(kIOPSBatteryPowerValue), 0) == kCFCompareEqualTo) {
+            on_ac = 0;
+        }
+    }
+    CFRelease(sources);
+    CFRelease(ps_info);
+    return on_ac;
+}
+
 - (void)toggleLidClosed:(id)sender {
     (void)sender;
     // raw 213: in-process IOPMAssertion (kIOPMAssertionTypePreventSystemSleep).
@@ -1127,7 +1154,33 @@ static void update_menu_states(void);
     } else {
         if (lid_assertion_create()) {
             g_lid_closed_on = 1;
-            fprintf(stderr, "menubar: lid-closed-awake -> ON (IOPMAssertion held)\n");
+            // raw 91 honest C3 hint: kIOPMAssertionTypePreventSystemSleep is
+            // documented effective only on AC power. Warn user when they
+            // toggle ON while currently on battery — assertion is held but
+            // hardware-level lid-close sleep enforcement may bypass it.
+            int on_ac = query_on_ac_power();
+            if (on_ac == 0) {
+                fprintf(stderr,
+                    "menubar: lid-closed-awake -> ON (IOPMAssertion held)  "
+                    "WARNING: currently on battery; "
+                    "kIOPMAssertionTypePreventSystemSleep is effective only on "
+                    "AC power per Apple docs (raw 91 C3 + raw 213 known limit)\n");
+                NSAlert *alert = [[NSAlert alloc] init];
+                alert.alertStyle = NSAlertStyleWarning;
+                alert.messageText = @"Wake when lid closed — battery limit";
+                alert.informativeText =
+                    @"This setting is held in process via IOPMAssertion "
+                    @"(kIOPMAssertionTypePreventSystemSleep).\n\n"
+                    @"Apple documents this assertion as effective only on AC "
+                    @"power. On battery + lid close, the system may still "
+                    @"sleep due to hardware-level enforcement on Apple "
+                    @"Silicon.\n\nFor reliable lid-closed wake on battery, "
+                    @"connect AC power.";
+                [alert addButtonWithTitle:@"OK"];
+                [alert runModal];
+            } else {
+                fprintf(stderr, "menubar: lid-closed-awake -> ON (IOPMAssertion held, on AC)\n");
+            }
         } else {
             fprintf(stderr, "menubar: lid-closed-awake -> FAILED (IOKit returned non-success)\n");
         }
