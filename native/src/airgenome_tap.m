@@ -14,8 +14,20 @@
 //
 // Build:  clang -O2 -Wall -Wextra -ObjC
 //                -framework ApplicationServices -framework Carbon
-//                -framework Cocoa -framework AppKit
+//                -framework Cocoa -framework AppKit -framework IOKit
 //                -o build/airgenome native/src/airgenome_tap.m
+//
+// raw 213 (cli-osascript-shell-out-os-escalation-ban-mandate, 2026-04-30):
+//   Wake (sleep prevention) and Wake-when-lid-closed are implemented via
+//   IOKit IOPMAssertionCreateWithName held IN-PROCESS — NO osascript admin
+//   shell-out, NO LaunchAgent indirection, NO pmset shell-out, NO admin auth
+//   dialog. Native Apple primitive (IOKit/IOPMLib.h):
+//     Wake             = kIOPMAssertionTypeNoIdleSleep        (whole-system)
+//     Wake-lid-closed  = kIOPMAssertionTypePreventSystemSleep (lid-close survive)
+//   raw 91 honest C3: kIOPMAssertionTypePreventSystemSleep is documented Apple
+//   side as effective only on AC power; on battery + lid close some Apple
+//   Silicon Macs sleep regardless (hardware-level enforcement). Apps like
+//   Amphetamine use private APIs; we use ONLY public API per raw 9 hexa-only.
 //
 // Run:    build/airgenome                              (foreground test)
 //         launchctl bootstrap gui/$UID
@@ -45,6 +57,7 @@
 #import <Cocoa/Cocoa.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
+#import <IOKit/pwr_mgt/IOPMLib.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,6 +150,15 @@ static int  g_orig_option_accel = -1;
 // lifetime of the process. Released in main() after [NSApp run] returns.
 static NSStatusItem *g_status_item = nil;
 
+// Menu items + target reference -- runtime-toggleable per-feature checkmarks
+// (Mouse / Magnet / Wake / Lid-Closed-Awake). Strong refs keep them alive.
+@class AirgenomeMenuTarget;
+static NSMenuItem         *g_item_mouse  = nil;
+static NSMenuItem         *g_item_magnet = nil;
+static NSMenuItem         *g_item_wake   = nil;
+static NSMenuItem         *g_item_lid    = nil;
+static AirgenomeMenuTarget *g_menu_target = nil;
+
 // Snap-preview overlay -- a borderless transparent window with a white
 // outline + faint fill, shown over the screen rect that the window will
 // snap into if the drag releases right now. Strong reference keeps it
@@ -149,6 +171,16 @@ static NSWindow *g_preview_window = nil;
 // so even SIGKILL leaves no stale lock behind.
 static int g_singleton_fd = -1;
 #define SINGLETON_LOCK_PATH "/tmp/com.airgenome.tap.lock"
+
+// raw 213 (2026-04-30) — IOPMAssertion held in-process. Lifetime tied to the
+// airgenome.app process; on shutdown the kernel auto-releases assertions
+// belonging to a dying process so a SIGKILL never leaves a stale Wake state.
+// Persisted in menubar.state (wake=on/off, lid_closed=on/off) so RunAtLoad
+// rehydrates from disk and the assertion is recreated on next launch.
+static IOPMAssertionID g_wake_assertion = kIOPMNullAssertionID;
+static IOPMAssertionID g_lid_assertion  = kIOPMNullAssertionID;
+static int g_wake_on        = 0;   // mirrors menubar.state wake=on/off
+static int g_lid_closed_on  = 0;   // mirrors menubar.state lid_closed=on/off
 
 // ---------------------------------------------------------------------------
 // Singleton lock -- exclusive flock() on /tmp lockfile.
@@ -785,11 +817,21 @@ static CGEventRef tap_callback(CGEventTapProxy proxy,
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-// Graceful shutdown: restore native tiling defaults, emit sentinel, stop
-// the event tap, then ask NSApp to terminate. Called from a dispatch
-// source (signal-safe scheduling) rather than directly from a UNIX signal
-// handler so we can call into AppKit safely.
+// Forward declarations — IOPMAssertion lifecycle defined further down with
+// the menubar-state code (raw 213 in-process IOKit primitives).
+static void wake_assertion_release(void);
+static void lid_assertion_release(void);
+
+// Graceful shutdown: release IOPMAssertions, restore native tiling defaults,
+// emit sentinel, stop the event tap, then ask NSApp to terminate. Called from
+// a dispatch source (signal-safe scheduling) rather than directly from a UNIX
+// signal handler so we can call into AppKit safely.
 static void on_shutdown(const char *reason) {
+    // raw 213: release in-process IOPMAssertions on shutdown. The kernel
+    // also auto-releases on process death (so SIGKILL is safe), but explicit
+    // release on graceful exit makes the lifecycle observable.
+    wake_assertion_release();
+    lid_assertion_release();
     native_tiling_restore();
     emit_sentinel("PASS", reason);
     if (g_tap) {
@@ -820,6 +862,289 @@ static void install_signal_handlers(void) {
         });
         dispatch_resume(src);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Persistent menubar state (raw 168 minimum-viable, raw 179 ~/Library path,
+// raw 213 native-IOKit IOPMAssertion replaces shell-out)
+// ---------------------------------------------------------------------------
+// Format (KV-pair, line-oriented, raw 92 ai-native-canonical):
+//   mouse=on
+//   magnet=on
+//   wake=on          (raw 213: in-process IOPMAssertionTypeNoIdleSleep)
+//   lid_closed=on    (raw 213: in-process IOPMAssertionTypePreventSystemSleep)
+// Wake/Lid live state = the IOPMAssertionID's validity (kIOPMNullAssertionID
+// when off). The state file is the persistence-across-launch surface.
+
+static NSString *menubar_state_dir(void) {
+    NSString *home = NSHomeDirectory();
+    return [home stringByAppendingPathComponent:@"Library/Application Support/airgenome"];
+}
+
+static NSString *menubar_state_path(void) {
+    return [menubar_state_dir() stringByAppendingPathComponent:@"menubar.state"];
+}
+
+// Legacy LaunchAgent path — cleaned up at first launch of the new binary so
+// the legacy caffeinate process is not left running alongside the in-process
+// IOPMAssertion (raw 91 honest C3: avoid double-effect during migration).
+static NSString *legacy_wake_plist_path(void) {
+    NSString *home = NSHomeDirectory();
+    return [home stringByAppendingPathComponent:@"Library/LaunchAgents/com.airgenome.wake.plist"];
+}
+
+static void load_menubar_state(void) {
+    NSString *path = menubar_state_path();
+    NSError *err = nil;
+    NSString *content = [NSString stringWithContentsOfFile:path
+                                                  encoding:NSUTF8StringEncoding
+                                                     error:&err];
+    if (!content) return;   // first-run default = env flags untouched
+    NSArray *lines = [content componentsSeparatedByString:@"\n"];
+    for (NSString *line in lines) {
+        NSArray *kv = [line componentsSeparatedByString:@"="];
+        if (kv.count != 2) continue;
+        NSString *k = [kv[0] stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceCharacterSet]];
+        NSString *v = [kv[1] stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceCharacterSet]];
+        int on = ([v isEqualToString:@"on"] ? 1 : 0);
+        if ([k isEqualToString:@"mouse"]) {
+            g_buttons_on = on;
+            g_scroll_on  = on;
+        } else if ([k isEqualToString:@"magnet"]) {
+            g_magnet_on = on;
+        } else if ([k isEqualToString:@"wake"]) {
+            g_wake_on = on;
+        } else if ([k isEqualToString:@"lid_closed"]) {
+            g_lid_closed_on = on;
+        }
+    }
+}
+
+static void save_menubar_state(void) {
+    NSString *dir = menubar_state_dir();
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:NULL];
+    int mouse_on = (g_buttons_on || g_scroll_on) ? 1 : 0;
+    NSString *content = [NSString stringWithFormat:
+        @"mouse=%s\nmagnet=%s\nwake=%s\nlid_closed=%s\n",
+        mouse_on        ? "on" : "off",
+        g_magnet_on     ? "on" : "off",
+        g_wake_on       ? "on" : "off",
+        g_lid_closed_on ? "on" : "off"];
+    [content writeToFile:menubar_state_path()
+              atomically:YES
+                encoding:NSUTF8StringEncoding
+                   error:NULL];
+}
+
+// raw 213: native IOPMAssertion replaces launchctl + caffeinate indirection
+// AND osascript-with-administrator-privileges admin shell-out for pmset.
+// Both assertions are held in-process; lifetime = airgenome.app PID; kernel
+// auto-releases on process death so SIGKILL leaves no stale assertion.
+
+static int wake_assertion_create(void) {
+    if (g_wake_assertion != kIOPMNullAssertionID) return 1;
+    IOReturn rc = IOPMAssertionCreateWithName(
+        kIOPMAssertionTypeNoIdleSleep,
+        kIOPMAssertionLevelOn,
+        CFSTR("airgenome.wake"),
+        &g_wake_assertion);
+    if (rc != kIOReturnSuccess) {
+        g_wake_assertion = kIOPMNullAssertionID;
+        fprintf(stderr,
+            "wake: IOPMAssertionCreateWithName(NoIdleSleep) failed rc=0x%x\n",
+            (unsigned)rc);
+        fflush(stderr);
+        return 0;
+    }
+    return 1;
+}
+
+static void wake_assertion_release(void) {
+    if (g_wake_assertion == kIOPMNullAssertionID) return;
+    IOPMAssertionRelease(g_wake_assertion);
+    g_wake_assertion = kIOPMNullAssertionID;
+}
+
+static int lid_assertion_create(void) {
+    if (g_lid_assertion != kIOPMNullAssertionID) return 1;
+    IOReturn rc = IOPMAssertionCreateWithName(
+        kIOPMAssertionTypePreventSystemSleep,
+        kIOPMAssertionLevelOn,
+        CFSTR("airgenome.lid-closed-awake"),
+        &g_lid_assertion);
+    if (rc != kIOReturnSuccess) {
+        g_lid_assertion = kIOPMNullAssertionID;
+        fprintf(stderr,
+            "lid: IOPMAssertionCreateWithName(PreventSystemSleep) failed rc=0x%x\n"
+            "     (raw 91 C3: on Apple Silicon battery + lid close, hardware-level\n"
+            "     sleep enforcement may apply regardless — Apple-documented limitation)\n",
+            (unsigned)rc);
+        fflush(stderr);
+        return 0;
+    }
+    return 1;
+}
+
+static void lid_assertion_release(void) {
+    if (g_lid_assertion == kIOPMNullAssertionID) return;
+    IOPMAssertionRelease(g_lid_assertion);
+    g_lid_assertion = kIOPMNullAssertionID;
+}
+
+static int query_wake_state(void) {
+    // Live state = assertion-id validity; persisted state = g_wake_on flag.
+    return (g_wake_assertion != kIOPMNullAssertionID) ? 1 : 0;
+}
+
+static int query_lid_closed_awake_state(void) {
+    return (g_lid_assertion != kIOPMNullAssertionID) ? 1 : 0;
+}
+
+// One-time legacy LaunchAgent cleanup on first launch of the raw 213 binary.
+// The previous implementation wrote ~/Library/LaunchAgents/com.airgenome.wake.plist
+// and ran `caffeinate -dimsu` in a separate process. The new in-process
+// IOPMAssertion supersedes it, so we bootout + rm the legacy plist to avoid
+// double-effect (two parallel sleep-prevention sources).
+static void cleanup_legacy_wake_launchagent(void) {
+    NSString *plist = legacy_wake_plist_path();
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:plist]) return;
+
+    // SMAppService / direct libxpc would be the canonical native-API
+    // replacement here, but the launchctl bootout call is read-only sandbox
+    // safe (no admin escalation) and operates on a user-domain LaunchAgent.
+    // raw 213 Tier-A bans osascript admin shell-out; this path is not admin.
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/bin/launchctl";
+    task.arguments  = @[@"bootout",
+                        [NSString stringWithFormat:@"gui/%u", (unsigned)getuid()],
+                        plist];
+    NSPipe *out = [NSPipe pipe];
+    task.standardOutput = out;
+    task.standardError  = out;
+    @try {
+        [task launch];
+        [task waitUntilExit];
+    } @catch (NSException *e) {
+        // ignore — LaunchAgent may not be loaded; rm proceeds regardless.
+    }
+
+    NSError *err = nil;
+    [fm removeItemAtPath:plist error:&err];
+    fprintf(stderr,
+        "wake: legacy LaunchAgent cleaned up (raw 213 migration: %s)\n",
+        err ? "plist remove failed" : "bootout + plist removed");
+    fflush(stderr);
+}
+
+// ---------------------------------------------------------------------------
+// Menu target -- 4 toggle actions
+// ---------------------------------------------------------------------------
+
+static void update_menu_states(void);
+
+@interface AirgenomeMenuTarget : NSObject
+- (void)toggleMouse:(id)sender;
+- (void)toggleMagnet:(id)sender;
+- (void)toggleWake:(id)sender;
+- (void)toggleLidClosed:(id)sender;
+@end
+
+@implementation AirgenomeMenuTarget
+
+- (void)toggleMouse:(id)sender {
+    (void)sender;
+    int on = (g_buttons_on || g_scroll_on) ? 0 : 1;
+    g_buttons_on = on;
+    g_scroll_on  = on;
+    save_menubar_state();
+    update_menu_states();
+    fprintf(stderr, "menubar: mouse -> %s\n", on ? "ON" : "off");
+    fflush(stderr);
+}
+
+- (void)toggleMagnet:(id)sender {
+    (void)sender;
+    if (!g_magnet_on) {
+        // OFF -> ON: AX permission required for window manipulation.
+        if (!AXIsProcessTrusted()) {
+            fprintf(stderr,
+                "menubar: magnet toggle refused (AX permission missing)\n"
+                "  fix: System Settings -> Privacy & Security -> Accessibility -> enable airgenome\n");
+            fflush(stderr);
+            return;
+        }
+        g_magnet_on = 1;
+        if (g_disable_native) native_tiling_capture_and_disable();
+    } else {
+        // ON -> OFF
+        g_magnet_on = 0;
+        native_tiling_restore();
+    }
+    save_menubar_state();
+    update_menu_states();
+    fprintf(stderr, "menubar: magnet -> %s\n", g_magnet_on ? "ON" : "off");
+    fflush(stderr);
+}
+
+- (void)toggleWake:(id)sender {
+    (void)sender;
+    // raw 213: in-process IOPMAssertion (kIOPMAssertionTypeNoIdleSleep).
+    // No osascript, no LaunchAgent indirection, no admin auth dialog.
+    if (query_wake_state()) {
+        wake_assertion_release();
+        g_wake_on = 0;
+        fprintf(stderr, "menubar: wake -> off (IOPMAssertion released)\n");
+    } else {
+        if (wake_assertion_create()) {
+            g_wake_on = 1;
+            fprintf(stderr, "menubar: wake -> ON (IOPMAssertion held)\n");
+        } else {
+            fprintf(stderr, "menubar: wake -> FAILED (IOKit returned non-success)\n");
+        }
+    }
+    fflush(stderr);
+    save_menubar_state();
+    update_menu_states();
+}
+
+- (void)toggleLidClosed:(id)sender {
+    (void)sender;
+    // raw 213: in-process IOPMAssertion (kIOPMAssertionTypePreventSystemSleep).
+    // Replaces `osascript -e 'do shell script "pmset -a disablesleep N"
+    // with administrator privileges'` admin shell-out — no admin dialog,
+    // instant toggle. raw 91 C3: on Apple Silicon battery + lid close, hardware
+    // sleep enforcement may still apply regardless of this assertion.
+    if (query_lid_closed_awake_state()) {
+        lid_assertion_release();
+        g_lid_closed_on = 0;
+        fprintf(stderr, "menubar: lid-closed-awake -> off (IOPMAssertion released)\n");
+    } else {
+        if (lid_assertion_create()) {
+            g_lid_closed_on = 1;
+            fprintf(stderr, "menubar: lid-closed-awake -> ON (IOPMAssertion held)\n");
+        } else {
+            fprintf(stderr, "menubar: lid-closed-awake -> FAILED (IOKit returned non-success)\n");
+        }
+    }
+    fflush(stderr);
+    save_menubar_state();
+    update_menu_states();
+}
+
+@end
+
+static void update_menu_states(void) {
+    int mouse_on = (g_buttons_on || g_scroll_on) ? 1 : 0;
+    if (g_item_mouse)  g_item_mouse.state  = mouse_on    ? NSControlStateValueOn : NSControlStateValueOff;
+    if (g_item_magnet) g_item_magnet.state = g_magnet_on ? NSControlStateValueOn : NSControlStateValueOff;
+    if (g_item_wake)   g_item_wake.state   = query_wake_state()             ? NSControlStateValueOn : NSControlStateValueOff;
+    if (g_item_lid)    g_item_lid.state    = query_lid_closed_awake_state() ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 // ---------------------------------------------------------------------------
@@ -865,23 +1190,37 @@ static void install_status_item(void) {
     [menu addItem:header];
     [menu addItem:[NSMenuItem separatorItem]];
 
-    NSString *featureLine = [NSString stringWithFormat:
-        @"buttons %@   scroll %@   magnet %@",
-        g_buttons_on ? @"ON" : @"off",
-        g_scroll_on  ? @"ON" : @"off",
-        g_magnet_on  ? @"ON" : @"off"];
-    NSMenuItem *featureItem = [[NSMenuItem alloc]
-        initWithTitle:featureLine action:nil keyEquivalent:@""];
-    [featureItem setEnabled:NO];
-    [menu addItem:featureItem];
+    g_menu_target = [[AirgenomeMenuTarget alloc] init];
 
-    NSString *nativeLine = [NSString stringWithFormat:
-        @"native tiling: %@",
-        (g_disable_native && g_magnet_on) ? @"disabled (restored on exit)" : @"untouched"];
-    NSMenuItem *nativeItem = [[NSMenuItem alloc]
-        initWithTitle:nativeLine action:nil keyEquivalent:@""];
-    [nativeItem setEnabled:NO];
-    [menu addItem:nativeItem];
+    g_item_wake = [[NSMenuItem alloc]
+        initWithTitle:@"Wake (sleep prevention)"
+               action:@selector(toggleWake:)
+        keyEquivalent:@""];
+    g_item_wake.target = g_menu_target;
+    [menu addItem:g_item_wake];
+
+    g_item_lid = [[NSMenuItem alloc]
+        initWithTitle:@"Wake when lid closed"
+               action:@selector(toggleLidClosed:)
+        keyEquivalent:@""];
+    g_item_lid.target = g_menu_target;
+    [menu addItem:g_item_lid];
+
+    g_item_magnet = [[NSMenuItem alloc]
+        initWithTitle:@"Magnet (8-zone snap)"
+               action:@selector(toggleMagnet:)
+        keyEquivalent:@""];
+    g_item_magnet.target = g_menu_target;
+    [menu addItem:g_item_magnet];
+
+    g_item_mouse = [[NSMenuItem alloc]
+        initWithTitle:@"Mouse (buttons + scroll)"
+               action:@selector(toggleMouse:)
+        keyEquivalent:@""];
+    g_item_mouse.target = g_menu_target;
+    [menu addItem:g_item_mouse];
+
+    update_menu_states();   // sync checkmarks to current real state
 
     [menu addItem:[NSMenuItem separatorItem]];
     [menu addItemWithTitle:@"Quit airgenome"
@@ -913,6 +1252,17 @@ int main(int argc, char **argv) {
         g_magnet_on         = env_flag("AIRG_TAP_MAGNET",         g_magnet_on);
         g_disable_native    = env_flag("AIRG_TAP_DISABLE_NATIVE", g_disable_native);
         g_debug             = env_flag("AIRG_TAP_DEBUG",          g_debug);
+        // Persisted menubar state overrides env defaults (raw 168 minimum-viable).
+        load_menubar_state();
+        // raw 213: one-time legacy LaunchAgent cleanup (com.airgenome.wake
+        // running caffeinate -dimsu) so the new in-process IOPMAssertion is
+        // not running alongside the legacy caffeinate process.
+        cleanup_legacy_wake_launchagent();
+        // Rehydrate IOPMAssertions from persisted state. If wake=on / lid=on
+        // were set in a previous session, recreate the assertions now so the
+        // user's intent survives reboot / RunAtLoad.
+        if (g_wake_on)       { wake_assertion_create(); }
+        if (g_lid_closed_on) { lid_assertion_create();  }
         EDGE_THRESHOLD_PX   = env_int("AIRG_TAP_EDGE_PX",     EDGE_THRESHOLD_PX);
         CORNER_THRESHOLD_PX = env_int("AIRG_TAP_CORNER_PX",   CORNER_THRESHOLD_PX);
         DRAG_MIN_DISTANCE_PX= env_int("AIRG_TAP_DRAG_MIN_PX", DRAG_MIN_DISTANCE_PX);
@@ -942,13 +1292,15 @@ int main(int argc, char **argv) {
 
         native_tiling_capture_and_disable();
 
-        // Build the event mask from enabled features.
-        CGEventMask mask = 0;
-        if (g_buttons_on) mask |= CGEventMaskBit(kCGEventOtherMouseDown);
-        if (g_scroll_on)  mask |= CGEventMaskBit(kCGEventScrollWheel);
-        if (g_magnet_on)  mask |= CGEventMaskBit(kCGEventLeftMouseDown)
-                                |  CGEventMaskBit(kCGEventLeftMouseDragged)
-                                |  CGEventMaskBit(kCGEventLeftMouseUp);
+        // Always subscribe to the union of all feature event types so the
+        // menubar can flip g_*_on flags at runtime without re-creating the
+        // CGEventTap. The callback gates per-event handling on the flags
+        // (see tap_callback above), so an "off" feature is a cheap noop.
+        CGEventMask mask = CGEventMaskBit(kCGEventOtherMouseDown)
+                         | CGEventMaskBit(kCGEventScrollWheel)
+                         | CGEventMaskBit(kCGEventLeftMouseDown)
+                         | CGEventMaskBit(kCGEventLeftMouseDragged)
+                         | CGEventMaskBit(kCGEventLeftMouseUp);
 
         // Mouse button feature needs to suppress the original button event
         // (return NULL from callback), so the tap must be in default mode
