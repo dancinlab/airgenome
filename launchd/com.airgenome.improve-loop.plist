@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/ghost/Dev/airgenome/bin/improve_loop.sh</string>
+        <string>/Users/ghost/core/airgenome/bin/improve_loop.sh</string>
         <string>run</string>
     </array>
 
@@ -29,7 +29,7 @@
     <string>/Users/ghost/.airgenome/improve-loop.stderr.log</string>
 
     <key>WorkingDirectory</key>
-    <string>/Users/ghost/Dev/airgenome</string>
+    <string>/Users/ghost/core/airgenome</string>
 
     <key>EnvironmentVariables</key>
     <dict>
