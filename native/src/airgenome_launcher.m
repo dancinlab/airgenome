@@ -57,6 +57,10 @@ NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query);
 // show_overlay references it (cache population) before its definition.
 static NSArray<NSURL *> *airgenome_launcher_enumerate_apps(void);
 
+// Internal helper - read launcher.jsonl history into recent-launch path set.
+// Forward-declared because show_overlay primes the set before its definition.
+static void airgenome_launcher_refresh_recent_set(void);
+
 // Launch action — invoke NSWorkspace to open the chosen app bundle.
 BOOL airgenome_launcher_launch_app(NSURL *appBundleURL);
 
@@ -98,6 +102,7 @@ static NSPanel *g_launcher_panel = nil;
 static NSTextField *g_launcher_search_field = nil;
 static NSTextField *g_launcher_status_label = nil;
 static NSArray<NSURL *> *g_launcher_current_results = nil;
+static NSUInteger g_launcher_selection_index = 0;
 // App enumeration cache - populated on each show_overlay, invalidated on hide.
 // Avoids filesystem traversal on every keystroke (raw 168 minimum-viable
 // performance optimization). Typical /Applications enumeration is fast (~ms),
@@ -117,11 +122,14 @@ static void airgenome_launcher_refresh_status(NSString *query) {
         [g_launcher_status_label setStringValue:@"No matches"];
         return;
     }
-    NSURL *first = g_launcher_current_results.firstObject;
-    NSString *name = [[first lastPathComponent] stringByDeletingPathExtension];
+    if (g_launcher_selection_index >= n) g_launcher_selection_index = 0;
+    NSURL *sel = g_launcher_current_results[g_launcher_selection_index];
+    NSString *name = [[sel lastPathComponent] stringByDeletingPathExtension];
     [g_launcher_status_label setStringValue:
-        [NSString stringWithFormat:@"↵ %@  (%lu match%@)",
-         name, (unsigned long)n, n == 1 ? @"" : @"es"]];
+        [NSString stringWithFormat:@"↵ %@  (%lu/%lu — ↑↓ cycle)",
+         name,
+         (unsigned long)(g_launcher_selection_index + 1),
+         (unsigned long)n]];
 }
 
 // Tiny delegate that bridges NSTextField text-change + Enter-key events
@@ -134,12 +142,16 @@ static void airgenome_launcher_refresh_status(NSString *query) {
     NSTextField *tf = (NSTextField *)note.object;
     NSString *q = [tf stringValue];
     g_launcher_current_results = airgenome_launcher_search_apps(q);
+    g_launcher_selection_index = 0;  // reset on new query
     airgenome_launcher_refresh_status(q);
 }
 - (void)launcherEnterAction:(id)sender {
     (void)sender;
-    if (g_launcher_current_results.count > 0) {
-        airgenome_launcher_launch_app(g_launcher_current_results.firstObject);
+    NSUInteger n = g_launcher_current_results.count;
+    if (n > 0) {
+        NSUInteger idx = g_launcher_selection_index < n
+            ? g_launcher_selection_index : 0;
+        airgenome_launcher_launch_app(g_launcher_current_results[idx]);
     } else {
         airgenome_launcher_hide_overlay();
     }
@@ -152,6 +164,20 @@ static void airgenome_launcher_refresh_status(NSString *query) {
     if (cmd == @selector(cancelOperation:)) {
         // Esc → dismiss launcher overlay.
         airgenome_launcher_hide_overlay();
+        return YES;
+    }
+    NSUInteger n = g_launcher_current_results.count;
+    if (n > 0 && cmd == @selector(moveDown:)) {
+        // Down arrow → next result (wrap around).
+        g_launcher_selection_index = (g_launcher_selection_index + 1) % n;
+        airgenome_launcher_refresh_status([g_launcher_search_field stringValue]);
+        return YES;
+    }
+    if (n > 0 && cmd == @selector(moveUp:)) {
+        // Up arrow → previous result (wrap around).
+        g_launcher_selection_index =
+            g_launcher_selection_index == 0 ? n - 1 : g_launcher_selection_index - 1;
+        airgenome_launcher_refresh_status([g_launcher_search_field stringValue]);
         return YES;
     }
     return NO;
@@ -223,8 +249,9 @@ void airgenome_launcher_show_overlay(void) {
         screenFrame.origin.y + (screenFrame.size.height - panelFrame.size.height) * 0.66
     );
     [g_launcher_panel setFrameOrigin:origin];
-    // Populate app cache once per show; cleared on hide_overlay.
+    // Populate app cache + recent set once per show; cleared on hide_overlay.
     g_launcher_app_cache = airgenome_launcher_enumerate_apps();
+    airgenome_launcher_refresh_recent_set();
     [g_launcher_panel makeKeyAndOrderFront:nil];
     [g_launcher_panel makeFirstResponder:g_launcher_search_field];
 }
@@ -290,6 +317,40 @@ static NSInteger airgenome_launcher_match_score(NSString *appName, NSString *que
     return 0;
 }
 
+// Recent-launch path set, populated from launcher.jsonl on show_overlay.
+// Each ".path" value from successful launches inside last 50 rows; matching
+// apps get a +200 boost in match_score (raw 168 minimum-viable: substring
+// match on JSONL, no full JSON parser).
+static NSSet<NSString *> *g_launcher_recent_set = nil;
+
+static void airgenome_launcher_refresh_recent_set(void) {
+    NSString *path = [[NSHomeDirectory()
+        stringByAppendingPathComponent:@"Library/Application Support/airgenome"]
+        stringByAppendingPathComponent:@"launcher.jsonl"];
+    NSString *raw = [NSString stringWithContentsOfFile:path
+                                              encoding:NSUTF8StringEncoding
+                                                 error:nil];
+    if (!raw) { g_launcher_recent_set = nil; return; }
+    NSArray<NSString *> *lines = [raw componentsSeparatedByString:@"\n"];
+    // Last 50 lines, parse "path":"..." substring with success:true.
+    NSMutableSet<NSString *> *set = [NSMutableSet set];
+    NSInteger start = (NSInteger)lines.count - 50;
+    if (start < 0) start = 0;
+    for (NSInteger i = start; i < (NSInteger)lines.count; i++) {
+        NSString *line = lines[i];
+        if ([line rangeOfString:@"\"success\":true"].location == NSNotFound) continue;
+        NSRange pStart = [line rangeOfString:@"\"path\":\""];
+        if (pStart.location == NSNotFound) continue;
+        NSUInteger valStart = pStart.location + pStart.length;
+        NSRange tail = NSMakeRange(valStart, line.length - valStart);
+        NSRange pEnd = [line rangeOfString:@"\"" options:0 range:tail];
+        if (pEnd.location == NSNotFound) continue;
+        NSString *p = [line substringWithRange:NSMakeRange(valStart, pEnd.location - valStart)];
+        [set addObject:p];
+    }
+    g_launcher_recent_set = set;
+}
+
 NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query) {
     if (!query || query.length == 0) return @[];
     // Use cached enumeration when available (populated on show_overlay).
@@ -301,6 +362,11 @@ NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query) {
         NSString *name = [[url lastPathComponent] stringByDeletingPathExtension];
         NSInteger s = airgenome_launcher_match_score(name, query);
         if (s > 0) {
+            // Recent-launch boost: +200 if app launched within last 50 rows.
+            if (g_launcher_recent_set
+                && [g_launcher_recent_set containsObject:url.path]) {
+                s += 200;
+            }
             [scored addObject:@{ @"url": url, @"score": @(s) }];
         }
     }
@@ -310,6 +376,37 @@ NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query) {
     NSMutableArray<NSURL *> *result = [NSMutableArray array];
     for (NSDictionary *d in scored) [result addObject:d[@"url"]];
     return result;
+}
+
+// raw 77 audit ledger: append one JSONL row per launch.
+// Path: ~/Library/Application Support/airgenome/launcher.jsonl (raw 179
+// multi-user-safe NSHomeDirectory). raw 65 idempotent: append-only, no edit.
+// raw 91 honest C3: best-effort write; failures NSLog'd but do not block launch.
+static void airgenome_launcher_append_history(NSURL *appURL, BOOL success) {
+    NSString *dir = [NSHomeDirectory()
+        stringByAppendingPathComponent:@"Library/Application Support/airgenome"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES
+                   attributes:nil error:nil];
+    NSString *path = [dir stringByAppendingPathComponent:@"launcher.jsonl"];
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZ";
+    df.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+    NSString *name = [[appURL lastPathComponent] stringByDeletingPathExtension];
+    NSString *row = [NSString stringWithFormat:
+        @"{\"ts\":\"%@\",\"event\":\"launcher-launch\",\"app\":\"%@\","
+        @"\"path\":\"%@\",\"success\":%@,\"raw\":\"raw 209\"}\n",
+        [df stringFromDate:[NSDate date]],
+        name, appURL.path, success ? @"true" : @"false"];
+    NSData *data = [row dataUsingEncoding:NSUTF8StringEncoding];
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!fh) {
+        [data writeToFile:path atomically:YES];
+        return;
+    }
+    [fh seekToEndOfFile];
+    [fh writeData:data];
+    [fh closeFile];
 }
 
 BOOL airgenome_launcher_launch_app(NSURL *appBundleURL) {
@@ -327,9 +424,11 @@ BOOL airgenome_launcher_launch_app(NSURL *appBundleURL) {
         if (error) {
             NSLog(@"[airgenome_launcher] launch failed: %@ (%@)",
                   appBundleURL.path, error.localizedDescription);
+            airgenome_launcher_append_history(appBundleURL, NO);
         } else if (app) {
             NSLog(@"[airgenome_launcher] launched: %@ (pid=%d)",
                   appBundleURL.path, app.processIdentifier);
+            airgenome_launcher_append_history(appBundleURL, YES);
         }
     }];
     airgenome_launcher_hide_overlay();
