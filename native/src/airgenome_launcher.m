@@ -61,6 +61,13 @@ static NSArray<NSURL *> *airgenome_launcher_enumerate_apps(void);
 // Forward-declared because show_overlay primes the set before its definition.
 static void airgenome_launcher_refresh_recent_set(void);
 
+// Internal helper - app icon cache lookup. Forward-declared because
+// refresh_status uses it before its definition.
+static NSImage *airgenome_launcher_cached_icon(NSString *path);
+// Forward declaration for icon cache dictionary so hide_overlay can clear it
+// before its definition lower in the file.
+static NSMutableDictionary<NSString *, NSImage *> *g_launcher_icon_cache;
+
 // Launch action — invoke NSWorkspace to open the chosen app bundle.
 BOOL airgenome_launcher_launch_app(NSURL *appBundleURL);
 
@@ -110,7 +117,19 @@ static void airgenome_launcher_parse_hotkey_env(void) {
         ? spec
         : [spec substringFromIndex:last.location + 1];
     if (keyPart.length == 0 || flags == 0) return;
-    int kc = airgenome_launcher_letter_to_keycode([keyPart characterAtIndex:0]);
+    // Named-key aliases (multi-char). Match these BEFORE letter fallback,
+    // otherwise "cmd+space" would be parsed as 'cmd' + letter 's'.
+    int kc = -1;
+    if      ([keyPart isEqualToString:@"space"])  kc = 0x31;  // kVK_Space
+    else if ([keyPart isEqualToString:@"tab"])    kc = 0x30;  // kVK_Tab
+    else if ([keyPart isEqualToString:@"return"]) kc = 0x24;  // kVK_Return
+    else if ([keyPart isEqualToString:@"enter"])  kc = 0x24;  // alias
+    else if ([keyPart isEqualToString:@"escape"]) kc = 0x35;  // kVK_Escape
+    else if ([keyPart isEqualToString:@"esc"])    kc = 0x35;  // alias
+    else if (keyPart.length == 1) {
+        kc = airgenome_launcher_letter_to_keycode(
+            [keyPart characterAtIndex:0]);
+    }
     if (kc < 0) return;
     g_launcher_hotkey_flags = flags;
     g_launcher_hotkey_keycode = kc;
@@ -178,9 +197,7 @@ static void airgenome_launcher_refresh_status(NSString *query) {
     // by AppKit). raw 168 minimum-viable: synchronous on main thread, OK
     // for ≤24×24 size (iconForFile is fast for installed apps).
     if (g_launcher_status_icon) {
-        NSImage *icon = [[NSWorkspace sharedWorkspace] iconForFile:sel.path];
-        if (icon) [icon setSize:NSMakeSize(24, 24)];
-        [g_launcher_status_icon setImage:icon];
+        [g_launcher_status_icon setImage:airgenome_launcher_cached_icon(sel.path)];
     }
 }
 
@@ -320,6 +337,7 @@ void airgenome_launcher_hide_overlay(void) {
     // uninstall between sessions). raw 65 idempotent: re-call OK.
     g_launcher_app_cache = nil;
     g_launcher_current_results = nil;
+    [g_launcher_icon_cache removeAllObjects];
 }
 
 // Enumerate installed .app bundles from canonical macOS locations.
@@ -378,6 +396,26 @@ static NSInteger airgenome_launcher_match_score(NSString *appName, NSString *que
 // apps get a +200 boost in match_score (raw 168 minimum-viable: substring
 // match on JSONL, no full JSON parser).
 static NSSet<NSString *> *g_launcher_recent_set = nil;
+
+// App icon cache: path → NSImage. Avoids redundant iconForFile fetch when
+// user cycles through results (↑↓). Cleared on hide_overlay (raw 65 idempotent).
+// (Forward-declared near top of file.)
+static NSMutableDictionary<NSString *, NSImage *> *g_launcher_icon_cache = nil;
+
+// Fetch icon with caching. Sets size to 24x24 once.
+static NSImage *airgenome_launcher_cached_icon(NSString *path) {
+    if (!g_launcher_icon_cache) {
+        g_launcher_icon_cache = [NSMutableDictionary dictionary];
+    }
+    NSImage *cached = g_launcher_icon_cache[path];
+    if (cached) return cached;
+    NSImage *icon = [[NSWorkspace sharedWorkspace] iconForFile:path];
+    if (icon) {
+        [icon setSize:NSMakeSize(24, 24)];
+        g_launcher_icon_cache[path] = icon;
+    }
+    return icon;
+}
 
 static void airgenome_launcher_refresh_recent_set(void) {
     NSString *path = [[NSHomeDirectory()
