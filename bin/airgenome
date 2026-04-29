@@ -35,9 +35,13 @@ OFF_FLAG="$LOG_DIR/guard_off"
 CLAUDE_SNAPSHOT_DIR="$LOG_DIR/claude-sessions"
 CLAUDE_LATEST_PTR="$CLAUDE_SNAPSHOT_DIR/latest.txt"
 
-# mouse_remap (CGEventTap shim — buttons + scroll-invert for mouse wheel)
-MOUSE_REMAP_ROOT="${MOUSE_REMAP_ROOT:-$HOME/core/mouse_remap}"
-MOUSE_REMAP_LABEL="com.user.mouse-remap"
+# airgenome_tap (CGEventTap + AX shim — unified mouse buttons + scroll inversion +
+# 8-zone window magnet + native tiling lockout). Single binary, single Accessibility
+# grant. Supersedes ~/core/mouse_remap and ~/core/window_magnet (kept as archive).
+AIRGENOME_TAP_ROOT="${AIRGENOME_TAP_ROOT:-$HOME/core/airgenome/native}"
+AIRGENOME_TAP_LABEL="com.airgenome.tap"
+# legacy LaunchAgent labels — bootout on migration
+LEGACY_TAP_LABELS="com.user.mouse-remap com.user.window-magnet"
 
 mkdir -p "$LOG_DIR"
 
@@ -238,6 +242,29 @@ cmd_init() {
     launchctl bootout "gui/$UID_VAL/$LABEL" 2>/dev/null || true
     launchctl bootstrap "gui/$UID_VAL" "$PLIST_DST" || die "launchctl bootstrap failed"
     log "installed + bootstrapped: $LABEL"
+
+    # airgenome tap 동행 설치 (통합 CGEventTap+AX shim — mouse 버튼 + 스크롤 반전
+    # + 8-zone 윈도우 자석 + native tiling lockout). 별도 LaunchAgent 라 supervisor 와
+    # 독립적으로 살지만 init/stop 라이프사이클은 묶음 — daemon 종료 시 자체 signal
+    # handler 가 com.apple.WindowManager.{EnableTiling*} 원래 값을 복구한다.
+    # opt-out: AIRGENOME_NO_TAP=1 (구 AIRGENOME_NO_MAGNET 도 호환)
+    if [ -z "${AIRGENOME_NO_TAP:-${AIRGENOME_NO_MAGNET:-}}" ] && [ -d "$AIRGENOME_TAP_ROOT" ]; then
+        # 1회 마이그레이션: 구 mouse_remap / window_magnet LaunchAgent 정리
+        local label
+        for label in $LEGACY_TAP_LABELS; do
+            if launchctl print "gui/$UID_VAL/$label" >/dev/null 2>&1; then
+                launchctl bootout "gui/$UID_VAL/$label" 2>/dev/null || true
+                rm -f "$HOME/Library/LaunchAgents/$label.plist"
+                log "airgenome tap migrate: bootout + plist removed for $label"
+            fi
+        done
+        # make install: build → bundle → /Applications/airgenome.app + bootstrap
+        ( cd "$AIRGENOME_TAP_ROOT" && make install ) >>"$SUPER_LOG" 2>&1 \
+            && log "airgenome tap: /Applications/airgenome.app installed + bootstrapped" \
+            || log "WARN airgenome tap install failed (see $SUPER_LOG)"
+        log "  Accessibility 권한 1회 부여 필요: System Settings → Privacy & Security → Accessibility → '+' /Applications/airgenome.app → 토글 → airgenome tap restart"
+    fi
+
     log "next: airgenome status (확인) → airgenome arm (live kill on) 필요 시"
 }
 
@@ -259,6 +286,16 @@ cmd_stop() {
         fi
         rm -f "$GUARD_PID_FILE"
     fi
+
+    # airgenome tap 동행 종료. SIGTERM → daemon signal handler 가 native tiling
+    # defaults 원래 값으로 복구 후 정상 종료.
+    if [ -z "${AIRGENOME_NO_TAP:-${AIRGENOME_NO_MAGNET:-}}" ]; then
+        if launchctl print "gui/$UID_VAL/$AIRGENOME_TAP_LABEL" >/dev/null 2>&1; then
+            launchctl bootout "gui/$UID_VAL/$AIRGENOME_TAP_LABEL" 2>/dev/null || true
+            log "airgenome tap: stopped (native tiling restored by daemon)"
+        fi
+    fi
+
     log "stopped"
 }
 
@@ -285,6 +322,31 @@ cmd_status() {
     fi
     if [ -e "$ARMED_FLAG" ]; then echo "  mode: ARMED (live kill)"; else echo "  mode: dry-run"; fi
     if [ -e "$OFF_FLAG" ]; then echo "  ** OFF flag set"; fi
+
+    echo "=== airgenome tap (mouse + scroll + magnet) ==="
+    if [ -n "${AIRGENOME_NO_TAP:-${AIRGENOME_NO_MAGNET:-}}" ]; then
+        echo "  (disabled via AIRGENOME_NO_TAP=1)"
+    elif [ ! -d "$AIRGENOME_TAP_ROOT" ]; then
+        echo "  (root missing: $AIRGENOME_TAP_ROOT)"
+    else
+        local tprint
+        tprint="$(launchctl print "gui/$UID_VAL/$AIRGENOME_TAP_LABEL" 2>/dev/null || true)"
+        if [ -z "$tprint" ]; then
+            echo "  (not loaded — airgenome init 또는 airgenome tap install)"
+        else
+            echo "$tprint" | grep -E '^[[:space:]]*(state|pid|last exit code)' | head -3
+        fi
+        # legacy LaunchAgents — warn if still loaded (should be 0 post-migration)
+        local llabel ltrace=""
+        for llabel in $LEGACY_TAP_LABELS; do
+            if launchctl print "gui/$UID_VAL/$llabel" >/dev/null 2>&1; then
+                ltrace="$ltrace $llabel"
+            fi
+        done
+        if [ -n "$ltrace" ]; then
+            echo "  ** legacy LaunchAgent(s) still loaded:$ltrace — run: airgenome tap migrate"
+        fi
+    fi
 
     echo "=== 최근 guard 이벤트 (last 5) ==="
     tail -5 "$GUARD_LOG" 2>/dev/null || echo "  (log 없음)"
@@ -646,72 +708,130 @@ HELP
 }
 
 # ============================================================
-# mouse_remap subcommand (CGEventTap shim @ ~/core/mouse_remap)
+# airgenome tap subcommand (unified CGEventTap + AX @ airgenome/native/)
 # ============================================================
+#
+# Combines mouse buttons (4/5 → Cmd+[/]) + scroll inversion + 8-zone window
+# magnet + native tiling lockout into a single binary so Accessibility / TCC
+# only needs one permission grant for the entire airgenome input stack.
 
-cmd_mouse() {
+cmd_tap() {
     local sub="${1:-status}"
     shift || true
-    if [ ! -d "$MOUSE_REMAP_ROOT" ]; then
-        echo "[airgenome-mouse] not found: $MOUSE_REMAP_ROOT" >&2
-        echo "  set MOUSE_REMAP_ROOT or check ~/core/mouse_remap exists" >&2
+    if [ ! -d "$AIRGENOME_TAP_ROOT" ]; then
+        echo "[airgenome-tap] not found: $AIRGENOME_TAP_ROOT" >&2
+        echo "  set AIRGENOME_TAP_ROOT or check airgenome/native/ exists" >&2
         return 2
     fi
     case "$sub" in
-        build)      ( cd "$MOUSE_REMAP_ROOT" && make build ) ;;
-        install)    ( cd "$MOUSE_REMAP_ROOT" && make install ) ;;
-        uninstall)  ( cd "$MOUSE_REMAP_ROOT" && make uninstall ) ;;
-        status)     ( cd "$MOUSE_REMAP_ROOT" && make status ) ;;
-        logs)       ( cd "$MOUSE_REMAP_ROOT" && make logs ) ;;
-        selftest)   ( cd "$MOUSE_REMAP_ROOT" && make selftest ) ;;
-        restart)    launchctl kickstart -k "gui/$UID_VAL/$MOUSE_REMAP_LABEL" ;;
+        build)      ( cd "$AIRGENOME_TAP_ROOT" && make build ) ;;
+        install)    ( cd "$AIRGENOME_TAP_ROOT" && make install ) ;;
+        uninstall)  ( cd "$AIRGENOME_TAP_ROOT" && make uninstall ) ;;
+        status)     ( cd "$AIRGENOME_TAP_ROOT" && make status ) ;;
+        logs)       ( cd "$AIRGENOME_TAP_ROOT" && make logs ) ;;
+        selftest)   ( cd "$AIRGENOME_TAP_ROOT" && make selftest ) ;;
+        restart)    launchctl kickstart -k "gui/$UID_VAL/$AIRGENOME_TAP_LABEL" ;;
         rebuild)
-            ( cd "$MOUSE_REMAP_ROOT" && make build ) || return $?
-            launchctl kickstart -k "gui/$UID_VAL/$MOUSE_REMAP_LABEL" 2>/dev/null || true
+            ( cd "$AIRGENOME_TAP_ROOT" && make install ) || return $?
             cat >&2 <<'NOTE'
 
-[airgenome-mouse] rebuild done. NEW BINARY = NEW cdhash → macOS revoked Accessibility.
+[airgenome-tap] rebuild + install done. NEW BINARY = NEW cdhash → macOS revoked Accessibility.
   fix: System Settings → Privacy & Security → Accessibility →
-       remove the existing 'mouse_remap' entry → re-add the same path → toggle on
-  then: airgenome mouse restart
+       remove the existing 'airgenome' entry → re-add /Applications/airgenome.app → toggle on
+  then: airgenome tap restart
 NOTE
             ;;
-        clean)      ( cd "$MOUSE_REMAP_ROOT" && make clean ) ;;
+        clean)      ( cd "$AIRGENOME_TAP_ROOT" && make clean ) ;;
+        migrate)
+            # one-time migration: bootout legacy mouse_remap + window_magnet
+            # LaunchAgents (replaced by single com.airgenome.tap).
+            local label
+            for label in $LEGACY_TAP_LABELS; do
+                if launchctl print "gui/$UID_VAL/$label" >/dev/null 2>&1; then
+                    launchctl bootout "gui/$UID_VAL/$label" 2>/dev/null || true
+                    rm -f "$HOME/Library/LaunchAgents/$label.plist"
+                    echo "[airgenome-tap] migrated: bootout + plist removed for $label"
+                fi
+            done
+            ;;
+        restore-native)
+            # Manual recovery if SIGKILL prevented the daemon from restoring
+            # the native tiling defaults.
+            for k in EnableTilingByEdgeDrag EnableTopTilingByEdgeDrag EnableTilingOptionAccelerator; do
+                defaults delete com.apple.WindowManager "$k" 2>/dev/null || true
+            done
+            killall WindowManager 2>/dev/null || true
+            echo "[airgenome-tap] native tiling defaults deleted (back to macOS defaults). re-run airgenome tap restart to re-disable."
+            ;;
         help|-h|--help|"")
             cat >&2 <<'HELP'
-usage: airgenome mouse <subcommand>
+usage: airgenome tap <subcommand>
 
-  build        clang → build/mouse_remap
-  install      build + plist 배치 + launchctl bootstrap
-  uninstall    bootout + plist 삭제
-  status       launchctl print → state / pid / last exit
-  logs         tail build/mouse_remap.{log,err}
-  selftest     2s foreground 실행 → sentinel 검증
-  restart      launchctl kickstart -k (Accessibility 재grant 후)
-  rebuild      build + restart (재grant 안내 출력)
-  clean        rm -rf build/
+  build           clang → native/build/airgenome (raw binary)
+  app             build + 🧬 .icns + .app 번들 (native/build/airgenome.app)
+  install         app + /Applications/airgenome.app 배포 + LaunchAgent + log dir
+  uninstall       bootout + plist + /Applications/airgenome.app 제거
+  status          launchctl print + bundle/log path + 현재 native-tiling defaults
+  logs            tail ~/Library/Logs/airgenome.app/airgenome.{log,err}
+  selftest        2s foreground 실행 → sentinel 검증
+  restart         launchctl kickstart -k (Accessibility 재grant 후)
+  rebuild         build + app + install + 재grant 안내
+  clean           rm -rf native/build/
+  migrate         legacy mouse_remap/window_magnet LaunchAgent bootout (1회 마이그레이션)
+  restore-native  daemon SIGKILL 후 native 설정 복구 (delete + WindowManager kick)
 
-기능:
-  (a) mouse button 4/5 → Cmd+[ / Cmd+]  (Finder/Safari 뒤로/앞으로)
-  (b) 마우스 휠 스크롤 방향 반전 — *마우스만*, 트랙패드는 macOS 기본 (Natural) 유지
+기능 (3-feature 단일 binary, 1 Accessibility grant):
+  (a) mouse button 4/5  →  Cmd+[ / Cmd+]   (Finder/Safari 뒤로/앞으로)
+  (b) mouse-wheel scroll 방향 반전          (트랙패드는 macOS 기본 유지)
+  (c) 8-zone 드래그-스냅:
+        ┌────┬────┬────┐  T  = 상단 절반   TL/TR = 좌·우상단 1/4
+        │ TL │ T  │ TR │  B  = 하단 절반   BL/BR = 좌·우하단 1/4
+        ├────┴────┴────┤  L  = 좌 절반     edge=20px / corner=40px
+        │ L  │    │ R  │  R  = 우 절반     (corner > edge priority)
+        ├────┬────┬────┤
+        │ BL │ B  │ BR │
+        └────┴────┴────┘
 
-env:
-  MOUSE_REMAP_ROOT=$HOME/core/mouse_remap   (기본)
-  MOUSE_REMAP_BUTTONS=1                     button4/5 매핑 (default 1)
-  MOUSE_REMAP_SCROLL=1                      mouse-wheel 반전 (default 1)
+  daemon 가동 중 macOS 기본 tiling 비활성화 (3-key flip + restore on exit):
+    com.apple.WindowManager.{EnableTilingByEdgeDrag,
+                             EnableTopTilingByEdgeDrag,
+                             EnableTilingOptionAccelerator}
+
+env (per-feature toggle, default 모두 1):
+  AIRGENOME_TAP_ROOT=$HOME/core/airgenome/native
+  AIRG_TAP_MOUSE_BUTTONS=1     button4/5 매핑
+  AIRG_TAP_MOUSE_SCROLL=1      mouse-wheel 반전
+  AIRG_TAP_MAGNET=1            8-zone 드래그-스냅
+  AIRG_TAP_DISABLE_NATIVE=1    macOS 기본 tiling 비활성화
+  AIRG_TAP_EDGE_PX=20          edge 임계 px
+  AIRG_TAP_CORNER_PX=40        corner 임계 px
+  AIRG_TAP_DRAG_MIN_PX=8       click-vs-drag 거리
 
 examples:
-  airgenome mouse status
-  airgenome mouse rebuild
-  airgenome mouse logs
+  airgenome tap install         # 첫 설치 (Accessibility grant 필요)
+  airgenome tap migrate         # 구 mouse_remap/window_magnet LaunchAgent 정리
+  airgenome tap status          # 현재 state + native defaults
+  airgenome tap rebuild         # 코드 수정 후 재빌드 + 재grant 안내
 HELP
             ;;
         *)
-            echo "[airgenome-mouse] unknown: $sub" >&2
-            echo "  airgenome mouse help" >&2
+            echo "[airgenome-tap] unknown: $sub" >&2
+            echo "  airgenome tap help" >&2
             return 2
             ;;
     esac
+}
+
+# Legacy aliases — forward to airgenome tap with a one-line deprecation note.
+# raw#21 deprecation pattern: keep referenceable, point to canonical.
+cmd_mouse() {
+    echo "[airgenome] note: 'airgenome mouse' is now part of 'airgenome tap' (unified CGEventTap)" >&2
+    cmd_tap "$@"
+}
+
+cmd_magnet() {
+    echo "[airgenome] note: 'airgenome magnet' is now part of 'airgenome tap' (unified CGEventTap)" >&2
+    cmd_tap "$@"
 }
 
 # ============================================================
@@ -735,7 +855,9 @@ main() {
         last-session)  cmd_last_session ;;
         list|ls)       cmd_list "$@" ;;
         offload|off)   cmd_offload "$@" ;;
-        mouse|mouse-remap) cmd_mouse "$@" ;;
+        tap|input)     cmd_tap "$@" ;;
+        mouse|mouse-remap)    cmd_mouse "$@" ;;    # legacy alias → cmd_tap
+        magnet|window-magnet) cmd_magnet "$@" ;;   # legacy alias → cmd_tap
         guard-loop)    guard_loop ;;   # 독립 디버그용
         help|-h|--help)
             cat <<'EOF'
@@ -755,8 +877,13 @@ usage: airgenome <command>
   last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
   list [kind]    자원 목록 — hosts (live infra_state) | workspace | projects
   offload <t> <cmd...>  원격 실행 — t: ubu1|ubu2|htz (ssh alias 경유)
-  mouse <sub>    mouse_remap (CGEventTap) — build/install/status/logs/rebuild
-                   button4/5 → Cmd+[/], mouse wheel 반전 (trackpad 무관)
+  tap <sub>      airgenome native shim (단일 binary, 1 Accessibility grant):
+                   (a) mouse button 4/5 → Cmd+[/]   (b) mouse wheel 반전
+                   (c) 8-zone 드래그-스냅 + macOS 기본 tiling 비활성화 (종료 시 복구)
+                   sub: build/install/uninstall/status/logs/selftest/restart/
+                        rebuild/clean/migrate/restore-native/help
+                   ※ airgenome init/stop 에 자동 동행 (opt-out: AIRGENOME_NO_TAP=1)
+                   legacy aliases: mouse, magnet (모두 tap 으로 forward)
   guard-loop     guard 만 독립 실행 (디버그)
 
 env:
