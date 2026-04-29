@@ -25,7 +25,7 @@
     <string>/Users/ghost/.airgenome/menubar.stderr.log</string>
 
     <key>WorkingDirectory</key>
-    <string>/Users/ghost/Dev/airgenome</string>
+    <string>/Users/ghost/core/airgenome</string>
 
     <key>EnvironmentVariables</key>
     <dict>
