@@ -53,6 +53,10 @@ void airgenome_launcher_hide_overlay(void);
 // Returns array of matching NSURL app bundle URLs, ranked by relevance.
 NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query);
 
+// Internal helper - enumerate installed app bundles. Forward-declared because
+// show_overlay references it (cache population) before its definition.
+static NSArray<NSURL *> *airgenome_launcher_enumerate_apps(void);
+
 // Launch action — invoke NSWorkspace to open the chosen app bundle.
 BOOL airgenome_launcher_launch_app(NSURL *appBundleURL);
 
@@ -92,18 +96,45 @@ BOOL airgenome_launcher_handle_keydown(CGEventRef event) {
 // Strong references retained between show/hide cycles for fast reopen.
 static NSPanel *g_launcher_panel = nil;
 static NSTextField *g_launcher_search_field = nil;
+static NSTextField *g_launcher_status_label = nil;
 static NSArray<NSURL *> *g_launcher_current_results = nil;
+// App enumeration cache - populated on each show_overlay, invalidated on hide.
+// Avoids filesystem traversal on every keystroke (raw 168 minimum-viable
+// performance optimization). Typical /Applications enumeration is fast (~ms),
+// but on slow disks or NFS mounts the per-keystroke cost would compound.
+static NSArray<NSURL *> *g_launcher_app_cache = nil;
+
+// Update the status label to show selection feedback. Called from
+// controlTextDidChange whenever results change. Empty query → idle hint.
+static void airgenome_launcher_refresh_status(NSString *query) {
+    if (!g_launcher_status_label) return;
+    if (query.length == 0) {
+        [g_launcher_status_label setStringValue:@""];
+        return;
+    }
+    NSUInteger n = g_launcher_current_results.count;
+    if (n == 0) {
+        [g_launcher_status_label setStringValue:@"No matches"];
+        return;
+    }
+    NSURL *first = g_launcher_current_results.firstObject;
+    NSString *name = [[first lastPathComponent] stringByDeletingPathExtension];
+    [g_launcher_status_label setStringValue:
+        [NSString stringWithFormat:@"↵ %@  (%lu match%@)",
+         name, (unsigned long)n, n == 1 ? @"" : @"es"]];
+}
 
 // Tiny delegate that bridges NSTextField text-change + Enter-key events
 // to the launcher's search/launch functions. Single shared instance.
-@interface AirgenomeLauncherDelegate : NSObject <NSTextFieldDelegate>
+@interface AirgenomeLauncherDelegate : NSObject <NSTextFieldDelegate, NSWindowDelegate>
 @end
 
 @implementation AirgenomeLauncherDelegate
 - (void)controlTextDidChange:(NSNotification *)note {
     NSTextField *tf = (NSTextField *)note.object;
-    g_launcher_current_results =
-        airgenome_launcher_search_apps([tf stringValue]);
+    NSString *q = [tf stringValue];
+    g_launcher_current_results = airgenome_launcher_search_apps(q);
+    airgenome_launcher_refresh_status(q);
 }
 - (void)launcherEnterAction:(id)sender {
     (void)sender;
@@ -112,6 +143,24 @@ static NSArray<NSURL *> *g_launcher_current_results = nil;
     } else {
         airgenome_launcher_hide_overlay();
     }
+}
+// NSTextFieldDelegate: handle special keys (Esc dismiss, optional arrows for
+// future result cycling). Returns YES if command consumed, NO to fall through.
+- (BOOL)control:(NSControl *)control textView:(NSTextView *)textView
+    doCommandBySelector:(SEL)cmd {
+    (void)control; (void)textView;
+    if (cmd == @selector(cancelOperation:)) {
+        // Esc → dismiss launcher overlay.
+        airgenome_launcher_hide_overlay();
+        return YES;
+    }
+    return NO;
+}
+// NSWindowDelegate: auto-dismiss when user clicks outside (loses key window).
+// Standard launcher UX: panel disappears on focus loss.
+- (void)windowDidResignKey:(NSNotification *)note {
+    (void)note;
+    airgenome_launcher_hide_overlay();
 }
 @end
 
@@ -126,7 +175,7 @@ void airgenome_launcher_show_overlay(void) {
     }
     // Lazy-create on first show; reused thereafter.
     if (!g_launcher_panel) {
-        NSRect frame = NSMakeRect(0, 0, 600, 60);
+        NSRect frame = NSMakeRect(0, 0, 600, 90);
         g_launcher_panel = [[NSPanel alloc]
             initWithContentRect:frame
                       styleMask:(NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel)
@@ -138,7 +187,7 @@ void airgenome_launcher_show_overlay(void) {
         [g_launcher_panel setHasShadow:YES];
         [g_launcher_panel setMovableByWindowBackground:YES];
         // Search input field at center of panel.
-        NSRect fieldFrame = NSMakeRect(20, 15, 560, 30);
+        NSRect fieldFrame = NSMakeRect(20, 45, 560, 30);
         g_launcher_search_field = [[NSTextField alloc] initWithFrame:fieldFrame];
         [g_launcher_search_field setBezelStyle:NSTextFieldRoundedBezel];
         [g_launcher_search_field setFont:[NSFont systemFontOfSize:18]];
@@ -150,7 +199,19 @@ void airgenome_launcher_show_overlay(void) {
         [g_launcher_search_field setDelegate:g_launcher_delegate];
         [g_launcher_search_field setTarget:g_launcher_delegate];
         [g_launcher_search_field setAction:@selector(launcherEnterAction:)];
+        [g_launcher_panel setDelegate:g_launcher_delegate];
         [[g_launcher_panel contentView] addSubview:g_launcher_search_field];
+        // Status label below search field — visual feedback on Enter target.
+        NSRect statusFrame = NSMakeRect(20, 12, 560, 22);
+        g_launcher_status_label = [[NSTextField alloc] initWithFrame:statusFrame];
+        [g_launcher_status_label setBezeled:NO];
+        [g_launcher_status_label setDrawsBackground:NO];
+        [g_launcher_status_label setEditable:NO];
+        [g_launcher_status_label setSelectable:NO];
+        [g_launcher_status_label setFont:[NSFont systemFontOfSize:13]];
+        [g_launcher_status_label setTextColor:[NSColor secondaryLabelColor]];
+        [g_launcher_status_label setStringValue:@""];
+        [[g_launcher_panel contentView] addSubview:g_launcher_status_label];
     }
     [g_launcher_search_field setStringValue:@""];
     // Center on screen of currently-active mouse cursor.
@@ -162,6 +223,8 @@ void airgenome_launcher_show_overlay(void) {
         screenFrame.origin.y + (screenFrame.size.height - panelFrame.size.height) * 0.66
     );
     [g_launcher_panel setFrameOrigin:origin];
+    // Populate app cache once per show; cleared on hide_overlay.
+    g_launcher_app_cache = airgenome_launcher_enumerate_apps();
     [g_launcher_panel makeKeyAndOrderFront:nil];
     [g_launcher_panel makeFirstResponder:g_launcher_search_field];
 }
@@ -170,6 +233,10 @@ void airgenome_launcher_hide_overlay(void) {
     if (g_launcher_panel) {
         [g_launcher_panel orderOut:nil];
     }
+    // Drop cache on hide; freshens app list on next show (apps may install/
+    // uninstall between sessions). raw 65 idempotent: re-call OK.
+    g_launcher_app_cache = nil;
+    g_launcher_current_results = nil;
 }
 
 // Enumerate installed .app bundles from canonical macOS locations.
@@ -225,7 +292,10 @@ static NSInteger airgenome_launcher_match_score(NSString *appName, NSString *que
 
 NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query) {
     if (!query || query.length == 0) return @[];
-    NSArray<NSURL *> *all = airgenome_launcher_enumerate_apps();
+    // Use cached enumeration when available (populated on show_overlay).
+    NSArray<NSURL *> *all = g_launcher_app_cache
+        ? g_launcher_app_cache
+        : airgenome_launcher_enumerate_apps();
     NSMutableArray *scored = [NSMutableArray array];
     for (NSURL *url in all) {
         NSString *name = [[url lastPathComponent] stringByDeletingPathExtension];
