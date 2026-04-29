@@ -945,6 +945,7 @@ main() {
         governance|gov) cmd_governance "$@" ;;
         mouse|mouse-remap)    cmd_mouse "$@" ;;    # legacy alias → cmd_tap
         magnet|window-magnet) cmd_magnet "$@" ;;   # legacy alias → cmd_tap
+        launcher)      cmd_launcher "$@" ;;   # hive raw 209 reference impl scaffold
         guard-loop)    guard_loop ;;   # 독립 디버그용
         help|-h|--help)
             cat <<'EOF'
