@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+                       "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>airgenome</string>
+    <key>CFBundleDisplayName</key>
+    <string>airgenome</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.airgenome.tap</string>
+    <key>CFBundleExecutable</key>
+    <string>airgenome</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticTermination</key>
+    <true/>
+    <key>NSSupportsSuddenTermination</key>
+    <true/>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>airgenome listens to mouse + drag events to provide mouse-button 4/5 navigation, mouse-wheel scroll inversion, and 8-zone drag-to-edge window snapping. Native macOS tiling is temporarily disabled while running and restored on exit.</string>
+</dict>
+</plist>

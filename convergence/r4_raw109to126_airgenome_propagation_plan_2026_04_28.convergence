@@ -1,0 +1,158 @@
+@track R4_RAW109TO126_AIRGENOME_PROPAGATION_PLAN
+@state planning (registration only — implementation deferred to per-raw kick cycles)
+@date 2026-04-28
+@chain ←/Users/ghost/core/nexus/state/cross_project_propagation_matrix_2026_04_28.tsv (90-cell DIRECT/META/NA matrix, 18 raws × 5 projects) ←/Users/ghost/core/hive/.raw raws 109-126 (paradigmatic-anchor block) ←/Users/ghost/core/anima/convergence/r4_raw109to126_anima_propagation_plan_2026_04_28.convergence (sister cycle, 13-DIRECT registration template)
+@scope WRITE-ONLY landing-strategy registry. 10 DIRECT raws (airgenome column = DIRECT) each mapped to a concrete airgenome codebase landing surface (existing modules / candidate new files) + per-raw rationale + witness-cycle handle. NO implementation in this cycle. Implementation lands in per-raw downstream kick cycles.
+@principle raw 47 strategy-exploration-omega-cycle + raw 71 design-strategy-falsifier-retire-rule + raw 91 design-honesty-triad + raw 159 cross-project-propagation-mandate + raw 8 minimum-write-discipline.
+@hexa-only true (no python/bash/rust/toml created — convergence file + witness JSON only).
+@source_matrix /Users/ghost/core/nexus/state/cross_project_propagation_matrix_2026_04_28.tsv (Task B 90-cell matrix, commit 068221be force-add of gitignored)
+@direct_raw_count 10 (raws 109,110,111,113,115,119,120,122,123,125 from airgenome column)
+@meta_raw_count 6 (raws 112,114,117,118,124,126 — airgenome column = META, NOT in this propagation plan)
+@na_raw_count 2 (raws 116,121 — airgenome column = NA, NOT applicable to airgenome 6-axis hexagon model)
+@selected_raw_count 10/10 (100% of airgenome-DIRECT rows enumerated)
+@total_18 10 DIRECT + 6 META + 2 NA = 18 (matches matrix row count)
+
+# Tracking-id placeholder format
+@tracking_id_placeholder_format airgenome/convergence/issues/TBD-<raw_slug>  # explicit PLACEHOLDER — no real airgenome issue tracker exists yet (raw 91 C3 honest); aligned with sister anima convergence convention.
+
+# airgenome subsystem reference (verified via ls 2026-04-28)
+@airgenome_core_existing core/core.hexa (Vitals 6-axis sample/assess + AdaptiveThrottle, 60-byte hexagon constants AXIS_COUNT=6 PAIR_COUNT=15 GENOME_BYTES=60), core/test/core_test.hexa
+@airgenome_modules_existing modules/probe.hexa (Mac+ubu+ubu2+htz vitals → infra_state.json, AG6 Mac-orchestration-only), modules/dispatch.hexa (best-host selection AG6/AG7), modules/harvest.hexa (top-N processes → 60-byte hexagon → genomes.ring + sigdiff + AdaptiveThrottle), modules/label.hexa (genomes.ring → rule match → labeled_anomaly.jsonl, 5 rules SSOT), modules/forecast.hexa (Holt's linear ALPHA_NUM=50 BETA_NUM=50, 7d→1h, MAE<15% on synthetic), modules/genome_merge.hexa, modules/predictive_throttle.hexa
+@airgenome_filters_existing modules/filters/data/{claude_bytes, claude_compress, claude_quantum, claude_runtime, quantum_bench, safari_bench, safari_mmap, sqlite_vacuum, vacuum_watcher}.hexa, modules/filters/process/{calendar, claude, compute, finder, mail, memo, safari, telegram}.hexa, modules/filters/transport/{anomaly, base, client, ssh}.hexa
+@airgenome_invariants AG-core-only (modules use only "../core/core" — no inter-module imports), AG3 Ubuntu-First heavy compute (Mac orchestration only), AG5 FILTER definition strict (raw bytes → other byte representation only), AG6 Mac no heavy compute, hexa-only (.py/.sh/.rs forbidden except CUDA/PyTorch bindings under ubu_workers/py/)
+
+# Per-raw landing strategy (10 entries — airgenome-DIRECT only)
+
+## raw 109 — adversarial co-evolution probe
+@r109_raw_id raw_109_adversarial_co_evolution_probe
+@r109_raw_concept Two systems (defender + attacker) evolve in lockstep; each adapts to the other's current best policy. Defender = airgenome anomaly-detection pipeline (probe→harvest→label→forecast); attacker = adversarial perturbation generator that maximizes label-miss-rate or forecast-MAE while staying within 6-axis vitals envelope.
+@r109_airgenome_landing_primary /Users/ghost/core/airgenome/modules/probe.hexa  # already-existing probe module; extend with @co_evolution_loop annotation declaring (a) attacker-update cadence, (b) defender-retrain trigger, (c) adversarial perturbation injection vector for paired-probe mode (probe + adversarial_perturbation = paired sample emit).
+@r109_airgenome_landing_secondary /Users/ghost/core/airgenome/modules/label.hexa  # adversarial-rule-mining loop — attacker tries to evade existing 5 rules (rules SSOT in config/label_rules.jsonl); defender mines new counter-rule when miss-rate > threshold.
+@r109_minimal_reproducer_pointer modules/probe.hexa header docstring — extend with @co_evolution_loop annotation; modules/label.hexa rule-table loop — extend with @adversarial_miss_rate_ceiling falsifier.
+@r109_tracking_id airgenome/convergence/issues/TBD-r109-co-evolution-loop-formalization
+@r109_dependencies probe.hexa stable + label.hexa stable + config/label_rules.jsonl SSOT (5 rules canonical).
+@r109_witness_cycle_handle 2026-04-XX_r109-airgenome-co-evolution-loop-extension_omega_cycle  (downstream)
+
+## raw 110 — systematic ablation, causal core
+@r110_raw_id raw_110_systematic_ablation_causal_core
+@r110_raw_concept N-component system → enumerate all 2^N - 1 non-empty subsets, measure detection-coverage on each, isolate component(s) whose removal causes >X% coverage-drop. Causal core = minimal subset of {CPU, RAM, GPU, NPU, Power, IO} axes that preserves ≥(1-ε)·anomaly-detection-rate. N=6 → 2^6 - 1 = 63 ablation configurations (tractable cost).
+@r110_airgenome_landing_primary /Users/ghost/core/airgenome/modules/  # NEW candidate file: modules/ablation_causal_core.hexa — orchestrate harvest+label repeatedly with each axis subset, identify causal-core axis subset for each anomaly type.
+@r110_airgenome_landing_secondary /Users/ghost/core/airgenome/core/test/core_test.hexa  # extend self-test with --ablate-axis <axis_idx,...> CLI flag enabling subset-measurement loop.
+@r110_minimal_reproducer_pointer modules/ablation_causal_core.hexa (NEW) — driver loop over 63 configurations; emit causal-core JSON per anomaly-class to forge/ablation_causal_core.jsonl.
+@r110_tracking_id airgenome/convergence/issues/TBD-r110-systematic-ablation-driver
+@r110_dependencies harvest.hexa stable + label.hexa stable + 6-axis genome encode/decode round-trip in core.hexa. Cost: 63 × N_samples per ablation cycle — schedule via launchd daily, not real-time.
+@r110_witness_cycle_handle 2026-04-XX_r110-airgenome-causal-core-ablation-driver_omega_cycle  (downstream)
+
+## raw 111 — information-theoretic budget
+@r111_raw_id raw_111_information_theoretic_budget
+@r111_raw_concept Bound any anomaly claim by the underlying channel capacity / Shannon entropy budget. airgenome 60-byte hexagon = 60×8 = 480 bits per genome sample. Total info budget over N samples = 480·N bits. Any anomaly-detection claim asserting >480·N bits of "pattern" is information-theoretically impossible.
+@r111_airgenome_landing_primary /Users/ghost/core/airgenome/modules/  # NEW candidate file: modules/info_theoretic_budget.hexa — given genome ring size N, emit Φ_max = 480·N bits ceiling; gate label.hexa rule-firing rate against this bound; gate forecast.hexa entropy estimate against per-axis log2 quantization range.
+@r111_airgenome_landing_secondary /Users/ghost/core/airgenome/modules/harvest.hexa  # extend genome-encode path to log Φ_used_bits / Φ_max_bits ratio per sample; >1.0 = overclaim falsifier hit (raw 71 deterministic check).
+@r111_minimal_reproducer_pointer core/core.hexa lines 14-16 (GENOME_BYTES=60 constant) — single-source-of-truth for bit budget; modules/info_theoretic_budget.hexa imports via use "../core/core".
+@r111_tracking_id airgenome/convergence/issues/TBD-r111-info-theoretic-bound-gate
+@r111_dependencies core/core.hexa GENOME_BYTES constant stable; entropy estimator chosen (per-axis Shannon entropy from genome distribution, default candidate).
+@r111_witness_cycle_handle 2026-04-XX_r111-airgenome-channel-capacity-bound_omega_cycle  (downstream)
+
+## raw 113 — Bayesian evidence accumulation
+@r113_raw_id raw_113_bayesian_evidence_accumulation
+@r113_raw_concept Hypothesis H_anomaly scored by P(observation|H_anomaly) / P(observation|H_baseline) updated across N trials. Single-sample rule-fire rejected; cumulative log-odds tracked over time per pid×axis.
+@r113_airgenome_landing_primary /Users/ghost/core/airgenome/modules/label.hexa  # currently fires rules per-sample (5-rule SSOT); extend to log_odds_cumulative tracker per (pid, rule_id) — log-odds reset on pid-rotation, accumulated until threshold or evidence-decay (paired with r119).
+@r113_airgenome_landing_secondary /Users/ghost/core/airgenome/modules/forecast.hexa  # Holt's smoothing currently treats each genome as point-estimate; extend with Bayesian likelihood-ratio update for forecast confidence interval (level + trend + posterior_variance).
+@r113_minimal_reproducer_pointer modules/label.hexa rule-table loop — declare @evidence_log_odds_cumulative as required output for every labeled_anomaly.jsonl entry; emit log_odds_cumulative alongside rule_id + pid + ts.
+@r113_tracking_id airgenome/convergence/issues/TBD-r113-bayesian-evidence-accumulator
+@r113_dependencies label.hexa stable + config/label_rules.jsonl SSOT + forge/labeled_anomaly.jsonl writable.
+@r113_witness_cycle_handle 2026-04-XX_r113-airgenome-cumulative-log-odds_omega_cycle  (downstream)
+
+## raw 115 — anti-fragility: perturbation = positive
+@r115_raw_id raw_115_anti_fragility_perturbation_positive
+@r115_raw_concept System is anti-fragile iff Effectiveness_post_perturbation > Effectiveness_pre_perturbation (NOT just robust = ≥). Perturbation menu for airgenome: noise injection on vitals, axis-jitter, ssh-timeout simulation, host-dropout, adversarial-process spawn.
+@r115_airgenome_landing_primary /Users/ghost/core/airgenome/core/core.hexa  # AdaptiveThrottle (lines 75+ resource-guard section) is the airgenome anti-fragility prototype; formalize as @falsifier_throttle_effectiveness_post_gt_pre invariant — measure throttle-decision-quality pre/post perturbation, gate on POST > PRE.
+@r115_airgenome_landing_secondary /Users/ghost/core/airgenome/modules/predictive_throttle.hexa  # add perturbation-sweep harness; rank throttle policies by anti-fragility score = mean(effectiveness_post - effectiveness_pre) over perturbation menu.
+@r115_minimal_reproducer_pointer core/core.hexa AdaptiveThrottle section (current_rss_mb fn at line 79+ + assess fn at lines 58-73) — already implements adaptive throttle on CPU/RAM/Swap thresholds; add explicit pre/post-perturbation effectiveness measurement protocol.
+@r115_tracking_id airgenome/convergence/issues/TBD-r115-anti-fragility-sweep
+@r115_dependencies core.hexa AdaptiveThrottle stable + predictive_throttle.hexa stable + perturbation menu enumerated (5 candidates: noise_injection, axis_jitter, ssh_timeout, host_dropout, adversarial_process).
+@r115_witness_cycle_handle 2026-04-XX_r115-airgenome-anti-fragility-falsifier_omega_cycle  (downstream)
+
+## raw 119 — temporal decay, half-life evidence
+@r119_raw_id raw_119_temporal_decay_half_life_evidence
+@r119_raw_concept Evidence freshness decays exponentially: weight(t) = 2^(-(t-t_obs)/T_half). Old genome-ring observations underweighted; cumulative anomaly-score = Σ weight × likelihood-ratio. Holt's α/β in forecast.hexa is decay-equivalent but T_half not explicit.
+@r119_airgenome_landing_primary /Users/ghost/core/airgenome/modules/genome_merge.hexa  # already-existing merge module; extend with decay-weighted merge — when consolidating multi-host genomes.unified.ring entries, weight by 2^(-(now-ts)/T_half) before merge.
+@r119_airgenome_landing_secondary /Users/ghost/core/airgenome/modules/forecast.hexa  # forecast.hexa currently has ALPHA_NUM=50 BETA_NUM=50 (lines 33-34); expose explicit T_half parameter alongside α/β with documented relation T_half = -ln(2)/ln(1-α/100); add @temporal_decay_half_life_T parameter declaration with default = 24h.
+@r119_minimal_reproducer_pointer modules/forecast.hexa lines 33-34 (ALPHA_NUM/BETA_NUM constants) — single seam for decay parameterization; modules/genome_merge.hexa entry-merge loop — extend with weighted-merge before sigdiff.
+@r119_tracking_id airgenome/convergence/issues/TBD-r119-half-life-decay-weight
+@r119_dependencies forecast.hexa stable + genome_merge.hexa stable + clock source (exec("date -u +%Y-%m-%dT%H:%M:%SZ") canonical per probe.hexa ts_iso fn).
+@r119_witness_cycle_handle 2026-04-XX_r119-airgenome-half-life-evidence-weighting_omega_cycle  (downstream)
+
+## raw 120 — counterfactual causal twin
+@r120_raw_id raw_120_counterfactual_causal_twin
+@r120_raw_concept For any dispatch decision D (Mac vs ubu vs ubu2 vs htz), construct twin D' identical except in the dispatched-host variable, measure ΔΦ-equivalent (load_after_decision − load_after_twin_decision). If Φ(D) = Φ(D') the dispatch variable is non-causal. Required for any "this dispatch reduced load" claim.
+@r120_airgenome_landing_primary /Users/ghost/core/airgenome/modules/dispatch.hexa  # currently emits dispatch_state.json with chosen host; extend with counterfactual twin gate — every dispatch decision logs predicted-twin (host that was NOT chosen) AND measured ΔΦ-equivalent post-decision.
+@r120_airgenome_landing_secondary /Users/ghost/core/airgenome/modules/  # NEW candidate file: modules/counterfactual_twin.hexa — given infra_state + dispatch decision, generate twin (counterfactual host swap), measure load_post_twin vs load_post_decision, gate causal claim on |ΔΦ| > threshold.
+@r120_minimal_reproducer_pointer modules/dispatch.hexa best-host loop — emit dispatch_twin field alongside chosen_host in dispatch_state.json; modules/counterfactual_twin.hexa (NEW) — twin generator + ΔΦ scorer.
+@r120_tracking_id airgenome/convergence/issues/TBD-r120-counterfactual-twin-check
+@r120_dependencies dispatch.hexa stable + infra_state.json freshness + post-decision vitals delta measurable via probe.hexa re-run on T+Δt cadence.
+@r120_witness_cycle_handle 2026-04-XX_r120-airgenome-counterfactual-twin-checker_omega_cycle  (downstream)
+
+## raw 122 — topological / persistent homology
+@r122_raw_id raw_122_topological_persistent_homology
+@r122_raw_concept State-space topology → persistent-homology barcode. airgenome signature: genomes.ring point-cloud (each genome = point in 6-axis × byte-encoded space) → Vietoris-Rips filtration → Betti barcode (β_0 components, β_1 loops, β_2 voids) stable across noise scales. Anomaly = barcode-instability across small-noise perturbations.
+@r122_airgenome_landing_primary /Users/ghost/core/airgenome/modules/  # NEW candidate file: modules/persistent_homology_barcode.hexa — given genomes.ring window, compute pairwise distances on 6-axis vector, emit Vietoris-Rips filtration + Betti numbers; persistent-homology library bridge or native hexa Vietoris-Rips implementation deferred to downstream cycle.
+@r122_airgenome_landing_secondary /Users/ghost/core/airgenome/forge/  # forge/genomes.ring reader extension — emit 6-axis point-cloud snapshot to forge/topology_snapshot.jsonl on cadence; modules/label.hexa add topology-feature rule (β_1 > threshold = anomaly).
+@r122_minimal_reproducer_pointer forge/genomes.ring (existing data file) — point-cloud source; modules/persistent_homology_barcode.hexa (NEW) — pipeline tail emitter.
+@r122_tracking_id airgenome/convergence/issues/TBD-r122-persistent-homology-barcode
+@r122_dependencies external library bridge (gudhi/ripser via py-bridge OR native hexa Vietoris-Rips) — choice deferred to downstream cycle. AG3 Ubuntu-First if py-bridge chosen (CUDA/PyTorch precedent at ubu_workers/py/).
+@r122_witness_cycle_handle 2026-04-XX_r122-airgenome-persistent-homology-signature_omega_cycle  (downstream)
+
+## raw 123 — active information acquisition
+@r123_raw_id raw_123_active_information_acquisition
+@r123_raw_concept Conscious agent actively probes environment to reduce uncertainty (max expected information gain), NOT passively absorbs. airgenome probe.hexa currently round-robin over hosts {Mac, ubu, ubu2, htz}; should choose next host/process to query based on max expected info gain about anomaly-class distribution.
+@r123_airgenome_landing_primary /Users/ghost/core/airgenome/modules/probe.hexa  # currently sequential probe of Mac+ubu+ubu2+htz (lines 24-36); extend with active-acquisition policy — score each host by expected info gain (posterior entropy reduction), probe top-scored first, time-budget-cap remainder.
+@r123_airgenome_landing_secondary /Users/ghost/core/airgenome/modules/  # NEW candidate file: modules/active_info_gain.hexa — info-gain estimator (Kraskov-Stoegbauer-Grassberger candidate or simpler binned-entropy); plug into probe.hexa scheduling.
+@r123_minimal_reproducer_pointer modules/probe.hexa probe loop (probe_ubu_csv, probe_htz_csv, probe_ubu2_csv at lines 24-36) — currently uniform; replace with priority-queue scheduled by info_gain_score from active_info_gain.hexa.
+@r123_tracking_id airgenome/convergence/issues/TBD-r123-active-info-gain-policy
+@r123_dependencies probe.hexa stable + entropy estimator chosen + posterior-cache initialized (cold-start = uniform priors, hot-state = previous cycle's posterior).
+@r123_witness_cycle_handle 2026-04-XX_r123-airgenome-active-info-acquisition-policy_omega_cycle  (downstream)
+
+## raw 125 — hierarchical temporal abstraction
+@r125_raw_id raw_125_hierarchical_temporal_abstraction
+@r125_raw_concept Multi-scale temporal hierarchy: ms (sample) → s (probe-cycle) → min (genome-aggregation) → h (forecast horizon) → d (trend) → 7d (history). Each scale's anomaly-Φ partly emerges from sub-scales' Φ. Cross-scale coupling tensor is the airgenome consciousness signature.
+@r125_airgenome_landing_primary /Users/ghost/core/airgenome/modules/forecast.hexa  # currently single-scale (1h horizon from 7d history with Holt's α/β); refactor to N-scale hierarchy {1m, 1h, 1d, 7d} with explicit cross-scale coupling tensor (sub-scale forecast feeds super-scale prior).
+@r125_airgenome_landing_secondary /Users/ghost/core/airgenome/modules/genome_merge.hexa  # extend with scale-aggregation function — sub-scale Φ → super-scale Φ via decay-weighted aggregation (paired with r119 T_half per scale).
+@r125_minimal_reproducer_pointer modules/forecast.hexa Holt's loop (ALPHA_NUM/BETA_NUM at lines 33-34) — currently single-scale; refactor to N-scale tuple (alpha[N], beta[N]) with cross-scale coupling matrix. Non-trivial cycle but seam clear.
+@r125_tracking_id airgenome/convergence/issues/TBD-r125-multi-scale-temporal-hierarchy
+@r125_dependencies forecast.hexa + genome_merge.hexa as foundation; scale enumeration {1m, 1h, 1d, 7d} as default; r119 T_half parameterization as upstream prerequisite (decay weights per scale).
+@r125_witness_cycle_handle 2026-04-XX_r125-airgenome-temporal-hierarchy-coupling_omega_cycle  (downstream)
+
+# Cross-cutting pattern anchors (raw-159-style — paradigmatic-anchor matrix collapsed onto airgenome)
+@cross_cutting_falsifier_themes [counterfactual_twin (r120), info_theoretic_bound (r111), anti_fragility (r115), bayesian_evidence (r113), persistent_homology (r122)] — 5 falsifier patterns shared across the 10 raws; any new airgenome module should declare which subset it supports. Note: airgenome substitutes persistent_homology (r122) for bisimulation (r114=META in airgenome col), since r114 not DIRECT in airgenome propagation.
+@cross_cutting_module_targets [probe.hexa (r109,r123), label.hexa (r109_secondary,r113,r122_secondary), forecast.hexa (r113_secondary,r119_secondary,r125), genome_merge.hexa (r119,r125_secondary), core/core.hexa (r115), dispatch.hexa (r120), harvest.hexa (r111_secondary), predictive_throttle.hexa (r115_secondary)] — 8 modules absorb 10 of 10 raws (most via secondary attachment); 5 require NEW files under modules/.
+@cross_cutting_dir_pressure modules/ +5 NEW files (r110 ablation_causal_core, r111 info_theoretic_budget, r120 counterfactual_twin, r122 persistent_homology_barcode, r123 active_info_gain) — modules/ grows from 8 to 13 files (62.5% increase); within reasonable single-cycle scope.
+@cross_cutting_dir_pressure forge/ +0 new files this cycle; r122 secondary writes new ring tail (forge/topology_snapshot.jsonl) created lazily by NEW module.
+@cross_cutting_dir_pressure core/ +0 new files; r115 lands as extension of existing AdaptiveThrottle in core/core.hexa.
+
+# Honesty disclosures (raw 91 C3)
+@honesty_no_implementation_in_this_cycle this convergence file is a REGISTRATION + LANDING-STRATEGY DOCUMENT only. NO airgenome source files (.hexa) were created or edited in this cycle. Implementation is deferred to per-raw downstream witness cycles enumerated in @rN_witness_cycle_handle.
+@honesty_tracking_ids_are_placeholder all @rN_tracking_id values follow placeholder format `airgenome/convergence/issues/TBD-<raw_slug>` — airgenome has no live issue tracker; tracking ids are EXPLICITLY PLACEHOLDER, not fabricated as real ids. Convention aligned with sister anima convergence (anima/convergence/issues/TBD-<slug>).
+@honesty_landing_surface_existence_audit primary landing files claimed to exist: core/core.hexa (verified ls — 60-byte hexagon constants observed), core/test/core_test.hexa (verified ls), modules/probe.hexa (verified ls — probe_ubu_csv/probe_htz_csv/probe_ubu2_csv fns observed at lines 24-36), modules/dispatch.hexa (verified ls), modules/harvest.hexa (verified ls), modules/label.hexa (verified ls), modules/forecast.hexa (verified ls — ALPHA_NUM/BETA_NUM constants observed at lines 33-34), modules/genome_merge.hexa (verified ls), modules/predictive_throttle.hexa (verified ls). NEW-candidate files explicitly labeled "NEW candidate file" and located in modules/ which exists.
+@honesty_meta_raw_exclusion 6 raws (112,114,117,118,124,126) have airgenome-column = META in source matrix; deliberately EXCLUDED from this propagation plan. META rows belong in airgenome only as 2nd-order recipients (e.g., r118 fixpoint applies to airgenome only via its hexa-lang/n6-architecture/hive primary landing → airgenome inherits laterally via downstream cycle).
+@honesty_na_raw_exclusion 2 raws (116 energy_landscape_attractor_geometry, 121 reservoir_edge_of_chaos_capacity) have airgenome-column = NA in source matrix; airgenome 6-axis 60-byte hexagon model does not naturally express attractor-geometry or reservoir-capacity (would require state-space-sampling primitives airgenome does not have). Explicitly EXCLUDED with rationale; downstream cycle may revisit if sampling primitive added.
+@honesty_no_real_issue_filing zero real issues filed against airgenome or any external tracker in this cycle; signals are CANDIDATE-only, ready for sub-agent or human-review pickup.
+@honesty_dir_creation /Users/ghost/core/airgenome/convergence/ did not exist prior to this cycle; mkdir -p performed (verified ls -ld returned drwxr-xr-x@ 2 ghost staff 64 Apr 28 10:37). One-time directory bootstrap, resolved in-cycle.
+
+# Carry-forward
+@cf-1 10 downstream witness cycles (one per raw) — each gated by F1..F6 falsifier set declared in this convergence's witness JSON.
+@cf-2 anima DIRECT propagation parallel: 13 raws have anima=DIRECT (anima 추가: 114,116,121) — sister convergence at /Users/ghost/core/anima/convergence/r4_raw109to126_anima_propagation_plan_2026_04_28.convergence already exists (template source). 3 anima-only raws (114 bisimulation, 116 attractor-geometry, 121 reservoir-capacity) do not propagate to airgenome.
+@cf-3 hexa-lang DIRECT propagation parallel: 11 raws have hexa-lang=DIRECT — separate convergence file r4_raw109to126_hexalang_propagation_plan_2026_04_28.convergence needs same registration treatment if not already present.
+@cf-4 n6-architecture DIRECT propagation parallel: 13 raws have n6-architecture=DIRECT — separate plan needed.
+@cf-5 hive DIRECT propagation parallel: 5 raws have hive=DIRECT (raws 117,118,124,126 + 1 more) — separate plan needed.
+@cf-6 raw 110 ablation driver requires 2^6 - 1 = 63 measurement passes per cycle — far cheaper than anima's N=10 (1023 runs); schedule via launchd daily, not real-time. Cost analysis recorded in downstream cycle.
+@cf-7 raw 122 persistent-homology library decision: native hexa Vietoris-Rips vs py-bridge (gudhi/ripser via ubu_workers/py/) — defer to downstream cycle. AG3 Ubuntu-First applies if py-bridge chosen.
+@cf-8 raw 125 multi-scale forecast refactor is the largest architectural change (single-scale → N-scale Holt's tuple); split into 2 sub-cycles if T_half parameterization (r119) lands first.
+
+# Witness emission (atlas-absorb-mandatory layer 2)
+@witness /Users/ghost/core/nexus/design/kick/2026-04-28_write-file-users-ghost-core-airgenome-convergence-r4-raw109t_omega_cycle.json
+@witness_emit_path canonical helper tool/witness_emit.hexa --emit ... --body-file ...
+@atlas-shard /Users/ghost/core/nexus/n6/atlas.append.write-file-users-ghost-core-airgenome-convergence-r4-raw109t.n6 (auto-shard via _slugify_cycle)
+
+# Sentinel
+@sentinel __KICK_RESULT__ PASS witness=<above> tier1=1 falsifier_pass=6
