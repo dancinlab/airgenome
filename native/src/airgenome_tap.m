@@ -110,6 +110,20 @@ static CFMachPortRef    g_tap            = NULL;
 static int              g_dragging       = 0;
 static CGPoint          g_drag_start_pt  = {0, 0};
 static AXUIElementRef   g_drag_window    = NULL;
+// Title-bar-drag whitelist (the ONLY gate). At LeftMouseDown we capture
+// the focused window's frame.origin into g_drag_window_origin_at_start.
+// During the drag we re-read the window's origin on every dragged event;
+// once it has moved by >= TITLE_BAR_DRAG_THRESHOLD_PX we flip
+// g_window_actually_moved to 1 and only THEN do we run the magnet
+// pipeline (zone classification, preview, top-edge y-clamp, snap on up).
+//
+// Rationale: title-bar drags move the window; URL-bar / Finder-icon /
+// text / image / attachment drag-to-copy gestures all share the property
+// that the source window does NOT move. So a window-position delta is the
+// single sufficient whitelist for "this is a real window drag".
+static CGPoint          g_drag_window_origin_at_start = {0, 0};
+static int              g_window_actually_moved       = 0;
+static int              TITLE_BAR_DRAG_THRESHOLD_PX   = 3;
 
 // Native-tiling restore state. -1 = "key was unset originally" so on
 // restore we delete the override rather than forcing a value the user
@@ -298,6 +312,28 @@ static AXUIElementRef get_focused_window(void) {
         return NULL;
     }
     return winRef;
+}
+
+// Read the AX position (top-left, screen coords) of the given window.
+// Returns {0,0} on failure -- callers must treat that as "could not read"
+// rather than "window is at origin", and gracefully degrade. In practice
+// the only consequence of a read failure during a drag is a false-negative
+// magnet (we miss a real title-bar drag), which is acceptable.
+static CGPoint get_window_origin(AXUIElementRef win) {
+    CGPoint p = {0, 0};
+    if (!win) return p;
+    AXValueRef v = NULL;
+    AXError err = AXUIElementCopyAttributeValue(
+        win, kAXPositionAttribute, (CFTypeRef *)&v);
+    if (err != kAXErrorSuccess || !v) {
+        fprintf(stderr, "ax: get window origin failed err=%d\n", (int)err);
+        fflush(stderr);
+        if (v) CFRelease(v);
+        return p;
+    }
+    AXValueGetValue(v, kAXValueCGPointType, &p);
+    CFRelease(v);
+    return p;
 }
 
 static int window_set_frame(AXUIElementRef win, CGRect frame) {
@@ -560,40 +596,85 @@ static void handle_scroll_wheel(CGEventRef event) {
 static void magnet_on_left_down(CGEventRef event) {
     g_drag_start_pt = CGEventGetLocation(event);
     g_dragging = 0;
+    g_window_actually_moved = 0;
     if (g_drag_window) {
         CFRelease(g_drag_window);
         g_drag_window = NULL;
     }
     // Stale preview from a previous cycle, if any.
     hide_snap_preview();
+    // Capture the focused window EARLY (do not wait for drag-min-distance)
+    // so we can compare frame.origin on every dragged event from t=0. This
+    // is the basis of the title-bar-drag whitelist: a real window drag
+    // moves the window; any other drag-and-drop source leaves it stationary.
+    g_drag_window = get_focused_window();
+    g_drag_window_origin_at_start = get_window_origin(g_drag_window);
+    if (g_debug) {
+        fprintf(stderr,
+            "magnet: down pt=(%.0f,%.0f) win=%s origin=(%.0f,%.0f)\n",
+            g_drag_start_pt.x, g_drag_start_pt.y,
+            g_drag_window ? "yes" : "no",
+            g_drag_window_origin_at_start.x,
+            g_drag_window_origin_at_start.y);
+        fflush(stderr);
+    }
 }
 
 static void magnet_on_left_dragged(CGEventRef event) {
     CGPoint p = CGEventGetLocation(event);
 
-    // Drag-detect (only run while not yet dragging).
+    // Drag-detect (only run while not yet dragging). Note: g_dragging
+    // here means "cursor has moved beyond the click slop"; it is NOT the
+    // magnet-eligible signal. The magnet-eligible signal is
+    // g_window_actually_moved, set below.
     if (!g_dragging) {
         CGFloat dx = p.x - g_drag_start_pt.x;
         CGFloat dy = p.y - g_drag_start_pt.y;
         CGFloat thr = (CGFloat)DRAG_MIN_DISTANCE_PX;
         if (dx * dx + dy * dy >= thr * thr) {
             g_dragging = 1;
-            g_drag_window = get_focused_window();
         }
     }
+
+    // Title-bar-drag whitelist: while g_dragging is set but we have not
+    // yet confirmed a real window move, re-read the focused window's
+    // origin and compare to the start. Once the delta crosses
+    // TITLE_BAR_DRAG_THRESHOLD_PX we latch g_window_actually_moved and
+    // never re-test (the window may briefly be re-positioned by user
+    // intent during the drag and we want to keep the magnet engaged).
+    if (g_dragging && !g_window_actually_moved && g_drag_window) {
+        CGPoint cur = get_window_origin(g_drag_window);
+        CGFloat ox = cur.x - g_drag_window_origin_at_start.x;
+        CGFloat oy = cur.y - g_drag_window_origin_at_start.y;
+        CGFloat thr = (CGFloat)TITLE_BAR_DRAG_THRESHOLD_PX;
+        if (ox * ox + oy * oy >= thr * thr) {
+            g_window_actually_moved = 1;
+            if (g_debug) {
+                fprintf(stderr,
+                    "magnet: window moved (%.1f,%.1f) -> engaging\n", ox, oy);
+                fflush(stderr);
+            }
+        }
+    }
+
+    // Until the window has actually moved, this is either a click+release,
+    // a sub-threshold tremor, or a drag-to-copy gesture. In all cases we
+    // suppress the entire magnet pipeline -- no preview, no zone classify,
+    // no spaces-guard y-clamp -- so the system's drag-and-drop session
+    // (URL drag, file icon drag, text selection, image, attachment) flows
+    // through untouched.
+    if (!g_window_actually_moved) return;
 
     // Live snap-preview: classify against the REAL cursor (not the
     // y-clamped event we are about to forward to the rest of macOS) so
     // the user sees feedback even when their cursor is in the very
     // edge sliver that the SPACES_GUARD_PX clamp covers.
-    if (g_dragging) {
-        CGRect vf = screen_visible_frame_at(p);
-        Zone   z  = classify_zone(p, vf);
-        if (z != ZONE_NONE) {
-            show_snap_preview(zone_to_frame(z, vf));
-        } else {
-            hide_snap_preview();
-        }
+    CGRect vf = screen_visible_frame_at(p);
+    Zone   z  = classify_zone(p, vf);
+    if (z != ZONE_NONE) {
+        show_snap_preview(zone_to_frame(z, vf));
+    } else {
+        hide_snap_preview();
     }
 
     // Top-edge guard: rewrite the event's y so the rest of macOS (the
@@ -613,7 +694,12 @@ static void magnet_on_left_up(CGEventRef event) {
     // snap actually fired (zone == NONE leaves no snap but we still want
     // the overlay gone).
     hide_snap_preview();
-    if (g_dragging) {
+
+    // Title-bar-drag whitelist: only run the snap path when we observed
+    // the focused window actually move during this drag. Drag-to-copy
+    // gestures (URL bar, file icon, text/image/attachment) never moved a
+    // window and so cleanly bypass the snap.
+    if (g_window_actually_moved) {
         CGPoint mouse_ax = CGEventGetLocation(event);
         CGRect vf = screen_visible_frame_at(mouse_ax);
         Zone z = classify_zone(mouse_ax, vf);
@@ -637,12 +723,14 @@ static void magnet_on_left_up(CGEventRef event) {
                 fflush(stderr);
             }
         }
-        if (g_drag_window) {
-            CFRelease(g_drag_window);
-            g_drag_window = NULL;
-        }
+    }
+
+    if (g_drag_window) {
+        CFRelease(g_drag_window);
+        g_drag_window = NULL;
     }
     g_dragging = 0;
+    g_window_actually_moved = 0;
 }
 
 // ---------------------------------------------------------------------------
