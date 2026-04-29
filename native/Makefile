@@ -18,7 +18,8 @@ ICON_PNG_1024 = build/AppIcon_1024.png
 ICON_SCRIPT   = scripts/build_icon.applescript
 
 BIN           = build/$(APP_NAME)
-SRC           = src/airgenome_tap.m
+# raw 177 single-TCC: launcher.m linked into same binary (NOT separate exe).
+SRC           = src/airgenome_tap.m src/airgenome_launcher.m
 PLIST_TPL     = launchd/com.airgenome.tap.plist
 INSTALL_PLIST = $(HOME)/Library/LaunchAgents/com.airgenome.tap.plist
 LOG_DIR       = $(HOME)/Library/Logs/$(APP_NAME).app
@@ -28,7 +29,7 @@ FRAMEWORKS    = -framework ApplicationServices -framework Carbon \
                 -framework Cocoa -framework AppKit -framework IOKit
 
 .PHONY: all build app icon install uninstall status logs selftest \
-        restart rebuild clean setup-signing
+        restart rebuild clean setup-signing launcher-status launcher-restore
 
 # One-time per-user signing cert provisioning. Idempotent.
 setup-signing:
@@ -44,7 +45,7 @@ build: $(BIN)
 
 $(BIN): $(SRC)
 	@mkdir -p build
-	clang $(CFLAGS) $(FRAMEWORKS) -o $@ $<
+	clang $(CFLAGS) $(FRAMEWORKS) -o $@ $^
 	@echo "built: $@ ($$(stat -f%z $@) bytes)"
 
 # ---------------------------------------------------------------------------
@@ -133,7 +134,21 @@ uninstall:
 	@launchctl bootout gui/$$(id -u) $(INSTALL_PLIST) 2>/dev/null || true
 	@rm -f  $(INSTALL_PLIST)
 	@rm -rf $(APP_BUNDLE)
+	@# hive raw 181 install/uninstall symmetry (raw 209 launcher inheritance):
+	@# remove launcher state files at idempotent rm -f. raw 180 system-state
+	@# restore is delegated to `airgenome launcher restore` subcommand for
+	@# SIGKILL recovery; this target only handles fs cleanup.
+	@rm -f $(HOME)/Library/Application\ Support/airgenome/launcher.jsonl 2>/dev/null || true
 	@echo "uninstalled."
+
+# hive raw 209 reference impl: launcher-* phony targets for discoverability.
+# These delegate to the bin/airgenome launcher subcommand stub (raw 169
+# surgical: do not duplicate logic, route through canonical entry).
+launcher-status:
+	@$(PWD)/../bin/airgenome launcher status
+
+launcher-restore:
+	@$(PWD)/../bin/airgenome launcher restore
 
 restart:
 	@launchctl kickstart -k gui/$$(id -u)/com.airgenome.tap 2>/dev/null \

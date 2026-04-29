@@ -85,7 +85,12 @@ static int g_buttons_on  = 1;
 static int g_scroll_on   = 1;
 static int g_magnet_on   = 1;
 static int g_disable_native = 1;
+static int g_launcher_on = 0;   // set via AIRG_TAP_LAUNCHER=1; hive raw 209
 static int g_debug       = 0;   // set via AIRG_TAP_DEBUG=1, logs every event
+
+// hive raw 209 reference impl - declared in airgenome_launcher.m, linked
+// into the same binary (raw 177 single TCC entry per project).
+extern BOOL airgenome_launcher_handle_keydown(CGEventRef event);
 
 // Magnet thresholds (pixels). Generous defaults for multi-monitor and
 // 4K/5K layouts -- a 20px reach feels invisible at high pixel densities.
@@ -793,6 +798,13 @@ static CGEventRef tap_callback(CGEventTapProxy proxy,
         fflush(stderr);
     }
 
+    // (a0) hive raw 209 launcher hotkey hook - check before mouse handlers
+    // since launcher consumes ctrl+s key down events. Per-event opt-in via
+    // AIRG_TAP_LAUNCHER env flag (raw 177 per-feature opt-in pattern).
+    if (g_launcher_on && type == kCGEventKeyDown) {
+        if (airgenome_launcher_handle_keydown(event)) return NULL;
+    }
+
     // (a) Mouse button: button 4 / 5 -> Cmd+[ / Cmd+]
     if (g_buttons_on && type == kCGEventOtherMouseDown) {
         if (handle_mouse_button(event)) return NULL;   // consumed
@@ -1304,6 +1316,7 @@ int main(int argc, char **argv) {
         g_scroll_on         = env_flag("AIRG_TAP_MOUSE_SCROLL",   g_scroll_on);
         g_magnet_on         = env_flag("AIRG_TAP_MAGNET",         g_magnet_on);
         g_disable_native    = env_flag("AIRG_TAP_DISABLE_NATIVE", g_disable_native);
+        g_launcher_on       = env_flag("AIRG_TAP_LAUNCHER",       g_launcher_on);
         g_debug             = env_flag("AIRG_TAP_DEBUG",          g_debug);
         // Persisted menubar state overrides env defaults (raw 168 minimum-viable).
         load_menubar_state();
