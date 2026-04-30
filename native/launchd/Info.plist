@@ -44,5 +44,29 @@
         <key>AIRG_TAP_LAUNCHER_HOTKEY</key>
         <string>ctrl+s</string>
     </dict>
+
+    <!-- .exe Finder dispatch — 단일 bundle, 별도 helper app 0.
+         Finder 가 .exe 더블클릭 시 LaunchServices 가 com.airgenome.tap 선택,
+         이미 실행 중인 instance 의 application:openFile: 으로 path 전달.
+         airgenome_tap.m 의 AirgenomeExeHandlerDelegate 가 처리. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Windows Executable</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.microsoft.windows-executable</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>exe</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

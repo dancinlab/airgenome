@@ -1572,6 +1572,102 @@ static void install_status_item(void) {
     g_status_item = item;   // strong reference to keep alive
 }
 
+// ─── .exe 파일 Finder dispatch — 단일 bundle 통합 (별도 helper app 0) ───
+//
+// Finder 가 .exe 더블클릭 시 LaunchServices 가 com.airgenome.tap 을 골라
+// (Info.plist CFBundleDocumentTypes) NSApplicationDelegate
+// application:openFile: 으로 path 전달.
+//
+// 현재 airgenome.tap 의 tap 데몬 instance 가 이미 실행 중일 가능성 높음
+// (singleton lock). LaunchServices 는 second-instance 띄우는 대신
+// 기존 instance 의 delegate 로 openFile event 보냄.
+//
+// → posix_spawn 으로 `hexa run airgenome/modules/exe_dispatch.hexa <path>`
+//   실행 — tap 메인 thread 블록 안 함.
+@interface AirgenomeExeHandlerDelegate : NSObject <NSApplicationDelegate>
+@end
+@implementation AirgenomeExeHandlerDelegate
+- (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
+    fprintf(stderr, "airgenome_tap: openFile event — %s\n", [filename UTF8String]);
+    fflush(stderr);
+
+    // hexa 위치 (PATH-resolved)
+    NSString *hexa = nil;
+    NSArray<NSString *> *cands = @[
+        [NSString stringWithFormat:@"%@/Dev/hexa-lang/hexa", NSHomeDirectory()],
+        [NSString stringWithFormat:@"%@/.hx/bin/hexa", NSHomeDirectory()],
+        @"/usr/local/bin/hexa",
+        @"/opt/homebrew/bin/hexa"
+    ];
+    for (NSString *c in cands) {
+        if ([[NSFileManager defaultManager] isExecutableFileAtPath:c]) {
+            hexa = c; break;
+        }
+    }
+    if (!hexa) {
+        // dialog 안내 — hexa 미설치
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"hexa-lang not installed";
+        alert.informativeText = @"airgenome requires hexa-lang to dispatch .exe.\n\nInstall hexa-lang first.";
+        [alert runModal];
+        return NO;
+    }
+
+    // airgenome modules/exe_dispatch.hexa 경로 (env 우선, 다음 dev/install)
+    NSString *dispatchPath = nil;
+    NSString *envRoot = [[[NSProcessInfo processInfo] environment] objectForKey:@"AIRGENOME_ROOT"];
+    NSMutableArray<NSString *> *roots = [NSMutableArray array];
+    if (envRoot.length) [roots addObject:envRoot];
+    [roots addObject:[NSString stringWithFormat:@"%@/Dev/airgenome", NSHomeDirectory()]];
+    [roots addObject:[NSString stringWithFormat:@"%@/.airgenome/airgenome", NSHomeDirectory()]];
+    [roots addObject:[NSString stringWithFormat:@"%@/core/airgenome", NSHomeDirectory()]];
+    for (NSString *r in roots) {
+        NSString *p = [r stringByAppendingPathComponent:@"modules/exe_dispatch.hexa"];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) {
+            dispatchPath = p; break;
+        }
+    }
+    if (!dispatchPath) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"airgenome exe_dispatch not found";
+        alert.informativeText = @"Could not find modules/exe_dispatch.hexa.\n\nClone airgenome to ~/.airgenome/airgenome";
+        [alert runModal];
+        return NO;
+    }
+
+    // posix_spawn — main thread 블록 안 함
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = hexa;
+    task.arguments = @[ @"run", dispatchPath, filename ];
+    task.currentDirectoryPath = [dispatchPath stringByDeletingLastPathComponent];
+    @try {
+        [task launch];
+        fprintf(stderr, "airgenome_tap: dispatched %s (pid=%d)\n",
+                [filename UTF8String], task.processIdentifier);
+        fflush(stderr);
+    }
+    @catch (NSException *ex) {
+        fprintf(stderr, "airgenome_tap: dispatch FAIL — %s\n",
+                [ex.description UTF8String]);
+        fflush(stderr);
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"dispatch failed";
+        alert.informativeText = ex.description;
+        [alert runModal];
+        return NO;
+    }
+    return YES;
+}
+
+- (void)application:(NSApplication *)sender openFiles:(NSArray<NSString *> *)filenames {
+    for (NSString *f in filenames) {
+        [self application:sender openFile:f];
+    }
+    [sender replyToOpenOrPrint:NSApplicationDelegateReplySuccess];
+}
+@end
+static AirgenomeExeHandlerDelegate *g_exe_handler_delegate = nil;
+
 int main(int argc, char **argv) {
     @autoreleasepool {
         // raw 241 단일 binary 단일 TCC entry — `--mode=run-once=<path>` 진입점.
@@ -1731,6 +1827,10 @@ int main(int argc, char **argv) {
         // a live main queue.
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        // Finder .exe 더블클릭 → application:openFile: 받기 위해 delegate 등록
+        // (단일 bundle, 단일 TCC entry — 별도 helper app 0).
+        g_exe_handler_delegate = [[AirgenomeExeHandlerDelegate alloc] init];
+        [NSApp setDelegate:g_exe_handler_delegate];
         install_status_item();
         install_signal_handlers();
 
