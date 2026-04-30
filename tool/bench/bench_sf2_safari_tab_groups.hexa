@@ -1,0 +1,51 @@
+// tool/bench/bench_sf2_safari_tab_groups.hexa — SF2 HOLD bench (carve-out documentation)
+//   raw 240 V2 score 332/400 < 350 → no impl, no real bench.
+//   This bench prints the verdict + a synth-only demo of what the bench *would*
+//   measure once Safari is quit OR sqlite ?immutable=1 is whitelisted.
+//
+// 5-tuple: site=SF2 ROI#=2 baseline_ns=N/A post_ns=N/A diff_test=N/A_HOLD
+// R1 HEXA-FIRST + R17 /usr/bin/perl alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random\n" +
+"print('airgenome bench/SF2 — Tab Groups (HOLD)')\n" +
+"print('  raw 240 V2 score: 332/400 < 350 threshold')\n" +
+"print('  verdict: HOLD reason=safari-running+spec-path-missing')\n" +
+"print('  spec path: ~/Library/Safari/TabGroups.plist (DOES NOT EXIST macOS 14+)')\n" +
+"print('  real path: ~/Library/Containers/com.apple.Safari/Data/Library/Safari/SafariTabs.db (sqlite, locked)')\n" +
+"print('---')\n" +
+"print('synth-only sanity bench (10 rows, demonstrates blob layout would work):')\n" +
+"BIN='/tmp/bench_sf2_synth.bin'\n" +
+"rng=random.Random(42)\n" +
+"rows=[(f'group{i}',[f'https://syn{i}/{j}' for j in range(5)]) for i in range(10)]\n" +
+"flat=[]\n" +
+"for g,urls in rows:\n" +
+"    for u in urls: flat.append((g,u))\n" +
+"flat.sort(key=lambda r:(r[0],r[1]))\n" +
+"# write minimal blob (group_pool + url_pool, parallel offset/len)\n" +
+"n=len(flat); pool=bytearray()\n" +
+"offs=array.array('I',[0]*n); lens=array.array('I',[0]*n)\n" +
+"for i,(g,u) in enumerate(flat):\n" +
+"    s=f'{g}\\x00{u}'.encode('utf-8','replace')\n" +
+"    offs[i]=len(pool); lens[i]=len(s); pool.extend(s)\n" +
+"with open(BIN,'wb') as f:\n" +
+"    f.write(struct.pack('<4sIII',b'STGF',1,n,len(pool)))\n" +
+"    f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(pool)\n" +
+"print(f'  synth blob: {os.path.getsize(BIN)}B for {n} (group,url) pairs')\n" +
+"# bisect demo on group prefix\n" +
+"sorted_strs=[(pool[offs[i]:offs[i]+lens[i]]) for i in range(n)]\n" +
+"prefix=b'group3'\n" +
+"s=bisect.bisect_left(sorted_strs,prefix)\n" +
+"e=bisect.bisect_left(sorted_strs,prefix+b'\\xff')\n" +
+"print(f'  bisect group3 → range [{s},{e}) = {e-s} pairs (synth check)')\n" +
+"print('  5-tuple: site=SF2 ROI#=2 baseline_ns=N/A post_ns=N/A diff_test=N/A_HOLD')\n" +
+"print('[next] re-score when Safari quit OR sqlite3 ?immutable=1 cold-snapshot whitelisted')\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_sf2_safari_tab_groups_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

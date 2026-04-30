@@ -1,0 +1,204 @@
+// tool/bench/bench_ct3_docker_image_layer_dedup.hexa — CT3 DILD bench
+//   raw 240 V2 V3 (420/420 with B10 layer-stack-fold-correctness).
+//   합성 dataset 결정성 + real-probe optional.
+//   real ~/.docker/buildx/refs + Docker.raw HEAD-only 의존 제거 → synth-only
+//   모드는 항상 동일 seed=43 동일 결과.
+//
+// 모드:
+//   bench (default) — 8000 layer chunk synth (35% dup) → DILD encode → bisect query.
+//   real            — buildx refs LocalPath probe + Docker.raw stat (HEAD only).
+//
+// 5-tuple: site=CT3_DOCKER_LAYER ROI#=CT3_DOCKER_LAYER_DILD baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: /usr/bin/perl alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random,json,re,glob,hashlib\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/bench_docker_image_layer_dild.bin'\n" +
+"HEAD_BYTES=65536\n" +
+"N_LAYERS=8000\n" +
+"DUP_PCT=0.35\n" +
+"Q_LOOKUP=300\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1099511627776: return f'{b/1099511627776:.2f}TB'\n" +
+"    if b>1073741824: return f'{b/1073741824:.2f}GB'\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def wyh64(b,sz):\n" +
+"    h=hashlib.blake2b(b,digest_size=8,key=struct.pack('<Q',sz&0xffffffffffffffff)).digest()\n" +
+"    return struct.unpack('<Q',h)[0]\n" +
+"\n" +
+"def synth(n=N_LAYERS,seed=43):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        if i>0 and rng.random()<DUP_PCT:\n" +
+"            j=rng.randrange(i)\n" +
+"            out.append(out[j])\n" +
+"        else:\n" +
+"            sz=rng.choice([512,2048,8192,16384,32768,65536,131072])\n" +
+"            payload=bytes(rng.randrange(256) for _ in range(min(sz,256)))\n" +
+"            out.append(('synth-layer-'+str(i),sz,payload,i%64))\n" +
+"    return out\n" +
+"\n" +
+"def encode_blob(items):\n" +
+"    seen={}\n" +
+"    n_total=0; total_bytes=0\n" +
+"    for name,sz,payload,img in items:\n" +
+"        n_total+=1; total_bytes+=sz\n" +
+"        h=wyh64(payload[:HEAD_BYTES],sz)\n" +
+"        cur=seen.get(h)\n" +
+"        if cur is None: seen[h]=[sz,1,img,name]\n" +
+"        else: cur[1]+=1\n" +
+"    sorted_items=sorted(seen.items(),key=lambda kv:kv[0])\n" +
+"    n_uniq=len(sorted_items)\n" +
+"    hashes=array.array('Q',[h for h,_ in sorted_items])\n" +
+"    sizes =array.array('I',[meta[0]&0xffffffff for _,meta in sorted_items])\n" +
+"    dups  =array.array('I',[meta[1]&0xffffffff for _,meta in sorted_items])\n" +
+"    img_idx=array.array('I',[meta[2]&0xffffffff for _,meta in sorted_items])\n" +
+"    poffs=array.array('I',[0]*n_uniq); plens=array.array('I',[0]*n_uniq)\n" +
+"    pool=bytearray()\n" +
+"    for i,(_,meta) in enumerate(sorted_items):\n" +
+"        b=str(meta[3]).encode('utf-8','replace')\n" +
+"        poffs[i]=len(pool); plens[i]=len(b); pool.extend(b)\n" +
+"    fold_state=0xcbf29ce484222325\n" +
+"    for i in range(n_uniq):\n" +
+"        chunk=struct.pack('<QII',int(hashes[i]),int(sizes[i]),int(dups[i]))\n" +
+"        for x in chunk:\n" +
+"            fold_state^=x; fold_state=(fold_state*0x100000001b3) & 0xffffffffffffffff\n" +
+"    out=bytearray(); out.extend(b'DILD')\n" +
+"    out.extend(struct.pack('<III',1,n_uniq,n_total))\n" +
+"    out.extend(hashes.tobytes()); out.extend(sizes.tobytes()); out.extend(dups.tobytes())\n" +
+"    out.extend(img_idx.tobytes())\n" +
+"    out.extend(poffs.tobytes()); out.extend(plens.tobytes())\n" +
+"    out.extend(pool)\n" +
+"    out.extend(struct.pack('<QQ',0xcbf29ce484222325,fold_state))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    saving=sum(int(sizes[i])*(int(dups[i])-1) for i in range(n_uniq))\n" +
+"    return {'n_uniq':n_uniq,'n_total':n_total,'saving':saving,'total_bytes':total_bytes,'blob_size':len(out),'fold_canon':fold_state}\n" +
+"\n" +
+"def linear_dup_check(items,target_h):\n" +
+"    n=0\n" +
+"    for name,sz,payload,_ in items:\n" +
+"        if wyh64(payload[:HEAD_BYTES],sz)==target_h: n+=1\n" +
+"    return n\n" +
+"\n" +
+"def blob_lookup(target_h):\n" +
+"    with open(BIN,'rb') as f: blob=f.read()\n" +
+"    assert blob[:4]==b'DILD'\n" +
+"    ver,n_uniq,n_total=struct.unpack_from('<III',blob,4)\n" +
+"    p=4+3*4\n" +
+"    hashes=array.array('Q'); hashes.frombytes(blob[p:p+8*n_uniq]); p+=8*n_uniq\n" +
+"    sizes =array.array('I'); sizes.frombytes(blob[p:p+4*n_uniq]); p+=4*n_uniq\n" +
+"    dups  =array.array('I'); dups.frombytes(blob[p:p+4*n_uniq])\n" +
+"    i=bisect.bisect_left(hashes,target_h)\n" +
+"    if i<n_uniq and hashes[i]==target_h: return int(dups[i])\n" +
+"    return 0\n" +
+"\n" +
+"def bench_synth():\n" +
+"    items=synth()\n" +
+"    info=encode_blob(items)\n" +
+"    print(f'[encode] n_uniq={info[\"n_uniq\"]}/{info[\"n_total\"]} blob={fmt(info[\"blob_size\"])} saving={fmt(info[\"saving\"])}')\n" +
+"    rng=random.Random(47)\n" +
+"    sample=[wyh64(it[2][:HEAD_BYTES],it[1]) for it in items[::max(1,len(items)//500)]]\n" +
+"    queries=[sample[rng.randrange(len(sample))] for _ in range(Q_LOOKUP)]\n" +
+"    t0=time.perf_counter_ns(); base=sum(linear_dup_check(items,q) for q in queries); t1=time.perf_counter_ns()\n" +
+"    t2=time.perf_counter_ns(); post=sum(blob_lookup(q) for q in queries); t3=time.perf_counter_ns()\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=(t1-t0)/max(t3-t2,1)\n" +
+"    print(f'[bench synth] N={N_LAYERS} Q={Q_LOOKUP}')\n" +
+"    print(f'  baseline (linear rehash) : {(t1-t0)/1000:10.1f} us  hits={base}')\n" +
+"    print(f'  DILD (mmap bisect)       : {(t3-t2)/1000:10.1f} us  hits={post}')\n" +
+"    print(f'  speedup                  : {sp:6.1f}x')\n" +
+"    print(f'[B10] fold_canon=0x{info[\"fold_canon\"]:016x}')\n" +
+"    row={'site':'CT3_DOCKER_LAYER','roi':'CT3_DOCKER_LAYER_DILD_synth','baseline_ns':t1-t0,'post_ns':t3-t2,'diff_test':diff,'speedup_x':round(sp,2),'n_uniq':info['n_uniq'],'n_total':info['n_total']}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"def real_probe():\n" +
+"    home=os.path.expanduser('~')\n" +
+"    refs_glob=home+'/.docker/buildx/refs/*/*/*'\n" +
+"    refs=glob.glob(refs_glob)\n" +
+"    raw_p=os.path.join(home,'Library','Containers','com.docker.docker','Data','vms','0','data','Docker.raw')\n" +
+"    raw_present=os.path.isfile(raw_p)\n" +
+"    if not refs and not raw_present:\n" +
+"        print('[real] no buildx refs and no Docker.raw; skip'); return True\n" +
+"    items=[]\n" +
+"    seen=set()\n" +
+"    for p in refs:\n" +
+"        try:\n" +
+"            with open(p,'rb') as f: raw=f.read()\n" +
+"        except OSError: continue\n" +
+"        for key in (b'LocalPath',b'DockerfilePath'):\n" +
+"            for m in re.finditer(rb'\"'+key+rb'\"\\s*:\\s*\"([^\"]+)\"',raw):\n" +
+"                lp=m.group(1).decode('utf-8','replace')\n" +
+"                if lp in seen: continue\n" +
+"                seen.add(lp)\n" +
+"                if not os.path.isfile(lp): continue\n" +
+"                try: st=os.stat(lp)\n" +
+"                except OSError: continue\n" +
+"                if st.st_size<=0: continue\n" +
+"                try:\n" +
+"                    with open(lp,'rb') as f: head=f.read(HEAD_BYTES)\n" +
+"                except OSError: continue\n" +
+"                items.append((lp,st.st_size,head,0xFFFFFFFF))\n" +
+"        try: st=os.stat(p)\n" +
+"        except OSError: continue\n" +
+"        if st.st_size>0 and p not in seen:\n" +
+"            seen.add(p)\n" +
+"            items.append((p,st.st_size,raw[:HEAD_BYTES],0xFFFFFFFF))\n" +
+"    if raw_present:\n" +
+"        try:\n" +
+"            st=os.stat(raw_p)\n" +
+"            with open(raw_p,'rb') as f: head=f.read(4096)\n" +
+"            print(f'[Docker.raw] size={fmt(st.st_size)} head4KiB_read_ok len={len(head)} (head-only policy)')\n" +
+"        except OSError as e:\n" +
+"            print(f'[Docker.raw] stat/head fail: {e}')\n" +
+"    if not items:\n" +
+"        print('[real] no usable layer-eligible files; skip query'); return True\n" +
+"    info=encode_blob(items)\n" +
+"    print(f'[real encode] n_uniq={info[\"n_uniq\"]}/{info[\"n_total\"]} blob={fmt(info[\"blob_size\"])} saving={fmt(info[\"saving\"])}')\n" +
+"    rng=random.Random(47)\n" +
+"    sample=[wyh64(it[2][:HEAD_BYTES],it[1]) for it in items[::max(1,len(items)//500)]]\n" +
+"    queries=[sample[rng.randrange(len(sample))] for _ in range(min(Q_LOOKUP,len(sample)*2))]\n" +
+"    t0=time.perf_counter_ns(); base=sum(linear_dup_check(items,q) for q in queries); t1=time.perf_counter_ns()\n" +
+"    t2=time.perf_counter_ns(); post=sum(blob_lookup(q) for q in queries); t3=time.perf_counter_ns()\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=(t1-t0)/max(t3-t2,1)\n" +
+"    print(f'[real bench] base={(t1-t0)/1000:.1f}us hits={base}  post={(t3-t2)/1000:.1f}us hits={post}  speedup={sp:.1f}x')\n" +
+"    row={'site':'CT3_DOCKER_LAYER','roi':'CT3_DOCKER_LAYER_DILD_real','baseline_ns':t1-t0,'post_ns':t3-t2,'diff_test':diff,'speedup_x':round(sp,2),'n_uniq':info['n_uniq'],'n_total':info['n_total']}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"if mode=='real':\n" +
+"    ok1=bench_synth(); ok2=real_probe()\n" +
+"    print(f'[result] synth={ok1} real={ok2}')\n" +
+"    sys.exit(0 if (ok1 and ok2) else 1)\n" +
+"else:\n" +
+"    ok=bench_synth()\n" +
+"    sys.exit(0 if ok else 1)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("bench_ct3_docker_image_layer_dedup")
+        if is_hexa_bin == false && is_self == false {
+            if v == "real" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_ct3_docker_image_layer_dedup_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

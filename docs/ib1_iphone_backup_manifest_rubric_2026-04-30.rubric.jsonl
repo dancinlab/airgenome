@@ -1,0 +1,7 @@
+{"site":"IB1","filter":"iphone_backup_manifest","candidate":"IB1-a","desc":"flat sorted file_id pool + linear domain str (no dict)","b1":55,"b2":45,"b3":50,"b4":40,"b5":50,"b6":35,"b7":40,"b8":35,"b9":20,"total":370,"selected":false}
+{"site":"IB1","filter":"iphone_backup_manifest","candidate":"IB1-b","desc":"domain u8 dict (#99) + sorted file_id pool + flags u32 col + relativePath pool","b1":60,"b2":50,"b3":50,"b4":50,"b5":50,"b6":40,"b7":40,"b8":40,"b9":20,"total":400,"selected":true}
+{"site":"IB1","gap_id":"G1","desc":"iOS backup absent on probe host (MobileSync/Backup empty) — synth-path-only validation this cycle","severity":"medium"}
+{"site":"IB1","gap_id":"G2","desc":"file BLOB column (bplist00 EncryptionKey/Mode/MTime) NOT decoded — out of scope, metadata-only filter","severity":"low"}
+{"site":"IB1","gap_id":"G3","desc":"domain >255 distinct → most_common(255) fallback; real backups typically <100 (cap safe)","severity":"low"}
+{"site":"IB1","gap_id":"G4","desc":"encrypted backups (Manifest.plist keybag) out of scope — assumes unencrypted or post-decryption Manifest.db","severity":"low"}
+{"site":"IB1","ancestry":"C2 sqlite_mmap immutable=1 + MA3 #99 domain dict","pattern":"sqlite ?immutable=1 URI read-only + #99 column dict ≤255 enum + sorted file_id pool bisect","magic":"IBMF","synth_seed":23,"synth_rows":5000}

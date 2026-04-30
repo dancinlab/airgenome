@@ -1,0 +1,17 @@
+{"site":"CL3","date":"2026-04-30","block":"B1","name":"design-rigor","max":50,"score_a":46,"score_b":50,"score_hybrid":50,"cut":"F18 SBBF + path-sorted layout + read-only os.walk + .icloud skip"}
+{"site":"CL3","date":"2026-04-30","block":"B2","name":"measurability","max":90,"score_a":84,"score_b":88,"score_hybrid":88,"cut":"per-query us + blob_size + speedup + path/app count + placeholder count"}
+{"site":"CL3","date":"2026-04-30","block":"B3","name":"enforcement-strength","max":40,"score_a":38,"score_b":40,"score_hybrid":40,"cut":"self-fixture synth + magic check + version pin + lstat-only invariant"}
+{"site":"CL3","date":"2026-04-30","block":"B4","name":"atomicity","max":40,"score_a":40,"score_b":38,"score_hybrid":40,"cut":"single .hexa + 0 side effects + /tmp blob + NO fdownload trigger"}
+{"site":"CL3","date":"2026-04-30","block":"B5","name":"observability","max":30,"score_a":26,"score_b":30,"score_hybrid":30,"cut":"rss/elapsed/blob_size + source kind + classifier_version + per-app dict"}
+{"site":"CL3","date":"2026-04-30","block":"B6","name":"cross-repo","max":30,"score_a":27,"score_b":28,"score_hybrid":28,"cut":"hive .raw + airgenome filter + anima 3-hop"}
+{"site":"CL3","date":"2026-04-30","block":"B7","name":"emission-cost-bounded","max":40,"score_a":40,"score_b":36,"score_hybrid":38,"cut":"payload <=16KB + 1-pass walk + /tmp cache + lstat-only no open"}
+{"site":"CL3","date":"2026-04-30","block":"B8","name":"adversarial-resistance","max":40,"score_a":40,"score_b":38,"score_hybrid":40,"cut":"empty + sparse-host + placeholder-only + TCC-denied + synth fallback"}
+{"site":"CL3","date":"2026-04-30","block":"B9","name":"meta-rubric-finite","max":20,"score_a":20,"score_b":18,"score_hybrid":20,"cut":"depth<=2 + self-score avoid + carve-out"}
+{"site":"CL3","date":"2026-04-30","block":"TOTAL","max":400,"score_a":361,"score_b":366,"score_hybrid":381,"cut":">=380","verdict":"PASS"}
+{"site":"CL3","date":"2026-04-30","gap":"G1","desc":"iCloud sync state mutable mid-walk; blob is snapshot not live view","severity":"medium"}
+{"site":"CL3","date":"2026-04-30","gap":"G2","desc":"mtime_days reflects local replica lstat mtime, not iCloud server time","severity":"medium"}
+{"site":"CL3","date":"2026-04-30","gap":"G3","desc":"TCC-denied subtree silently skipped; logged in source kind only","severity":"low"}
+{"site":"CL3","date":"2026-04-30","gap":"G4","desc":".icloud placeholder skip is basename heuristic; Apple may rotate","severity":"low"}
+{"site":"CL3","date":"2026-04-30","gap":"G5","desc":"synth fallback skips real per-app dict skew exercise","severity":"low"}
+{"site":"CL3","date":"2026-04-30","gap":"G6","desc":"sparse-host probe (3 files); per-app B5 dense-only verified","severity":"low"}
+{"site":"CL3","date":"2026-04-30","probe":"top_apps","host":"sparse","top1":["com~apple~mail",1],"top2":["iCloud~is~workflow~my~workflows",1],"top3":["F6266T9T75~com~apple~iMovie",1],"total_app_dirs":27,"total_descendant_dirs":56,"local_files":3,"placeholders":0}

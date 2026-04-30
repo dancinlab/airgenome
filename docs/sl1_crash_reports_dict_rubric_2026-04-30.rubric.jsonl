@@ -1,0 +1,15 @@
+{"site":"SL1","date":"2026-04-30","block":"B1","name":"design-rigor","max":50,"score_a":48,"score_b":42,"score_hybrid":48,"cut":"MA3 column-dict + app_name enum + procPath pool + read-only"}
+{"site":"SL1","date":"2026-04-30","block":"B2","name":"measurability","max":90,"score_a":86,"score_b":80,"score_hybrid":85,"cut":"per-query us + blob_size + speedup + crash count"}
+{"site":"SL1","date":"2026-04-30","block":"B3","name":"enforcement-strength","max":40,"score_a":38,"score_b":34,"score_hybrid":38,"cut":"self-fixture synth + magic check + version pin"}
+{"site":"SL1","date":"2026-04-30","block":"B4","name":"atomicity","max":40,"score_a":40,"score_b":40,"score_hybrid":40,"cut":"single .hexa + 0 side effects + /tmp blob"}
+{"site":"SL1","date":"2026-04-30","block":"B5","name":"observability","max":30,"score_a":30,"score_b":28,"score_hybrid":29,"cut":"rss/elapsed/blob_size + source kind + classifier_version"}
+{"site":"SL1","date":"2026-04-30","block":"B6","name":"cross-repo","max":30,"score_a":28,"score_b":26,"score_hybrid":28,"cut":"hive .raw + airgenome filter + anima 3-hop"}
+{"site":"SL1","date":"2026-04-30","block":"B7","name":"emission-cost-bounded","max":40,"score_a":38,"score_b":38,"score_hybrid":38,"cut":"payload <=16KB + 1-pass + /tmp cache"}
+{"site":"SL1","date":"2026-04-30","block":"B8","name":"adversarial-resistance","max":40,"score_a":38,"score_b":34,"score_hybrid":38,"cut":"empty + missing-glob + corrupt-ips + synth fallback"}
+{"site":"SL1","date":"2026-04-30","block":"B9","name":"meta-rubric-finite","max":20,"score_a":20,"score_b":18,"score_hybrid":20,"cut":"depth<=2 + self-score avoid + carve-out"}
+{"site":"SL1","date":"2026-04-30","block":"TOTAL","max":400,"score_a":366,"score_b":340,"score_hybrid":364,"cut":">=350","verdict":"PASS_IMPL"}
+{"site":"SL1","date":"2026-04-30","gap":"G1","desc":".ips body schema rotates per macOS version; header + best-effort body","severity":"medium"}
+{"site":"SL1","date":"2026-04-30","gap":"G2","desc":"timestamp TZ stripped, no DST normalization","severity":"low"}
+{"site":"SL1","date":"2026-04-30","gap":"G3","desc":"DiagnosticReports rotates; blob is point-in-time","severity":"low"}
+{"site":"SL1","date":"2026-04-30","gap":"G4","desc":"no severity column (crash/hang/spin) — filename suffix only","severity":"medium"}
+{"site":"SL1","date":"2026-04-30","gap":"G5","desc":"synth fallback skips body-JSON parse hot-path","severity":"low"}

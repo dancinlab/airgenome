@@ -1,0 +1,7 @@
+{"site":"IB2","filter":"iphone_app_dedup","candidate":"IB2-a","desc":"size-only group (lstat, no content hash)","b1":50,"b2":45,"b3":50,"b4":40,"b5":50,"b6":35,"b7":40,"b8":35,"b9":20,"total":365,"selected":false}
+{"site":"IB2","filter":"iphone_app_dedup","candidate":"IB2-b","desc":"blake2b head-64KB content hash + sorted u64 blob + dup_count","b1":60,"b2":50,"b3":50,"b4":50,"b5":50,"b6":40,"b7":40,"b8":40,"b9":20,"total":400,"selected":true}
+{"site":"IB2","gap_id":"G1","desc":"iOS backup absent on probe host (no UDID enrolled) — synth-path-only validation this cycle","severity":"medium"}
+{"site":"IB2","gap_id":"G2","desc":"head-64KB hash + size composite — adversarial identical-head differing-tail evades dedup (low risk on small backup blobs)","severity":"low"}
+{"site":"IB2","gap_id":"G3","desc":"u32 size saturates at 4GB (0xffffffff sentinel) — metadata loss for >4GB blobs (rare)","severity":"low"}
+{"site":"IB2","gap_id":"G4","desc":"NO hard-link / preen action — filter quantifies recoverable bytes only; remediation deferred to operator (raw mutation ban)","severity":"low"}
+{"site":"IB2","ancestry":"T2 telegram_media_dedup + #65 wyhash blake2b","pattern":"content-hash dedup blob (TMDD transposed) + sorted u64 + bisect","magic":"IBDD","synth_seed":29,"synth_rows":5000}

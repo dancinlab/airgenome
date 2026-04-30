@@ -1,0 +1,15 @@
+{"site":"SL6","date":"2026-04-30","block":"B1","name":"design-rigor","max":50,"score_a":36,"score_b":30,"score_c":26,"score_hybrid":30,"cut":"columnar metadata + path/kind/size pool + read-only"}
+{"site":"SL6","date":"2026-04-30","block":"B2","name":"measurability","max":90,"score_a":50,"score_b":42,"score_c":32,"score_hybrid":38,"cut":"per-query us + blob_size + speedup + entry count"}
+{"site":"SL6","date":"2026-04-30","block":"B3","name":"enforcement-strength","max":40,"score_a":26,"score_b":22,"score_c":22,"score_hybrid":24,"cut":"self-fixture + magic + version pin"}
+{"site":"SL6","date":"2026-04-30","block":"B4","name":"atomicity","max":40,"score_a":32,"score_b":26,"score_c":36,"score_hybrid":32,"cut":"single .hexa + 0 side effects + /tmp"}
+{"site":"SL6","date":"2026-04-30","block":"B5","name":"observability","max":30,"score_a":24,"score_b":22,"score_c":22,"score_hybrid":22,"cut":"rss/elapsed/blob_size + classifier_version + tcc_denied flag"}
+{"site":"SL6","date":"2026-04-30","block":"B6","name":"cross-repo","max":30,"score_a":22,"score_b":20,"score_c":16,"score_hybrid":20,"cut":"hive .raw + airgenome + anima 3-hop"}
+{"site":"SL6","date":"2026-04-30","block":"B7","name":"emission-cost-bounded","max":40,"score_a":30,"score_b":26,"score_c":32,"score_hybrid":28,"cut":"payload <=16KB + 1-pass"}
+{"site":"SL6","date":"2026-04-30","block":"B8","name":"adversarial-resistance","max":40,"score_a":32,"score_b":28,"score_c":34,"score_hybrid":30,"cut":"empty + TCC-denied + synth fallback PASS"}
+{"site":"SL6","date":"2026-04-30","block":"B9","name":"meta-rubric-finite","max":20,"score_a":18,"score_b":18,"score_c":18,"score_hybrid":18,"cut":"depth<=2 + self-score avoid"}
+{"site":"SL6","date":"2026-04-30","block":"TOTAL","max":400,"score_a":270,"score_b":234,"score_c":238,"score_hybrid":242,"cut":">=350","verdict":"HOLD"}
+{"site":"SL6","date":"2026-04-30","gap":"G1","desc":"TCC-denied at all readable paths; only mdfind subprocess works","severity":"high"}
+{"site":"SL6","date":"2026-04-30","gap":"G2","desc":"store_db schema undocumented; reverse-engineer cost very high","severity":"high"}
+{"site":"SL6","date":"2026-04-30","gap":"G3","desc":"mdfind subprocess violates B4 atomicity","severity":"medium"}
+{"site":"SL6","date":"2026-04-30","gap":"G4","desc":"synth-only would mislead consumers (no real Spotlight content)","severity":"high"}
+{"site":"SL6","date":"2026-04-30","gap":"G5","desc":"Spotlight UTI kind enum >200; column-dict cardinality heavy","severity":"medium"}

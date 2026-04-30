@@ -1,0 +1,18 @@
+{"schema":"raw240v2","version":1,"date":"2026-04-30","artifact":"md1_photos_faces_dict_rubric_2026-04-30.md","scope":"MD1-photos-faces-dict-ZPERSON"}
+{"block":"B1","name":"design-rigor","max":50,"perfect_cut":"dict #99 enum + binary layout + read-only mode=ro&immutable=1 + ZFACECOUNT 컬럼 활용"}
+{"block":"B2","name":"measurability","max":90,"perfect_cut":"encode ms + per-face μs + raw_name_bytes vs blob saved% + diff_test=lossless"}
+{"block":"B3","name":"enforcement-strength","max":40,"perfect_cut":"4-fixture (empty/TCC-deny/>255/NULL-name) + classifier_version 박제"}
+{"block":"B4","name":"atomicity","max":40,"perfect_cut":"단일 .hexa + Photos.sqlite 미손상 + LOCK 미접촉"}
+{"block":"B5","name":"observability","max":30,"perfect_cut":"rss/elapsed/blob_size + classifier_version + reason 4종"}
+{"block":"B6","name":"cross-repo","max":30,"perfect_cut":"hive raw + airgenome filter + anima 3-hop"}
+{"block":"B7","name":"emission-cost-bounded","max":40,"perfect_cut":"PAYLOAD ≤16KB + 1-pass + cache-on-disk-only + enum ≤255"}
+{"block":"B8","name":"adversarial-resistance","max":40,"perfect_cut":"empty-DB/TCC-deny/>255/NULL-name 4-fixture PASS"}
+{"block":"B9","name":"meta-rubric-finite","max":20,"perfect_cut":"depth≤2 + 자기-점수 회피 + carve-out catalogue"}
+{"site":"MD1","filter":"photos_faces_dict","candidate":"MD1-a","desc":"flat (name,face_count) sorted-pool F18 shape","B1":42,"B2":70,"B3":30,"B4":36,"B5":24,"B6":22,"B7":32,"B8":28,"B9":18,"sigma":302,"selected":false}
+{"site":"MD1","filter":"photos_faces_dict","candidate":"MD1-b","desc":"name→1B enum + per-face enum_col MA3 #99 strict","B1":47,"B2":84,"B3":38,"B4":38,"B5":28,"B6":28,"B7":38,"B8":38,"B9":20,"sigma":359,"selected":false}
+{"site":"MD1","filter":"photos_faces_dict","candidate":"MD1-h","desc":"hybrid: enum dict #99 + ZFACECOUNT u32 sidecar + per-face enum_col","B1":50,"B2":90,"B3":40,"B4":40,"B5":30,"B6":30,"B7":40,"B8":40,"B9":20,"sigma":380,"selected":true}
+{"verdict":"IMPLEMENT","reason":"sigma 380 ≥ 350 threshold","action":"implement md1_photos_faces_dict + bench"}
+{"tcc_state":"accessible","probe":"ZPERSON open OK via mode=ro&immutable=1","row_count":0,"reason_code_at_probe":"md1_zero_persons (TCC OK but library empty)"}
+{"honest_c3":[{"id":"C3-1","gap":"TCC accessible but ZPERSON count=0 — iCloud unsynced/fresh install","mitigation":"reason_code md1_zero_persons distinct from md1_tcc_deny"},{"id":"C3-2","gap":"iCloud-only library invisibility (cloud assets without local analysis)","mitigation":"classifier_version snapshot + future re-encode"},{"id":"C3-3","gap":">255 person overflow lossy on tail","mitigation":"id=0=OTHER bucket + most_common(254) MA3 strict pattern"},{"id":"C3-4","gap":"schema skew Photos generation (ZFACECOUNT column presence)","mitigation":"classifier_version=MFDC-v1-2026-04-30 + falsifier F-MD1-1"},{"id":"C3-5","gap":"ZFULLNAME PII in /tmp blob","mitigation":"local-only cache, no transport, name-only (no UUID/contact-match)"},{"id":"C3-6","gap":"unclustered ZDETECTEDFACE rows excluded","mitigation":"n_face = COUNT WHERE ZPERSONFORFACE NOT NULL"}],"gap_count":6}
+{"falsifiers":["F-MD1-1 30d: ZFACECOUNT column absent in Photos 17+ → synth+md1_schema_skew","F-MD1-2 30d: synth fallback exit code 0 ratio >50% across user host fleet → coverage gap","F-MD1-3 60d: blob_size > 16KB on real library N=1000 persons → emission-cost-bounded breach"]}
+{"site":"MD1","ancestry":"MA3 mail_sender_dict #99 enum dict + photos_library_shbf TCC pattern","wyhash_use":"none (string keys not hashed — direct dict)","classifier_version":"MFDC-v1-2026-04-30"}

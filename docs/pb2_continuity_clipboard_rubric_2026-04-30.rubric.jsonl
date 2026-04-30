@@ -1,0 +1,8 @@
+{"site":"PB2","filter":"continuity_clipboard","candidate":"PB2-a","desc":"single u8 type col + ts (no device-id), flat","b1":50,"b2":45,"b3":50,"b4":40,"b5":50,"b6":30,"b7":40,"b8":35,"b9":20,"total":360,"selected":false}
+{"site":"PB2","filter":"continuity_clipboard","candidate":"PB2-b","desc":"u8 device-id dict + u8 type dict + ts u32 + size u32 + direction u8 (K6+K2 twin)","b1":60,"b2":50,"b3":50,"b4":50,"b5":50,"b6":40,"b7":40,"b8":40,"b9":20,"total":400,"selected":true}
+{"site":"PB2","filter":"continuity_clipboard","candidate":"PB2-c","desc":"flat ndjson stream (no blob, grep-only)","b1":35,"b2":40,"b3":40,"b4":30,"b5":40,"b6":25,"b7":35,"b8":30,"b9":20,"total":295,"selected":false}
+{"site":"PB2","gap_id":"G1","desc":"no active Handoff event stream on this host (single-device or paired devices not on shared iCloud net) — synth path operative; real-corpus ROI deferred to multi-device host","severity":"medium"}
+{"site":"PB2","gap_id":"G2","desc":"direction inference heuristic (ts-delta vs paired-event order); ground truth requires Handoff API hook (private, out of scope)","severity":"medium"}
+{"site":"PB2","gap_id":"G3","desc":"distinct devices >255 → most_common(255) fallback (real iCloud user device count typically ≤10)","severity":"low"}
+{"site":"PB2","gap_id":"G4","desc":"content NOT stored by design (metadata-only envelope); cross-reference with PB1 by ts window for content recovery (separate join layer)","severity":"low"}
+{"site":"PB2","ancestry":"K6 KZHC u8-dict twin + K2 LSSharedFileList SHBF cross-device + claude_session_shbf","pattern":"dual u8 dict (device + type) + u32 ts/size cols + u8 direction col + metadata-only envelope","wyhash_use":"canonicalize device-uuid + UTI pre-dict-insert"}

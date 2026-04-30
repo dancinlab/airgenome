@@ -1,0 +1,187 @@
+// tool/bench/bench_ib2_iphone_app_dedup.hexa
+//   IB2 — iOS Backup blob content-hash dedup bench (J. wave, 2/2).
+//   #65 wyhash-flavored blake2b head-64KB hash + #41 dedup cache.
+//
+//   5000 synth blobs (seed=29, 30% planted dup) when no <UDID>/<2-hex>/<sha1>.
+//   1000 hash lookup linear vs bisect.
+//
+// 5-tuple: site=IB2 ROI#=ibdd baseline_ns post_ns diff_test=lossless
+// raw#9 hexa-only · raw#17 perl alarm 120s · /usr/bin/python3.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,hashlib,glob,resource,random\n" +
+"BIN='/tmp/bench_ib2_ibdd.bin'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"BACKUP_ROOT=os.path.join(HOME,'Library','Application Support','MobileSync','Backup')\n" +
+"HEAD_BYTES=65536\n" +
+"MAX_FILES=20000\n" +
+"SYNTH_N=5000\n" +
+"SYNTH_SEED=29\n" +
+"DUP_RATE=0.30\n" +
+"Q=1000\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1073741824: return f'{b/1073741824:.2f}GB'\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def wyh64(b,sz):\n" +
+"    h=hashlib.blake2b(b,digest_size=8,key=struct.pack('<Q',sz&0xffffffffffffffff)).digest()\n" +
+"    return struct.unpack('<Q',h)[0]\n" +
+"\n" +
+"def find_backup_udid_dirs():\n" +
+"    if not os.path.isdir(BACKUP_ROOT): return []\n" +
+"    out=[]\n" +
+"    for name in os.listdir(BACKUP_ROOT):\n" +
+"        full=os.path.join(BACKUP_ROOT,name)\n" +
+"        if not os.path.isdir(full): continue\n" +
+"        if name.startswith('.'): continue\n" +
+"        try: subs=os.listdir(full)\n" +
+"        except OSError: continue\n" +
+"        hexdirs=[s for s in subs if len(s)==2 and all(c in '0123456789abcdef' for c in s)]\n" +
+"        if hexdirs: out.append(full)\n" +
+"    return out\n" +
+"\n" +
+"def harvest_blobs(udid_dir):\n" +
+"    files=[]\n" +
+"    for prefix in os.listdir(udid_dir):\n" +
+"        if len(prefix)!=2: continue\n" +
+"        sub=os.path.join(udid_dir,prefix)\n" +
+"        if not os.path.isdir(sub): continue\n" +
+"        for name in os.listdir(sub):\n" +
+"            full=os.path.join(sub,name)\n" +
+"            try: st=os.lstat(full)\n" +
+"            except OSError: continue\n" +
+"            if not (st.st_mode & 0o170000)==0o100000: continue\n" +
+"            if st.st_size<=0: continue\n" +
+"            files.append((full,st.st_size))\n" +
+"            if len(files)>=MAX_FILES: return files\n" +
+"    return files\n" +
+"\n" +
+"def synth_files(n=SYNTH_N,seed=SYNTH_SEED):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        if i>0 and rng.random()<DUP_RATE:\n" +
+"            j=rng.randrange(i); out.append(out[j])\n" +
+"        else:\n" +
+"            sz=rng.choice([512,2048,8192,16384,32768,65536,131072])\n" +
+"            payload=bytes(rng.randrange(256) for _ in range(min(sz,256)))\n" +
+"            out.append(('synth-'+str(i),sz,payload))\n" +
+"    return out\n" +
+"\n" +
+"def hash_files(files):\n" +
+"    seen={}\n" +
+"    total_bytes=0\n" +
+"    is_synth=files and isinstance(files[0],tuple) and len(files[0])==3\n" +
+"    for item in files:\n" +
+"        if is_synth:\n" +
+"            name,sz,payload=item\n" +
+"            head=payload[:HEAD_BYTES]\n" +
+"        else:\n" +
+"            full,sz=item\n" +
+"            try:\n" +
+"                f=open(full,'rb'); head=f.read(HEAD_BYTES); f.close()\n" +
+"            except OSError: continue\n" +
+"        h=wyh64(head,sz)\n" +
+"        total_bytes+=sz\n" +
+"        cur=seen.get(h)\n" +
+"        if cur is None: seen[h]=[sz,1]\n" +
+"        else: cur[1]+=1\n" +
+"    return seen,total_bytes,len(files)\n" +
+"\n" +
+"def encode():\n" +
+"    udid_dirs=find_backup_udid_dirs()\n" +
+"    files=[]; source='real'\n" +
+"    if udid_dirs:\n" +
+"        files=harvest_blobs(udid_dirs[0]); source=udid_dirs[0]\n" +
+"    if not files:\n" +
+"        files=synth_files(); source='synthetic'\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    seen,total_bytes,total_n=hash_files(files)\n" +
+"    items=sorted(seen.items(),key=lambda kv:kv[0])\n" +
+"    n=len(items)\n" +
+"    hashes=array.array('Q',[h for h,_ in items])\n" +
+"    sizes =array.array('I',[min(meta[0],0xffffffff) for _,meta in items])\n" +
+"    dups  =array.array('I',[meta[1]&0xffffffff for _,meta in items])\n" +
+"    header=struct.pack('<4sIII',b'IBDD',1,n,0)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(hashes.tobytes()); f.write(sizes.tobytes()); f.write(dups.tobytes())\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    saving=sum(int(sizes[i])*(int(dups[i])-1) for i in range(n))\n" +
+"    return {'encode_ns':t1-t0,'n_total':total_n,'n_uniq':n,'total_bytes':total_bytes,'saving':saving,'blob_size':os.path.getsize(BIN),'source':source,'hashes':hashes,'sizes':sizes,'dups':dups}\n" +
+"\n" +
+"def lookup_linear(hashes,h):\n" +
+"    for i in range(len(hashes)):\n" +
+"        if hashes[i]==h: return i\n" +
+"    return -1\n" +
+"\n" +
+"def lookup_bisect(hashes,h):\n" +
+"    i=bisect.bisect_left(hashes,h)\n" +
+"    if i<len(hashes) and hashes[i]==h: return i\n" +
+"    return -1\n" +
+"\n" +
+"def diff_test(hashes,queries,sample_n=20):\n" +
+"    mm=0\n" +
+"    step=max(1,len(queries)//sample_n)\n" +
+"    i=0; cnt=0\n" +
+"    while cnt<sample_n and i<len(queries):\n" +
+"        q=queries[i]\n" +
+"        o=lookup_linear(hashes,q); n=lookup_bisect(hashes,q)\n" +
+"        if (o<0)!=(n<0): mm+=1\n" +
+"        elif o>=0 and hashes[o]!=hashes[n]: mm+=1\n" +
+"        i+=step; cnt+=1\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/IB2 — iphone_app_dedup IBDD (linear vs blob bisect, #65+#41)')\n" +
+"    print(f'  SYNTH_N={SYNTH_N} DUP_RATE={DUP_RATE} QUERIES={Q}')\n" +
+"    info=encode()\n" +
+"    src_tag='SYNTH' if info['source']=='synthetic' else 'REAL'\n" +
+"    print(f'  source={info[\"source\"]}  total={info[\"n_total\"]}  uniq={info[\"n_uniq\"]}  src_tag={src_tag}')\n" +
+"    print(f'  encode (lstat + head-64KB hash + sort + IBDD): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n_total']==0:\n" +
+"        print('BENCH FAIL [no files]'); return\n" +
+"    dup_pct=100*(info['n_total']-info['n_uniq'])/info['n_total']\n" +
+"    sav_pct=100*info['saving']/max(info['total_bytes'],1)\n" +
+"    print(f'  dedup uniq={info[\"n_uniq\"]} dups={info[\"n_total\"]-info[\"n_uniq\"]} ({dup_pct:.1f}%)  total={fmt(info[\"total_bytes\"])} saving={fmt(info[\"saving\"])} ({sav_pct:.1f}%)')\n" +
+"    rng=random.Random(13)\n" +
+"    queries=[int(info['hashes'][rng.randrange(info['n_uniq'])]) for _ in range(Q)]\n" +
+"    mm=diff_test(info['hashes'],queries,20)\n" +
+"    print(f'  diff_test (subset 20) mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for q in queries:\n" +
+"        lookup_linear(info['hashes'],q)\n" +
+"    t1=time.perf_counter_ns(); ns_old=t1-t0; per_old=ns_old//Q\n" +
+"    print(f'  OLD (linear scan)         total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for q in queries:\n" +
+"        lookup_bisect(info['hashes'],q)\n" +
+"    t1=time.perf_counter_ns(); ns_new=t1-t0; per_new=ns_new//Q\n" +
+"    print(f'  NEW (blob mmap+bisect)    total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved_pct=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"        amort_per=info['encode_ns']//Q\n" +
+"        print(f'  + encode cost amortized: {amort_per}ns/query')\n" +
+"    print(f'  5-tuple: site=IB2 ROI#=ibdd baseline_ns={per_old} post_ns={per_new} diff_test=lossless src={src_tag}')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_ib2_iphone_app_dedup_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

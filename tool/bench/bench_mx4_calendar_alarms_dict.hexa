@@ -1,0 +1,94 @@
+// tool/bench/bench_mx4_calendar_alarms_dict.hexa — MX4 calendar alarms dict bench
+//   MA3 + CA1 + CA2 패턴 직접 이식. Calendar.sqlitedb 부재 시 800 synthetic
+//   alarms (4 type enum) → CALD encode → Counter-on-str vs u8 1-pass scan.
+//
+// 5-tuple: site=MX4 ROI#=calendar-alarms-dict baseline_ns post_ns diff_test=lossless
+// rubric: docs/mx4_calendar_alarms_dict_rubric_2026-04-30.md (400/400)
+// R1 HEXA-FIRST: 인라인 python3. R17: alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,array,random\n" +
+"from collections import Counter\n" +
+"N_AL=800\n" +
+"BIN='/tmp/bench_mx4_cald.bin'\n" +
+"TYPE_NAME={0:'NONE',1:'display',2:'audio',3:'email',4:'procedure'}\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def build_alarms(n=N_AL,seed=14):\n" +
+"    rng=random.Random(seed)\n" +
+"    base=int(time.time())-86400*30\n" +
+"    rows=[]\n" +
+"    for i in range(n):\n" +
+"        tp=rng.choice([1,1,1,2,3,4])\n" +
+"        off=-rng.choice([300,600,900,1800,3600,86400])\n" +
+"        tg=base+rng.randrange(86400*60)\n" +
+"        rows.append((i+1,tp,off,tg))\n" +
+"    return rows\n" +
+"\n" +
+"def encode(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    n=len(rows)\n" +
+"    pks=array.array('I',[r[0]&0xffffffff for r in rows])\n" +
+"    types=bytes(r[1]&0xff for r in rows)\n" +
+"    offs=array.array('i',[int(r[2]) for r in rows])\n" +
+"    trigs=array.array('q',[int(r[3]) for r in rows])\n" +
+"    header=struct.pack('<4sIII',b'CALD',1,n,0)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(pks.tobytes()); f.write(types)\n" +
+"        f.write(offs.tobytes()); f.write(trigs.tobytes())\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'types':types,'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"def old_count(rows):\n" +
+"    return Counter(TYPE_NAME.get(r[1],'NONE') for r in rows)\n" +
+"\n" +
+"def new_count(types):\n" +
+"    c=[0]*5\n" +
+"    for t in types:\n" +
+"        if t<5: c[t]+=1\n" +
+"    return {TYPE_NAME[i]:c[i] for i in range(5)}\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/MX4 — calendar_alarms_dict (Counter-on-str vs u8 1-pass)')\n" +
+"    print(f'  N_AL={N_AL}')\n" +
+"    print(f'  source: synthetic (~/Library/Calendars/Calendar.sqlitedb fallback)')\n" +
+"    rows=build_alarms()\n" +
+"    info=encode(rows)\n" +
+"    print(f'  encode: {info[\"encode_ns\"]/1e6:.1f}ms  n={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    o=old_count(rows); nn=new_count(info['types'])\n" +
+"    mm=0\n" +
+"    for k in TYPE_NAME.values():\n" +
+"        if o.get(k,0)!=nn.get(k,0): mm+=1\n" +
+"    print(f'  diff_test mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    REP=200\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(REP): old_count(rows)\n" +
+"    t1=time.perf_counter_ns(); ns_old=(t1-t0)//REP; per_old=ns_old\n" +
+"    print(f'  OLD (Counter on str)         per_call_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(REP): new_count(info['types'])\n" +
+"    t1=time.perf_counter_ns(); ns_new=(t1-t0)//REP; per_new=ns_new\n" +
+"    print(f'  NEW (u8 1-pass scan)         per_call_ns={per_new}')\n" +
+"    if per_new>0:\n" +
+"        ratio=per_old/per_new; saved=((per_old-per_new)*100)//per_old if per_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved}%')\n" +
+"        amort=info['encode_ns']//REP\n" +
+"        print(f'  + encode cost amortized: {amort}ns/call')\n" +
+"    print(f'  5-tuple: site=MX4 ROI#=calendar-alarms-dict baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_mx4_calendar_alarms_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

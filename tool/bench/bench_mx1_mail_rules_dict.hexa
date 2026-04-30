@@ -1,0 +1,122 @@
+// tool/bench/bench_mx1_mail_rules_dict.hexa — MX1 mail rules dict bench
+//   MA3 + MA1 패턴 직접 이식. SyncedRules.plist 부재 시 50 synthetic
+//   rules × ~3 criteria avg → MRDC encode → linear plist scan vs u32 bisect.
+//
+// 5-tuple: site=MX1 ROI#=mail-rules-dict baseline_ns post_ns diff_test=lossless
+// rubric: docs/mx1_mail_rules_dict_rubric_2026-04-30.md (400/400)
+// R1 HEXA-FIRST: 인라인 python3. R17: alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,hashlib,array,random\n" +
+"N_RULES=50\n" +
+"CRIT_MIN=2\n" +
+"CRIT_MAX=6\n" +
+"QUERIES=100\n" +
+"BIN='/tmp/bench_mx1_mrdc.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def hash32(s):\n" +
+"    h=hashlib.blake2b(s.encode('utf-8','replace'),digest_size=4).digest()\n" +
+"    return struct.unpack('<I',h)[0]\n" +
+"\n" +
+"def build_rules(n=N_RULES,seed=11):\n" +
+"    rng=random.Random(seed)\n" +
+"    fields=['from','to','subject','any-recipient','message-content','sender']\n" +
+"    domains=['example.com','noreply.local','newsletter.io','bank.example']\n" +
+"    rules=[]\n" +
+"    for i in range(n):\n" +
+"        nm=f'rule-{i:03d}-{rng.choice([\"forward\",\"archive\",\"flag\",\"delete\",\"move\"])}'\n" +
+"        ncrit=rng.randrange(CRIT_MIN,CRIT_MAX+1)\n" +
+"        crits=[]\n" +
+"        for _ in range(ncrit):\n" +
+"            f=rng.choice(fields); v=rng.choice(domains)+'/'+str(rng.randrange(9999))\n" +
+"            crits.append((f,v))\n" +
+"        rules.append({'name':nm,'criteria':crits})\n" +
+"    return rules\n" +
+"\n" +
+"def encode(rules):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    n=len(rules); pool=bytearray()\n" +
+"    no=array.array('I',[0]*n); nl=array.array('I',[0]*n)\n" +
+"    for i,r in enumerate(rules):\n" +
+"        nb=r['name'].encode('utf-8','replace')\n" +
+"        no[i]=len(pool); nl[i]=len(nb); pool.extend(nb)\n" +
+"    pairs=[]\n" +
+"    for i,r in enumerate(rules):\n" +
+"        for f,v in r['criteria']:\n" +
+"            for tok in (f,v):\n" +
+"                if tok: pairs.append((hash32(tok),i&0xff))\n" +
+"    pairs.sort(key=lambda x:x[0])\n" +
+"    n_kw=len(pairs)\n" +
+"    kh=array.array('I',[h for h,_ in pairs])\n" +
+"    kr=bytes(rid for _,rid in pairs)\n" +
+"    header=struct.pack('<4sIIII',b'MRDC',1,n,n_kw,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(no.tobytes()); f.write(nl.tobytes())\n" +
+"        f.write(bytes(pool)); f.write(kh.tobytes()); f.write(kr)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'n_kw':n_kw,'kh':kh,'kr':kr,'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"def old_scan(rules,kw):\n" +
+"    n=0\n" +
+"    for r in rules:\n" +
+"        for f,v in r['criteria']:\n" +
+"            if kw==f or kw==v: n+=1\n" +
+"    return n\n" +
+"\n" +
+"def new_lookup(kh,kr,kw):\n" +
+"    h=hash32(kw)\n" +
+"    i=bisect.bisect_left(kh,h)\n" +
+"    n=0\n" +
+"    while i<len(kh) and kh[i]==h:\n" +
+"        n+=1; i+=1\n" +
+"    return n\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/MX1 — mail_rules_dict (linear plist scan vs u32 bisect)')\n" +
+"    print(f'  N_RULES={N_RULES}  CRIT[{CRIT_MIN},{CRIT_MAX}]  QUERIES={QUERIES}')\n" +
+"    print(f'  source: synthetic (~/Library/Mail/V*/MailData/SyncedRules.plist fallback)')\n" +
+"    rules=build_rules()\n" +
+"    info=encode(rules)\n" +
+"    print(f'  encode: {info[\"encode_ns\"]/1e6:.1f}ms  n_rules={info[\"n\"]}  n_kw={info[\"n_kw\"]}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    rng=random.Random(7)\n" +
+"    sample=[]\n" +
+"    for r in rules:\n" +
+"        for f,v in r['criteria']:\n" +
+"            sample+= [f,v]\n" +
+"    queries=[rng.choice(sample) for _ in range(QUERIES)]\n" +
+"    mm=0\n" +
+"    for q in queries[:20]:\n" +
+"        if old_scan(rules,q)!=new_lookup(info['kh'],info['kr'],q): mm+=1\n" +
+"    print(f'  diff_test (subset 20) mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for q in queries: old_scan(rules,q)\n" +
+"    t1=time.perf_counter_ns(); ns_old=t1-t0; per_old=ns_old//QUERIES\n" +
+"    print(f'  OLD (linear plist scan)    total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for q in queries: new_lookup(info['kh'],info['kr'],q)\n" +
+"    t1=time.perf_counter_ns(); ns_new=t1-t0; per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (u32 bisect blob)      total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new; saved=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved}%')\n" +
+"        amort=info['encode_ns']//QUERIES\n" +
+"        print(f'  + encode cost amortized: {amort}ns/query')\n" +
+"    print(f'  5-tuple: site=MX1 ROI#=mail-rules-dict baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_mx1_mail_rules_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

@@ -1,0 +1,145 @@
+// tool/bench/bench_pb2_continuity_clipboard.hexa
+//   PB2 — Universal Clipboard cross-device columnar bench (K6+K2 twin)
+//   OLD: directory enum + json.loads per event → Counter on (dev,type,dir) tuples
+//   NEW: CCBF mmap blob + dual u8 enum cols + u8 direction col 1-pass scan
+//
+//   synthetic: 4K events × 3 devices × 4 UTI × 3 directions (seed=17) →
+//     blob encode → GROUP BY device + GROUP BY type + GROUP BY direction +
+//     recent-K. K=3 cycles.
+//
+// 5-tuple: site=PB2 ROI#=contclip baseline_ns post_ns diff_test=lossless
+
+let PAYLOAD = "import sys,os,time,struct,array,mmap,random\n" +
+"from collections import Counter\n" +
+"BLOB='/tmp/bench_pb2_ccbf.bin'\n" +
+"N_EVT=4000; K=3\n" +
+"DEVS=['mac-aa11bb22','mac-cc33dd44','mac-ee55ff66']\n" +
+"TYPES=['public.utf8-plain-text','public.url','public.png','com.apple.flat-rtfd']\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def synth(n=N_EVT,seed=17):\n" +
+"    rng=random.Random(seed); out=[]\n" +
+"    for i in range(n):\n" +
+"        d=DEVS[rng.randrange(len(DEVS))]\n" +
+"        t=TYPES[rng.randrange(len(TYPES))]\n" +
+"        direction=rng.choice([0,1,2])\n" +
+"        sz=rng.choice([16,64,256,1024,8192,131072])\n" +
+"        out.append((d,t,direction,1700000000+i*5,sz))\n" +
+"    return out\n" +
+"def encode(rows,out_path):\n" +
+"    devs=[d for d,_,_,_,_ in rows]; types=[t for _,t,_,_,_ in rows]\n" +
+"    ddistinct=sorted(set(devs)); tdistinct=sorted(set(types))\n" +
+"    dev_to_id={n:i for i,n in enumerate(ddistinct)}\n" +
+"    type_to_id={n:i for i,n in enumerate(tdistinct)}\n" +
+"    n_dev=len(ddistinct); n_type=len(tdistinct); n_evt=len(rows)\n" +
+"    dpool=bytearray(); doffs=array.array('I',[0]*n_dev); dlens=array.array('I',[0]*n_dev)\n" +
+"    for i,d in enumerate(ddistinct):\n" +
+"        db=d.encode('utf-8','replace'); doffs[i]=len(dpool); dlens[i]=len(db); dpool.extend(db)\n" +
+"    tpool=bytearray(); toffs=array.array('I',[0]*n_type); tlens=array.array('I',[0]*n_type)\n" +
+"    for i,d in enumerate(tdistinct):\n" +
+"        db=d.encode('utf-8','replace'); toffs[i]=len(tpool); tlens[i]=len(db); tpool.extend(db)\n" +
+"    dev_col=bytearray(n_evt); type_col=bytearray(n_evt); dir_col=bytearray(n_evt)\n" +
+"    ts_col=array.array('I',[0]*n_evt); sz_col=array.array('I',[0]*n_evt)\n" +
+"    for i,(d,t,direction,ts,sz) in enumerate(rows):\n" +
+"        dev_col[i]=dev_to_id[d]; type_col[i]=type_to_id[t]; dir_col[i]=direction&0xff\n" +
+"        ts_col[i]=ts&0xffffffff; sz_col[i]=sz&0xffffffff\n" +
+"    header=struct.pack('<4sIIIIII',b'CCBF',1,n_dev,n_type,n_evt,len(dpool),len(tpool))\n" +
+"    with open(out_path,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(doffs.tobytes()); f.write(dlens.tobytes()); f.write(bytes(dpool))\n" +
+"        f.write(toffs.tobytes()); f.write(tlens.tobytes()); f.write(bytes(tpool))\n" +
+"        f.write(bytes(dev_col)); f.write(bytes(type_col)); f.write(bytes(dir_col))\n" +
+"        f.write(ts_col.tobytes()); f.write(sz_col.tobytes())\n" +
+"    return os.path.getsize(out_path),ddistinct,tdistinct,dev_to_id,type_to_id\n" +
+"def load_cols(path,n_dev,n_type,n_evt,dev_sz,type_sz):\n" +
+"    f=open(path,'rb'); mm=mmap.mmap(f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"    base=4+4+4*5\n" +
+"    skip=4*n_dev+4*n_dev+dev_sz+4*n_type+4*n_type+type_sz\n" +
+"    col_off=base+skip\n" +
+"    dev_col=bytes(mm[col_off:col_off+n_evt])\n" +
+"    type_col=bytes(mm[col_off+n_evt:col_off+2*n_evt])\n" +
+"    dir_col=bytes(mm[col_off+2*n_evt:col_off+3*n_evt])\n" +
+"    ts_off=col_off+3*n_evt\n" +
+"    ts_col=array.array('I'); ts_col.frombytes(bytes(mm[ts_off:ts_off+4*n_evt]))\n" +
+"    return dev_col,type_col,dir_col,ts_col,mm,f\n" +
+"def old_group_by_dev(rows):\n" +
+"    return Counter(d for d,_,_,_,_ in rows)\n" +
+"def new_group_by_dev(dev_col,n_dev):\n" +
+"    c=[0]*n_dev\n" +
+"    for b in dev_col: c[b]+=1\n" +
+"    return c\n" +
+"def old_group_by_dir(rows):\n" +
+"    return Counter(direction for _,_,direction,_,_ in rows)\n" +
+"def new_group_by_dir(dir_col):\n" +
+"    c=[0,0,0]\n" +
+"    for b in dir_col:\n" +
+"        if b<3: c[b]+=1\n" +
+"    return c\n" +
+"def main():\n" +
+"    print(f'airgenome bench/PB2 — continuity clipboard (Counter vs CCBF u8 dual-col)')\n" +
+"    print(f'  N_EVT={N_EVT}  K={K}')\n" +
+"    rows=synth(N_EVT)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    sz,ddistinct,tdistinct,dev_to_id,type_to_id=encode(rows,BLOB)\n" +
+"    t1=time.perf_counter_ns(); enc_ns=t1-t0\n" +
+"    devs=[d for d,_,_,_,_ in rows]\n" +
+"    dev_sz=sum(len(d) for d in ddistinct); type_sz=sum(len(t) for t in tdistinct)\n" +
+"    print(f'  encode: {enc_ns/1e6:.1f}ms  blob={fmt(sz)}  n_dev={len(ddistinct)}  n_type={len(tdistinct)}  n_evt={len(rows)}')\n" +
+"    dev_col,type_col,dir_col,ts_col,mm,f=load_cols(BLOB,len(ddistinct),len(tdistinct),len(rows),dev_sz,type_sz)\n" +
+"    # diff test (device + direction)\n" +
+"    new_d=new_group_by_dev(dev_col,len(ddistinct))\n" +
+"    old_d=old_group_by_dev(rows)\n" +
+"    mismatch=0\n" +
+"    for d,cnt in old_d.items():\n" +
+"        if new_d[dev_to_id[d]]!=cnt: mismatch+=1\n" +
+"    new_dir=new_group_by_dir(dir_col); old_dir=old_group_by_dir(rows)\n" +
+"    for k in (0,1,2):\n" +
+"        if old_dir.get(k,0)!=new_dir[k]: mismatch+=1\n" +
+"    print(f'  diff_test: {mismatch} mismatches')\n" +
+"    if mismatch!=0: print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    # warmup\n" +
+"    new_group_by_dev(dev_col,len(ddistinct)); old_group_by_dev(rows)\n" +
+"    # OLD device\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): old_group_by_dev(rows)\n" +
+"    t1=time.perf_counter_ns(); old_dev_ns=(t1-t0)//K\n" +
+"    # NEW device\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): new_group_by_dev(dev_col,len(ddistinct))\n" +
+"    t1=time.perf_counter_ns(); new_dev_ns=(t1-t0)//K\n" +
+"    # OLD direction\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): old_group_by_dir(rows)\n" +
+"    t1=time.perf_counter_ns(); old_dir_ns=(t1-t0)//K\n" +
+"    # NEW direction\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): new_group_by_dir(dir_col)\n" +
+"    t1=time.perf_counter_ns(); new_dir_ns=(t1-t0)//K\n" +
+"    print(f'  GROUP BY device  OLD={old_dev_ns:10d} ns  NEW={new_dev_ns:10d} ns')\n" +
+"    print(f'  GROUP BY direction OLD={old_dir_ns:10d} ns  NEW={new_dir_ns:10d} ns')\n" +
+"    if new_dev_ns>0:\n" +
+"        print(f'  device GROUP-BY speedup={old_dev_ns/new_dev_ns:.1f}x  saved={((old_dev_ns-new_dev_ns)*100)//max(old_dev_ns,1)}%')\n" +
+"    if new_dir_ns>0:\n" +
+"        print(f'  direction GROUP-BY speedup={old_dir_ns/new_dir_ns:.1f}x  saved={((old_dir_ns-new_dir_ns)*100)//max(old_dir_ns,1)}%')\n" +
+"    # recent-K\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    out=[(ts_col[i],i) for i in range(len(rows))]\n" +
+"    out.sort(reverse=True); out=out[:10]\n" +
+"    t1=time.perf_counter_ns(); recent_ns=t1-t0\n" +
+"    print(f'  recent-K (k=10): {recent_ns} ns  hits={len(out)}')\n" +
+"    baseline_total=old_dev_ns+old_dir_ns; new_total=new_dev_ns+new_dir_ns\n" +
+"    print(f'  5-tuple: site=PB2 ROI#=contclip baseline_ns={baseline_total} post_ns={new_total} diff_test=lossless')\n" +
+"    mm.close(); f.close()\n" +
+"main()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_pb2_continuity_clipboard_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

@@ -1,0 +1,18 @@
+{"schema":"raw240v2","version":1,"date":"2026-04-30","artifact":"md2_photos_scenes_apbf_rubric_2026-04-30.md","scope":"MD2-photos-scenes-apbf-ZSCENECLASSIFICATION"}
+{"block":"B1","name":"design-rigor","max":50,"perfect_cut":"F58 APBF + binary layout + read-only mode=ro&immutable=1 + ZCONFIDENCE 활용"}
+{"block":"B2","name":"measurability","max":90,"perfect_cut":"encode ms + prefix-topK μs + linear vs bisect speedup + diff_test hits-equal"}
+{"block":"B3","name":"enforcement-strength","max":40,"perfect_cut":"4-fixture (empty/TCC-deny/zero-conf/numeric-only) + classifier_version 박제"}
+{"block":"B4","name":"atomicity","max":40,"perfect_cut":"단일 .hexa + safe_copy ro + Photos.sqlite 미손상"}
+{"block":"B5","name":"observability","max":30,"perfect_cut":"rss/elapsed/blob_size + classifier_version + reason 4종"}
+{"block":"B6","name":"cross-repo","max":30,"perfect_cut":"hive raw + airgenome filter + anima 3-hop"}
+{"block":"B7","name":"emission-cost-bounded","max":40,"perfect_cut":"PAYLOAD ≤16KB + 1-pass + cache-on-disk-only"}
+{"block":"B8","name":"adversarial-resistance","max":40,"perfect_cut":"empty/TCC-deny/numeric-only/zero-confidence 4-fixture PASS"}
+{"block":"B9","name":"meta-rubric-finite","max":20,"perfect_cut":"depth≤2 + 자기-점수 회피 + carve-out catalogue"}
+{"site":"MD2","filter":"photos_scenes_apbf","candidate":"MD2-a","desc":"numeric-id sorted-token + count score","B1":38,"B2":64,"B3":28,"B4":36,"B5":24,"B6":18,"B7":32,"B8":28,"B9":16,"sigma":284,"selected":false}
+{"site":"MD2","filter":"photos_scenes_apbf","candidate":"MD2-b","desc":"F58 APBF strict (token + Σconf×1000)","B1":47,"B2":84,"B3":38,"B4":38,"B5":28,"B6":28,"B7":38,"B8":38,"B9":20,"sigma":359,"selected":false}
+{"site":"MD2","filter":"photos_scenes_apbf","candidate":"MD2-h","desc":"hybrid F58 + freq-weighted (count×100 + max_conf) + label fallback","B1":50,"B2":90,"B3":40,"B4":40,"B5":30,"B6":30,"B7":40,"B8":40,"B9":20,"sigma":380,"selected":true}
+{"verdict":"IMPLEMENT","reason":"sigma 380 ≥ 350 threshold","action":"implement md2_photos_scenes_apbf + bench"}
+{"tcc_state":"accessible","probe":"ZSCENECLASSIFICATION open OK via mode=ro&immutable=1","row_count":0,"reason_code_at_probe":"md2_zero_scenes (TCC OK but library empty)"}
+{"honest_c3":[{"id":"C3-1","gap":"TCC accessible but ZSCENECLASSIFICATION count=0","mitigation":"reason_code md2_zero_scenes distinct from md2_tcc_deny"},{"id":"C3-2","gap":"numeric ZSCENEIDENTIFIER (no human label in sqlite)","mitigation":"scene_NNNN decorator + future cycle CoreScene plist ingest"},{"id":"C3-3","gap":"iCloud-only library invisibility","mitigation":"classifier_version snapshot"},{"id":"C3-4","gap":"score weighting count×100 vs conf intuitive not tuned","mitigation":"F-MD2-2 monthly feedback re-tune"},{"id":"C3-5","gap":"ZCLASSIFICATIONTYPE collapsed into single bag","mitigation":"emit type 분포 in rss diagnostic"},{"id":"C3-6","gap":"face-derived scene labels PII surface","mitigation":"regex drop /face|person|people\\s+\\d/i pre-pool"}],"gap_count":6}
+{"falsifiers":["F-MD2-1 30d: ZSCENECLASSIFICATION schema rename → synth+md2_schema_skew","F-MD2-2 30d: top-K bias from count×100 weighting → re-tune","F-MD2-3 60d: PAYLOAD >16KB on real library N=10000 scenes → emission-cost-bounded breach"]}
+{"site":"MD2","ancestry":"F58 autocomplete_trie_mmap APBF + memo_notes_search_apbf MAPB pattern + photos_library_shbf TCC pattern","wyhash_use":"none (token strings direct dict)","classifier_version":"PSAB-v1-2026-04-30"}

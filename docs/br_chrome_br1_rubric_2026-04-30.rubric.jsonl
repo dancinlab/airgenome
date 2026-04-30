@@ -1,0 +1,16 @@
+{"schema":"raw240v2","version":1,"date":"2026-04-30","artifact":"br_chrome_br1_rubric_2026-04-30.md","scope":"BR1-chrome-history-shbf","magic":"CHHF","pattern_ref":"E4 safari_mmap"}
+{"block":"B1","name":"design-rigor","max":50,"perfect_cut":"shbf sorted url + offsets/lens/vc + binary layout + ?mode=ro&immutable=1"}
+{"block":"B2","name":"measurability","max":90,"perfect_cut":"latency μs + memory MB + before/after ratio + 3-axis sqlite-cold/persistent/blob"}
+{"block":"B3","name":"enforcement-strength","max":40,"perfect_cut":"4-fixture self-test + classifier-version 박제"}
+{"block":"B4","name":"atomicity","max":40,"perfect_cut":"single .hexa + 0 side-effect + tmp 격리 + WAL 미손상 + sqlite backup-only"}
+{"block":"B5","name":"observability","max":30,"perfect_cut":"rss/elapsed/blob_size + classifier_version + reason code"}
+{"block":"B6","name":"cross-repo","max":30,"perfect_cut":"hive raw + airgenome filter + anima 3-hop"}
+{"block":"B7","name":"emission-cost-bounded","max":40,"perfect_cut":"PAYLOAD ≤16KB + 1-pass + cache-on-disk-only"}
+{"block":"B8","name":"adversarial-resistance","max":40,"perfect_cut":"empty/running/corrupt/wal 4-fixture PASS"}
+{"block":"B9","name":"meta-rubric-finite","max":20,"perfect_cut":"depth≤2 + self-scoring 회피 + carve-out catalogue"}
+{"candidate":"BR1-a","desc":"urls only E4 verbatim","B1":48,"B2":86,"B3":38,"B4":38,"B5":28,"B6":26,"B7":38,"B8":38,"B9":20,"sigma":360}
+{"candidate":"BR1-b","desc":"urls+title+typed_count blend","B1":50,"B2":88,"B3":38,"B4":38,"B5":28,"B6":28,"B7":36,"B8":36,"B9":20,"sigma":362}
+{"candidate":"BR1-h","desc":"hybrid sorted SHBF + visit_count + chrome-running synth","B1":50,"B2":90,"B3":40,"B4":40,"B5":30,"B6":28,"B7":38,"B8":40,"B9":20,"sigma":376}
+{"verdict":"IMPL","reason":"sigma 376 >= 350 threshold","action":"impl chrome_history_shbf.hexa"}
+{"honest_c3":[{"id":"C3-1","gap":"WAL active write window","mitigation":"immutable=1 + backup snapshot"},{"id":"C3-2","gap":"encrypted columns out of scope","mitigation":"BR6 separate"},{"id":"C3-3","gap":"multi-profile skew","mitigation":"Default/ only, next cycle"},{"id":"C3-4","gap":"schema-version skew","mitigation":"classifier_version=CHHF-v1-2026-04-30"},{"id":"C3-5","gap":"chrome running -> synth only","mitigation":"diff_test on synth"}],"gap_count":5}
+{"roi_projection":{"encode_ms":"50-80","mmap_lookup_us":"5-20","speedup_vs_cold_sqlite":"1000x+","blob_size_kb_per_5k_urls":"~250"}}

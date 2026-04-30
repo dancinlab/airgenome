@@ -1,0 +1,192 @@
+// tool/bench/bench_ct1_podman_containers_dict.hexa — CT1 PCDD bench
+//   raw 240 V2 V3 (400/400). 합성 dataset 결정성 + real-probe optional.
+//   real ~/.local/share/containers/storage/ 의존을 제거해 결정성 확보 —
+//   synth_only 모드에서는 항상 동일 seed=23 동일 결과.
+//
+// 모드:
+//   bench (default) — N_CONT/N_IMG 합성 dataset → PCDD encode → bisect query.
+//   real            — real overlay-{containers,images}.json 추가 probe.
+//
+// 5-tuple: site=CT1_PODMAN ROI#=CT1_PODMAN_PCDD baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: /usr/bin/perl alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random,json,re\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/bench_podman_containers_pcdd.bin'\n" +
+"N_CONT=2500\n" +
+"N_IMG=600\n" +
+"Q_LOOKUP=500\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def fnv1a64(b):\n" +
+"    h=0xcbf29ce484222325\n" +
+"    for x in b:\n" +
+"        h^=x; h=(h*0x100000001b3) & 0xffffffffffffffff\n" +
+"    return h\n" +
+"def short_id_hash(s):\n" +
+"    if isinstance(s,str): s=s.encode('ascii','replace')\n" +
+"    if len(s)<12: s=(s+b'0'*12)[:12]\n" +
+"    return fnv1a64(s[:12])\n" +
+"\n" +
+"def synth(n_cont=N_CONT,n_img=N_IMG,seed=23):\n" +
+"    rng=random.Random(seed)\n" +
+"    images=[]\n" +
+"    for i in range(n_img):\n" +
+"        iid=''.join(rng.choice('0123456789abcdef') for _ in range(64))\n" +
+"        images.append({'id':iid,'names':[f'docker.io/library/img{i}:tag{i%17}']})\n" +
+"    containers=[]\n" +
+"    for i in range(n_cont):\n" +
+"        cid=''.join(rng.choice('0123456789abcdef') for _ in range(64))\n" +
+"        img=images[rng.randrange(n_img)]\n" +
+"        containers.append({'id':cid,'names':[f'cont{i}'],'image':img['id']})\n" +
+"    return containers,images\n" +
+"\n" +
+"def encode_blob(containers,images):\n" +
+"    img_id_to_idx={}\n" +
+"    items=[]\n" +
+"    for i,im in enumerate(images):\n" +
+"        iid=im.get('id','') or ''\n" +
+"        h=short_id_hash(iid)\n" +
+"        img_id_to_idx[iid]=i\n" +
+"        nm=''\n" +
+"        ns=im.get('names') or []\n" +
+"        if isinstance(ns,list) and ns: nm=str(ns[0])\n" +
+"        items.append((h,i,nm))\n" +
+"    items.sort(key=lambda x:x[0])\n" +
+"    img_remap={}\n" +
+"    name_pool=bytearray()\n" +
+"    n_img=len(items)\n" +
+"    sorted_img_h=array.array('Q',[0]*n_img)\n" +
+"    img_offs=array.array('I',[0]*n_img); img_lens=array.array('I',[0]*n_img)\n" +
+"    for new_i,(h,old_i,nm) in enumerate(items):\n" +
+"        sorted_img_h[new_i]=h\n" +
+"        b=nm.encode('utf-8','replace')\n" +
+"        img_offs[new_i]=len(name_pool); img_lens[new_i]=len(b); name_pool.extend(b)\n" +
+"        img_remap[old_i]=new_i\n" +
+"    cont_rows=[]\n" +
+"    for c in containers:\n" +
+"        cid=c.get('id','') or ''\n" +
+"        h=short_id_hash(cid)\n" +
+"        ii=img_id_to_idx.get(c.get('image','') or '',-1)\n" +
+"        idx=img_remap.get(ii,0xFFFFFFFF) if ii>=0 else 0xFFFFFFFF\n" +
+"        ns=c.get('names') or []\n" +
+"        nm=str(ns[0]) if isinstance(ns,list) and ns else ''\n" +
+"        cont_rows.append((h,idx,nm))\n" +
+"    cont_rows.sort(key=lambda x:x[0])\n" +
+"    n_cont=len(cont_rows)\n" +
+"    cont_h=array.array('Q',[r[0] for r in cont_rows])\n" +
+"    cont_img=array.array('I',[r[1]&0xffffffff for r in cont_rows])\n" +
+"    cont_offs=array.array('I',[0]*n_cont); cont_lens=array.array('I',[0]*n_cont)\n" +
+"    for i,(h,idx,nm) in enumerate(cont_rows):\n" +
+"        b=nm.encode('utf-8','replace')\n" +
+"        cont_offs[i]=len(name_pool); cont_lens[i]=len(b); name_pool.extend(b)\n" +
+"    out=bytearray(); out.extend(b'PCDD')\n" +
+"    out.extend(struct.pack('<IIII',1,n_cont,n_img,len(name_pool)))\n" +
+"    out.extend(cont_h.tobytes()); out.extend(cont_img.tobytes())\n" +
+"    out.extend(cont_offs.tobytes()); out.extend(cont_lens.tobytes())\n" +
+"    out.extend(sorted_img_h.tobytes()); out.extend(img_offs.tobytes()); out.extend(img_lens.tobytes())\n" +
+"    out.extend(name_pool)\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    return {'n_cont':n_cont,'n_img':n_img,'blob_size':len(out)}\n" +
+"\n" +
+"def linear_lookup(containers,sh):\n" +
+"    n=0\n" +
+"    for c in containers:\n" +
+"        if short_id_hash(c.get('id','') or '')==sh: n+=1\n" +
+"    return n\n" +
+"\n" +
+"def blob_lookup(sh):\n" +
+"    with open(BIN,'rb') as f: blob=f.read()\n" +
+"    assert blob[:4]==b'PCDD'\n" +
+"    ver,n_cont,n_img,name_sz=struct.unpack_from('<IIII',blob,4)\n" +
+"    p=4+4*4\n" +
+"    cont_h=array.array('Q'); cont_h.frombytes(blob[p:p+8*n_cont])\n" +
+"    i=bisect.bisect_left(cont_h,sh)\n" +
+"    return 1 if (i<n_cont and cont_h[i]==sh) else 0\n" +
+"\n" +
+"def bench_synth():\n" +
+"    containers,images=synth()\n" +
+"    info=encode_blob(containers,images)\n" +
+"    print(f'[encode] n_cont={info[\"n_cont\"]} n_img={info[\"n_img\"]} blob={fmt(info[\"blob_size\"])}')\n" +
+"    rng=random.Random(29)\n" +
+"    sample=[c['id'] for c in containers]\n" +
+"    queries=[short_id_hash(sample[rng.randrange(len(sample))]) for _ in range(Q_LOOKUP)]\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    base=sum(linear_lookup(containers,q) for q in queries)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    t2=time.perf_counter_ns()\n" +
+"    post=sum(blob_lookup(q) for q in queries)\n" +
+"    t3=time.perf_counter_ns()\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=(t1-t0)/max(t3-t2,1)\n" +
+"    print(f'[bench synth] N={N_CONT} Q={Q_LOOKUP}')\n" +
+"    print(f'  baseline (json linear)  : {(t1-t0)/1000:10.1f} us  hits={base}')\n" +
+"    print(f'  PCDD (mmap bisect)      : {(t3-t2)/1000:10.1f} us  hits={post}')\n" +
+"    print(f'  speedup                 : {sp:6.1f}x')\n" +
+"    row={'site':'CT1_PODMAN','roi':'CT1_PODMAN_PCDD_synth','baseline_ns':t1-t0,'post_ns':t3-t2,'diff_test':diff,'speedup_x':round(sp,2),'n':N_CONT}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"def real_probe():\n" +
+"    home=os.path.expanduser('~')\n" +
+"    cont_p=os.path.join(home,'.local','share','containers','storage','overlay-containers','containers.json')\n" +
+"    img_p =os.path.join(home,'.local','share','containers','storage','overlay-images','images.json')\n" +
+"    if not (os.path.isfile(cont_p) and os.path.isfile(img_p)):\n" +
+"        print('[real] storage json absent; skip'); return True\n" +
+"    try:\n" +
+"        with open(cont_p,'rb') as f: containers=json.loads(f.read().decode('utf-8','replace'))\n" +
+"        with open(img_p,'rb') as f: images=json.loads(f.read().decode('utf-8','replace'))\n" +
+"    except Exception as e:\n" +
+"        print(f'[real] parse fail: {e}'); return True\n" +
+"    if not isinstance(containers,list): containers=[]\n" +
+"    if not isinstance(images,list): images=[]\n" +
+"    if not containers:\n" +
+"        print('[real] empty containers; skip'); return True\n" +
+"    info=encode_blob(containers,images)\n" +
+"    print(f'[real encode] n_cont={info[\"n_cont\"]} n_img={info[\"n_img\"]} blob={fmt(info[\"blob_size\"])}')\n" +
+"    rng=random.Random(29)\n" +
+"    sample=[c.get('id','') or '' for c in containers]\n" +
+"    queries=[short_id_hash(sample[rng.randrange(len(sample))]) for _ in range(min(Q_LOOKUP,len(sample)))]\n" +
+"    t0=time.perf_counter_ns(); base=sum(linear_lookup(containers,q) for q in queries); t1=time.perf_counter_ns()\n" +
+"    t2=time.perf_counter_ns(); post=sum(blob_lookup(q) for q in queries); t3=time.perf_counter_ns()\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=(t1-t0)/max(t3-t2,1)\n" +
+"    print(f'[real bench] base={(t1-t0)/1000:.1f}us hits={base}  post={(t3-t2)/1000:.1f}us hits={post}  speedup={sp:.1f}x')\n" +
+"    row={'site':'CT1_PODMAN','roi':'CT1_PODMAN_PCDD_real','baseline_ns':t1-t0,'post_ns':t3-t2,'diff_test':diff,'speedup_x':round(sp,2),'n':info['n_cont']}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"if mode=='real':\n" +
+"    ok1=bench_synth(); ok2=real_probe()\n" +
+"    print(f'[result] synth={ok1} real={ok2}')\n" +
+"    sys.exit(0 if (ok1 and ok2) else 1)\n" +
+"else:\n" +
+"    ok=bench_synth()\n" +
+"    sys.exit(0 if ok else 1)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("bench_ct1_podman_containers_dict")
+        if is_hexa_bin == false && is_self == false {
+            if v == "real" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_ct1_podman_containers_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

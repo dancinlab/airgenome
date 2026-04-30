@@ -1,0 +1,107 @@
+// tool/bench/bench_br6_chrome_cookies.hexa — BR6 Chrome Cookies host_key dict bench
+//   MA3 패턴 synth 5000-row dataset → CCDF encode → GROUP BY count
+//   (str Counter vs u8 enum scan) wall-clock 비교.
+//
+// 5-tuple: site=BR6 ROI#=BR6 baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST. R17: /usr/bin/perl alarm 120s. /usr/bin/python3 절대.
+
+let PAYLOAD = "import sys,os,struct,time,array,random,subprocess\n" +
+"from collections import Counter\n" +
+"BIN='/tmp/bench_br6_chrome_cookies.bin'\n" +
+"CLASSIFIER='CCDF-v1-2026-04-30'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def chrome_running():\n" +
+"    r=subprocess.run(['/usr/bin/pgrep','-lf','[Cc]hrome'],capture_output=True,timeout=3)\n" +
+"    return bool(r.stdout.strip())\n" +
+"\n" +
+"def synth_hosts(n=5000,seed=45):\n" +
+"    rng=random.Random(seed)\n" +
+"    base_hosts=[f'.host{i}.example' for i in range(180)]\n" +
+"    out=[]\n" +
+"    for _ in range(n):\n" +
+"        h=base_hosts[rng.randrange(len(base_hosts))]\n" +
+"        out.append(h)\n" +
+"    return out\n" +
+"\n" +
+"def encode(hosts):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    cnt=Counter(hosts); distinct=sorted(cnt)\n" +
+"    if len(distinct)>255:\n" +
+"        top=cnt.most_common(254)\n" +
+"        distinct=['(OTHER)']+sorted([k for k,_ in top])\n" +
+"    name_to_id={n:i for i,n in enumerate(distinct)}\n" +
+"    n_host=len(distinct); n_msg=len(hosts)\n" +
+"    pool=bytearray()\n" +
+"    name_offs=array.array('I',[0]*n_host); name_lens=array.array('I',[0]*n_host)\n" +
+"    for i,n in enumerate(distinct):\n" +
+"        nb=n.encode('utf-8','replace')\n" +
+"        name_offs[i]=len(pool); name_lens[i]=len(nb); pool.extend(nb)\n" +
+"    enum_col=bytearray(n_msg)\n" +
+"    for i,h in enumerate(hosts):\n" +
+"        enum_col[i]=name_to_id.get(h,0)\n" +
+"    header=struct.pack('<4sIIII',b'CCDF',1,n_host,n_msg,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(name_offs.tobytes()); f.write(name_lens.tobytes())\n" +
+"        f.write(bytes(pool)); f.write(bytes(enum_col))\n" +
+"    return time.perf_counter_ns()-t0, distinct, enum_col\n" +
+"\n" +
+"def main():\n" +
+"    print('airgenome bench/BR6 — chrome_cookies_dict  (synth)')\n" +
+"    print(f'  classifier_version={CLASSIFIER}')\n" +
+"    print(f'  chrome_running={chrome_running()}  (synth-only path either way)')\n" +
+"    hosts=synth_hosts(5000)\n" +
+"    enc_ns, distinct, enum_col = encode(hosts)\n" +
+"    blob_sz=os.path.getsize(BIN)\n" +
+"    print(f'  encode (CCDF dict): {enc_ns/1e6:.1f}ms  blob={fmt(blob_sz)}  hosts_distinct={len(distinct)}  rows={len(hosts)}')\n" +
+"    raw_name_bytes=sum(len(s)+10 for s in hosts)\n" +
+"    saved_pct=((raw_name_bytes-len(hosts))*100)//max(raw_name_bytes,1)\n" +
+"    print(f'  raw_name_bytes={fmt(raw_name_bytes)}  enum_col={fmt(len(hosts))}  saved={saved_pct}%')\n" +
+"    QUERIES=100\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(QUERIES):\n" +
+"        cc=Counter(hosts)\n" +
+"    ns_old=time.perf_counter_ns()-t0; per_old=ns_old//QUERIES\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(QUERIES):\n" +
+"        c=[0]*len(distinct)\n" +
+"        for b in enum_col: c[b]+=1\n" +
+"    ns_new=time.perf_counter_ns()-t0; per_new=ns_new//QUERIES\n" +
+"    print(f'  OLD (Counter on str list)  total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    print(f'  NEW (u8 enum column scan)  total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved}%')\n" +
+"    # diff_test: u8 enum count == Counter on hosts\n" +
+"    name_to_id={n:i for i,n in enumerate(distinct)}\n" +
+"    cb=[0]*len(distinct)\n" +
+"    for b in enum_col: cb[b]+=1\n" +
+"    cc=Counter(hosts)\n" +
+"    if len(distinct)>0 and distinct[0]=='(OTHER)':\n" +
+"        top_set=set(distinct[1:])\n" +
+"        other_c=sum(c for s,c in cc.items() if s not in top_set)\n" +
+"        cc_folded={s:c for s,c in cc.items() if s in top_set}\n" +
+"        cc_folded['(OTHER)']=other_c\n" +
+"        cc=Counter(cc_folded)\n" +
+"    a=sorted(zip(distinct,cb)); b=sorted(cc.items())\n" +
+"    mm=sum(1 for x,y in zip(a,b) if x[0]!=y[0] or x[1]!=y[1]) if len(a)==len(b) else abs(len(a)-len(b))\n" +
+"    print(f'  diff_test mismatches: {mm}')\n" +
+"    print(f'  5-tuple: site=BR6 ROI#=BR6 baseline_ns={per_old} post_ns={per_new} diff_test={\"lossless\" if mm==0 else \"FAIL\"}')\n" +
+"\n" +
+"main()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_br6_chrome_cookies_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

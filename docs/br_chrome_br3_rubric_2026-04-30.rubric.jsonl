@@ -1,0 +1,16 @@
+{"schema":"raw240v2","version":1,"date":"2026-04-30","artifact":"br_chrome_br3_rubric_2026-04-30.md","scope":"BR3-chrome-localstorage-shbf","magic":"CLBF","pattern_ref":"K4 discord_localstorage_shbf v2 (snappy decoder reuse)"}
+{"block":"B1","name":"design-rigor","max":50,"perfect_cut":"shbf sorted key + leveldb footer/index/data walk + snappy decoder"}
+{"block":"B2","name":"measurability","max":90,"perfect_cut":"latency μs + memory MB + ratio + snappy coverage %"}
+{"block":"B3","name":"enforcement-strength","max":40,"perfect_cut":"snappy 5-fixture + 4-adversarial fixture + classifier"}
+{"block":"B4","name":"atomicity","max":40,"perfect_cut":"single .hexa + LOCK 미접촉 + open('rb') + tmp 격리"}
+{"block":"B5","name":"observability","max":30,"perfect_cut":"rss/elapsed/blob_size + classifier + reason code"}
+{"block":"B6","name":"cross-repo","max":30,"perfect_cut":"hive raw + airgenome filter + anima 3-hop"}
+{"block":"B7","name":"emission-cost-bounded","max":40,"perfect_cut":"PAYLOAD ≤16KB + 1-pass"}
+{"block":"B8","name":"adversarial-resistance","max":40,"perfect_cut":"empty/corrupt/running/snappy-skew 4-fixture"}
+{"block":"B9","name":"meta-rubric-finite","max":20,"perfect_cut":"depth≤2 + self-scoring 회피 + carve-out"}
+{"candidate":"BR3-a","desc":"LS only no snappy","B1":44,"B2":78,"B3":34,"B4":38,"B5":28,"B6":22,"B7":36,"B8":32,"B9":18,"sigma":330}
+{"candidate":"BR3-b","desc":"LS + K4 snappy decoder reuse","B1":48,"B2":86,"B3":38,"B4":38,"B5":28,"B6":26,"B7":36,"B8":38,"B9":20,"sigma":358}
+{"candidate":"BR3-h","desc":"hybrid LS+IDB+snappy+chrome-running synth","B1":50,"B2":88,"B3":40,"B4":40,"B5":30,"B6":28,"B7":36,"B8":40,"B9":20,"sigma":372}
+{"verdict":"IMPL","reason":"sigma 372 >= 350 threshold","action":"impl chrome_localstorage_shbf.hexa"}
+{"honest_c3":[{"id":"C3-1","gap":"snappy decoder reuse","mitigation":"K4 verbatim 5/5 fixtures"},{"id":"C3-2","gap":"chrome mid-write","mitigation":"pgrep + LOCK stat + synth fallback"},{"id":"C3-3","gap":"multi-profile","mitigation":"Default only"},{"id":"C3-4","gap":"schema-version","mitigation":"classifier_version=CLBF-v1-2026-04-30"},{"id":"C3-5","gap":"token surface","mitigation":"regex drop /token|password|secret|auth|jwt|bearer/i"}],"gap_count":5}
+{"roi_projection":{"encode_ms":"30-60","mmap_lookup_us":"~5","speedup_vs_linear":"1000x+","blob_size_kb_per_5k_keys":"~150"}}

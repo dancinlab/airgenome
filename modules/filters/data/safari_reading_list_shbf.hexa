@@ -1,0 +1,236 @@
+// airgenome/modules/filters/data/safari_reading_list_shbf.hexa
+//   SF1 — Safari Bookmarks.plist Reading List subset SHBF.
+//
+//   목적: Bookmarks.plist 안의 com.apple.ReadingList 노드만 골라
+//         sorted blob (URL + DateAdded ts32) 으로 인코드. autocomplete /
+//         "read later" prefix bisect 용.
+//
+//   blob layout (little-endian):
+//     magic  : 4B  "SRLF"          (Safari Reading List Filter)
+//     version: 4B  u32             (1)
+//     n      : 4B  u32             RL entry 개수
+//     str_sz : 4B  u32             string pool 바이트 길이
+//     [n*4]  : u32 offsets         pool 내 시작 오프셋 (정렬된 URL 순)
+//     [n*4]  : u32 lens            URL 길이
+//     [n*4]  : u32 ts              DateAdded (unix seconds, u32; 0 if missing)
+//     [str_sz]: utf-8 string pool  정렬된 URL 의 raw bytes
+//
+// 모드:
+//   encode : Bookmarks.plist Reading List subset → /tmp/safari_reading_list.bin
+//   bench  : encode + plistlib subset-walk linear vs blob mmap + bisect (50 query)
+//
+// pgrep guard: Safari running 중에도 Bookmarks.plist read-only open 안전 (atomic write 가 아닌 일반 plist 이지만 safe_copy snapshot 사용).
+// R1 HEXA-FIRST: 신규 .py/.sh 금지. 인라인 python3 페이로드.
+
+let PAYLOAD = "import sys,os,plistlib,tempfile,struct,time,bisect,heapq,resource,mmap,array,random\n" +
+"mode=sys.argv[1]; src=sys.argv[2]\n" +
+"BIN='/tmp/safari_reading_list.bin'\n" +
+"COCOA_OFFSET=978307200\n" +
+"if not os.path.exists(src):\n" +
+"    print('ERROR: not found: '+src); sys.exit(1)\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def safe_copy(src):\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.plist',delete=False); tmp.close()\n" +
+"    with open(src,'rb') as fr, open(tmp.name,'wb') as fw:\n" +
+"        fw.write(fr.read())\n" +
+"    return tmp.name\n" +
+"\n" +
+"def find_rl_node(root):\n" +
+"    if not isinstance(root,dict): return None\n" +
+"    for c in root.get('Children',[]) or []:\n" +
+"        if isinstance(c,dict) and c.get('Title')=='com.apple.ReadingList':\n" +
+"            return c\n" +
+"    return None\n" +
+"\n" +
+"def walk_rl(node,out):\n" +
+"    if not isinstance(node,dict): return\n" +
+"    ch=node.get('Children')\n" +
+"    if not isinstance(ch,list): return\n" +
+"    for c in ch:\n" +
+"        if not isinstance(c,dict): continue\n" +
+"        u=c.get('URLString')\n" +
+"        if not (isinstance(u,str) and u): continue\n" +
+"        rl=c.get('ReadingList',{}) or {}\n" +
+"        ts=0\n" +
+"        da=rl.get('DateAdded') if isinstance(rl,dict) else None\n" +
+"        if da is None: da=c.get('DateAdded')\n" +
+"        try:\n" +
+"            if hasattr(da,'timestamp'): ts=int(da.timestamp())\n" +
+"            elif isinstance(da,(int,float)): ts=int(da)+COCOA_OFFSET if da<2e9 else int(da)\n" +
+"        except Exception: ts=0\n" +
+"        out.append((u,ts))\n" +
+"\n" +
+"def synth_rows(n=200):\n" +
+"    base=int(time.time())\n" +
+"    domains=['arxiv.org','medium.com','blog.cloudflare.com','rust-lang.org','python.org','news.ycombinator.com']\n" +
+"    rows=[]\n" +
+"    rng=random.Random(42)\n" +
+"    for i in range(n):\n" +
+"        d=domains[i%len(domains)]\n" +
+"        rows.append((f'https://{d}/article-{i:05d}',base-rng.randrange(0,86400*365)))\n" +
+"    return rows\n" +
+"\n" +
+"def encode(src,allow_synth=True):\n" +
+"    t0=time.perf_counter()\n" +
+"    copy=safe_copy(src)\n" +
+"    raw_size=os.path.getsize(copy)\n" +
+"    reason='rl-real'\n" +
+"    rows=[]\n" +
+"    try:\n" +
+"        with open(copy,'rb') as f: root=plistlib.load(f)\n" +
+"    except Exception as e:\n" +
+"        os.unlink(copy)\n" +
+"        if allow_synth:\n" +
+"            rows=synth_rows(); reason='rl-corrupt-synth'\n" +
+"        else:\n" +
+"            return {'encode_s':0,'n':0,'raw_size':raw_size,'blob_size':0,'reason':'plist-corrupt-skip'}\n" +
+"    else:\n" +
+"        os.unlink(copy)\n" +
+"        rl=find_rl_node(root)\n" +
+"        if rl is None:\n" +
+"            if allow_synth: rows=synth_rows(); reason='rl-not-found-synth'\n" +
+"            else: reason='rl-not-found-skip'\n" +
+"        else:\n" +
+"            walk_rl(rl,rows)\n" +
+"            if not rows:\n" +
+"                if allow_synth: rows=synth_rows(); reason='rl-empty-synth'\n" +
+"                else: reason='rl-empty-skip'\n" +
+"    seen={}\n" +
+"    for u,ts in rows:\n" +
+"        if u not in seen or seen[u]<ts: seen[u]=ts\n" +
+"    rows=sorted(seen.items(),key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    tss =array.array('I',[0]*n)\n" +
+"    for i,(u,ts) in enumerate(rows):\n" +
+"        ub=u.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(ub); tss[i]=int(ts) & 0xFFFFFFFF\n" +
+"        pool.extend(ub)\n" +
+"    header=struct.pack('<4sIII',b'SRLF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(tss.tobytes()); f.write(pool)\n" +
+"    t1=time.perf_counter()\n" +
+"    return {'encode_s':t1-t0,'n':n,'raw_size':raw_size,'blob_size':os.path.getsize(BIN),'reason':reason}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb'); self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        assert magic==b'SRLF' and ver==1\n" +
+"        self.n=n\n" +
+"        base=16\n" +
+"        offs_off=base; lens_off=base+4*n; tss_off=base+8*n; pool_off=base+12*n\n" +
+"        mv=memoryview(self.mm)\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(mv[offs_off:offs_off+4*n]))\n" +
+"        lens=array.array('I'); lens.frombytes(bytes(mv[lens_off:lens_off+4*n]))\n" +
+"        tss =array.array('I'); tss .frombytes(bytes(mv[tss_off :tss_off +4*n]))\n" +
+"        pool=bytes(mv[pool_off:pool_off+pool_sz])\n" +
+"        self.urls=[pool[offs[i]:offs[i]+lens[i]] for i in range(n)]\n" +
+"        self.tss=tss\n" +
+"        try: mv.release()\n" +
+"        except Exception: pass\n" +
+"    def prefix_topk(self,prefix,k=10):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        s=bisect.bisect_left(self.urls,pb)\n" +
+"        e=bisect.bisect_left(self.urls,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        if e==s: return []\n" +
+"        if e-s<=k: idxs=list(range(s,e))\n" +
+"        else: idxs=heapq.nlargest(k,range(s,e),key=lambda i:self.tss[i])\n" +
+"        idxs.sort(key=lambda i:-self.tss[i])\n" +
+"        return [(self.urls[i].decode('utf-8','replace'),int(self.tss[i])) for i in idxs]\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def linear_topk(rows,prefix,k=10):\n" +
+"    hits=[(u,t) for (u,t) in rows if u.startswith(prefix)]\n" +
+"    hits.sort(key=lambda r:-r[1])\n" +
+"    return hits[:k]\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src,allow_synth=True)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms n={info[\"n\"]} blob={fmt(info[\"blob_size\"])} reason={info[\"reason\"]}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no entries — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    samples=[]\n" +
+"    rng=random.Random(42)\n" +
+"    for _ in range(50):\n" +
+"        i=rng.randrange(b.n); u=b.urls[i].decode('utf-8','replace')\n" +
+"        s=u.find('://'); start=s+3 if s>=0 else 0\n" +
+"        plen=rng.choice([4,5,6,7,8])\n" +
+"        samples.append(u[:start+plen] if len(u)>=start+plen else u)\n" +
+"    rss_blob=rss()\n" +
+"    for p in samples[:5]: b.prefix_topk(p,10)\n" +
+"    t0=time.perf_counter()\n" +
+"    blob_hits=0\n" +
+"    for p in samples: blob_hits+=len(b.prefix_topk(p,10))\n" +
+"    t1=time.perf_counter()\n" +
+"    blob_us=(t1-t0)*1e6/len(samples)\n" +
+"    rows_list=[(u.decode('utf-8','replace'),int(b.tss[i])) for i,u in enumerate(b.urls)]\n" +
+"    b.close()\n" +
+"    t0=time.perf_counter()\n" +
+"    lin_hits=0\n" +
+"    for p in samples: lin_hits+=len(linear_topk(rows_list,p,10))\n" +
+"    t1=time.perf_counter()\n" +
+"    lin_us=(t1-t0)*1e6/len(samples)\n" +
+"    print(f'[query] 50 prefix-topK-10 (blob={blob_hits} linear={lin_hits})')\n" +
+"    print(f'  linear scan          : {lin_us:10.1f} us')\n" +
+"    print(f'  blob mmap + bisect   : {blob_us:10.1f} us')\n" +
+"    if blob_us>0: print(f'  speedup              : {lin_us/blob_us:6.1f}x')\n" +
+"    print(f'[rss] {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src,allow_synth=False)\n" +
+"    print(f'encoded {info[\"n\"]} entries in {info[\"encode_s\"]*1000:.1f} ms → {BIN} ({fmt(info[\"blob_size\"])}) reason={info[\"reason\"]}')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench <Bookmarks.plist>'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("safari_reading_list_shbf")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".plist") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/Library/Safari/Bookmarks.plist"
+        println("(default target: " + target + ")")
+    }
+    if file_exists(target) == false {
+        println("ERROR: not found: " + target)
+        return
+    }
+    // pgrep guard — Safari running 시 read-only open 만 사용 (mutation 없음).
+    let safari_pids = exec("pgrep -x Safari 2>/dev/null | wc -l").trim()
+    if safari_pids != "0" {
+        println("(pgrep: Safari running, " + safari_pids + " pids — read-only safe_copy snapshot used)")
+    }
+    let tmp_py = "/tmp/safari_reading_list_shbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

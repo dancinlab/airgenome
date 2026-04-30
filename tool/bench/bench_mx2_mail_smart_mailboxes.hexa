@@ -1,0 +1,124 @@
+// tool/bench/bench_mx2_mail_smart_mailboxes.hexa — MX2 smart mailboxes dict bench
+//   MA3 + MX1 패턴 직접 이식. SmartMailboxes.plist 부재 시 20 synthetic
+//   mailboxes × ~5 clauses → MSMB encode → re-tokenize linear scan vs u32 bisect.
+//
+// 5-tuple: site=MX2 ROI#=mail-smart-mailboxes baseline_ns post_ns diff_test=lossless
+// rubric: docs/mx2_mail_smart_mailboxes_rubric_2026-04-30.md (400/400)
+// R1 HEXA-FIRST: 인라인 python3. R17: alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,hashlib,array,random,re\n" +
+"N_MB=20\n" +
+"CL_MIN=2\n" +
+"CL_MAX=8\n" +
+"QUERIES=100\n" +
+"BIN='/tmp/bench_mx2_msmb.bin'\n" +
+"\n" +
+"_TOK=re.compile(r'[A-Za-z_][A-Za-z0-9_]+')\n" +
+"def tokens_of(s):\n" +
+"    return list({m.group(0) for m in _TOK.finditer(s.lower())})\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def hash32(s):\n" +
+"    h=hashlib.blake2b(s.encode('utf-8','replace'),digest_size=4).digest()\n" +
+"    return struct.unpack('<I',h)[0]\n" +
+"\n" +
+"def build_mb(n=N_MB,seed=12):\n" +
+"    rng=random.Random(seed)\n" +
+"    fields=['is_unread','date_received','flagged','has_attachment','from','to','subject_contains','sender']\n" +
+"    ops=['==','!=','>','<','LIKE','BEGINSWITH','CONTAINS']\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        nm=f'smart-{i:02d}-{rng.choice([\"unread\",\"flagged\",\"vip\",\"recent\",\"large\"])}'\n" +
+"        nclause=rng.randrange(CL_MIN,CL_MAX+1)\n" +
+"        clauses=[]\n" +
+"        for _ in range(nclause):\n" +
+"            f=rng.choice(fields); o=rng.choice(ops); v=str(rng.randrange(9999))\n" +
+"            clauses.append(f'{f} {o} {v}')\n" +
+"        out.append({'name':nm,'predicate':' AND '.join(clauses)})\n" +
+"    return out\n" +
+"\n" +
+"def encode(mb):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    n=len(mb); pool=bytearray()\n" +
+"    no=array.array('I',[0]*n); nl=array.array('I',[0]*n)\n" +
+"    po=array.array('I',[0]*n); pl=array.array('I',[0]*n)\n" +
+"    for i,m in enumerate(mb):\n" +
+"        nb=m['name'].encode('utf-8','replace')\n" +
+"        no[i]=len(pool); nl[i]=len(nb); pool.extend(nb)\n" +
+"        pb=m['predicate'].encode('utf-8','replace')\n" +
+"        po[i]=len(pool); pl[i]=len(pb); pool.extend(pb)\n" +
+"    pairs=[]\n" +
+"    for i,m in enumerate(mb):\n" +
+"        for t in tokens_of(m['predicate']):\n" +
+"            pairs.append((hash32(t),i&0xff))\n" +
+"    pairs.sort(key=lambda x:x[0])\n" +
+"    n_tok=len(pairs)\n" +
+"    th=array.array('I',[h for h,_ in pairs])\n" +
+"    tr=bytes(rid for _,rid in pairs)\n" +
+"    header=struct.pack('<4sIIII',b'MSMB',1,n,n_tok,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(no.tobytes()); f.write(nl.tobytes())\n" +
+"        f.write(po.tobytes()); f.write(pl.tobytes()); f.write(bytes(pool))\n" +
+"        f.write(th.tobytes()); f.write(tr)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'n_tok':n_tok,'th':th,'tr':tr,'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"def old_scan(mb,kw):\n" +
+"    n=0\n" +
+"    for m in mb:\n" +
+"        if kw in tokens_of(m['predicate']): n+=1\n" +
+"    return n\n" +
+"\n" +
+"def new_lookup(th,tr,kw):\n" +
+"    h=hash32(kw); i=bisect.bisect_left(th,h); n=0\n" +
+"    while i<len(th) and th[i]==h:\n" +
+"        n+=1; i+=1\n" +
+"    return n\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/MX2 — mail_smart_mailboxes (re-tokenize linear vs u32 bisect)')\n" +
+"    print(f'  N_MB={N_MB}  CL[{CL_MIN},{CL_MAX}]  QUERIES={QUERIES}')\n" +
+"    print(f'  source: synthetic (~/Library/Mail/V*/MailData/SmartMailboxes.plist fallback)')\n" +
+"    mb=build_mb()\n" +
+"    info=encode(mb)\n" +
+"    print(f'  encode: {info[\"encode_ns\"]/1e6:.1f}ms  n_mb={info[\"n\"]}  n_tok={info[\"n_tok\"]}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    rng=random.Random(7)\n" +
+"    sample=[]\n" +
+"    for m in mb: sample+=tokens_of(m['predicate'])\n" +
+"    queries=[rng.choice(sample) for _ in range(QUERIES)]\n" +
+"    mm=0\n" +
+"    for q in queries[:20]:\n" +
+"        if old_scan(mb,q)!=new_lookup(info['th'],info['tr'],q): mm+=1\n" +
+"    print(f'  diff_test (subset 20) mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for q in queries: old_scan(mb,q)\n" +
+"    t1=time.perf_counter_ns(); ns_old=t1-t0; per_old=ns_old//QUERIES\n" +
+"    print(f'  OLD (re-tokenize linear)   total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for q in queries: new_lookup(info['th'],info['tr'],q)\n" +
+"    t1=time.perf_counter_ns(); ns_new=t1-t0; per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (u32 bisect blob)      total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new; saved=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved}%')\n" +
+"        amort=info['encode_ns']//QUERIES\n" +
+"        print(f'  + encode cost amortized: {amort}ns/query')\n" +
+"    print(f'  5-tuple: site=MX2 ROI#=mail-smart-mailboxes baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_mx2_mail_smart_mailboxes_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

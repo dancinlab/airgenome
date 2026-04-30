@@ -1,0 +1,110 @@
+// tool/bench/bench_mx3_calendar_attachment_dedup.hexa — MX3 calendar attachment dedup bench
+//   T2 + K1 패턴 직접 이식. ~/Library/Calendars 부재 / TCC 없을 시 1500
+//   synthetic (hash, path, size) 30% dup → CADD encode → linear scan vs u64 bisect.
+//
+// 5-tuple: site=MX3 ROI#=calendar-attachment-dedup baseline_ns post_ns diff_test=lossless
+// rubric: docs/mx3_calendar_attachment_dedup_rubric_2026-04-30.md (400/400)
+// R1 HEXA-FIRST: 인라인 python3. R17: alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,hashlib,array,random\n" +
+"ATT_N=1500\n" +
+"DUP_RATIO=0.3\n" +
+"QUERIES=1000\n" +
+"BIN='/tmp/bench_mx3_cadd.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1073741824: return f'{b/1073741824:.2f}GB'\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def synth_hash(seed,sz):\n" +
+"    h=hashlib.blake2b(str(seed).encode(),digest_size=8,key=struct.pack('<Q',sz&0xffffffffffffffff))\n" +
+"    return int.from_bytes(h.digest(),'little')\n" +
+"\n" +
+"def build_dataset(n=ATT_N,dup=DUP_RATIO):\n" +
+"    rng=random.Random(13)\n" +
+"    n_uniq=int(n*(1-dup)); n_dup=n-n_uniq\n" +
+"    sizes=[rng.choice([1024,4096,16384,65536,262144,1048576,4194304]) for _ in range(n_uniq)]\n" +
+"    hashes=[synth_hash(i,sizes[i]) for i in range(n_uniq)]\n" +
+"    entries=[]\n" +
+"    for i in range(n_uniq):\n" +
+"        p=f'/tmp/synth/Calendars/{i//100:02x}.calendar/Events/{i:06x}.ics/Attachments/file_{i}.pdf'\n" +
+"        entries.append((hashes[i],p,sizes[i]))\n" +
+"    for i in range(n_dup):\n" +
+"        j=rng.randrange(n_uniq)\n" +
+"        p=f'/tmp/synth/Calendars/{(n_uniq+i)//100:02x}.calendar/Events/{n_uniq+i:06x}.ics/Attachments/file_{j}.pdf'\n" +
+"        entries.append((hashes[j],p,sizes[j]))\n" +
+"    return entries\n" +
+"\n" +
+"def encode(entries):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    seen={}\n" +
+"    for h,p,sz in entries:\n" +
+"        cur=seen.get(h)\n" +
+"        if cur is None: seen[h]=[sz,1]\n" +
+"        else: cur[1]+=1\n" +
+"    items=sorted(seen.items(),key=lambda kv:kv[0])\n" +
+"    n=len(items)\n" +
+"    hashes=array.array('Q',[h for h,_ in items])\n" +
+"    sizes =array.array('I',[m[0]&0xffffffff for _,m in items])\n" +
+"    dups  =array.array('I',[m[1]&0xffffffff for _,m in items])\n" +
+"    header=struct.pack('<4sIII',b'CADD',1,n,0)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(hashes.tobytes()); f.write(sizes.tobytes()); f.write(dups.tobytes())\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'hashes':hashes,'sizes':sizes,'dups':dups,'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"def old_lookup(entries,h):\n" +
+"    c=0\n" +
+"    for hh,_,_ in entries:\n" +
+"        if hh==h: c+=1\n" +
+"    return c\n" +
+"\n" +
+"def new_lookup(hashes,h):\n" +
+"    i=bisect.bisect_left(hashes,h)\n" +
+"    if i<len(hashes) and hashes[i]==h: return 1\n" +
+"    return 0\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/MX3 — calendar_attachment_dedup (linear vs u64 bisect)')\n" +
+"    print(f'  ATT_N={ATT_N}  DUP_RATIO={DUP_RATIO}  QUERIES={QUERIES}')\n" +
+"    print(f'  source: synthetic (~/Library/Calendars TCC fallback)')\n" +
+"    entries=build_dataset()\n" +
+"    info=encode(entries)\n" +
+"    total=sum(sz for _,_,sz in entries)\n" +
+"    saving=sum(int(info['sizes'][i])*(int(info['dups'][i])-1) for i in range(info['n']))\n" +
+"    print(f'  encode: {info[\"encode_ns\"]/1e6:.1f}ms  total={len(entries)}  uniq={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    print(f'  dedup: dup={len(entries)-info[\"n\"]}  total={fmt(total)}  saving={fmt(saving)} ({100*saving/max(total,1):.1f}%)')\n" +
+"    rng=random.Random(7)\n" +
+"    sample=[int(info['hashes'][rng.randrange(info['n'])]) for _ in range(QUERIES)]\n" +
+"    mm=0\n" +
+"    for h in sample[:20]:\n" +
+"        o=1 if old_lookup(entries,h)>0 else 0\n" +
+"        nn=new_lookup(info['hashes'],h)\n" +
+"        if o!=nn: mm+=1\n" +
+"    print(f'  diff_test (subset 20) mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for h in sample: old_lookup(entries,h)\n" +
+"    t1=time.perf_counter_ns(); ns_old=t1-t0; per_old=ns_old//QUERIES\n" +
+"    print(f'  OLD (linear scan)        per_query_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for h in sample: new_lookup(info['hashes'],h)\n" +
+"    t1=time.perf_counter_ns(); ns_new=t1-t0; per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (u64 bisect blob)    per_query_ns={per_new}')\n" +
+"    if per_new>0: print(f'  speedup={per_old/per_new:.1f}x')\n" +
+"    print(f'  5-tuple: site=MX3 ROI#=calendar-attachment-dedup baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_mx3_calendar_attachment_dedup_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

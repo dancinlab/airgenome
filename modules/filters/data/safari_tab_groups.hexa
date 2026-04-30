@@ -1,0 +1,98 @@
+// airgenome/modules/filters/data/safari_tab_groups.hexa
+//   SF2 — Safari Tab Groups Filter (HOLD stub).
+//
+//   raw 240 V2 weighted rubric: 332/400 (best candidate SF2b) < 350 threshold.
+//   Verdict: HOLD. This module emits a probe + carve-out report and exits 0.
+//
+//   Root cause:
+//     - spec path ~/Library/Safari/TabGroups.plist does not exist (macOS 14+).
+//     - real source = SafariTabs.db (sqlite under sandbox container) is locked
+//       while Safari is running (pgrep: 14+ Safari pids).
+//     - safe path forward requires either Safari quit OR sqlite3 ?mode=ro&immutable=1
+//       cold-snapshot — both out of scope for this cycle (raw 168 minimum-viable).
+//
+//   This stub:
+//     - prints filesystem probe results (read-only stat() only).
+//     - prints honest verdict + reason.
+//     - DOES NOT open SafariTabs.db / DOES NOT mutate / DOES NOT call sqlite3.
+//
+// pgrep guard: enforced. /usr/bin/perl alarm 120s wrapper.
+// R1 HEXA-FIRST: 인라인 python3 페이로드.
+
+let PAYLOAD = "import sys,os,plistlib,time\n" +
+"mode=sys.argv[1]; src=sys.argv[2]\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"home=os.environ.get('HOME','/Users/_')\n" +
+"S1=home+'/Library/Safari/TabGroups.plist'\n" +
+"S2=home+'/Library/Containers/com.apple.Safari/Data/Library/Safari/SafariTabs.db'\n" +
+"S3=home+'/Library/Safari/RecentlyClosedTabs.plist'\n" +
+"S4=home+'/Library/Containers/com.apple.Safari/Data/Library/Safari/CloudTabs.db'\n" +
+"\n" +
+"def probe(p):\n" +
+"    try:\n" +
+"        st=os.stat(p)\n" +
+"        return {'exists':True,'size':st.st_size}\n" +
+"    except Exception:\n" +
+"        return {'exists':False,'size':0}\n" +
+"\n" +
+"def parse_recently_closed(p):\n" +
+"    if not os.path.exists(p): return []\n" +
+"    try:\n" +
+"        with open(p,'rb') as f: d=plistlib.load(f)\n" +
+"    except Exception: return []\n" +
+"    out=[]\n" +
+"    if isinstance(d,dict):\n" +
+"        items=d.get('ClosedTabOrWindowPersistentStates') or d.get('Items') or []\n" +
+"        if isinstance(items,list):\n" +
+"            for it in items[:50]:\n" +
+"                if isinstance(it,dict):\n" +
+"                    title=it.get('Title') or it.get('PersistentTitle') or ''\n" +
+"                    out.append(str(title)[:80])\n" +
+"    return out\n" +
+"\n" +
+"print('SF2 safari_tab_groups — HOLD stub (raw 240 V2 score 332/400 < 350)')\n" +
+"print(f'  arg mode={mode} src={src}')\n" +
+"print('[probe]')\n" +
+"for label,p in (('S1 spec TabGroups.plist',S1),('S2 SafariTabs.db (locked)',S2),('S3 RecentlyClosedTabs.plist',S3),('S4 CloudTabs.db',S4)):\n" +
+"    r=probe(p)\n" +
+"    print(f'  {label:40s} exists={r[\"exists\"]} size={fmt(r[\"size\"]) if r[\"exists\"] else \"-\"}')\n" +
+"print('[recently_closed_sample]')\n" +
+"items=parse_recently_closed(S3)\n" +
+"print(f'  parsed {len(items)} closed-tab/window titles (read-only)')\n" +
+"for t in items[:5]:\n" +
+"    print(f'    - {t}')\n" +
+"print('[verdict] HOLD reason=safari-running+spec-path-missing')\n" +
+"print('[next] when Safari quit OR sqlite3 ?immutable=1 whitelisted → re-score → impl')\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "probe"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("safari_tab_groups")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" || v == "probe" { mode = v }
+            else if v.contains(".plist") || v.contains(".db") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/Library/Safari/TabGroups.plist"
+    }
+    let safari_pids = exec("pgrep -x Safari 2>/dev/null | wc -l").trim()
+    println("(pgrep: Safari running, " + safari_pids + " pids — sqlite path BLOCKED by pgrep guard)")
+    let tmp_py = "/tmp/safari_tab_groups_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

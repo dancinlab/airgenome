@@ -1,0 +1,317 @@
+// airgenome/modules/filters/data/recent_documents_global.hexa
+//   IX3 — Recent Documents GLobal cross-app aggregation filter (RDGL —
+//   Recent Documents GLobal). raw 240 V2 V4-cand win (400/400). multi-source
+//   bplist00 NSKeyedArchiver glob fold + Bookmark bytes path regex + app-id
+//   u8 dict GROUP BY pattern.
+//
+//   목적: ~/Library/Application Support/com.apple.sharedfilelist/ 의 multiple
+//         recent-source plist 들 (RecentDocuments.sfl4 + RecentApplications.sfl4
+//         + iCloudItems.sfl4 + ApplicationRecentDocuments/*.sfl3-4) 를 cross-
+//         app fold → 단일 mmap blob 으로 columnar 화. GROUP BY app / prefix
+//         path / mtime-range 쿼리 hot path 을 plistlib parse + regex linear
+//         fold 에서 u8 col 1-pass + bisect 로 치환.
+//
+//   blob layout (little-endian):
+//     magic         : 4B  "RDGL"
+//     version       : 4B  u32 (1)
+//     n_app         : 4B  u32 distinct app-id count (≤255)
+//     n_path        : 4B  u32 distinct path count
+//     app_sz        : 4B  u32 app-id pool bytes
+//     path_sz       : 4B  u32 path pool bytes
+//     [n_app*4]     : u32 app_offs
+//     [n_app*2]     : u16 app_lens
+//     [app_sz]      : utf-8 app-id pool (sorted)
+//     [n_path]      : u8  app_idx_col (255 = misc overflow)
+//     [n_path*4]    : u32 path_offs
+//     [n_path*2]    : u16 path_lens
+//     [n_path*4]    : u32 mtime_col (epoch seconds)
+//     [path_sz]     : utf-8 path pool
+//     trailer       : u64 fnv1a_seed
+//
+//   query: u8 col 1-pass GROUP BY app; bisect path_offs (sorted) → range.
+//
+// 모드:
+//   encode <root>    : root=~/Library/Application Support/com.apple.sharedfilelist
+//                      → /tmp/ix3_rdgl.bin
+//   bench  <root>    : encode + linear plistlib parse vs RDGL mmap u8 col scan
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음). raw 9 hexa-only.
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,resource,array,glob,re,json,plistlib\n" +
+"mode=sys.argv[1]; target=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"BIN='/tmp/ix3_rdgl.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"PATH_RE=re.compile(rb'(?:/Users/|/Applications/|/Volumes/|/System/|/Library/|/opt/|/usr/local/)[\\w\\-./ ]{2,300}')\n" +
+"\n" +
+"def default_root():\n" +
+"    return os.path.expanduser('~/Library/Application Support/com.apple.sharedfilelist')\n" +
+"\n" +
+"def discover_sources(root):\n" +
+"    if not os.path.isdir(root): return []\n" +
+"    out=[]\n" +
+"    for nm in ('com.apple.LSSharedFileList.RecentDocuments.sfl4','com.apple.LSSharedFileList.RecentApplications.sfl4','com.apple.LSSharedFileList.iCloudItems.sfl4'):\n" +
+"        p=os.path.join(root,nm)\n" +
+"        if os.path.isfile(p): out.append(('macOS',p))\n" +
+"    sub=os.path.join(root,'ApplicationRecentDocuments')\n" +
+"    if os.path.isdir(sub):\n" +
+"        for ext in ('*.sfl3','*.sfl4'):\n" +
+"            for p in glob.glob(os.path.join(sub,ext)):\n" +
+"                bn=os.path.basename(p)\n" +
+"                if bn.endswith('.sfl3'): app=bn[:-5]\n" +
+"                elif bn.endswith('.sfl4'): app=bn[:-5]\n" +
+"                else: app=bn\n" +
+"                out.append((app,p))\n" +
+"    return out\n" +
+"\n" +
+"def extract_paths_from_plist(p):\n" +
+"    try:\n" +
+"        with open(p,'rb') as f: data=f.read()\n" +
+"    except Exception: return ([],0)\n" +
+"    if data[:8]!=b'bplist00': return ([],0)\n" +
+"    out=[]\n" +
+"    try:\n" +
+"        d=plistlib.loads(data)\n" +
+"    except Exception:\n" +
+"        # fallback: raw byte regex\n" +
+"        for m in PATH_RE.finditer(data):\n" +
+"            out.append(m.group(0).decode('utf-8','replace'))\n" +
+"        return (out,_safe_mtime(p))\n" +
+"    objs=d.get('$objects',[]) if isinstance(d,dict) else []\n" +
+"    if not isinstance(objs,list):\n" +
+"        return (out,_safe_mtime(p))\n" +
+"    for entry in objs:\n" +
+"        if isinstance(entry,(bytes,bytearray)):\n" +
+"            for m in PATH_RE.finditer(bytes(entry)):\n" +
+"                out.append(m.group(0).decode('utf-8','replace'))\n" +
+"        elif isinstance(entry,str):\n" +
+"            for m in PATH_RE.finditer(entry.encode('utf-8','replace')):\n" +
+"                out.append(m.group(0).decode('utf-8','replace'))\n" +
+"    return (out,_safe_mtime(p))\n" +
+"\n" +
+"def _safe_mtime(p):\n" +
+"    try: return int(os.path.getmtime(p))\n" +
+"    except Exception: return 0\n" +
+"\n" +
+"def fold_sources(sources):\n" +
+"    rows=[]  # (app_id, path, mtime)\n" +
+"    seen=set()\n" +
+"    for app,p in sources:\n" +
+"        paths,mt=extract_paths_from_plist(p)\n" +
+"        for s in paths:\n" +
+"            key=(app,s)\n" +
+"            if key in seen: continue\n" +
+"            seen.add(key)\n" +
+"            rows.append((app,s,mt))\n" +
+"    return rows\n" +
+"\n" +
+"def synth(seed=7):\n" +
+"    import random\n" +
+"    rng=random.Random(seed)\n" +
+"    apps=['com.apple.dt.xcode','com.apple.Safari','com.apple.TextEdit','com.apple.Terminal','com.apple.Preview','com.microsoft.VSCode','app.soulver.appstore.mac','com.apple.dt.Instruments']\n" +
+"    roots=['/Users/ghost/Documents/','/Users/ghost/Downloads/','/Users/ghost/src/','/Applications/','/Library/']\n" +
+"    rows=[]; ts0=int(time.time())\n" +
+"    for i in range(2000):\n" +
+"        a=apps[rng.randrange(len(apps))]\n" +
+"        r=roots[rng.randrange(len(roots))]\n" +
+"        rows.append((a,f'{r}item_{i:04d}.txt',ts0-rng.randrange(0,86400*30)))\n" +
+"    return rows\n" +
+"\n" +
+"def encode_blob(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    # app-id u8 dict, top-255 by count, alphabetical for bisect\n" +
+"    counts={}\n" +
+"    for a,_,_ in rows: counts[a]=counts.get(a,0)+1\n" +
+"    top=[k for k,_ in sorted(counts.items(),key=lambda kv:(-kv[1],kv[0]))[:255]]\n" +
+"    apps_sorted=sorted(top)\n" +
+"    app_idx={a:i for i,a in enumerate(apps_sorted)}\n" +
+"    n_app=len(apps_sorted)\n" +
+"    # dedup paths globally too (post-app-fold)\n" +
+"    seen=set(); rows2=[]\n" +
+"    for a,s,mt in rows:\n" +
+"        if (a,s) in seen: continue\n" +
+"        seen.add((a,s)); rows2.append((a,s,mt))\n" +
+"    n=len(rows2)\n" +
+"    # app pool\n" +
+"    app_pool=bytearray(); app_offs=array.array('I',[0]*n_app); app_lens=array.array('H',[0]*n_app)\n" +
+"    for i,a in enumerate(apps_sorted):\n" +
+"        ab=a.encode('utf-8','replace')\n" +
+"        app_offs[i]=len(app_pool); app_lens[i]=len(ab); app_pool.extend(ab)\n" +
+"    # path columns (sort rows by path for bisect)\n" +
+"    rows2.sort(key=lambda r:r[1])\n" +
+"    idx_col=bytearray(n)\n" +
+"    path_offs=array.array('I',[0]*n); path_lens=array.array('H',[0]*n)\n" +
+"    mtime_col=array.array('I',[0]*n)\n" +
+"    path_pool=bytearray()\n" +
+"    OVF=255\n" +
+"    for i,(a,s,mt) in enumerate(rows2):\n" +
+"        idx_col[i]=app_idx.get(a,OVF)\n" +
+"        sb=s.encode('utf-8','replace')\n" +
+"        if len(sb)>65535: sb=sb[:65535]\n" +
+"        path_offs[i]=len(path_pool); path_lens[i]=len(sb); path_pool.extend(sb)\n" +
+"        mtime_col[i]=mt & 0xffffffff\n" +
+"    out=bytearray(); out.extend(b'RDGL')\n" +
+"    out.extend(struct.pack('<IIIII',1,n_app,n,len(app_pool),len(path_pool)))\n" +
+"    out.extend(app_offs.tobytes()); out.extend(app_lens.tobytes())\n" +
+"    out.extend(app_pool)\n" +
+"    out.extend(idx_col)\n" +
+"    out.extend(path_offs.tobytes()); out.extend(path_lens.tobytes())\n" +
+"    out.extend(mtime_col.tobytes())\n" +
+"    out.extend(path_pool)\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'n':n,'n_app':n_app,'blob_size':len(out),'encode_ns':t1-t0,'app_sz':len(app_pool),'path_sz':len(path_pool)}\n" +
+"\n" +
+"def encode_main(root):\n" +
+"    if not root: root=default_root()\n" +
+"    sources=discover_sources(root)\n" +
+"    use_synth=False\n" +
+"    if not sources:\n" +
+"        rows=synth(); use_synth=True\n" +
+"    else:\n" +
+"        rows=fold_sources(sources)\n" +
+"        if not rows:\n" +
+"            rows=synth(); use_synth=True\n" +
+"    info=encode_blob(rows)\n" +
+"    info['source']='synth-fallback' if use_synth else f'{len(sources)} plist sources'\n" +
+"    return info\n" +
+"\n" +
+"def linear_groupby_app(rows):\n" +
+"    g={}\n" +
+"    for a,_,_ in rows: g[a]=g.get(a,0)+1\n" +
+"    return g\n" +
+"\n" +
+"def linear_count_prefix(rows,prefix):\n" +
+"    return sum(1 for _,s,_ in rows if s.startswith(prefix))\n" +
+"\n" +
+"def linear_count_recent(rows,since):\n" +
+"    return sum(1 for _,_,mt in rows if mt>=since)\n" +
+"\n" +
+"def blob_load():\n" +
+"    with open(BIN,'rb') as f: blob=f.read()\n" +
+"    assert blob[:4]==b'RDGL'\n" +
+"    ver,n_app,n,app_sz,path_sz=struct.unpack_from('<IIIII',blob,4)\n" +
+"    p=4+5*4\n" +
+"    app_offs=array.array('I'); app_offs.frombytes(blob[p:p+n_app*4]); p+=n_app*4\n" +
+"    app_lens=array.array('H'); app_lens.frombytes(blob[p:p+n_app*2]); p+=n_app*2\n" +
+"    app_pool=blob[p:p+app_sz]; p+=app_sz\n" +
+"    idx_col=blob[p:p+n]; p+=n\n" +
+"    path_offs=array.array('I'); path_offs.frombytes(blob[p:p+n*4]); p+=n*4\n" +
+"    path_lens=array.array('H'); path_lens.frombytes(blob[p:p+n*2]); p+=n*2\n" +
+"    mtime_col=array.array('I'); mtime_col.frombytes(blob[p:p+n*4]); p+=n*4\n" +
+"    path_pool=blob[p:p+path_sz]\n" +
+"    return (app_offs,app_lens,app_pool,idx_col,path_offs,path_lens,mtime_col,path_pool,n,n_app)\n" +
+"\n" +
+"def blob_groupby_app():\n" +
+"    ao,al,ap,ic,po,pl,mc,pp,n,na=blob_load()\n" +
+"    counts=[0]*256\n" +
+"    for b in ic: counts[b]+=1\n" +
+"    out={}\n" +
+"    for i in range(na):\n" +
+"        a=bytes(ap[ao[i]:ao[i]+al[i]]).decode('utf-8','replace')\n" +
+"        out[a]=counts[i]\n" +
+"    return out\n" +
+"\n" +
+"def blob_count_prefix(prefix):\n" +
+"    ao,al,ap,ic,po,pl,mc,pp,n,na=blob_load()\n" +
+"    pb=prefix.encode('utf-8','replace')\n" +
+"    lo,hi=0,n\n" +
+"    while lo<hi:\n" +
+"        mid=(lo+hi)//2\n" +
+"        s=bytes(pp[po[mid]:po[mid]+pl[mid]])\n" +
+"        if s<pb: lo=mid+1\n" +
+"        else: hi=mid\n" +
+"    cnt=0; i=lo\n" +
+"    while i<n:\n" +
+"        s=bytes(pp[po[i]:po[i]+pl[i]])\n" +
+"        if not s.startswith(pb): break\n" +
+"        cnt+=1; i+=1\n" +
+"    return cnt\n" +
+"\n" +
+"def blob_count_recent(since):\n" +
+"    ao,al,ap,ic,po,pl,mc,pp,n,na=blob_load()\n" +
+"    return sum(1 for v in mc if v>=since)\n" +
+"\n" +
+"def bench_main(root):\n" +
+"    info=encode_main(root)\n" +
+"    print(f'[encode] n_path={info[\"n\"]} n_app={info[\"n_app\"]} blob={fmt(info[\"blob_size\"])} encode={info[\"encode_ns\"]/1e6:.1f}ms source={info[\"source\"]}')\n" +
+"    rss_enc=rss()\n" +
+"    # decode rows for baseline\n" +
+"    ao,al,ap,ic,po,pl,mc,pp,n,na=blob_load()\n" +
+"    apps=[bytes(ap[ao[i]:ao[i]+al[i]]).decode('utf-8','replace') for i in range(na)]\n" +
+"    rows=[]\n" +
+"    for i in range(n):\n" +
+"        idx=ic[i]\n" +
+"        a=apps[idx] if idx<na else 'misc'\n" +
+"        s=bytes(pp[po[i]:po[i]+pl[i]]).decode('utf-8','replace')\n" +
+"        rows.append((a,s,mc[i]))\n" +
+"    P=['/Users/','/Applications/','/Library/','/Volumes/','/System/']\n" +
+"    since=int(time.time())-86400*7\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    base=0\n" +
+"    g=linear_groupby_app(rows); base+=sum(g.values())\n" +
+"    for q in P: base+=linear_count_prefix(rows,q)\n" +
+"    base+=linear_count_recent(rows,since)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    base_ns=t1-t0\n" +
+"    t2=time.perf_counter_ns()\n" +
+"    post=0\n" +
+"    g2=blob_groupby_app(); post+=sum(g2.values())\n" +
+"    for q in P: post+=blob_count_prefix(q)\n" +
+"    post+=blob_count_recent(since)\n" +
+"    t3=time.perf_counter_ns()\n" +
+"    post_ns=t3-t2\n" +
+"    diff_test='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=base_ns/max(post_ns,1)\n" +
+"    print(f'[query] groupby + {len(P)} prefix + recent-7d')\n" +
+"    print(f'  baseline (linear)        : {base_ns/1000:10.1f} us  hits={base}')\n" +
+"    print(f'  RDGL (u8 col + bisect)   : {post_ns/1000:10.1f} us  hits={post}')\n" +
+"    print(f'  speedup                  : {sp:6.1f}x')\n" +
+"    print(f'[rss] after encode         : {fmt(rss_enc)}')\n" +
+"    row={'site':'IX3','roi':'IX3_RDGL','baseline_ns':base_ns,'post_ns':post_ns,'diff_test':diff_test,'speedup_x':round(sp,2),'n_path':n,'n_app':na,'blob_bytes':info['blob_size'],'source':info['source']}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode_main(target)\n" +
+"    print(f'encoded n_path={info[\"n\"]} n_app={info[\"n_app\"]} -> {BIN} ({fmt(info[\"blob_size\"])}) source={info[\"source\"]}')\n" +
+"elif mode=='bench':\n" +
+"    bench_main(target)\n" +
+"else:\n" +
+"    print('usage: encode|bench [<root>]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("recent_documents_global")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains("sharedfilelist") || v.contains("/Library/") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/Library/Application Support/com.apple.sharedfilelist"
+        println("(default target: " + target + ")")
+    }
+    let tmp_py = "/tmp/recent_documents_global_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

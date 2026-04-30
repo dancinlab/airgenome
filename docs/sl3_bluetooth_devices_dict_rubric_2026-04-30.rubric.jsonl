@@ -1,0 +1,15 @@
+{"site":"SL3","date":"2026-04-30","block":"B1","name":"design-rigor","max":50,"score_a":28,"score_b":26,"score_hybrid":28,"cut":"column-dict + device addr pool + read-only"}
+{"site":"SL3","date":"2026-04-30","block":"B2","name":"measurability","max":90,"score_a":38,"score_b":32,"score_hybrid":35,"cut":"per-query us + blob_size + speedup + device count"}
+{"site":"SL3","date":"2026-04-30","block":"B3","name":"enforcement-strength","max":40,"score_a":22,"score_b":20,"score_hybrid":22,"cut":"self-fixture + magic + version pin"}
+{"site":"SL3","date":"2026-04-30","block":"B4","name":"atomicity","max":40,"score_a":32,"score_b":28,"score_hybrid":32,"cut":"single .hexa + 0 side effects + /tmp"}
+{"site":"SL3","date":"2026-04-30","block":"B5","name":"observability","max":30,"score_a":22,"score_b":20,"score_hybrid":20,"cut":"rss/elapsed/blob_size + classifier_version"}
+{"site":"SL3","date":"2026-04-30","block":"B6","name":"cross-repo","max":30,"score_a":18,"score_b":16,"score_hybrid":18,"cut":"hive .raw + airgenome + anima 3-hop"}
+{"site":"SL3","date":"2026-04-30","block":"B7","name":"emission-cost-bounded","max":40,"score_a":28,"score_b":24,"score_hybrid":26,"cut":"payload <=16KB + 1-pass"}
+{"site":"SL3","date":"2026-04-30","block":"B8","name":"adversarial-resistance","max":40,"score_a":28,"score_b":24,"score_hybrid":28,"cut":"empty + missing + synth fallback"}
+{"site":"SL3","date":"2026-04-30","block":"B9","name":"meta-rubric-finite","max":20,"score_a":18,"score_b":16,"score_hybrid":18,"cut":"depth<=2 + self-score avoid"}
+{"site":"SL3","date":"2026-04-30","block":"TOTAL","max":400,"score_a":234,"score_b":206,"score_hybrid":227,"cut":">=350","verdict":"HOLD"}
+{"site":"SL3","date":"2026-04-30","gap":"G1","desc":"visible Bluetooth.plist lacks PairedDevices key on Sequoia","severity":"high"}
+{"site":"SL3","date":"2026-04-30","gap":"G2","desc":"ioreg subprocess violates B4 atomicity","severity":"medium"}
+{"site":"SL3","date":"2026-04-30","gap":"G3","desc":"BD_ADDR is PII-equivalent; must scrub","severity":"high"}
+{"site":"SL3","date":"2026-04-30","gap":"G4","desc":"device count typically <=10; intrinsic low ROI","severity":"medium"}
+{"site":"SL3","date":"2026-04-30","gap":"G5","desc":"/private/var/db/Bluetooth requires sudo (same class as SL2)","severity":"high"}

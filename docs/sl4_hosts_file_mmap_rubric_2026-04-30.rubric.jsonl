@@ -1,0 +1,15 @@
+{"site":"SL4","date":"2026-04-30","block":"B1","name":"design-rigor","max":50,"score_a":28,"score_b":26,"score_hybrid":26,"cut":"mmap+bisect + IP/host pool + read-only"}
+{"site":"SL4","date":"2026-04-30","block":"B2","name":"measurability","max":90,"score_a":30,"score_b":32,"score_hybrid":30,"cut":"per-query us + blob_size + speedup + entry count"}
+{"site":"SL4","date":"2026-04-30","block":"B3","name":"enforcement-strength","max":40,"score_a":22,"score_b":22,"score_hybrid":22,"cut":"self-fixture + magic + version pin"}
+{"site":"SL4","date":"2026-04-30","block":"B4","name":"atomicity","max":40,"score_a":32,"score_b":32,"score_hybrid":32,"cut":"single .hexa + 0 side effects + /tmp"}
+{"site":"SL4","date":"2026-04-30","block":"B5","name":"observability","max":30,"score_a":20,"score_b":22,"score_hybrid":20,"cut":"rss/elapsed/blob_size + classifier_version"}
+{"site":"SL4","date":"2026-04-30","block":"B6","name":"cross-repo","max":30,"score_a":22,"score_b":24,"score_hybrid":22,"cut":"raw 47 + airgenome filter + anima 3-hop"}
+{"site":"SL4","date":"2026-04-30","block":"B7","name":"emission-cost-bounded","max":40,"score_a":28,"score_b":30,"score_hybrid":28,"cut":"payload <=16KB + 1-pass"}
+{"site":"SL4","date":"2026-04-30","block":"B8","name":"adversarial-resistance","max":40,"score_a":28,"score_b":28,"score_hybrid":28,"cut":"empty + missing + synth fallback"}
+{"site":"SL4","date":"2026-04-30","block":"B9","name":"meta-rubric-finite","max":20,"score_a":18,"score_b":18,"score_hybrid":18,"cut":"depth<=2 + self-score avoid"}
+{"site":"SL4","date":"2026-04-30","block":"TOTAL","max":400,"score_a":228,"score_b":234,"score_hybrid":226,"cut":">=350","verdict":"HOLD"}
+{"site":"SL4","date":"2026-04-30","gap":"G1","desc":"n=12 too small to amortize blob encode + mmap setup","severity":"high"}
+{"site":"SL4","date":"2026-04-30","gap":"G2","desc":"comment vs entry parsing non-trivial (inline #)","severity":"low"}
+{"site":"SL4","date":"2026-04-30","gap":"G3","desc":"IPv4/IPv6 dual-form doubles count without ROI","severity":"low"}
+{"site":"SL4","date":"2026-04-30","gap":"G4","desc":"ad-blocker list opt-in flips ROI; carve-out path","severity":"medium"}
+{"site":"SL4","date":"2026-04-30","gap":"G5","desc":"hosts mtime fresh; cache invalidation needed","severity":"low"}

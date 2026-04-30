@@ -272,6 +272,34 @@ static dispatch_source_t g_datae_w5_cal_event_src       = NULL;  // FAIL fix 301
 static dispatch_source_t g_datae_w5_mail_envelope_src   = NULL;  // V10 schema fix 1161.7× post Mail set up
 static dispatch_source_t g_datae_w5_mail_sender_src     = NULL;  // OTHER bucket fix size 96% lossless
 static dispatch_source_t g_datae_w5_memo_attach_src     = NULL;  // auto-discover regular + shared Media+Previews
+// own 9 wave-6 — 13 bg agent 산출 26 PASS filter (raw 240 V2 만점기준 사전 적용).
+// 만점 13 / B10 ceiling 420 expansion 2 (CT3 + IX1) / 380+ 11.
+static dispatch_source_t g_datae_w6_bash_src            = NULL;  // DV5 400/400 K6 verbatim
+static dispatch_source_t g_datae_w6_ib1_src             = NULL;  // IB1 400/400 iPhone Manifest.db
+static dispatch_source_t g_datae_w6_ib2_src             = NULL;  // IB2 400/400 iPhone backup blob dedup
+static dispatch_source_t g_datae_w6_pb1_src             = NULL;  // PB1 400/400 pasteboard history
+static dispatch_source_t g_datae_w6_pb2_src             = NULL;  // PB2 400/400 continuity clipboard
+static dispatch_source_t g_datae_w6_md1_src             = NULL;  // MD1 380/400 Photos faces dict
+static dispatch_source_t g_datae_w6_md2_src             = NULL;  // MD2 380/400 Photos scenes APBF
+static dispatch_source_t g_datae_w6_sl1_src             = NULL;  // SL1 364/400 crash reports dict
+static dispatch_source_t g_datae_w6_cl3_src             = NULL;  // CL3 381/400 iCloud documents
+static dispatch_source_t g_datae_w6_mx1_src             = NULL;  // MX1 400/400 Mail rules dict
+static dispatch_source_t g_datae_w6_mx2_src             = NULL;  // MX2 400/400 Mail smart mailboxes
+static dispatch_source_t g_datae_w6_mx3_src             = NULL;  // MX3 400/400 Calendar attachment dedup
+static dispatch_source_t g_datae_w6_mx4_src             = NULL;  // MX4 400/400 Calendar alarms dict
+static dispatch_source_t g_datae_w6_ct1_src             = NULL;  // CT1 400/400 podman containers
+static dispatch_source_t g_datae_w6_ct2_src             = NULL;  // CT2 400/400 colima lima state
+static dispatch_source_t g_datae_w6_ct3_src             = NULL;  // CT3 420/420 docker image layer dedup (B10)
+static dispatch_source_t g_datae_w6_br1_src             = NULL;  // BR1 376/400 chrome history
+static dispatch_source_t g_datae_w6_br2_src             = NULL;  // BR2 374/400 chrome bookmarks
+static dispatch_source_t g_datae_w6_br3_src             = NULL;  // BR3 372/400 chrome localstorage (snappy)
+static dispatch_source_t g_datae_w6_br6_src             = NULL;  // BR6 374/400 chrome cookies dict
+static dispatch_source_t g_datae_w6_sf1_src             = NULL;  // SF1 374/400 safari reading list
+static dispatch_source_t g_datae_w6_sf3_src             = NULL;  // SF3 378/400 safari cookies binary (BE/LE mixed)
+static dispatch_source_t g_datae_w6_sf4_src             = NULL;  // SF4 376/400 safari extensions
+static dispatch_source_t g_datae_w6_ix1_src             = NULL;  // IX1 420/420 locate database mmap (B10)
+static dispatch_source_t g_datae_w6_ix2_src             = NULL;  // IX2 400/400 dyld shared cache dict
+static dispatch_source_t g_datae_w6_ix3_src             = NULL;  // IX3 400/400 recent documents global
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -568,6 +596,85 @@ void airgenome_loop_init(void) {
         .interval_s  = 3600,           // 1h — 첨부 파일 walk 비용 medium
         .timeout_s   = 120,
     };
+    // wave-6 — 13 bg agent 산출 26 PASS filter (raw 240 V2 사전 적용).
+    static const airgenome_loop_module_t datae_w6_bash = {
+        .module_name="datae-w6-bash-history", .module_path="/Users/ghost/core/airgenome/modules/filters/data/bash_history_columnar.hexa",
+        .extra_arg="encode", .interval_s=1800, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_ib1 = {
+        .module_name="datae-w6-ib1-iphone-manifest", .module_path="/Users/ghost/core/airgenome/modules/filters/data/iphone_backup_manifest.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_ib2 = {
+        .module_name="datae-w6-ib2-iphone-app-dedup", .module_path="/Users/ghost/core/airgenome/modules/filters/data/iphone_app_dedup.hexa",
+        .extra_arg="encode", .interval_s=14400, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w6_pb1 = {
+        .module_name="datae-w6-pb1-pasteboard", .module_path="/Users/ghost/core/airgenome/modules/filters/data/pasteboard_history_columnar.hexa",
+        .extra_arg="encode", .interval_s=1800, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_pb2 = {
+        .module_name="datae-w6-pb2-continuity", .module_path="/Users/ghost/core/airgenome/modules/filters/data/continuity_clipboard.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_md1 = {
+        .module_name="datae-w6-md1-photos-faces", .module_path="/Users/ghost/core/airgenome/modules/filters/data/photos_faces_dict.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_md2 = {
+        .module_name="datae-w6-md2-photos-scenes", .module_path="/Users/ghost/core/airgenome/modules/filters/data/photos_scenes_apbf.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_sl1 = {
+        .module_name="datae-w6-sl1-crash-reports", .module_path="/Users/ghost/core/airgenome/modules/filters/data/crash_reports_dict.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_cl3 = {
+        .module_name="datae-w6-cl3-icloud", .module_path="/Users/ghost/core/airgenome/modules/filters/data/icloud_documents_shbf.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w6_mx1 = {
+        .module_name="datae-w6-mx1-mail-rules", .module_path="/Users/ghost/core/airgenome/modules/filters/data/mail_rules_dict.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_mx2 = {
+        .module_name="datae-w6-mx2-smart-mailboxes", .module_path="/Users/ghost/core/airgenome/modules/filters/data/mail_smart_mailboxes.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_mx3 = {
+        .module_name="datae-w6-mx3-cal-attach", .module_path="/Users/ghost/core/airgenome/modules/filters/data/calendar_attachment_dedup.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w6_mx4 = {
+        .module_name="datae-w6-mx4-cal-alarms", .module_path="/Users/ghost/core/airgenome/modules/filters/data/calendar_alarms_dict.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_ct1 = {
+        .module_name="datae-w6-ct1-podman", .module_path="/Users/ghost/core/airgenome/modules/filters/data/podman_containers_dict.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_ct2 = {
+        .module_name="datae-w6-ct2-colima-lima", .module_path="/Users/ghost/core/airgenome/modules/filters/data/colima_lima_state.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_ct3 = {
+        .module_name="datae-w6-ct3-docker-layer", .module_path="/Users/ghost/core/airgenome/modules/filters/data/docker_image_layer_dedup.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w6_br1 = {
+        .module_name="datae-w6-br1-chrome-history", .module_path="/Users/ghost/core/airgenome/modules/filters/data/chrome_history_shbf.hexa",
+        .extra_arg="encode", .interval_s=1800, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_br2 = {
+        .module_name="datae-w6-br2-chrome-bookmarks", .module_path="/Users/ghost/core/airgenome/modules/filters/data/chrome_bookmarks_shbf.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_br3 = {
+        .module_name="datae-w6-br3-chrome-localstorage", .module_path="/Users/ghost/core/airgenome/modules/filters/data/chrome_localstorage_shbf.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w6_br6 = {
+        .module_name="datae-w6-br6-chrome-cookies", .module_path="/Users/ghost/core/airgenome/modules/filters/data/chrome_cookies_dict.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_sf1 = {
+        .module_name="datae-w6-sf1-safari-reading", .module_path="/Users/ghost/core/airgenome/modules/filters/data/safari_reading_list_shbf.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_sf3 = {
+        .module_name="datae-w6-sf3-safari-cookies", .module_path="/Users/ghost/core/airgenome/modules/filters/data/safari_cookies_binary.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_sf4 = {
+        .module_name="datae-w6-sf4-safari-extensions", .module_path="/Users/ghost/core/airgenome/modules/filters/data/safari_extensions_dict.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w6_ix1 = {
+        .module_name="datae-w6-ix1-locate-db", .module_path="/Users/ghost/core/airgenome/modules/filters/data/locate_database_mmap.hexa",
+        .extra_arg="encode", .interval_s=14400, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w6_ix2 = {
+        .module_name="datae-w6-ix2-dyld-cache", .module_path="/Users/ghost/core/airgenome/modules/filters/data/dyld_shared_cache_dict.hexa",
+        .extra_arg="encode", .interval_s=14400, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w6_ix3 = {
+        .module_name="datae-w6-ix3-recent-documents", .module_path="/Users/ghost/core/airgenome/modules/filters/data/recent_documents_global.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=60 };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -632,6 +739,33 @@ void airgenome_loop_init(void) {
         g_datae_w5_mail_envelope_src = loop_make_timer(&datae_w5_mail_envelope, g_loop_queue);
         g_datae_w5_mail_sender_src   = loop_make_timer(&datae_w5_mail_sender,   g_loop_queue);
         g_datae_w5_memo_attach_src   = loop_make_timer(&datae_w5_memo_attach,   g_loop_queue);
+        // wave-6 26 PASS filter
+        g_datae_w6_bash_src = loop_make_timer(&datae_w6_bash, g_loop_queue);
+        g_datae_w6_ib1_src  = loop_make_timer(&datae_w6_ib1,  g_loop_queue);
+        g_datae_w6_ib2_src  = loop_make_timer(&datae_w6_ib2,  g_loop_queue);
+        g_datae_w6_pb1_src  = loop_make_timer(&datae_w6_pb1,  g_loop_queue);
+        g_datae_w6_pb2_src  = loop_make_timer(&datae_w6_pb2,  g_loop_queue);
+        g_datae_w6_md1_src  = loop_make_timer(&datae_w6_md1,  g_loop_queue);
+        g_datae_w6_md2_src  = loop_make_timer(&datae_w6_md2,  g_loop_queue);
+        g_datae_w6_sl1_src  = loop_make_timer(&datae_w6_sl1,  g_loop_queue);
+        g_datae_w6_cl3_src  = loop_make_timer(&datae_w6_cl3,  g_loop_queue);
+        g_datae_w6_mx1_src  = loop_make_timer(&datae_w6_mx1,  g_loop_queue);
+        g_datae_w6_mx2_src  = loop_make_timer(&datae_w6_mx2,  g_loop_queue);
+        g_datae_w6_mx3_src  = loop_make_timer(&datae_w6_mx3,  g_loop_queue);
+        g_datae_w6_mx4_src  = loop_make_timer(&datae_w6_mx4,  g_loop_queue);
+        g_datae_w6_ct1_src  = loop_make_timer(&datae_w6_ct1,  g_loop_queue);
+        g_datae_w6_ct2_src  = loop_make_timer(&datae_w6_ct2,  g_loop_queue);
+        g_datae_w6_ct3_src  = loop_make_timer(&datae_w6_ct3,  g_loop_queue);
+        g_datae_w6_br1_src  = loop_make_timer(&datae_w6_br1,  g_loop_queue);
+        g_datae_w6_br2_src  = loop_make_timer(&datae_w6_br2,  g_loop_queue);
+        g_datae_w6_br3_src  = loop_make_timer(&datae_w6_br3,  g_loop_queue);
+        g_datae_w6_br6_src  = loop_make_timer(&datae_w6_br6,  g_loop_queue);
+        g_datae_w6_sf1_src  = loop_make_timer(&datae_w6_sf1,  g_loop_queue);
+        g_datae_w6_sf3_src  = loop_make_timer(&datae_w6_sf3,  g_loop_queue);
+        g_datae_w6_sf4_src  = loop_make_timer(&datae_w6_sf4,  g_loop_queue);
+        g_datae_w6_ix1_src  = loop_make_timer(&datae_w6_ix1,  g_loop_queue);
+        g_datae_w6_ix2_src  = loop_make_timer(&datae_w6_ix2,  g_loop_queue);
+        g_datae_w6_ix3_src  = loop_make_timer(&datae_w6_ix3,  g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -689,6 +823,35 @@ void airgenome_loop_init(void) {
               g_datae_w5_mail_envelope_src ? "ok" : "FAIL",
               g_datae_w5_mail_sender_src   ? "ok" : "FAIL",
               g_datae_w5_memo_attach_src   ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae w6-A: bash=%s ib1=%s ib2=%s pb1=%s pb2=%s md1=%s md2=%s sl1=%s cl3=%s",
+              g_datae_w6_bash_src ? "ok" : "FAIL",
+              g_datae_w6_ib1_src  ? "ok" : "FAIL",
+              g_datae_w6_ib2_src  ? "ok" : "FAIL",
+              g_datae_w6_pb1_src  ? "ok" : "FAIL",
+              g_datae_w6_pb2_src  ? "ok" : "FAIL",
+              g_datae_w6_md1_src  ? "ok" : "FAIL",
+              g_datae_w6_md2_src  ? "ok" : "FAIL",
+              g_datae_w6_sl1_src  ? "ok" : "FAIL",
+              g_datae_w6_cl3_src  ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae w6-B: mx1=%s mx2=%s mx3=%s mx4=%s ct1=%s ct2=%s ct3=%s",
+              g_datae_w6_mx1_src ? "ok" : "FAIL",
+              g_datae_w6_mx2_src ? "ok" : "FAIL",
+              g_datae_w6_mx3_src ? "ok" : "FAIL",
+              g_datae_w6_mx4_src ? "ok" : "FAIL",
+              g_datae_w6_ct1_src ? "ok" : "FAIL",
+              g_datae_w6_ct2_src ? "ok" : "FAIL",
+              g_datae_w6_ct3_src ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae w6-C: br1=%s br2=%s br3=%s br6=%s sf1=%s sf3=%s sf4=%s ix1=%s ix2=%s ix3=%s",
+              g_datae_w6_br1_src ? "ok" : "FAIL",
+              g_datae_w6_br2_src ? "ok" : "FAIL",
+              g_datae_w6_br3_src ? "ok" : "FAIL",
+              g_datae_w6_br6_src ? "ok" : "FAIL",
+              g_datae_w6_sf1_src ? "ok" : "FAIL",
+              g_datae_w6_sf3_src ? "ok" : "FAIL",
+              g_datae_w6_sf4_src ? "ok" : "FAIL",
+              g_datae_w6_ix1_src ? "ok" : "FAIL",
+              g_datae_w6_ix2_src ? "ok" : "FAIL",
+              g_datae_w6_ix3_src ? "ok" : "FAIL");
     }
 }
 
@@ -756,6 +919,32 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_w5_mail_envelope_src) { dispatch_source_cancel(g_datae_w5_mail_envelope_src); g_datae_w5_mail_envelope_src = NULL; }
     if (g_datae_w5_mail_sender_src)   { dispatch_source_cancel(g_datae_w5_mail_sender_src);   g_datae_w5_mail_sender_src   = NULL; }
     if (g_datae_w5_memo_attach_src)   { dispatch_source_cancel(g_datae_w5_memo_attach_src);   g_datae_w5_memo_attach_src   = NULL; }
+    if (g_datae_w6_bash_src) { dispatch_source_cancel(g_datae_w6_bash_src); g_datae_w6_bash_src = NULL; }
+    if (g_datae_w6_ib1_src)  { dispatch_source_cancel(g_datae_w6_ib1_src);  g_datae_w6_ib1_src  = NULL; }
+    if (g_datae_w6_ib2_src)  { dispatch_source_cancel(g_datae_w6_ib2_src);  g_datae_w6_ib2_src  = NULL; }
+    if (g_datae_w6_pb1_src)  { dispatch_source_cancel(g_datae_w6_pb1_src);  g_datae_w6_pb1_src  = NULL; }
+    if (g_datae_w6_pb2_src)  { dispatch_source_cancel(g_datae_w6_pb2_src);  g_datae_w6_pb2_src  = NULL; }
+    if (g_datae_w6_md1_src)  { dispatch_source_cancel(g_datae_w6_md1_src);  g_datae_w6_md1_src  = NULL; }
+    if (g_datae_w6_md2_src)  { dispatch_source_cancel(g_datae_w6_md2_src);  g_datae_w6_md2_src  = NULL; }
+    if (g_datae_w6_sl1_src)  { dispatch_source_cancel(g_datae_w6_sl1_src);  g_datae_w6_sl1_src  = NULL; }
+    if (g_datae_w6_cl3_src)  { dispatch_source_cancel(g_datae_w6_cl3_src);  g_datae_w6_cl3_src  = NULL; }
+    if (g_datae_w6_mx1_src)  { dispatch_source_cancel(g_datae_w6_mx1_src);  g_datae_w6_mx1_src  = NULL; }
+    if (g_datae_w6_mx2_src)  { dispatch_source_cancel(g_datae_w6_mx2_src);  g_datae_w6_mx2_src  = NULL; }
+    if (g_datae_w6_mx3_src)  { dispatch_source_cancel(g_datae_w6_mx3_src);  g_datae_w6_mx3_src  = NULL; }
+    if (g_datae_w6_mx4_src)  { dispatch_source_cancel(g_datae_w6_mx4_src);  g_datae_w6_mx4_src  = NULL; }
+    if (g_datae_w6_ct1_src)  { dispatch_source_cancel(g_datae_w6_ct1_src);  g_datae_w6_ct1_src  = NULL; }
+    if (g_datae_w6_ct2_src)  { dispatch_source_cancel(g_datae_w6_ct2_src);  g_datae_w6_ct2_src  = NULL; }
+    if (g_datae_w6_ct3_src)  { dispatch_source_cancel(g_datae_w6_ct3_src);  g_datae_w6_ct3_src  = NULL; }
+    if (g_datae_w6_br1_src)  { dispatch_source_cancel(g_datae_w6_br1_src);  g_datae_w6_br1_src  = NULL; }
+    if (g_datae_w6_br2_src)  { dispatch_source_cancel(g_datae_w6_br2_src);  g_datae_w6_br2_src  = NULL; }
+    if (g_datae_w6_br3_src)  { dispatch_source_cancel(g_datae_w6_br3_src);  g_datae_w6_br3_src  = NULL; }
+    if (g_datae_w6_br6_src)  { dispatch_source_cancel(g_datae_w6_br6_src);  g_datae_w6_br6_src  = NULL; }
+    if (g_datae_w6_sf1_src)  { dispatch_source_cancel(g_datae_w6_sf1_src);  g_datae_w6_sf1_src  = NULL; }
+    if (g_datae_w6_sf3_src)  { dispatch_source_cancel(g_datae_w6_sf3_src);  g_datae_w6_sf3_src  = NULL; }
+    if (g_datae_w6_sf4_src)  { dispatch_source_cancel(g_datae_w6_sf4_src);  g_datae_w6_sf4_src  = NULL; }
+    if (g_datae_w6_ix1_src)  { dispatch_source_cancel(g_datae_w6_ix1_src);  g_datae_w6_ix1_src  = NULL; }
+    if (g_datae_w6_ix2_src)  { dispatch_source_cancel(g_datae_w6_ix2_src);  g_datae_w6_ix2_src  = NULL; }
+    if (g_datae_w6_ix3_src)  { dispatch_source_cancel(g_datae_w6_ix3_src);  g_datae_w6_ix3_src  = NULL; }
 }
 
 // ----------------------------------------------------------------------

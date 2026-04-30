@@ -1,0 +1,161 @@
+// tool/bench/bench_md2_photos_scenes_apbf.hexa — MD2 Photos scenes APBF bench
+//   F58 autocomplete pattern applied to ZSCENECLASSIFICATION surface.
+//   8000 synth scene rows (300 distinct labels, zipfian) → APBF encode +
+//   100 prefix-topK queries: linear scan vs sorted blob mmap+bisect.
+//
+// 5-tuple: site=MD2 ROI#=58 baseline_ns post_ns diff_test=lossless
+//
+// dataset: 300 labels (canonical scene vocab + scene_NNN decorators)
+//          / 8000 occurrences / synthetic
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: perl alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,array,random\n" +
+"from collections import Counter\n" +
+"N_LABEL=300\n" +
+"N_ROW=8000\n" +
+"QUERIES=100\n" +
+"TOP_K=10\n" +
+"BIN='/tmp/bench_md2_psab.bin'\n" +
+"VOCAB=['beach','mountain','sunset','sunrise','indoor','outdoor','restaurant','kitchen','bedroom','livingroom','party','sports','concert','wedding','park','forest','river','lake','ocean','sky','clouds','snow','rain','desert','street','city','highway','airport','train','car','flower','tree','garden','food','dessert','coffee','book','laptop','phone','document','animal','dog','cat','bird','fish','horse','baby','child','art','painting']\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def build_dataset(n_label=N_LABEL,n_row=N_ROW):\n" +
+"    random.seed(7)\n" +
+"    labels=list(VOCAB)\n" +
+"    while len(labels)<n_label:\n" +
+"        labels.append(f'scene_{len(labels):04d}')\n" +
+"    weights=[]\n" +
+"    for i in range(n_label):\n" +
+"        if i<5: w=300-i*40\n" +
+"        elif i<30: w=30\n" +
+"        else: w=2\n" +
+"        weights.append(w)\n" +
+"    rows=[]\n" +
+"    for _ in range(n_row):\n" +
+"        idx=random.choices(range(n_label),weights=weights,k=1)[0]\n" +
+"        conf=random.uniform(0.3,0.99)\n" +
+"        rows.append((labels[idx],conf))\n" +
+"    return rows\n" +
+"\n" +
+"def aggregate(rows):\n" +
+"    cnt=Counter(); maxc={}\n" +
+"    for tok,c in rows:\n" +
+"        cnt[tok]+=1\n" +
+"        if c>maxc.get(tok,0.0): maxc[tok]=c\n" +
+"    out=[]\n" +
+"    for tok,n in cnt.items():\n" +
+"        sc=int(n*100)+int(maxc.get(tok,0.0)*100)\n" +
+"        out.append((tok,min(sc,0xffffffff)))\n" +
+"    return out\n" +
+"\n" +
+"def encode(pairs):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    pairs=sorted(pairs,key=lambda r:r[0])\n" +
+"    n=len(pairs)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    scs =array.array('I',[0]*n)\n" +
+"    for i,(s,sc) in enumerate(pairs):\n" +
+"        sb=s.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(sb); scs[i]=int(sc)&0xffffffff\n" +
+"        pool.extend(sb)\n" +
+"    header=struct.pack('<4sIII',b'PSAB',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(scs.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'blob_size':os.path.getsize(BIN),'pairs':pairs}\n" +
+"\n" +
+"def linear_topk(pairs,prefix,k=TOP_K):\n" +
+"    cand=[(s,sc) for s,sc in pairs if s.startswith(prefix)]\n" +
+"    if len(cand)<=k: return sorted(cand,key=lambda r:-r[1])\n" +
+"    return sorted(heapq.nlargest(k,cand,key=lambda r:r[1]),key=lambda r:-r[1])\n" +
+"\n" +
+"def bisect_topk(sorted_tokens,scs,prefix,k=TOP_K):\n" +
+"    s=bisect.bisect_left(sorted_tokens,prefix)\n" +
+"    e=bisect.bisect_left(sorted_tokens,prefix+'\\uffff')\n" +
+"    if e==s: return []\n" +
+"    if e-s<=k: idxs=list(range(s,e))\n" +
+"    else: idxs=heapq.nlargest(k,range(s,e),key=lambda i:scs[i])\n" +
+"    idxs.sort(key=lambda i:-scs[i])\n" +
+"    return [(sorted_tokens[i],scs[i]) for i in idxs]\n" +
+"\n" +
+"def build_prefixes(labels):\n" +
+"    ps=[]\n" +
+"    rng=random.Random(13)\n" +
+"    for _ in range(QUERIES):\n" +
+"        t=labels[rng.randrange(len(labels))]\n" +
+"        plen=rng.choice([1,2,3,4])\n" +
+"        ps.append(t[:plen] if len(t)>=plen else t)\n" +
+"    return ps\n" +
+"\n" +
+"def diff_test(pairs,sorted_tokens,scs,prefixes):\n" +
+"    miss=0\n" +
+"    for p in prefixes:\n" +
+"        a=linear_topk(pairs,p,TOP_K)\n" +
+"        b=bisect_topk(sorted_tokens,scs,p,TOP_K)\n" +
+"        if [(s,sc) for s,sc in a]!=[(s,sc) for s,sc in b]:\n" +
+"            miss+=1\n" +
+"    return miss\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/MD2 — Photos scenes APBF (linear scan vs sorted blob bisect)')\n" +
+"    print(f'  N_LABEL={N_LABEL} N_ROW={N_ROW} QUERIES={QUERIES} TOP_K={TOP_K}  source: synthetic zipfian')\n" +
+"    rows=build_dataset()\n" +
+"    pairs=aggregate(rows)\n" +
+"    print(f'  built: {len(rows)} rows / {len(pairs)} unique labels')\n" +
+"    info=encode(pairs)\n" +
+"    print(f'  encode (sort+pool+blob): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    sorted_tokens=[s for s,sc in info['pairs']]\n" +
+"    scs=[sc for s,sc in info['pairs']]\n" +
+"    prefixes=build_prefixes(sorted_tokens)\n" +
+"    miss=diff_test(info['pairs'],sorted_tokens,scs,prefixes)\n" +
+"    print(f'  diff_test mismatches: {miss}')\n" +
+"    if miss!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    # warmup\n" +
+"    for p in prefixes[:5]:\n" +
+"        linear_topk(info['pairs'],p,TOP_K); bisect_topk(sorted_tokens,scs,p,TOP_K)\n" +
+"    # axis-A linear scan (OLD)\n" +
+"    t0=time.perf_counter_ns(); h_lin=0\n" +
+"    for p in prefixes:\n" +
+"        h_lin+=len(linear_topk(info['pairs'],p,TOP_K))\n" +
+"    t1=time.perf_counter_ns(); ns_old=t1-t0\n" +
+"    # axis-A bisect (NEW)\n" +
+"    t0=time.perf_counter_ns(); h_bi=0\n" +
+"    for p in prefixes:\n" +
+"        h_bi+=len(bisect_topk(sorted_tokens,scs,p,TOP_K))\n" +
+"    t1=time.perf_counter_ns(); ns_new=t1-t0\n" +
+"    per_old=ns_old//max(1,len(prefixes))\n" +
+"    per_new=ns_new//max(1,len(prefixes))\n" +
+"    print(f'  axis-A prefix-topK (per query):')\n" +
+"    print(f'    OLD linear scan O(n)         total_ns={ns_old}  per_q_ns={per_old}  hits={h_lin}')\n" +
+"    print(f'    NEW sorted+bisect O(log n+k) total_ns={ns_new}  per_q_ns={per_new}  hits={h_bi}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved_pct=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'    speedup={ratio:.2f}x  saved={saved_pct}%')\n" +
+"    if h_lin!=h_bi:\n" +
+"        print('BENCH FAIL [hits diverged]'); return\n" +
+"    amort_per=info['encode_ns']//max(1,len(prefixes))\n" +
+"    print(f'  + encode cost amortized: {amort_per}ns/query (1회 sort+pool / {len(prefixes)} queries)')\n" +
+"    print(f'  5-tuple: site=MD2 ROI#=58 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_md2_photos_scenes_apbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

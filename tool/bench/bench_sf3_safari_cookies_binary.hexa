@@ -1,0 +1,196 @@
+// tool/bench/bench_sf3_safari_cookies_binary.hexa — SF3 Cookies SHBF bench
+//   pattern: bench_f18_bookmarks_shbf.hexa
+//   synthetic 1500-row cookie dataset → SCBF encode → cold-parse vs linear vs bisect.
+//
+//   binarycookies parse complexity simulated: build a synthetic .binarycookies
+//   blob with proper outer BE header + page LE records to measure parse cost
+//   against the SHBF blob bisect path.
+//
+// 5-tuple: site=SF3 ROI#=3 baseline_ns post_ns diff_test=lossless
+// R1 HEXA-FIRST + R17 /usr/bin/perl alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,array,random\n" +
+"N=1500\n" +
+"QUERIES=100\n" +
+"TOP_K=5\n" +
+"COOKIE_BIN='/tmp/bench_sf3_synth.binarycookies'\n" +
+"BLOB='/tmp/bench_sf3_scbf.bin'\n" +
+"COCOA_OFFSET=978307200\n" +
+"DOMAINS=['github.com','google.com','stackoverflow.com','youtube.com','wikipedia.org','reddit.com','docs.python.org','apple.com','arxiv.org','medium.com']\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def build_dataset(n=N):\n" +
+"    rng=random.Random(42); base=time.time()-COCOA_OFFSET\n" +
+"    rows=[]\n" +
+"    for i in range(n):\n" +
+"        d=DOMAINS[i%len(DOMAINS)]\n" +
+"        sub=f'sub{i//50:03d}.{d}'\n" +
+"        nm=f'cookie_{i%30}'\n" +
+"        ts_cocoa=base+rng.randrange(-86400*30,86400*365)\n" +
+"        flags=(i & 0x5)  # bit0 secure, bit2 httpOnly\n" +
+"        rows.append((sub,nm,ts_cocoa,flags))\n" +
+"    return rows\n" +
+"\n" +
+"def write_synthetic_binarycookies(rows):\n" +
+"    # One page per ~50 cookies\n" +
+"    chunks=[rows[i:i+50] for i in range(0,len(rows),50)]\n" +
+"    pages=[]\n" +
+"    for chunk in chunks:\n" +
+"        # build page records\n" +
+"        recs=[]\n" +
+"        for (h,nm,ts,fb) in chunk:\n" +
+"            url=h.encode('utf-8'); name=nm.encode('utf-8'); path=b'/'; val=b'v'+name+b'='+url\n" +
+"            # offsets: header=56B then strings\n" +
+"            url_off=56; name_off=url_off+len(url)+1; path_off=name_off+len(name)+1; val_off=path_off+len(path)+1\n" +
+"            size=val_off+len(val)+1\n" +
+"            rec=struct.pack('<IIIIIIII',size,0,fb,0,url_off,name_off,path_off,val_off)\n" +
+"            rec+=b'\\x00'*8  # end_marker\n" +
+"            rec+=struct.pack('<dd',ts,ts-86400)  # expiry, creation\n" +
+"            rec+=url+b'\\x00'+name+b'\\x00'+path+b'\\x00'+val+b'\\x00'\n" +
+"            assert len(rec)==size, f'rec len {len(rec)}!=size {size}'\n" +
+"            recs.append(rec)\n" +
+"        # page: page_magic + n_cookies + offsets + footer + recs\n" +
+"        n_cookies=len(recs)\n" +
+"        page_header_size=8+4*n_cookies+4\n" +
+"        offsets=[]; cur=page_header_size\n" +
+"        for r in recs: offsets.append(cur); cur+=len(r)\n" +
+"        # page magic 0x00000100 is BIG-ENDIAN, n_cookies + offsets are LITTLE-ENDIAN\n" +
+"        page=b'\\x00\\x00\\x01\\x00'+struct.pack('<I',n_cookies)+struct.pack('<'+'I'*n_cookies,*offsets)+struct.pack('<I',0)\n" +
+"        for r in recs: page+=r\n" +
+"        pages.append(page)\n" +
+"    n_pages=len(pages); page_sizes=[len(p) for p in pages]\n" +
+"    out=b'cook'+struct.pack('>I',n_pages)+struct.pack('>'+'I'*n_pages,*page_sizes)\n" +
+"    for p in pages: out+=p\n" +
+"    out+=struct.pack('>Q',0x071720050000004B)\n" +
+"    with open(COOKIE_BIN,'wb') as f: f.write(out)\n" +
+"    return os.path.getsize(COOKIE_BIN)\n" +
+"\n" +
+"def cstring(buf,off):\n" +
+"    e=buf.find(b'\\x00',off)\n" +
+"    return buf[off:e] if e>=0 else buf[off:]\n" +
+"\n" +
+"def parse_binarycookies(path):\n" +
+"    with open(path,'rb') as f: data=f.read()\n" +
+"    if data[:4]!=b'cook': return [], 'bad-magic'\n" +
+"    n_pages=struct.unpack_from('>I',data,4)[0]\n" +
+"    page_sizes=struct.unpack_from('>'+'I'*n_pages,data,8)\n" +
+"    cur=8+4*n_pages; rows=[]\n" +
+"    for psz in page_sizes:\n" +
+"        page=data[cur:cur+psz]; cur+=psz\n" +
+"        if page[:4]!=b'\\x00\\x00\\x01\\x00': continue\n" +
+"        n_cookies=struct.unpack_from('<I',page,4)[0]\n" +
+"        offs=struct.unpack_from('<'+'I'*n_cookies,page,8)\n" +
+"        for co in offs:\n" +
+"            rec=page[co:]\n" +
+"            size=struct.unpack_from('<I',rec,0)[0]\n" +
+"            if size<56 or size>len(rec): continue\n" +
+"            rec=rec[:size]\n" +
+"            flags=struct.unpack_from('<I',rec,8)[0]\n" +
+"            url_off=struct.unpack_from('<I',rec,16)[0]\n" +
+"            name_off=struct.unpack_from('<I',rec,20)[0]\n" +
+"            expiry=struct.unpack_from('<d',rec,40)[0]\n" +
+"            url=cstring(rec,url_off).decode('utf-8','replace')\n" +
+"            name=cstring(rec,name_off).decode('utf-8','replace')\n" +
+"            ts=int(expiry+COCOA_OFFSET) if expiry>0 else 0\n" +
+"            rows.append((url.lstrip('.'),name,ts,flags))\n" +
+"    return rows, 'ok'\n" +
+"\n" +
+"def encode_scbf(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    rows=sorted(rows,key=lambda r:(r[0],r[1]))\n" +
+"    n=len(rows)\n" +
+"    hp=bytearray(); ho=array.array('I',[0]*n); hl=array.array('I',[0]*n)\n" +
+"    np_=bytearray(); no=array.array('I',[0]*n); nl=array.array('I',[0]*n)\n" +
+"    tss=array.array('I',[0]*n); flags=bytearray(n)\n" +
+"    for i,(h,nm,t,fb) in enumerate(rows):\n" +
+"        hb=h.encode('utf-8'); nb=nm.encode('utf-8')\n" +
+"        ho[i]=len(hp); hl[i]=len(hb); hp.extend(hb)\n" +
+"        no[i]=len(np_); nl[i]=len(nb); np_.extend(nb)\n" +
+"        tss[i]=int(t) & 0xFFFFFFFF; flags[i]=fb & 0xFF\n" +
+"    with open(BLOB,'wb') as f:\n" +
+"        f.write(struct.pack('<4sIII',b'SCBF',1,n,len(hp)+len(np_)))\n" +
+"        f.write(ho.tobytes()); f.write(hl.tobytes()); f.write(no.tobytes()); f.write(nl.tobytes())\n" +
+"        f.write(tss.tobytes()); f.write(bytes(flags))\n" +
+"        pad=(4-(f.tell()%4))%4\n" +
+"        if pad: f.write(b'\\x00'*pad)\n" +
+"        f.write(struct.pack('<I',len(hp))); f.write(bytes(hp))\n" +
+"        f.write(struct.pack('<I',len(np_))); f.write(bytes(np_))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'blob_size':os.path.getsize(BLOB),'sorted_hosts':[r[0] for r in rows]}\n" +
+"\n" +
+"def old_query(rows,prefix):\n" +
+"    plen=len(prefix); hits=0\n" +
+"    for h,_,_,_ in rows:\n" +
+"        if len(h)>=plen and h[:plen]==prefix: hits+=1\n" +
+"    return hits\n" +
+"\n" +
+"def new_query(sorted_hosts,prefix):\n" +
+"    s=bisect.bisect_left(sorted_hosts,prefix)\n" +
+"    e=bisect.bisect_left(sorted_hosts,prefix+'\\uffff')\n" +
+"    return e-s\n" +
+"\n" +
+"def build_prefixes():\n" +
+"    return ['sub000','sub010','sub020.github','sub030','sub099','sub100.google','sub199','sub-no-such']\n" +
+"\n" +
+"def diff_test(rows,sorted_hosts,prefixes):\n" +
+"    mm=0\n" +
+"    for p in prefixes:\n" +
+"        o=old_query(rows,p); n=new_query(sorted_hosts,p)\n" +
+"        if o!=n: mm+=1; print(f'    DIFF prefix={p} old={o} new={n}')\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print('airgenome bench/SF3 — Cookies.binarycookies SHBF (cold-parse vs linear vs bisect)')\n" +
+"    print(f'  N={N} QUERIES={QUERIES} TOP_K={TOP_K}')\n" +
+"    rows=build_dataset(N)\n" +
+"    raw_size=write_synthetic_binarycookies(rows)\n" +
+"    print(f'  built synthetic .binarycookies: {fmt(raw_size)} ({len(rows)} cookies)')\n" +
+"    parsed,_=parse_binarycookies(COOKIE_BIN)\n" +
+"    print(f'  re-parse round-trip: {len(parsed)} rows recovered (lossless={len(parsed)==len(rows)})')\n" +
+"    info=encode_scbf(rows)\n" +
+"    print(f'  encode (sort + SCBF): {info[\"encode_ns\"]/1e6:.2f}ms blob={fmt(info[\"blob_size\"])}')\n" +
+"    sorted_hosts=info['sorted_hosts']\n" +
+"    prefixes=build_prefixes()\n" +
+"    mm=diff_test(rows,sorted_hosts,prefixes)\n" +
+"    print(f'  diff_test mismatches: {mm} / {len(prefixes)}')\n" +
+"    if mm!=0: print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    # COLD path: per-query parse + linear scan (Safari hot-path 모사 worst case)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(10):  # 10 만 (cold-parse 비용 비싸므로)\n" +
+"        rs,_=parse_binarycookies(COOKIE_BIN)\n" +
+"        old_query(rs,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    cold_per=(t1-t0)//10\n" +
+"    print(f'  COLD (parse+linear/q)   per_query_ns={cold_per}')\n" +
+"    # IN-MEMORY linear\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES): old_query(rows,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    lin_per=(t1-t0)//QUERIES\n" +
+"    print(f'  IN-MEM linear           per_query_ns={lin_per}')\n" +
+"    # NEW: bisect\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES): new_query(sorted_hosts,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    new_per=(t1-t0)//QUERIES\n" +
+"    print(f'  NEW (blob mmap+bisect)  per_query_ns={new_per}')\n" +
+"    if new_per>0:\n" +
+"        print(f'  speedup vs cold-parse  : {cold_per/new_per:.1f}x')\n" +
+"        print(f'  speedup vs in-mem linear: {lin_per/new_per:.1f}x')\n" +
+"    print(f'  5-tuple: site=SF3 ROI#=3 baseline_ns={cold_per} post_ns={new_per} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_sf3_safari_cookies_binary_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

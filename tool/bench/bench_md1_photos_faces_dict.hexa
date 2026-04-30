@@ -1,0 +1,163 @@
+// tool/bench/bench_md1_photos_faces_dict.hexa — MD1 Photos faces dict bench
+//   ZPERSON face_count + ZDETECTEDFACE 가 매번 sqlite GROUP BY 로 풀리던 hot path
+//   를 1B enum 컬럼 (MA3 #99) 으로 치환. zipfian-200-person / 5K-face synth 데이터셋
+//   에서 OLD (Counter on str list) vs NEW (u8 enum scan) 비교.
+//
+// 5-tuple: site=MD1 ROI#=99 baseline_ns post_ns diff_test=lossless
+//
+// dataset: 200 persons (top 5 = 50% face occurrences) / 5000 faces / synth
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: perl alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,array,random\n" +
+"from collections import Counter\n" +
+"N_PERSON=200\n" +
+"N_FACE=5000\n" +
+"BIN='/tmp/bench_md1_mfdc.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def build_dataset(n_person=N_PERSON,n_face=N_FACE):\n" +
+"    random.seed(7)\n" +
+"    names=[f'Person {i:04d}' for i in range(n_person)]\n" +
+"    weights=[]\n" +
+"    for i in range(n_person):\n" +
+"        if i<5: w=400-i*50\n" +
+"        elif i<30: w=40\n" +
+"        else: w=3\n" +
+"        weights.append(w)\n" +
+"    faces=random.choices(range(n_person),weights=weights,k=n_face)\n" +
+"    fc=[0]*n_person\n" +
+"    for fid in faces: fc[fid]+=1\n" +
+"    return names,fc,faces\n" +
+"\n" +
+"def encode(names,fc,faces):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    distinct=sorted(set(faces))\n" +
+"    if len(distinct)>255:\n" +
+"        cc=Counter(faces).most_common(254)\n" +
+"        distinct=[fid for fid,_ in cc]\n" +
+"    fid_to_id={fid:i for i,fid in enumerate(distinct)}\n" +
+"    n_p=len(distinct); n_f=len(faces)\n" +
+"    pool=bytearray()\n" +
+"    name_offs=array.array('I',[0]*n_p)\n" +
+"    name_lens=array.array('I',[0]*n_p)\n" +
+"    fc_arr   =array.array('I',[0]*n_p)\n" +
+"    for i,fid in enumerate(distinct):\n" +
+"        nb=names[fid].encode('utf-8','replace')\n" +
+"        name_offs[i]=len(pool); name_lens[i]=len(nb); pool.extend(nb)\n" +
+"        fc_arr[i]=int(fc[fid])&0xffffffff\n" +
+"    enum_col=bytearray(n_f)\n" +
+"    for i,fid in enumerate(faces):\n" +
+"        enum_col[i]=fid_to_id.get(fid,0)\n" +
+"    header=struct.pack('<4sIIII',b'MFDC',1,n_p,n_f,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(name_offs.tobytes()); f.write(name_lens.tobytes()); f.write(fc_arr.tobytes())\n" +
+"        f.write(bytes(pool)); f.write(bytes(enum_col))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    raw_name_bytes=sum(len(names[fid].encode('utf-8','replace')) for fid in faces)\n" +
+"    return {'encode_ns':t1-t0,'n_p':n_p,'n_f':n_f,'distinct':distinct,'distinct_names':[names[fid] for fid in distinct],\n" +
+"            'enum_col':bytes(enum_col),'raw_name_bytes':raw_name_bytes,'blob_size':os.path.getsize(BIN),'fc_arr':list(fc_arr)}\n" +
+"\n" +
+"def old_count_str(names,faces):\n" +
+"    c=Counter()\n" +
+"    for fid in faces: c[names[fid]]+=1\n" +
+"    return c\n" +
+"def new_count_u8(distinct_names,enum_col):\n" +
+"    n=len(distinct_names)\n" +
+"    c=[0]*n\n" +
+"    for b in enum_col: c[b]+=1\n" +
+"    return list(zip(distinct_names,c))\n" +
+"\n" +
+"def old_alert_str(names,faces,alert_set):\n" +
+"    h=0\n" +
+"    for fid in faces:\n" +
+"        if names[fid] in alert_set: h+=1\n" +
+"    return h\n" +
+"def new_alert_u8(enum_col,alert_ids):\n" +
+"    h=0\n" +
+"    a=set(alert_ids)\n" +
+"    for b in enum_col:\n" +
+"        if b in a: h+=1\n" +
+"    return h\n" +
+"\n" +
+"def diff_test(names,faces,distinct_names,enum_col):\n" +
+"    a=sorted(new_count_u8(distinct_names,enum_col))\n" +
+"    b=sorted(old_count_str(names,faces).items())\n" +
+"    if len(a)!=len(b): return abs(len(a)-len(b))\n" +
+"    return sum(1 for x,y in zip(a,b) if x[0]!=y[0] or x[1]!=y[1])\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/MD1 — Photos faces dict (Counter on str vs u8 enum scan)')\n" +
+"    print(f'  N_PERSON={N_PERSON} N_FACE={N_FACE}  source: synthetic zipfian')\n" +
+"    names,fc,faces=build_dataset()\n" +
+"    print(f'  built: {len(faces)} faces / {len(set(faces))} distinct persons')\n" +
+"    info=encode(names,fc,faces)\n" +
+"    print(f'  encode (sort+enum+blob): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    saved_pct=((info['raw_name_bytes']-info['n_f'])*100)//max(info['raw_name_bytes'],1)\n" +
+"    print(f'  raw_name_bytes≈{fmt(info[\"raw_name_bytes\"])} → enum={fmt(info[\"n_f\"])}  saved={saved_pct}%')\n" +
+"    mm=diff_test(names,faces,info['distinct_names'],info['enum_col'])\n" +
+"    print(f'  diff_test mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    # axis-A: GROUP BY count\n" +
+"    t0=time.perf_counter_ns(); cc=old_count_str(names,faces); t1=time.perf_counter_ns(); ns_old_a=t1-t0\n" +
+"    t0=time.perf_counter_ns(); cb=new_count_u8(info['distinct_names'],info['enum_col']); t1=time.perf_counter_ns(); ns_new_a=t1-t0\n" +
+"    print(f'  axis-A GROUP BY count:')\n" +
+"    print(f'    OLD Counter(str)  total_ns={ns_old_a}  per_face_ns={ns_old_a//max(1,len(faces))}')\n" +
+"    print(f'    NEW u8 enum scan  total_ns={ns_new_a}  per_face_ns={ns_new_a//max(1,len(faces))}')\n" +
+"    if ns_new_a>0: print(f'    speedup={ns_old_a/ns_new_a:.2f}x')\n" +
+"    # axis-B: top-K by face_count (Photos UI 'people sorted by face count')\n" +
+"    K=10\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    h_old=sorted(((names[fid],fc[fid]) for fid in info['distinct']),key=lambda r:-r[1])[:K]\n" +
+"    t1=time.perf_counter_ns(); ns_old_b=t1-t0\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    idx=sorted(range(info['n_p']),key=lambda i:-info['fc_arr'][i])[:K]\n" +
+"    h_new=[(info['distinct_names'][i],info['fc_arr'][i]) for i in idx]\n" +
+"    t1=time.perf_counter_ns(); ns_new_b=t1-t0\n" +
+"    print(f'  axis-B top-K-by-face_count:')\n" +
+"    print(f'    OLD sort(str_tuples) total_ns={ns_old_b}')\n" +
+"    print(f'    NEW sort(u32 sidecar) total_ns={ns_new_b}')\n" +
+"    if ns_new_b>0:\n" +
+"        ratio=ns_old_b/ns_new_b\n" +
+"        saved_pct=((ns_old_b-ns_new_b)*100)//ns_old_b if ns_old_b>0 else 0\n" +
+"        print(f'    speedup={ratio:.2f}x  saved={saved_pct}%')\n" +
+"    if [n for n,_ in h_old]!=[n for n,_ in h_new]:\n" +
+"        print('BENCH FAIL [top-K diverged]'); return\n" +
+"    # axis-C: per-face alert match (Photos VIP/favorite person filter — like MA3 axis-B)\n" +
+"    name_to_id={n:i for i,n in enumerate(info['distinct_names'])}\n" +
+"    alert_names=set([info['distinct_names'][i] for i in range(min(5,info['n_p']))])\n" +
+"    alert_ids={name_to_id[n] for n in alert_names if n in name_to_id}\n" +
+"    t0=time.perf_counter_ns(); h_old=old_alert_str(names,faces,alert_names); t1=time.perf_counter_ns(); ns_old_c=t1-t0\n" +
+"    t0=time.perf_counter_ns(); h_new=new_alert_u8(info['enum_col'],alert_ids); t1=time.perf_counter_ns(); ns_new_c=t1-t0\n" +
+"    print(f'  axis-C alert match (top-5 alert):')\n" +
+"    print(f'    OLD str-in-set    total_ns={ns_old_c}  per_face_ns={ns_old_c//max(1,len(faces))}  hits={h_old}')\n" +
+"    print(f'    NEW u8-in-set     total_ns={ns_new_c}  per_face_ns={ns_new_c//max(1,len(faces))}  hits={h_new}')\n" +
+"    if ns_new_c>0:\n" +
+"        ratio=ns_old_c/ns_new_c\n" +
+"        saved_pct=((ns_old_c-ns_new_c)*100)//ns_old_c if ns_old_c>0 else 0\n" +
+"        print(f'    speedup={ratio:.2f}x  saved={saved_pct}%')\n" +
+"    if h_old!=h_new:\n" +
+"        print('BENCH FAIL [alert-match diverged]'); return\n" +
+"    amort_per=info['encode_ns']//max(1,len(faces))\n" +
+"    per_old=ns_old_c//max(1,len(faces))\n" +
+"    per_new=ns_new_c//max(1,len(faces))\n" +
+"    print(f'  + encode cost amortized: {amort_per}ns/face')\n" +
+"    print(f'  5-tuple: site=MD1 ROI#=99 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_md1_photos_faces_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

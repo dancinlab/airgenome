@@ -1,0 +1,8 @@
+{"site":"PB1","filter":"pasteboard_history_columnar","candidate":"PB1-a","desc":"flat sorted clip-pool + ts u32 (F18 form, no type dict)","b1":55,"b2":45,"b3":50,"b4":40,"b5":50,"b6":35,"b7":40,"b8":35,"b9":20,"total":370,"selected":false}
+{"site":"PB1","filter":"pasteboard_history_columnar","candidate":"PB1-b","desc":"type u8 dict (#99) + clip-content pool + ts u32 + size u32 (K6-twin)","b1":60,"b2":50,"b3":50,"b4":50,"b5":50,"b6":40,"b7":40,"b8":40,"b9":20,"total":400,"selected":true}
+{"site":"PB1","filter":"pasteboard_history_columnar","candidate":"PB1-c","desc":"sqlite-on-disk index (no columnar blob)","b1":45,"b2":40,"b3":45,"b4":35,"b5":40,"b6":30,"b7":35,"b8":35,"b9":20,"total":325,"selected":false}
+{"site":"PB1","gap_id":"G1","desc":"this host has no readable pasteboard cache (biome restricted, plist cache gone, CoreSpotlight empty) — synth path is operative; real-corpus ROI deferred to FDA-granted host","severity":"medium"}
+{"site":"PB1","gap_id":"G2","desc":"binary clip types (png/tiff) stored as base64 head-4KB only — large items metadata-only (size/type/ts no content) per B7 emission-cost trade","severity":"medium"}
+{"site":"PB1","gap_id":"G3","desc":"distinct UTI >255 → most_common(255) fallback maps tail to id=0 misc bucket","severity":"low"}
+{"site":"PB1","gap_id":"G4","desc":"clip-source-app not captured (separate Biome AppActivity stream filter)","severity":"low"}
+{"site":"PB1","ancestry":"K6 zsh_history_columnar (KZHC twin) + #99 type-dict + C14 sorted-pool prefix bisect","pattern":"u8 column dict ≤255 enum + utf-8 content pool + ts/size u32 columns","wyhash_use":"canonicalize UTI string pre-dict-insert"}

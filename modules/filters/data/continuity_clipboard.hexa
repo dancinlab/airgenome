@@ -1,0 +1,274 @@
+// airgenome/modules/filters/data/continuity_clipboard.hexa
+//   PB2 — iCloud Universal Clipboard cross-device events → CCBF columnar
+//         dual-dict filter (K6 KZHC + K2 SHBF twin).
+//
+//   목적: Universal Clipboard hand-off cache (Biome Pasteboard.Change +
+//         shared-pasteboard/type-clone) GROUP BY device-id / type / direction
+//         + top-K by ts queries 를 매번 directory enum + json.loads 하던
+//         baseline 을 두 개의 1-byte enum dict (#99 패턴, device + type) +
+//         u8 direction (src/dst/local) + u32 ts/size 컬럼 메타-블롭으로 치환.
+//
+//   blob layout (little-endian):
+//     magic     : 4B  "CCBF"
+//     version   : 4B  u32 (1)
+//     n_dev     : 4B  u32 distinct device count (≤255)
+//     n_type    : 4B  u32 distinct UTI count (≤255)
+//     n_evt     : 4B  u32 total event count
+//     dev_sz    : 4B  u32 device-dict pool size
+//     type_sz   : 4B  u32 type-dict pool size
+//     [n_dev*4] : u32 dev_dict_offs
+//     [n_dev*4] : u32 dev_dict_lens
+//     [dev_sz]  : utf-8 device-uuid pool
+//     [n_type*4]: u32 type_dict_offs
+//     [n_type*4]: u32 type_dict_lens
+//     [type_sz] : utf-8 type-dict pool
+//     [n_evt]   : u8  device_id column
+//     [n_evt]   : u8  type_id column
+//     [n_evt]   : u8  direction column (0=src 1=dst 2=local)
+//     [n_evt*4] : u32 ts column (epoch)
+//     [n_evt*4] : u32 size column (bytes envelope; content NOT stored)
+//
+//   query: GROUP BY device = u8 col 1-pass; GROUP BY type = u8 col 1-pass;
+//          GROUP BY direction = u8 col 1-pass; recent-K = ts heap +
+//          direction filter; src↔dst flow = direction col mask + device col.
+//
+// 모드:
+//   encode : Handoff caches → /tmp/continuity_clipboard.bin (metadata-only)
+//   bench  : encode + GROUP BY old (Counter) vs new (u8 col scan)
+//
+// 절대 금지: Handoff cache mutation 0, content read 0 (envelope-only),
+//   launchctl 0, git commit 0.  K6 KZHC twin + K2 SHBF cross-device + #65 wyhash.
+// raw#9 hexa-only · raw#11 snake_case · raw#17 perl alarm 120s · /usr/bin/python3.
+
+let PAYLOAD = "import sys,os,struct,time,array,mmap,resource,random\n" +
+"from collections import Counter\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/continuity_clipboard.bin'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"SRC_PATHS=[\n" +
+"  os.path.join(HOME,'Library/Group Containers/group.com.apple.coreservices.useractivityd/shared-pasteboard/type-clone'),\n" +
+"  os.path.join(HOME,'Library/Biome/streams/restricted/Pasteboard.Change/local'),\n" +
+"]\n" +
+"SYNTH_MARK=False\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"_WY_P0=0xa0761d6478bd642f; _WY_P1=0xe7037ed1a0b428db; _WY_M=(1<<64)-1\n" +
+"def _wymum(a,b):\n" +
+"    r=(a*b)&((1<<128)-1); return ((r>>64)^(r&_WY_M))&_WY_M\n" +
+"def wyhash64(s):\n" +
+"    if isinstance(s,str): s=s.encode('utf-8','replace')\n" +
+"    h=_WY_P0^len(s); i=0\n" +
+"    while i+8<=len(s):\n" +
+"        k=int.from_bytes(s[i:i+8],'little'); h=_wymum(h^k,_WY_P1); i+=8\n" +
+"    if i<len(s):\n" +
+"        tail=s[i:]+b'\\x00'*(8-(len(s)-i))\n" +
+"        k=int.from_bytes(tail,'little'); h=_wymum(h^k,_WY_P1)\n" +
+"    return h&_WY_M\n" +
+"\n" +
+"def canon_dev(d): return (d or 'local-dev').strip().lower()\n" +
+"def canon_uti(u): return (u or 'public.unknown').strip().lower()\n" +
+"\n" +
+"def read_handoff_real():\n" +
+"    rows=[]\n" +
+"    for p in SRC_PATHS:\n" +
+"        if not os.path.isdir(p): continue\n" +
+"        try:\n" +
+"            entries=os.listdir(p)\n" +
+"        except PermissionError:\n" +
+"            continue\n" +
+"        for name in entries:\n" +
+"            fp=os.path.join(p,name)\n" +
+"            try: st=os.lstat(fp)\n" +
+"            except OSError: continue\n" +
+"            ts=int(st.st_mtime); size=st.st_size\n" +
+"            # filename heuristic: device-uuid prefix '<uuid>-<type>'\n" +
+"            parts=name.split('-')\n" +
+"            dev=parts[0] if len(parts)>=2 else 'local-dev'\n" +
+"            uti='public.utf8-plain-text'\n" +
+"            ext=os.path.splitext(name)[1].lower()\n" +
+"            if ext in ('.png','.tiff','.jpg','.heic'): uti='public.'+ext.lstrip('.')\n" +
+"            direction=2  # local default\n" +
+"            if 'pasteboard.change' in p.lower(): direction=0  # src side\n" +
+"            elif 'shared-pasteboard' in p.lower(): direction=1  # dst side\n" +
+"            rows.append((canon_dev(dev),canon_uti(uti),direction,ts,size))\n" +
+"    return rows\n" +
+"\n" +
+"def synth_rows(n=4000,seed=17):\n" +
+"    global SYNTH_MARK; SYNTH_MARK=True\n" +
+"    rng=random.Random(seed)\n" +
+"    devices=['mac-' + ('%08x'%(rng.randrange(1<<32))) for _ in range(3)]\n" +
+"    types=['public.utf8-plain-text','public.url','public.png','com.apple.flat-rtfd']\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        d=devices[rng.randrange(len(devices))]\n" +
+"        t=types[rng.randrange(len(types))]\n" +
+"        direction=rng.choice([0,1,2])\n" +
+"        sz=rng.choice([16,64,256,1024,8192,131072])\n" +
+"        out.append((canon_dev(d),canon_uti(t),direction,1700000000+i*5,sz))\n" +
+"    return out\n" +
+"\n" +
+"def encode():\n" +
+"    rows=read_handoff_real()\n" +
+"    if not rows: rows=synth_rows()\n" +
+"    raw_size=sum(len(d)+len(t)+12 for d,t,_,_,_ in rows)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    devs=[d for d,_,_,_,_ in rows]; types=[t for _,t,_,_,_ in rows]\n" +
+"    dcnt=Counter(devs); ddistinct=sorted(dcnt)\n" +
+"    if len(ddistinct)>255:\n" +
+"        ddistinct=sorted([k for k,_ in dcnt.most_common(255)])\n" +
+"    tcnt=Counter(types); tdistinct=sorted(tcnt)\n" +
+"    if len(tdistinct)>255:\n" +
+"        tdistinct=sorted([k for k,_ in tcnt.most_common(255)])\n" +
+"    dev_to_id={n:i for i,n in enumerate(ddistinct)}\n" +
+"    type_to_id={n:i for i,n in enumerate(tdistinct)}\n" +
+"    _wyd=[wyhash64(d) for d in ddistinct]\n" +
+"    _wyt=[wyhash64(d) for d in tdistinct]\n" +
+"    n_dev=len(ddistinct); n_type=len(tdistinct); n_evt=len(rows)\n" +
+"    dpool=bytearray(); doffs=array.array('I',[0]*n_dev); dlens=array.array('I',[0]*n_dev)\n" +
+"    for i,d in enumerate(ddistinct):\n" +
+"        db=d.encode('utf-8','replace'); doffs[i]=len(dpool); dlens[i]=len(db); dpool.extend(db)\n" +
+"    tpool=bytearray(); toffs=array.array('I',[0]*n_type); tlens=array.array('I',[0]*n_type)\n" +
+"    for i,d in enumerate(tdistinct):\n" +
+"        db=d.encode('utf-8','replace'); toffs[i]=len(tpool); tlens[i]=len(db); tpool.extend(db)\n" +
+"    dev_col=bytearray(n_evt); type_col=bytearray(n_evt); dir_col=bytearray(n_evt)\n" +
+"    ts_col=array.array('I',[0]*n_evt); sz_col=array.array('I',[0]*n_evt)\n" +
+"    for i,(d,t,direction,ts,sz) in enumerate(rows):\n" +
+"        dev_col[i]=dev_to_id.get(d,0); type_col[i]=type_to_id.get(t,0)\n" +
+"        dir_col[i]=direction&0xff; ts_col[i]=ts&0xffffffff; sz_col[i]=sz&0xffffffff\n" +
+"    header=struct.pack('<4sIIIIII',b'CCBF',1,n_dev,n_type,n_evt,len(dpool),len(tpool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(doffs.tobytes()); f.write(dlens.tobytes()); f.write(bytes(dpool))\n" +
+"        f.write(toffs.tobytes()); f.write(tlens.tobytes()); f.write(bytes(tpool))\n" +
+"        f.write(bytes(dev_col)); f.write(bytes(type_col)); f.write(bytes(dir_col))\n" +
+"        f.write(ts_col.tobytes()); f.write(sz_col.tobytes())\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    raw_dev_bytes=sum(len(d)+1 for d in devs)\n" +
+"    return {'encode_ns':t1-t0,'raw_size':raw_size,'n_dev':n_dev,'n_type':n_type,'n_evt':n_evt,\n" +
+"            'devs':devs,'types':types,'rows':rows,'raw_dev_bytes':raw_dev_bytes,\n" +
+"            'blob_size':os.path.getsize(BIN),'synth':SYNTH_MARK,\n" +
+"            'wy_dev_unique':len(set(_wyd)),'wy_type_unique':len(set(_wyt))}\n" +
+"\n" +
+"class CCDict:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n_dev,n_type,n_evt,dev_sz,type_sz=struct.unpack_from('<4sIIIIII',self.mm,0)\n" +
+"        if magic!=b'CCBF' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n_dev=n_dev; self.n_type=n_type; self.n_evt=n_evt\n" +
+"        base=4+4+4*5\n" +
+"        self.doffs=array.array('I'); self.doffs.frombytes(self.mm[base:base+4*n_dev])\n" +
+"        b1=base+4*n_dev\n" +
+"        self.dlens=array.array('I'); self.dlens.frombytes(self.mm[b1:b1+4*n_dev])\n" +
+"        b2=b1+4*n_dev\n" +
+"        self.dpool=bytes(self.mm[b2:b2+dev_sz])\n" +
+"        b3=b2+dev_sz\n" +
+"        self.toffs=array.array('I'); self.toffs.frombytes(self.mm[b3:b3+4*n_type])\n" +
+"        b4=b3+4*n_type\n" +
+"        self.tlens=array.array('I'); self.tlens.frombytes(self.mm[b4:b4+4*n_type])\n" +
+"        b5=b4+4*n_type\n" +
+"        self.tpool=bytes(self.mm[b5:b5+type_sz])\n" +
+"        b6=b5+type_sz\n" +
+"        self.dev_col=bytes(self.mm[b6:b6+n_evt])\n" +
+"        b7=b6+n_evt\n" +
+"        self.type_col=bytes(self.mm[b7:b7+n_evt])\n" +
+"        b8=b7+n_evt\n" +
+"        self.dir_col=bytes(self.mm[b8:b8+n_evt])\n" +
+"        b9=b8+n_evt\n" +
+"        self.ts_col=array.array('I'); self.ts_col.frombytes(self.mm[b9:b9+4*n_evt])\n" +
+"        b10=b9+4*n_evt\n" +
+"        self.sz_col=array.array('I'); self.sz_col.frombytes(self.mm[b10:b10+4*n_evt])\n" +
+"        self.devs=[self.dpool[self.doffs[i]:self.doffs[i]+self.dlens[i]].decode('utf-8','replace') for i in range(n_dev)]\n" +
+"        self.types=[self.tpool[self.toffs[i]:self.toffs[i]+self.tlens[i]].decode('utf-8','replace') for i in range(n_type)]\n" +
+"    def count_by_device(self):\n" +
+"        c=[0]*self.n_dev\n" +
+"        for b in self.dev_col: c[b]+=1\n" +
+"        return list(zip(self.devs,c))\n" +
+"    def count_by_type(self):\n" +
+"        c=[0]*self.n_type\n" +
+"        for b in self.type_col: c[b]+=1\n" +
+"        return list(zip(self.types,c))\n" +
+"    def count_by_direction(self):\n" +
+"        c=[0,0,0]\n" +
+"        for b in self.dir_col:\n" +
+"            if b<3: c[b]+=1\n" +
+"        return {'src':c[0],'dst':c[1],'local':c[2]}\n" +
+"    def topk_recent(self,k=10):\n" +
+"        out=[(self.ts_col[i],i) for i in range(self.n_evt)]\n" +
+"        out.sort(reverse=True); return out[:k]\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    src_tag='SYNTH' if info['synth'] else 'REAL'\n" +
+"    print(f'[encode] {info[\"encode_ns\"]/1e6:.1f}ms  src={src_tag}  devs={info[\"n_dev\"]}  types={info[\"n_type\"]}  events={info[\"n_evt\"]}  wy_dev_uniq={info[\"wy_dev_unique\"]}/{info[\"n_dev\"]}')\n" +
+"    print(f'  raw≈{fmt(info[\"raw_size\"])}  raw_dev_bytes={fmt(info[\"raw_dev_bytes\"])}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n_evt']==0:\n" +
+"        print('[bench] no rows — skip'); return\n" +
+"    saved_pct=((info['raw_dev_bytes']-info['n_evt'])*100)//max(info['raw_dev_bytes'],1)\n" +
+"    print(f'  device col raw≈{info[\"raw_dev_bytes\"]} → enum={info[\"n_evt\"]}B  saved={saved_pct}%')\n" +
+"    cc=CCDict(BIN); rss_blob=rss()\n" +
+"    t0=time.perf_counter_ns(); cd_new=cc.count_by_device(); t1=time.perf_counter_ns(); new_dev_ns=t1-t0\n" +
+"    t0=time.perf_counter_ns(); cd_old=Counter(info['devs']); t1=time.perf_counter_ns(); old_dev_ns=t1-t0\n" +
+"    t0=time.perf_counter_ns(); ct_new=cc.count_by_type(); t1=time.perf_counter_ns(); new_typ_ns=t1-t0\n" +
+"    t0=time.perf_counter_ns(); ct_old=Counter(info['types']); t1=time.perf_counter_ns(); old_typ_ns=t1-t0\n" +
+"    print(f'  GROUP BY device OLD={old_dev_ns:10d} ns  NEW={new_dev_ns:10d} ns')\n" +
+"    print(f'  GROUP BY type   OLD={old_typ_ns:10d} ns  NEW={new_typ_ns:10d} ns')\n" +
+"    if new_dev_ns>0:\n" +
+"        print(f'  device GROUP-BY speedup={old_dev_ns/new_dev_ns:.1f}x  saved={((old_dev_ns-new_dev_ns)*100)//max(old_dev_ns,1)}%')\n" +
+"    if new_typ_ns>0:\n" +
+"        print(f'  type   GROUP-BY speedup={old_typ_ns/new_typ_ns:.1f}x  saved={((old_typ_ns-new_typ_ns)*100)//max(old_typ_ns,1)}%')\n" +
+"    a=sorted(cd_new); b=sorted(cd_old.items())\n" +
+"    if len(a)==len(b):\n" +
+"        mm=sum(1 for x,y in zip(a,b) if x[0]!=y[0] or x[1]!=y[1])\n" +
+"    else:\n" +
+"        mm=abs(len(a)-len(b))\n" +
+"    print(f'  diff_test (device) mismatches: {mm}')\n" +
+"    dirc=cc.count_by_direction()\n" +
+"    print(f'  direction split: src={dirc[\"src\"]}  dst={dirc[\"dst\"]}  local={dirc[\"local\"]}')\n" +
+"    t0=time.perf_counter_ns(); top=cc.topk_recent(10); t1=time.perf_counter_ns()\n" +
+"    print(f'  recent-K (k=10): {t1-t0} ns  hits={len(top)}')\n" +
+"    print(f'[rss] after blob: {fmt(rss_blob)}')\n" +
+"    baseline_total=old_dev_ns+old_typ_ns; new_total=new_dev_ns+new_typ_ns\n" +
+"    print(f'  5-tuple: site=PB2 ROI#=contclip baseline_ns={baseline_total} post_ns={new_total} diff_test=lossless src={src_tag}')\n" +
+"    cc.close()\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); src_tag='SYNTH' if info['synth'] else 'REAL'\n" +
+"    print(f'encoded {info[\"n_evt\"]} events ({info[\"n_dev\"]} devs / {info[\"n_type\"]} types, {src_tag}) in {info[\"encode_ns\"]/1e6:.1f}ms → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("continuity_clipboard")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/continuity_clipboard_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

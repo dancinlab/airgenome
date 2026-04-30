@@ -1,0 +1,16 @@
+{"schema":"raw240v2","version":1,"date":"2026-04-30","artifact":"br_chrome_br6_rubric_2026-04-30.md","scope":"BR6-chrome-cookies-dict","magic":"CCDF","pattern_ref":"MA3 #99 mail_sender_dict column dict"}
+{"block":"B1","name":"design-rigor","max":50,"perfect_cut":"column dict + distinct pool + u8 enum + binary layout + ?mode=ro&immutable=1"}
+{"block":"B2","name":"measurability","max":90,"perfect_cut":"latency μs + memory MB + str→enum byte ratio + GROUP BY 비교"}
+{"block":"B3","name":"enforcement-strength","max":40,"perfect_cut":"4-fixture self-test + classifier-version"}
+{"block":"B4","name":"atomicity","max":40,"perfect_cut":"single .hexa + 0 side-effect + sqlite backup snapshot + WAL 미손상"}
+{"block":"B5","name":"observability","max":30,"perfect_cut":"rss/elapsed/blob_size + classifier_version + reason"}
+{"block":"B6","name":"cross-repo","max":30,"perfect_cut":"hive raw + airgenome filter + anima 3-hop"}
+{"block":"B7","name":"emission-cost-bounded","max":40,"perfect_cut":"PAYLOAD ≤16KB + 1-pass"}
+{"block":"B8","name":"adversarial-resistance","max":40,"perfect_cut":"empty/running/>255-OTHER/encrypted-rows 4-fixture"}
+{"block":"B9","name":"meta-rubric-finite","max":20,"perfect_cut":"depth≤2 + self-scoring 회피 + carve-out"}
+{"candidate":"BR6-a","desc":"host_key only u8 dict","B1":48,"B2":86,"B3":38,"B4":38,"B5":28,"B6":26,"B7":38,"B8":36,"B9":20,"sigma":358}
+{"candidate":"BR6-b","desc":"host_key + name 2nd col u16","B1":48,"B2":86,"B3":36,"B4":38,"B5":28,"B6":28,"B7":34,"B8":36,"B9":18,"sigma":352}
+{"candidate":"BR6-h","desc":"hybrid host_key u8 dict + OTHER overflow + chrome-running synth","B1":50,"B2":88,"B3":40,"B4":40,"B5":30,"B6":28,"B7":38,"B8":40,"B9":20,"sigma":374}
+{"verdict":"IMPL","reason":"sigma 374 >= 350 threshold","action":"impl chrome_cookies_dict.hexa"}
+{"honest_c3":[{"id":"C3-1","gap":"encrypted_value out of scope","mitigation":"plaintext host_key only"},{"id":"C3-2","gap":"chrome mid-write","mitigation":"pgrep + immutable=1 + synth fallback"},{"id":"C3-3","gap":"multi-profile","mitigation":"Default only"},{"id":"C3-4","gap":"distinct>255 overflow","mitigation":"OTHER id=0 + top-254"},{"id":"C3-5","gap":"classifier-version skew","mitigation":"classifier_version=CCDF-v1-2026-04-30"}],"gap_count":5}
+{"roi_projection":{"encode_ms":"30-60","group_by_count_speedup":"100x+ (u8 vs str Counter)","sender_byte_saved_pct":"95+"}}

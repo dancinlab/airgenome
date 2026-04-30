@@ -1,0 +1,176 @@
+// tool/bench/bench_ct2_colima_lima_state.hexa — CT2 CLST bench
+//   raw 240 V2 V3 (400/400). 합성 dataset 결정성 + real-probe optional.
+//   real ~/.colima/ + ~/.lima/ 의존을 제거해 결정성 확보 — synth_only 모드는
+//   항상 동일 seed=37 동일 결과.
+//
+// 모드:
+//   bench (default) — 합성 12 instance dataset → CLST encode → bisect query.
+//   real            — real lima/colima 디렉토리 enumerate 추가.
+//
+// 5-tuple: site=CT2_COLIMA_LIMA ROI#=CT2_COLIMA_LIMA_CLST baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: /usr/bin/perl alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random,json,re,glob\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/bench_colima_lima_clst.bin'\n" +
+"Q_LOOKUP=300\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def fnv1a64(b):\n" +
+"    h=0xcbf29ce484222325\n" +
+"    for x in b:\n" +
+"        h^=x; h=(h*0x100000001b3) & 0xffffffffffffffff\n" +
+"    return h\n" +
+"\n" +
+"def synth(seed=37):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    lima_names=['default','docker','k8s','dev','rust','golang','data','sandbox']\n" +
+"    for nm in lima_names:\n" +
+"        out.append({'name':nm,'cpus':rng.choice([2,4,6,8]),'mem':rng.choice([2,4,8])*1024**3,'disk':rng.choice([20,60,100])*1024**3,'mounts':rng.randrange(0,4),'qcow_vsize':rng.choice([20,60,100])*1024**3,'qcow_cbits':16,'flags':0x3})\n" +
+"    col_names=['default','prod','test','exp']\n" +
+"    for nm in col_names:\n" +
+"        out.append({'name':'colima:'+nm,'cpus':rng.choice([2,4]),'mem':rng.choice([4,8])*1024**3,'disk':rng.choice([60,100])*1024**3,'mounts':rng.randrange(0,3),'qcow_vsize':0,'qcow_cbits':0,'flags':0x4})\n" +
+"    return out\n" +
+"\n" +
+"def encode_blob(insts):\n" +
+"    rows=[(fnv1a64(i['name'].encode('utf-8','replace')),i) for i in insts]\n" +
+"    rows.sort(key=lambda x:x[0])\n" +
+"    n=len(rows)\n" +
+"    name_pool=bytearray()\n" +
+"    name_h=array.array('Q',[r[0] for r in rows])\n" +
+"    name_offs=array.array('I',[0]*n); name_lens=array.array('I',[0]*n)\n" +
+"    cpus=array.array('I',[0]*n); mem=array.array('Q',[0]*n); disk=array.array('Q',[0]*n)\n" +
+"    qvs=array.array('Q',[0]*n); qcb=array.array('I',[0]*n); mc=array.array('I',[0]*n)\n" +
+"    flg=bytearray(n)\n" +
+"    for i,(h,inst) in enumerate(rows):\n" +
+"        b=inst['name'].encode('utf-8','replace')\n" +
+"        name_offs[i]=len(name_pool); name_lens[i]=len(b); name_pool.extend(b)\n" +
+"        cpus[i]=int(inst.get('cpus',0))&0xffffffff\n" +
+"        mem[i]=int(inst.get('mem',0))&0xffffffffffffffff\n" +
+"        disk[i]=int(inst.get('disk',0))&0xffffffffffffffff\n" +
+"        qvs[i]=int(inst.get('qcow_vsize',0))&0xffffffffffffffff\n" +
+"        qcb[i]=int(inst.get('qcow_cbits',0))&0xffffffff\n" +
+"        mc[i]=int(inst.get('mounts',0))&0xffffffff\n" +
+"        flg[i]=int(inst.get('flags',0))&0xff\n" +
+"    out=bytearray(); out.extend(b'CLST')\n" +
+"    out.extend(struct.pack('<IIII',1,n,len(name_pool),0))\n" +
+"    out.extend(name_h.tobytes()); out.extend(name_offs.tobytes()); out.extend(name_lens.tobytes())\n" +
+"    out.extend(cpus.tobytes()); out.extend(mem.tobytes()); out.extend(disk.tobytes())\n" +
+"    out.extend(qvs.tobytes()); out.extend(qcb.tobytes()); out.extend(mc.tobytes())\n" +
+"    out.extend(bytes(flg))\n" +
+"    out.extend(name_pool)\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    return {'n_inst':n,'blob_size':len(out)}\n" +
+"\n" +
+"def linear_status(insts,name_h):\n" +
+"    for i in insts:\n" +
+"        if fnv1a64(i['name'].encode('utf-8','replace'))==name_h:\n" +
+"            return (int(i.get('cpus',0)),int(i.get('mem',0)),int(i.get('disk',0)),int(i.get('qcow_vsize',0)))\n" +
+"    return None\n" +
+"\n" +
+"def blob_status(name_h):\n" +
+"    with open(BIN,'rb') as f: blob=f.read()\n" +
+"    assert blob[:4]==b'CLST'\n" +
+"    ver,n,name_sz,_=struct.unpack_from('<IIII',blob,4)\n" +
+"    p=4+4*4\n" +
+"    name_hash=array.array('Q'); name_hash.frombytes(blob[p:p+8*n]); p+=8*n\n" +
+"    p+=4*n; p+=4*n\n" +
+"    cpus=array.array('I'); cpus.frombytes(blob[p:p+4*n]); p+=4*n\n" +
+"    mem =array.array('Q'); mem.frombytes(blob[p:p+8*n]); p+=8*n\n" +
+"    disk=array.array('Q'); disk.frombytes(blob[p:p+8*n]); p+=8*n\n" +
+"    qvs =array.array('Q'); qvs.frombytes(blob[p:p+8*n]); p+=8*n\n" +
+"    i=bisect.bisect_left(name_hash,name_h)\n" +
+"    if i<n and name_hash[i]==name_h:\n" +
+"        return (int(cpus[i]),int(mem[i]),int(disk[i]),int(qvs[i]))\n" +
+"    return None\n" +
+"\n" +
+"def bench_synth():\n" +
+"    insts=synth()\n" +
+"    info=encode_blob(insts)\n" +
+"    print(f'[encode] n_inst={info[\"n_inst\"]} blob={fmt(info[\"blob_size\"])}')\n" +
+"    rng=random.Random(41)\n" +
+"    names=[i['name'] for i in insts]\n" +
+"    queries=[fnv1a64(names[rng.randrange(len(names))].encode('utf-8','replace')) for _ in range(Q_LOOKUP)]\n" +
+"    t0=time.perf_counter_ns(); base=sum(1 for q in queries if linear_status(insts,q) is not None); t1=time.perf_counter_ns()\n" +
+"    t2=time.perf_counter_ns(); post=sum(1 for q in queries if blob_status(q) is not None); t3=time.perf_counter_ns()\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=(t1-t0)/max(t3-t2,1)\n" +
+"    print(f'[bench synth] N={info[\"n_inst\"]} Q={Q_LOOKUP}')\n" +
+"    print(f'  baseline (linear)       : {(t1-t0)/1000:10.1f} us  hits={base}')\n" +
+"    print(f'  CLST (mmap bisect)      : {(t3-t2)/1000:10.1f} us  hits={post}')\n" +
+"    print(f'  speedup                 : {sp:6.1f}x')\n" +
+"    row={'site':'CT2_COLIMA_LIMA','roi':'CT2_COLIMA_LIMA_CLST_synth','baseline_ns':t1-t0,'post_ns':t3-t2,'diff_test':diff,'speedup_x':round(sp,2),'n':info['n_inst']}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"def real_probe():\n" +
+"    home=os.path.expanduser('~')\n" +
+"    found=False\n" +
+"    if os.path.isdir(os.path.join(home,'.lima')) or os.path.isdir(os.path.join(home,'.colima')):\n" +
+"        found=True\n" +
+"    if not found:\n" +
+"        print('[real] no ~/.lima or ~/.colima; skip'); return True\n" +
+"    insts=[]\n" +
+"    lima_root=os.path.join(home,'.lima')\n" +
+"    if os.path.isdir(lima_root):\n" +
+"        for nm in sorted(os.listdir(lima_root)):\n" +
+"            if nm.startswith('_'): continue\n" +
+"            d=os.path.join(lima_root,nm)\n" +
+"            if not os.path.isdir(d): continue\n" +
+"            insts.append({'name':nm,'cpus':0,'mem':0,'disk':0,'mounts':0,'qcow_vsize':0,'qcow_cbits':0,'flags':0x2})\n" +
+"    col_root=os.path.join(home,'.colima')\n" +
+"    if os.path.isdir(col_root):\n" +
+"        for nm in sorted(os.listdir(col_root)):\n" +
+"            if nm.startswith('_'): continue\n" +
+"            insts.append({'name':'colima:'+nm,'cpus':0,'mem':0,'disk':0,'mounts':0,'qcow_vsize':0,'qcow_cbits':0,'flags':0x4})\n" +
+"    if not insts:\n" +
+"        print('[real] dirs exist but empty; skip'); return True\n" +
+"    info=encode_blob(insts)\n" +
+"    print(f'[real encode] n_inst={info[\"n_inst\"]} blob={fmt(info[\"blob_size\"])}')\n" +
+"    rng=random.Random(41)\n" +
+"    names=[i['name'] for i in insts]\n" +
+"    queries=[fnv1a64(names[rng.randrange(len(names))].encode('utf-8','replace')) for _ in range(min(Q_LOOKUP,len(names)))]\n" +
+"    t0=time.perf_counter_ns(); base=sum(1 for q in queries if linear_status(insts,q) is not None); t1=time.perf_counter_ns()\n" +
+"    t2=time.perf_counter_ns(); post=sum(1 for q in queries if blob_status(q) is not None); t3=time.perf_counter_ns()\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=(t1-t0)/max(t3-t2,1)\n" +
+"    print(f'[real bench] base={(t1-t0)/1000:.1f}us hits={base}  post={(t3-t2)/1000:.1f}us hits={post}  speedup={sp:.1f}x')\n" +
+"    row={'site':'CT2_COLIMA_LIMA','roi':'CT2_COLIMA_LIMA_CLST_real','baseline_ns':t1-t0,'post_ns':t3-t2,'diff_test':diff,'speedup_x':round(sp,2),'n':info['n_inst']}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"if mode=='real':\n" +
+"    ok1=bench_synth(); ok2=real_probe()\n" +
+"    print(f'[result] synth={ok1} real={ok2}')\n" +
+"    sys.exit(0 if (ok1 and ok2) else 1)\n" +
+"else:\n" +
+"    ok=bench_synth()\n" +
+"    sys.exit(0 if ok else 1)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("bench_ct2_colima_lima_state")
+        if is_hexa_bin == false && is_self == false {
+            if v == "real" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_ct2_colima_lima_state_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

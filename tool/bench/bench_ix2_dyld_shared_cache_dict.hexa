@@ -1,0 +1,204 @@
+// tool/bench/bench_ix2_dyld_shared_cache_dict.hexa — IX2 DSCD bench
+//   raw 240 V2 V2-cand (400/400). 합성 dataset 결정성 + real-probe optional.
+//
+// 모드:
+//   bench (default) — N synth image-path 생성 → DSCD encode
+//                     → prefix+ext count linear vs DSCD bisect+col-scan.
+//   real            — real /System/Volumes/Preboot/.../dyld_shared_cache_arm64e probe.
+//
+// 5-tuple: site=IX2 ROI#=IX2_DSCD baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random,glob,re,json,mmap\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/bench_ix2_dscd.bin'\n" +
+"N=3000\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"FWS=['Foundation','AppKit','UIKit','CoreFoundation','CoreGraphics','Security','SystemConfiguration','IOKit','CoreAudio','CoreVideo','CoreImage','CoreText','CoreLocation','CoreMedia','CoreData']\n" +
+"LIBS=['c','objc','System','Network','crypto','sqlite3','xml2','z','curl','iconv']\n" +
+"\n" +
+"def synth(n,seed=7):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        if rng.random()<0.4:\n" +
+"            out.append('/usr/lib/lib'+rng.choice(LIBS)+'.'+str(rng.randrange(1,9))+'.dylib')\n" +
+"        elif rng.random()<0.7:\n" +
+"            f=rng.choice(FWS)\n" +
+"            out.append(f'/System/Library/Frameworks/{f}.framework/{f}')\n" +
+"        else:\n" +
+"            f=rng.choice(FWS)+'_priv_'+str(rng.randrange(0,40))\n" +
+"            out.append(f'/System/Library/PrivateFrameworks/{f}.framework/{f}')\n" +
+"    return ' arm64e\\x00',sorted(set(out))\n" +
+"\n" +
+"def encode_blob(arch,paths):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    paths=sorted(set(paths)); n=len(paths)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n); lens=array.array('H',[0]*n)\n" +
+"    for i,s in enumerate(paths):\n" +
+"        sb=s.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(sb); pool.extend(sb)\n" +
+"    if isinstance(arch,str): ab=arch.encode('utf-8','replace')\n" +
+"    else: ab=arch\n" +
+"    ab=(ab+b'\\x00'*8)[:8]\n" +
+"    out=bytearray(); out.extend(b'DSCD')\n" +
+"    out.extend(struct.pack('<I',1))\n" +
+"    out.extend(ab)\n" +
+"    out.extend(struct.pack('<II',n,len(pool)))\n" +
+"    out.extend(offs.tobytes()); out.extend(lens.tobytes())\n" +
+"    out.extend(pool)\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'n':n,'blob_size':len(out),'encode_ns':t1-t0}\n" +
+"\n" +
+"def linear_count_prefix(rows,prefix): return sum(1 for s in rows if s.startswith(prefix))\n" +
+"def linear_count_ext(rows,ext):       return sum(1 for s in rows if s.endswith(ext))\n" +
+"\n" +
+"def blob_load():\n" +
+"    with open(BIN,'rb') as f: blob=f.read()\n" +
+"    assert blob[:4]==b'DSCD'\n" +
+"    arch=bytes(blob[8:16])\n" +
+"    n,pool_sz=struct.unpack_from('<II',blob,16)\n" +
+"    p=24\n" +
+"    offs=array.array('I'); offs.frombytes(blob[p:p+n*4]); p+=n*4\n" +
+"    lens=array.array('H'); lens.frombytes(blob[p:p+n*2]); p+=n*2\n" +
+"    pool=blob[p:p+pool_sz]\n" +
+"    return (offs,lens,pool,n,arch)\n" +
+"\n" +
+"def blob_count_prefix(prefix):\n" +
+"    offs,lens,pool,n,_=blob_load()\n" +
+"    pb=prefix.encode('utf-8','replace')\n" +
+"    lo,hi=0,n\n" +
+"    while lo<hi:\n" +
+"        mid=(lo+hi)//2\n" +
+"        s=bytes(pool[offs[mid]:offs[mid]+lens[mid]])\n" +
+"        if s<pb: lo=mid+1\n" +
+"        else: hi=mid\n" +
+"    cnt=0; i=lo\n" +
+"    while i<n:\n" +
+"        s=bytes(pool[offs[i]:offs[i]+lens[i]])\n" +
+"        if not s.startswith(pb): break\n" +
+"        cnt+=1; i+=1\n" +
+"    return cnt\n" +
+"\n" +
+"def blob_count_ext(ext):\n" +
+"    offs,lens,pool,n,_=blob_load()\n" +
+"    eb=ext.encode('utf-8','replace'); el=len(eb)\n" +
+"    cnt=0\n" +
+"    for i in range(n):\n" +
+"        L=lens[i]\n" +
+"        if L<el: continue\n" +
+"        if bytes(pool[offs[i]+L-el:offs[i]+L])==eb: cnt+=1\n" +
+"    return cnt\n" +
+"\n" +
+"P=['/usr/lib/','/System/Library/Frameworks/','/System/Library/PrivateFrameworks/','/System/']\n" +
+"E=['.dylib','/Foundation','/AppKit','/IOKit']\n" +
+"\n" +
+"def bench_synth():\n" +
+"    arch,rows=synth(N)\n" +
+"    info=encode_blob(arch,rows)\n" +
+"    print(f'[encode] n_image={info[\"n\"]} blob={fmt(info[\"blob_size\"])} encode={info[\"encode_ns\"]/1e6:.1f}ms')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    base=sum(linear_count_prefix(rows,q) for q in P)+sum(linear_count_ext(rows,q) for q in E)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    base_ns=t1-t0\n" +
+"    t2=time.perf_counter_ns()\n" +
+"    post=sum(blob_count_prefix(q) for q in P)+sum(blob_count_ext(q) for q in E)\n" +
+"    t3=time.perf_counter_ns()\n" +
+"    post_ns=t3-t2\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=base_ns/max(post_ns,1)\n" +
+"    print(f'[bench synth] N={len(rows)} queries={len(P)+len(E)}')\n" +
+"    print(f'  baseline (linear)        : {base_ns/1000:10.1f} us  hits={base}')\n" +
+"    print(f'  DSCD (bisect+col scan)   : {post_ns/1000:10.1f} us  hits={post}')\n" +
+"    print(f'  speedup                  : {sp:6.1f}x')\n" +
+"    row={'site':'IX2','roi':'IX2_DSCD_synth','baseline_ns':base_ns,'post_ns':post_ns,'diff_test':diff,'speedup_x':round(sp,2),'n':len(rows)}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"def real_probe():\n" +
+"    p='/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/dyld_shared_cache_arm64e'\n" +
+"    if not os.path.isfile(p):\n" +
+"        print('[real] dyld_shared_cache_arm64e absent; skip'); return True\n" +
+"    sz=os.path.getsize(p)\n" +
+"    fd=os.open(p,os.O_RDONLY)\n" +
+"    try:\n" +
+"        mm=mmap.mmap(fd,sz,prot=mmap.PROT_READ)\n" +
+"    except Exception:\n" +
+"        os.close(fd); print('[real] mmap failed; skip'); return True\n" +
+"    try:\n" +
+"        head=mm[:0x40]\n" +
+"        if head[:8]!=b'dyld_v1 ':\n" +
+"            print('[real] magic mismatch; skip'); return True\n" +
+"        arch=bytes(head[8:16]); mo,mc,io,ic=struct.unpack_from('<IIII',head,0x10)\n" +
+"        IMG_SIZE=32\n" +
+"        rows=[]\n" +
+"        if io+ic*IMG_SIZE<=sz and ic<=200000:\n" +
+"            arr=mm[io:io+ic*IMG_SIZE]\n" +
+"            for i in range(ic):\n" +
+"                pfo=struct.unpack_from('<I',arr,i*IMG_SIZE+24)[0]\n" +
+"                if pfo==0 or pfo>=sz: continue\n" +
+"                end=mm.find(b'\\x00',pfo,min(pfo+1024,sz))\n" +
+"                if end<0 or end<=pfo: continue\n" +
+"                s=bytes(mm[pfo:end]).decode('utf-8','replace')\n" +
+"                if s.startswith('/'): rows.append(s)\n" +
+"        if not rows:\n" +
+"            print('[real] no images extracted (header structure changed?); skip'); return True\n" +
+"        info=encode_blob(arch,rows)\n" +
+"        print(f'[real encode] n_image={info[\"n\"]} blob={fmt(info[\"blob_size\"])} arch={arch.decode(\"ascii\",\"replace\").strip(chr(0))}')\n" +
+"        t0=time.perf_counter_ns()\n" +
+"        base=sum(linear_count_prefix(rows,q) for q in P)+sum(linear_count_ext(rows,q) for q in E)\n" +
+"        t1=time.perf_counter_ns()\n" +
+"        t2=time.perf_counter_ns()\n" +
+"        post=sum(blob_count_prefix(q) for q in P)+sum(blob_count_ext(q) for q in E)\n" +
+"        t3=time.perf_counter_ns()\n" +
+"        diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"        sp=(t1-t0)/max(t3-t2,1)\n" +
+"        print(f'[real bench] base={(t1-t0)/1000:.1f}us hits={base}  post={(t3-t2)/1000:.1f}us hits={post}  speedup={sp:.1f}x')\n" +
+"        row={'site':'IX2','roi':'IX2_DSCD_real','baseline_ns':t1-t0,'post_ns':t3-t2,'diff_test':diff,'speedup_x':round(sp,2),'n':len(rows)}\n" +
+"        print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"        return base==post\n" +
+"    finally:\n" +
+"        try: mm.close()\n" +
+"        except Exception: pass\n" +
+"        try: os.close(fd)\n" +
+"        except Exception: pass\n" +
+"\n" +
+"if mode=='real':\n" +
+"    ok1=bench_synth(); ok2=real_probe()\n" +
+"    print(f'[result] synth={ok1} real={ok2}')\n" +
+"    sys.exit(0 if (ok1 and ok2) else 1)\n" +
+"else:\n" +
+"    ok=bench_synth()\n" +
+"    sys.exit(0 if ok else 1)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("bench_ix2_dyld_shared_cache_dict")
+        if is_hexa_bin == false && is_self == false {
+            if v == "real" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_ix2_dyld_shared_cache_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

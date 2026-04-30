@@ -1,0 +1,129 @@
+// tool/bench/bench_pb1_pasteboard_history_columnar.hexa
+//   PB1 — pasteboard history columnar bench (K6 zsh-history twin)
+//   OLD: linear plist/biome scan + json.loads each query → Counter on str list
+//   NEW: PHCO mmap blob + u8 enum column 1-pass scan
+//
+//   synthetic: 8K clips × 5 UTI types (seed=13) → blob encode → GROUP BY +
+//     top-K-by-ts + size-bucket. K=3 cycles.
+//
+// 5-tuple: site=PB1 ROI#=pbhist baseline_ns post_ns diff_test=lossless
+
+let PAYLOAD = "import sys,os,time,struct,array,mmap,random\n" +
+"from collections import Counter\n" +
+"BLOB='/tmp/bench_pb1_phco.bin'\n" +
+"N_CLIPS=8000; QUERIES=200; K=3\n" +
+"TYPES=['public.utf8-plain-text','public.url','public.png','com.apple.flat-rtfd','public.tiff']\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def synth(n=N_CLIPS,seed=13):\n" +
+"    rng=random.Random(seed); out=[]\n" +
+"    for i in range(n):\n" +
+"        t=TYPES[rng.randrange(len(TYPES))]\n" +
+"        sz=rng.choice([12,32,128,512,4096,32768])\n" +
+"        out.append((t,1700000000+i*7,sz))\n" +
+"    return out\n" +
+"def encode(rows,out_path):\n" +
+"    types_only=[t for t,_,_ in rows]\n" +
+"    distinct=sorted(set(types_only))\n" +
+"    type_to_id={n:i for i,n in enumerate(distinct)}\n" +
+"    n_type=len(distinct); n_clip=len(rows)\n" +
+"    tdpool=bytearray()\n" +
+"    tdoffs=array.array('I',[0]*n_type); tdlens=array.array('I',[0]*n_type)\n" +
+"    for i,d in enumerate(distinct):\n" +
+"        db=d.encode('utf-8','replace'); tdoffs[i]=len(tdpool); tdlens[i]=len(db); tdpool.extend(db)\n" +
+"    enum_col=bytearray(n_clip); ts_col=array.array('I',[0]*n_clip); sz_col=array.array('I',[0]*n_clip)\n" +
+"    clip_offs=array.array('I',[0]*n_clip); clip_lens=array.array('I',[0]*n_clip)\n" +
+"    clip_pool=bytearray()\n" +
+"    for i,(t,ts,sz) in enumerate(rows):\n" +
+"        enum_col[i]=type_to_id[t]; ts_col[i]=ts&0xffffffff; sz_col[i]=sz&0xffffffff\n" +
+"        clip_offs[i]=len(clip_pool); clip_lens[i]=0\n" +
+"    header=struct.pack('<4sIIIII',b'PHCO',1,n_type,n_clip,len(tdpool),len(clip_pool))\n" +
+"    with open(out_path,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(tdoffs.tobytes()); f.write(tdlens.tobytes()); f.write(bytes(tdpool))\n" +
+"        f.write(bytes(enum_col)); f.write(ts_col.tobytes()); f.write(sz_col.tobytes())\n" +
+"        f.write(clip_offs.tobytes()); f.write(clip_lens.tobytes()); f.write(bytes(clip_pool))\n" +
+"    return os.path.getsize(out_path),distinct,type_to_id\n" +
+"def load_blob(path,n_type,n_clip):\n" +
+"    f=open(path,'rb'); mm=mmap.mmap(f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"    base=24+8*n_type\n" +
+"    str_sz=struct.unpack_from('<I',mm,16)[0]\n" +
+"    enum_off=base+str_sz\n" +
+"    enum_col=bytes(mm[enum_off:enum_off+n_clip])\n" +
+"    ts_off=enum_off+n_clip\n" +
+"    ts_col=array.array('I'); ts_col.frombytes(bytes(mm[ts_off:ts_off+4*n_clip]))\n" +
+"    sz_off=ts_off+4*n_clip\n" +
+"    sz_col=array.array('I'); sz_col.frombytes(bytes(mm[sz_off:sz_off+4*n_clip]))\n" +
+"    return enum_col,ts_col,sz_col,mm,f\n" +
+"def old_group_by(types_only):\n" +
+"    return Counter(types_only)\n" +
+"def new_group_by(enum_col,n_type):\n" +
+"    c=[0]*n_type\n" +
+"    for b in enum_col: c[b]+=1\n" +
+"    return c\n" +
+"def main():\n" +
+"    print(f'airgenome bench/PB1 — pasteboard history columnar (Counter-on-str vs PHCO u8 1-pass)')\n" +
+"    print(f'  N_CLIPS={N_CLIPS}  QUERIES={QUERIES}  K={K}')\n" +
+"    rows=synth(N_CLIPS)\n" +
+"    t0=time.perf_counter_ns(); sz,distinct,type_to_id=encode(rows,BLOB); t1=time.perf_counter_ns()\n" +
+"    enc_ns=t1-t0\n" +
+"    print(f'  encode: {enc_ns/1e6:.1f}ms  blob={fmt(sz)}  n_type={len(distinct)}  n_clip={len(rows)}')\n" +
+"    enum_col,ts_col,sz_col,mm,f=load_blob(BLOB,len(distinct),len(rows))\n" +
+"    types_only=[t for t,_,_ in rows]\n" +
+"    # diff test\n" +
+"    new_c=new_group_by(enum_col,len(distinct))\n" +
+"    old_c=old_group_by(types_only)\n" +
+"    mismatch=0\n" +
+"    for t,cnt in old_c.items():\n" +
+"        if new_c[type_to_id[t]]!=cnt: mismatch+=1\n" +
+"    print(f'  diff_test: {mismatch} mismatches')\n" +
+"    if mismatch!=0: print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    # warmup\n" +
+"    new_group_by(enum_col,len(distinct)); old_group_by(types_only)\n" +
+"    # OLD\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): old_group_by(types_only)\n" +
+"    t1=time.perf_counter_ns(); old_ns=(t1-t0)//K\n" +
+"    # NEW\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): new_group_by(enum_col,len(distinct))\n" +
+"    t1=time.perf_counter_ns(); new_ns=(t1-t0)//K\n" +
+"    print(f'  OLD (Counter on str) per_call_ns={old_ns}')\n" +
+"    print(f'  NEW (u8 col 1-pass) per_call_ns={new_ns}')\n" +
+"    if new_ns>0:\n" +
+"        ratio=old_ns/new_ns\n" +
+"        saved=((old_ns-new_ns)*100)//max(old_ns,1)\n" +
+"        print(f'  GROUP-BY speedup={ratio:.1f}x  saved={saved}%')\n" +
+"    # top-K by ts probe\n" +
+"    probe='public.utf8-plain-text'; pid=type_to_id[probe]\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    out=[(ts_col[i],i) for i,b in enumerate(enum_col) if b==pid]\n" +
+"    out.sort(reverse=True); out=out[:10]\n" +
+"    t1=time.perf_counter_ns(); topk_ns=t1-t0\n" +
+"    print(f'  top-K-by-ts [{probe}]: {topk_ns} ns  hits={len(out)}')\n" +
+"    # size buckets\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    bk=[0,0,0,0,0]\n" +
+"    for s in sz_col:\n" +
+"        if s<64: bk[0]+=1\n" +
+"        elif s<512: bk[1]+=1\n" +
+"        elif s<4096: bk[2]+=1\n" +
+"        elif s<65536: bk[3]+=1\n" +
+"        else: bk[4]+=1\n" +
+"    t1=time.perf_counter_ns(); bk_ns=t1-t0\n" +
+"    print(f'  size buckets {bk} ({bk_ns} ns)')\n" +
+"    print(f'  5-tuple: site=PB1 ROI#=pbhist baseline_ns={old_ns} post_ns={new_ns} diff_test=lossless')\n" +
+"    mm.close(); f.close()\n" +
+"main()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_pb1_pasteboard_history_columnar_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

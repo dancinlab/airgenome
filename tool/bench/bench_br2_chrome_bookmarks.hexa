@@ -1,0 +1,104 @@
+// tool/bench/bench_br2_chrome_bookmarks.hexa — BR2 Chrome Bookmarks SHBF bench
+//   F18 패턴 synth 5000-bookmark dataset → CBBF encode → 100 prefix
+//   query (linear scan vs blob bisect) wall-clock 비교.
+//
+// 5-tuple: site=BR2 ROI#=BR2 baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST. R17: /usr/bin/perl alarm 120s. /usr/bin/python3 절대경로.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,array,random,subprocess\n" +
+"URLS_N=5000; QUERIES=100; TOP_K=10\n" +
+"BIN='/tmp/bench_br2_chrome_bookmarks.bin'\n" +
+"CLASSIFIER='CBBF-v1-2026-04-30'\n" +
+"DOMAINS=['github.com','google.com','stackoverflow.com','youtube.com','wikipedia.org','reddit.com','developer.mozilla.org','docs.python.org','news.ycombinator.com','apple.com','arxiv.org','x.com']\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def chrome_running():\n" +
+"    r=subprocess.run(['/usr/bin/pgrep','-lf','[Cc]hrome'],capture_output=True,timeout=3)\n" +
+"    return bool(r.stdout.strip())\n" +
+"\n" +
+"def build_dataset(n=URLS_N):\n" +
+"    rng=random.Random(43); rows=[]\n" +
+"    for i in range(n):\n" +
+"        d=DOMAINS[i%len(DOMAINS)]\n" +
+"        depth=(i//100)%9\n" +
+"        path='/'.join([f'f{rng.randrange(50)}' for _ in range(depth+1)])\n" +
+"        rows.append((f'https://{d}/{path}/bm-{i}', max(1,100-depth*10)))\n" +
+"    return rows\n" +
+"\n" +
+"def encode(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    rows=sorted(rows,key=lambda r:r[0]); n=len(rows)\n" +
+"    pool=bytearray(); offs=array.array('I',[0]*n); lens=array.array('I',[0]*n); vcs=array.array('I',[0]*n)\n" +
+"    for i,(u,v) in enumerate(rows):\n" +
+"        ub=u.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(ub); vcs[i]=int(v); pool.extend(ub)\n" +
+"    header=struct.pack('<4sIII',b'CBBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(vcs.tobytes()); f.write(pool)\n" +
+"    return time.perf_counter_ns()-t0, rows\n" +
+"\n" +
+"def old_prefix_topk(rows,prefix,k):\n" +
+"    hits=[(u,v) for (u,v) in rows if u.startswith(prefix)]\n" +
+"    hits.sort(key=lambda r:-r[1])\n" +
+"    return hits[:k]\n" +
+"\n" +
+"def new_prefix_topk(sorted_urls,vcs,prefix,k):\n" +
+"    s=bisect.bisect_left(sorted_urls,prefix)\n" +
+"    e=bisect.bisect_left(sorted_urls,prefix+'\\uffff')\n" +
+"    if e==s: return []\n" +
+"    if e-s<=k: idxs=list(range(s,e))\n" +
+"    else: idxs=heapq.nlargest(k,range(s,e),key=lambda i:vcs[i])\n" +
+"    idxs.sort(key=lambda i:-vcs[i])\n" +
+"    return [(sorted_urls[i],vcs[i]) for i in idxs]\n" +
+"\n" +
+"def diff_test(rows,sorted_urls,vcs,prefixes,k):\n" +
+"    mm=0\n" +
+"    for p in prefixes:\n" +
+"        a=old_prefix_topk(rows,p,k); b=new_prefix_topk(sorted_urls,vcs,p,k)\n" +
+"        if len(a)!=len(b) or sorted(a)!=sorted(b):\n" +
+"            mm+=1; print(f'  DIFF prefix={p} old={len(a)} new={len(b)}')\n" +
+"    return mm\n" +
+"\n" +
+"def main():\n" +
+"    print('airgenome bench/BR2 — chrome_bookmarks_shbf  (synth)')\n" +
+"    print(f'  classifier_version={CLASSIFIER}')\n" +
+"    print(f'  chrome_running={chrome_running()}  (synth-only path either way)')\n" +
+"    rows=build_dataset(URLS_N)\n" +
+"    enc_ns, sorted_rows = encode(rows)\n" +
+"    sorted_urls=[u for u,_ in sorted_rows]; vcs=[v for _,v in sorted_rows]\n" +
+"    blob_sz=os.path.getsize(BIN)\n" +
+"    print(f'  encode (sort+CBBF): {enc_ns/1e6:.1f}ms  blob={fmt(blob_sz)}  n={len(rows)}')\n" +
+"    prefixes=[f'https://{d}/' for d in DOMAINS[:7]] + ['https://github.com/f1','https://docs.python.org/f','https://x-no-such-host/']\n" +
+"    mm=diff_test(rows,sorted_urls,vcs,prefixes,TOP_K)\n" +
+"    print(f'  diff_test mismatches: {mm}/{len(prefixes)}')\n" +
+"    if mm!=0: print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES): old_prefix_topk(rows,prefixes[k%len(prefixes)],TOP_K)\n" +
+"    ns_old=time.perf_counter_ns()-t0; per_old=ns_old//QUERIES\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES): new_prefix_topk(sorted_urls,vcs,prefixes[k%len(prefixes)],TOP_K)\n" +
+"    ns_new=time.perf_counter_ns()-t0; per_new=ns_new//QUERIES\n" +
+"    print(f'  OLD (linear scan)    total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    print(f'  NEW (sorted bisect)  total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved}%')\n" +
+"    print(f'  5-tuple: site=BR2 ROI#=BR2 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"main()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_br2_chrome_bookmarks_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

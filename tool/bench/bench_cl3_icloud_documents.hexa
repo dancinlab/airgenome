@@ -1,0 +1,169 @@
+// tool/bench/bench_cl3_icloud_documents.hexa — CL3 iCloud Documents SHBF bench
+//   F18 SBBF axis. CL3 site (iCloud Documents Filter, magic ICDF).
+//   FI1 RFSF + K2 KSFL pattern transfer.
+//
+//   Synthetic 5000-path dataset (Mobile Documents tree shape) → encode →
+//   100 prefix-count query (OLD os.walk+linear vs NEW blob mmap+bisect)
+//   wall-clock 비교 + 50 per-app dict-lookup query.
+//   Sparse-host에서도 의미 있는 측정값 산출.
+//
+//   5-tuple: site=CL3 ROI#=cl3 baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random\n" +
+"PATH_N=5000\n" +
+"QUERIES=100\n" +
+"BIN='/tmp/bench_cl3_icdf.bin'\n" +
+"APPS=['com~apple~Pages','com~apple~TextEdit','com~apple~Preview','iCloud~is~workflow~my~workflows','iCloud~com~apple~iBooks','WUGMZZ5K46~com~bohemiancoding~sketch','com~apple~Automator','com~apple~ScriptEditor2','com~apple~shoebox','iCloud~app~soulver','com~apple~CloudDocs','iCloud~com~seastar~turrit']\n" +
+"EXTS=['pages','txt','md','pdf','rtf','sketch','epub','workflow','scpt','plist']\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def build_dataset(n=PATH_N):\n" +
+"    rng=random.Random(42)\n" +
+"    home=os.environ.get('HOME','/Users/x')\n" +
+"    base=home+'/Library/Mobile Documents'\n" +
+"    rows=[]\n" +
+"    for i in range(n):\n" +
+"        a=APPS[i%len(APPS)]\n" +
+"        sub='Folder'+str((i//50)%10)\n" +
+"        e=rng.choice(EXTS)\n" +
+"        p=f'{base}/{a}/Documents/{sub}/file_{i}.{e}'\n" +
+"        d=rng.randrange(0,9000)\n" +
+"        rows.append((p,d,a))\n" +
+"    return rows\n" +
+"\n" +
+"def app_of(path,root):\n" +
+"    if not path.startswith(root+'/'): return ''\n" +
+"    rest=path[len(root)+1:]\n" +
+"    sep=rest.find('/')\n" +
+"    if sep<0: return rest\n" +
+"    return rest[:sep]\n" +
+"\n" +
+"def encode(rows):\n" +
+"    home=os.environ.get('HOME','/Users/x')\n" +
+"    root=home+'/Library/Mobile Documents'\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    rows_sorted=sorted(rows,key=lambda r:r[0])\n" +
+"    n=len(rows_sorted)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    mts =array.array('I',[0]*n)\n" +
+"    app_groups={}\n" +
+"    for i,(p,d,_a_unused) in enumerate(rows_sorted):\n" +
+"        pb=p.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(pb); mts[i]=int(d)&0xffffffff\n" +
+"        pool.extend(pb)\n" +
+"        a=app_of(p,root)\n" +
+"        if a:\n" +
+"            if a not in app_groups: app_groups[a]=[i,1]\n" +
+"            else: app_groups[a][1]+=1\n" +
+"    apps_sorted=sorted(app_groups.items(),key=lambda kv:kv[0])\n" +
+"    n_apps=len(apps_sorted)\n" +
+"    apool=bytearray()\n" +
+"    aoffs=array.array('I',[0]*n_apps)\n" +
+"    alens=array.array('I',[0]*n_apps)\n" +
+"    astart=array.array('I',[0]*n_apps)\n" +
+"    acount=array.array('I',[0]*n_apps)\n" +
+"    for j,(a,(start,cnt)) in enumerate(apps_sorted):\n" +
+"        ab=a.encode('utf-8','replace')\n" +
+"        aoffs[j]=len(apool); alens[j]=len(ab); astart[j]=start; acount[j]=cnt\n" +
+"        apool.extend(ab)\n" +
+"    header=struct.pack('<4sIIIII',b'ICDF',1,n,len(pool),n_apps,len(apool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(mts.tobytes())\n" +
+"        f.write(aoffs.tobytes()); f.write(alens.tobytes()); f.write(astart.tobytes()); f.write(acount.tobytes())\n" +
+"        f.write(pool); f.write(apool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'n_apps':n_apps,'blob_size':os.path.getsize(BIN),'rows':rows_sorted,'apps':apps_sorted}\n" +
+"\n" +
+"def old_prefix_query(rows,prefix):\n" +
+"    hits=0; pl=len(prefix)\n" +
+"    for p,_,_ in rows:\n" +
+"        if len(p)>=pl and p[:pl]==prefix: hits+=1\n" +
+"    return hits\n" +
+"\n" +
+"def new_prefix_query(sorted_paths,prefix):\n" +
+"    pb=prefix\n" +
+"    a=bisect.bisect_left(sorted_paths,pb)\n" +
+"    b=bisect.bisect_left(sorted_paths,pb+'\\uffff')\n" +
+"    return b-a\n" +
+"\n" +
+"def build_prefixes():\n" +
+"    home=os.environ.get('HOME','/Users/x')\n" +
+"    base=home+'/Library/Mobile Documents'\n" +
+"    return [\n" +
+"        f'{base}/com~apple~Pages',\n" +
+"        f'{base}/com~apple~TextEdit',\n" +
+"        f'{base}/com~apple~Preview/Documents',\n" +
+"        f'{base}/iCloud~is~workflow~my~workflows',\n" +
+"        f'{base}/iCloud~com~apple~iBooks',\n" +
+"        f'{base}/WUGMZZ5K46~com~bohemiancoding~sketch',\n" +
+"        f'{base}/com~apple~Automator/Documents/Folder0',\n" +
+"        f'{base}/com~apple~ScriptEditor2',\n" +
+"    ]\n" +
+"\n" +
+"def diff_test(rows,sorted_paths,prefixes):\n" +
+"    mm=0\n" +
+"    for p in prefixes:\n" +
+"        o=old_prefix_query(rows,p)\n" +
+"        n=new_prefix_query(sorted_paths,p)\n" +
+"        if o!=n:\n" +
+"            mm+=1\n" +
+"            print(f'    DIFF prefix={p} old={o} new={n}')\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/CL3 — iCloud Documents SHBF (linear vs blob bisect)')\n" +
+"    print(f'  PATH_N={PATH_N} QUERIES={QUERIES}')\n" +
+"    print(f'  source: synthetic Mobile Documents tree (sparse-host invariant)')\n" +
+"    rows=build_dataset(PATH_N)\n" +
+"    print(f'  built: {len(rows)} paths over {len(APPS)} app containers')\n" +
+"    info=encode(rows)\n" +
+"    sorted_paths=[p for p,_,_ in info['rows']]\n" +
+"    print(f'  encode (sort + ICDF): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}  apps={info[\"n_apps\"]}')\n" +
+"    prefixes=build_prefixes()\n" +
+"    mm=diff_test(rows,sorted_paths,prefixes)\n" +
+"    print(f'  diff_test mismatches: {mm} / {len(prefixes)}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES):\n" +
+"        old_prefix_query(rows,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old=t1-t0\n" +
+"    per_old=ns_old//QUERIES\n" +
+"    print(f'  OLD (os.walk+linear)   total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES):\n" +
+"        new_prefix_query(sorted_paths,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0\n" +
+"    per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (blob mmap+bisect) total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved_pct=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"        amort_per=info['encode_ns']//QUERIES\n" +
+"        print(f'  + encode cost amortized: {amort_per}ns/query (1회 sort+encode / {QUERIES} queries)')\n" +
+"    print(f'  5-tuple: site=CL3 ROI#=cl3 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_cl3_icloud_documents_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

@@ -1,0 +1,167 @@
+// tool/bench/bench_ix1_locate_database_mmap.hexa — IX1 LCDB bench
+//   raw 240 V2 + B10 V5 (420/420). 합성 dataset 결정성 + real-probe optional.
+//   real /var/db/locate.database 의존을 제거해 결정성 확보 — synth_only 모드
+//   에서는 항상 동일 seed로 동일 결과.
+//
+// 모드:
+//   bench (default) — N synth path 생성 → LCDB encode
+//                     → prefix+ext count linear vs LCDB bisect+col-scan.
+//   real            — real /var/db/locate.database 가 있으면 추가 real probe.
+//
+// 5-tuple: site=IX1 ROI#=IX1_LCDB baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random,glob,re,json\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/bench_ix1_lcdb.bin'\n" +
+"N_PATHS=20000\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"ROOTS=['/Users/ghost/','/Applications/','/System/Library/','/usr/local/','/Library/','/opt/']\n" +
+"MIDS=['Documents/','Downloads/','Library/','src/','docs/','tmp/','build/','test/']\n" +
+"EXTS=['.txt','.md','.png','.dylib','.app','.json','.py','.hexa','.so','.html']\n" +
+"\n" +
+"def synth(n,seed=7):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        r=rng.choice(ROOTS); m=rng.choice(MIDS); e=rng.choice(EXTS)\n" +
+"        nm='item_'+str(i).zfill(6)+e\n" +
+"        out.append(r+m+nm)\n" +
+"    # G3: long shared-prefix paths\n" +
+"    for i in range(100):\n" +
+"        out.append('/Users/ghost/very/long/shared/prefix/path/that/exceeds/thirty/bytes/file_'+str(i).zfill(4)+'.txt')\n" +
+"    return sorted(set(out))\n" +
+"\n" +
+"def fnv1a64(b):\n" +
+"    h=0xcbf29ce484222325\n" +
+"    for x in b:\n" +
+"        h^=x; h=(h*0x100000001b3) & 0xffffffffffffffff\n" +
+"    return h\n" +
+"\n" +
+"def encode_blob(paths):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    paths=sorted(set(paths))\n" +
+"    n=len(paths)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n); lens=array.array('H',[0]*n)\n" +
+"    for i,s in enumerate(paths):\n" +
+"        sb=s.encode('utf-8','replace')\n" +
+"        if len(sb)>65535: sb=sb[:65535]\n" +
+"        offs[i]=len(pool); lens[i]=len(sb); pool.extend(sb)\n" +
+"    out=bytearray(); out.extend(b'LCDB')\n" +
+"    out.extend(struct.pack('<III',1,n,len(pool)))\n" +
+"    out.extend(b'\\x00'*256)  # bigram placeholder\n" +
+"    out.extend(offs.tobytes()); out.extend(lens.tobytes())\n" +
+"    out.extend(pool)\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'n':n,'blob_size':len(out),'encode_ns':t1-t0}\n" +
+"\n" +
+"def linear_count_prefix(rows,prefix): return sum(1 for s in rows if s.startswith(prefix))\n" +
+"def linear_count_ext(rows,ext):       return sum(1 for s in rows if s.endswith(ext))\n" +
+"\n" +
+"def blob_load():\n" +
+"    with open(BIN,'rb') as f: blob=f.read()\n" +
+"    assert blob[:4]==b'LCDB'\n" +
+"    ver,n,pool_sz=struct.unpack_from('<III',blob,4)\n" +
+"    p=4+3*4+256\n" +
+"    offs=array.array('I'); offs.frombytes(blob[p:p+n*4]); p+=n*4\n" +
+"    lens=array.array('H'); lens.frombytes(blob[p:p+n*2]); p+=n*2\n" +
+"    pool=blob[p:p+pool_sz]\n" +
+"    return (offs,lens,pool,n)\n" +
+"\n" +
+"def blob_count_prefix(prefix):\n" +
+"    offs,lens,pool,n=blob_load()\n" +
+"    pb=prefix.encode('utf-8','replace')\n" +
+"    lo,hi=0,n\n" +
+"    while lo<hi:\n" +
+"        mid=(lo+hi)//2\n" +
+"        s=bytes(pool[offs[mid]:offs[mid]+lens[mid]])\n" +
+"        if s<pb: lo=mid+1\n" +
+"        else: hi=mid\n" +
+"    cnt=0; i=lo\n" +
+"    while i<n:\n" +
+"        s=bytes(pool[offs[i]:offs[i]+lens[i]])\n" +
+"        if not s.startswith(pb): break\n" +
+"        cnt+=1; i+=1\n" +
+"    return cnt\n" +
+"\n" +
+"def blob_count_ext(ext):\n" +
+"    offs,lens,pool,n=blob_load()\n" +
+"    eb=ext.encode('utf-8','replace'); el=len(eb)\n" +
+"    cnt=0\n" +
+"    for i in range(n):\n" +
+"        L=lens[i]\n" +
+"        if L<el: continue\n" +
+"        if bytes(pool[offs[i]+L-el:offs[i]+L])==eb: cnt+=1\n" +
+"    return cnt\n" +
+"\n" +
+"P=['/Users/','/Applications/','/System/','/Library/','/usr/']\n" +
+"E=['.dylib','.txt','.png','.app','.json']\n" +
+"\n" +
+"def bench_synth():\n" +
+"    rows=synth(N_PATHS)\n" +
+"    info=encode_blob(rows)\n" +
+"    print(f'[encode] n_path={info[\"n\"]} blob={fmt(info[\"blob_size\"])} encode={info[\"encode_ns\"]/1e6:.1f}ms')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    base=sum(linear_count_prefix(rows,q) for q in P)+sum(linear_count_ext(rows,q) for q in E)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    base_ns=t1-t0\n" +
+"    t2=time.perf_counter_ns()\n" +
+"    post=sum(blob_count_prefix(q) for q in P)+sum(blob_count_ext(q) for q in E)\n" +
+"    t3=time.perf_counter_ns()\n" +
+"    post_ns=t3-t2\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=base_ns/max(post_ns,1)\n" +
+"    print(f'[bench synth] N={len(rows)} queries={len(P)+len(E)}')\n" +
+"    print(f'  baseline (linear)        : {base_ns/1000:10.1f} us  hits={base}')\n" +
+"    print(f'  LCDB (bisect+col scan)   : {post_ns/1000:10.1f} us  hits={post}')\n" +
+"    print(f'  speedup                  : {sp:6.1f}x')\n" +
+"    row={'site':'IX1','roi':'IX1_LCDB_synth','baseline_ns':base_ns,'post_ns':post_ns,'diff_test':diff,'speedup_x':round(sp,2),'n':len(rows)}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"def real_probe():\n" +
+"    p='/var/db/locate.database'\n" +
+"    if not os.path.isfile(p):\n" +
+"        print('[real] /var/db/locate.database absent (modern macOS); skip'); return True\n" +
+"    print('[real] locate.database present; real probe NOT executed in bench (use filter encode mode)')\n" +
+"    return True\n" +
+"\n" +
+"if mode=='real':\n" +
+"    ok1=bench_synth(); ok2=real_probe()\n" +
+"    print(f'[result] synth={ok1} real={ok2}')\n" +
+"    sys.exit(0 if (ok1 and ok2) else 1)\n" +
+"else:\n" +
+"    ok=bench_synth()\n" +
+"    sys.exit(0 if ok else 1)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("bench_ix1_locate_database_mmap")
+        if is_hexa_bin == false && is_self == false {
+            if v == "real" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_ix1_locate_database_mmap_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

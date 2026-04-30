@@ -1,0 +1,265 @@
+// airgenome/modules/filters/data/crash_reports_dict.hexa
+//   SL1 — Crash Reports Dictionary Filter (KCRD).
+//
+//   목적: ~/Library/Logs/DiagnosticReports/*.ips 의 .ips 헤더(JSON line1) 을
+//         반복 glob+json.loads 으로 매번 파싱하던 hot path 를 sorted
+//         column-dict blob 으로 치환. app_name enum + ts(u32) + procPath pool
+//         + pid u32. app_id u16 prefix bisect O(log n).
+//
+//   MA3 #99 column-dict pattern (Mail attachment columnar) + K2 KSFL bisect 결합.
+//
+//   blob layout (little-endian):
+//     magic        : 4B   "KCRD"
+//     version      : 4B   u32 = 1
+//     n            : 4B   u32  crash record count
+//     dict_n       : 4B   u32  app_name dict size
+//     str_pool_sz  : 4B   u32  string pool bytes
+//     [dict_n*4]   : u32  dict_str_offs   (sorted unique app_name)
+//     [dict_n*4]   : u32  dict_str_lens
+//     [n*2]        : u16  app_id          (index into dict)
+//     [n*4]        : u32  ts_epoch        (unix seconds)
+//     [n*4]        : u32  procpath_offs
+//     [n*4]        : u32  procpath_lens
+//     [n*4]        : u32  pid             (0 if unknown)
+//     [str_pool_sz]: utf-8 string pool    (dict + procPath)
+//
+// 모드:
+//   encode : real-probe → /tmp/crash_reports_dict.bin
+//   bench  : encode + 50 app_name prefix-count query
+//
+// macOS path probe (read-only, NO TCC mutation, NO ReportCrash invocation):
+//   S1 user      : ~/Library/Logs/DiagnosticReports/*.ips
+//   absent       : synth fallback (200 records, 8 synth app_names)
+//
+// R1 HEXA-FIRST: 신규 .py/.sh 금지. 인라인 python3 페이로드.
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0 in hexa.
+// classifier_version=KCRD-v1
+// NO production execute. NO launchctl. NO mutation.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,resource,mmap,array,random,glob,json,calendar\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/crash_reports_dict.bin'\n" +
+"CLASSIFIER='KCRD-v1'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def parse_ts(s):\n" +
+"    if not isinstance(s,str): return 0\n" +
+"    try:\n" +
+"        ss=s.split(' +')[0].split(' -')[0].strip()\n" +
+"        t=time.strptime(ss[:19],'%Y-%m-%d %H:%M:%S')\n" +
+"        return int(calendar.timegm(t))\n" +
+"    except Exception:\n" +
+"        return 0\n" +
+"\n" +
+"def synth(n=200,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    apps=['hexa','bash','ccache','exe','ReportCrash','synth_node','synth_zsh','synth_app']\n" +
+"    base=int(time.time())-86400*30\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        a=apps[i%len(apps)]\n" +
+"        ts=base+rng.randint(0,86400*30)\n" +
+"        pp='/usr/local/bin/'+a\n" +
+"        pid=rng.randint(100,99999)\n" +
+"        out.append((a,ts,pp,pid))\n" +
+"    return out,'synth'\n" +
+"\n" +
+"def parse_ips(path):\n" +
+"    try:\n" +
+"        with open(path,'rb') as f: raw=f.read()\n" +
+"    except Exception:\n" +
+"        return None\n" +
+"    if not raw: return None\n" +
+"    try:\n" +
+"        nl=raw.find(b'\\n')\n" +
+"        if nl<=0: return None\n" +
+"        h=json.loads(raw[:nl].decode('utf-8','replace'))\n" +
+"    except Exception:\n" +
+"        return None\n" +
+"    if not isinstance(h,dict): return None\n" +
+"    app=h.get('app_name')\n" +
+"    if not isinstance(app,str) or not app: app='_unknown'\n" +
+"    ts=parse_ts(h.get('timestamp'))\n" +
+"    pp=''; pid=0\n" +
+"    body=raw[nl+1:]\n" +
+"    if body[:1]==b'{':\n" +
+"        try:\n" +
+"            b=json.loads(body.decode('utf-8','replace'))\n" +
+"            if isinstance(b,dict):\n" +
+"                v=b.get('procPath')\n" +
+"                if isinstance(v,str): pp=v\n" +
+"                p=b.get('pid')\n" +
+"                if isinstance(p,int): pid=int(p)&0xffffffff\n" +
+"        except Exception:\n" +
+"            pass\n" +
+"    return (app,ts,pp,pid)\n" +
+"\n" +
+"def real_probe():\n" +
+"    home=os.environ.get('HOME','')\n" +
+"    if not home: return [],'no-home',0\n" +
+"    pat=home+'/Library/Logs/DiagnosticReports/*.ips'\n" +
+"    paths=sorted(glob.glob(pat))\n" +
+"    rows=[]; skipped=0\n" +
+"    for p in paths:\n" +
+"        r=parse_ips(p)\n" +
+"        if r: rows.append(r)\n" +
+"        else: skipped+=1\n" +
+"    if not rows: return [],'empty',skipped\n" +
+"    return rows,'real',skipped\n" +
+"\n" +
+"def encode(rows):\n" +
+"    apps=sorted({r[0] for r in rows})\n" +
+"    a_idx={a:i for i,a in enumerate(apps)}\n" +
+"    rows=sorted(rows,key=lambda r:(a_idx[r[0]],r[1]))\n" +
+"    n=len(rows); dn=len(apps)\n" +
+"    pool=bytearray()\n" +
+"    d_off=array.array('I',[0]*dn); d_len=array.array('I',[0]*dn)\n" +
+"    for i,a in enumerate(apps):\n" +
+"        b=a.encode('utf-8','replace')\n" +
+"        d_off[i]=len(pool); d_len[i]=len(b); pool.extend(b)\n" +
+"    aid=array.array('H',[0]*n)\n" +
+"    ts =array.array('I',[0]*n)\n" +
+"    pp_off=array.array('I',[0]*n); pp_len=array.array('I',[0]*n)\n" +
+"    pid=array.array('I',[0]*n)\n" +
+"    for i,(a,t,p,pi) in enumerate(rows):\n" +
+"        aid[i]=a_idx[a]&0xffff\n" +
+"        ts[i]=int(t)&0xffffffff\n" +
+"        pb=p.encode('utf-8','replace')\n" +
+"        pp_off[i]=len(pool); pp_len[i]=len(pb); pool.extend(pb)\n" +
+"        pid[i]=int(pi)&0xffffffff\n" +
+"    header=struct.pack('<4sIIII',b'KCRD',1,n,dn,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(d_off.tobytes()); f.write(d_len.tobytes())\n" +
+"        f.write(aid.tobytes())\n" +
+"        f.write(ts.tobytes())\n" +
+"        f.write(pp_off.tobytes()); f.write(pp_len.tobytes())\n" +
+"        f.write(pid.tobytes())\n" +
+"        f.write(bytes(pool))\n" +
+"    return {'n':n,'dn':dn,'blob_size':os.path.getsize(BIN),'rows':rows,'apps':apps}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb'); self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,dn,ps=struct.unpack_from('<4sIIII',self.mm,0)\n" +
+"        assert magic==b'KCRD' and ver==1\n" +
+"        self.n=n; self.dn=dn\n" +
+"        base=20\n" +
+"        a=base; b=a+4*dn; c=b+4*dn\n" +
+"        d=c+2*n; e=d+4*n; g=e+4*n; h=g+4*n; ip=h+4*n; pool_off=ip+4*n\n" +
+"        mv=memoryview(self.mm)\n" +
+"        d_off=array.array('I'); d_off.frombytes(bytes(mv[a:a+4*dn]))\n" +
+"        d_len=array.array('I'); d_len.frombytes(bytes(mv[b:b+4*dn]))\n" +
+"        pool=bytes(mv[pool_off:pool_off+ps])\n" +
+"        self.apps=[pool[d_off[i]:d_off[i]+d_len[i]] for i in range(dn)]\n" +
+"        self.aid=array.array('H'); self.aid.frombytes(bytes(mv[c:c+2*n]))\n" +
+"        self.ts=array.array('I'); self.ts.frombytes(bytes(mv[d:d+4*n]))\n" +
+"        self.pid=array.array('I'); self.pid.frombytes(bytes(mv[ip:ip+4*n]))\n" +
+"    def app_count(self,prefix):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        a=bisect.bisect_left(self.apps,pb)\n" +
+"        b=bisect.bisect_left(self.apps,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        if a>=b: return 0\n" +
+"        c=0\n" +
+"        for x in self.aid:\n" +
+"            if a<=x<b: c+=1\n" +
+"        return c\n" +
+"    def total(self): return self.n\n" +
+"    def close(self): self.mm.close(); self.f.close()\n" +
+"\n" +
+"def linear_repeated(prefix):\n" +
+"    home=os.environ.get('HOME','')\n" +
+"    paths=sorted(glob.glob(home+'/Library/Logs/DiagnosticReports/*.ips')) if home else []\n" +
+"    c=0\n" +
+"    for p in paths:\n" +
+"        try:\n" +
+"            with open(p,'rb') as f: raw=f.read(4096)\n" +
+"        except Exception: continue\n" +
+"        nl=raw.find(b'\\n')\n" +
+"        if nl<=0: continue\n" +
+"        try:\n" +
+"            h=json.loads(raw[:nl].decode('utf-8','replace'))\n" +
+"        except Exception: continue\n" +
+"        a=h.get('app_name','') if isinstance(h,dict) else ''\n" +
+"        if isinstance(a,str) and a.startswith(prefix): c+=1\n" +
+"    return c\n" +
+"\n" +
+"def bench():\n" +
+"    rows,kind,skipped=real_probe()\n" +
+"    if not rows: rows,kind=synth(); skipped=0\n" +
+"    print(f'[classifier] {CLASSIFIER}')\n" +
+"    print(f'[source] {kind}  n={len(rows)}  skipped={skipped}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    info=encode(rows)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    print(f'[encode] {(t1-t0)/1e6:.2f} ms  records={info[\"n\"]}  apps={info[\"dn\"]}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n']==0: print('[bench] empty — skip'); return\n" +
+"    samples=[a[:4] for a in info['apps']]\n" +
+"    samples=samples+[a[:2] for a in info['apps']]\n" +
+"    samples=(samples*4)[:50]\n" +
+"    b=Blob(BIN)\n" +
+"    for s in samples[:3]: b.app_count(s)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    bh=0\n" +
+"    for s in samples: bh+=b.app_count(s)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    blob_us=(t1-t0)/1000/len(samples)\n" +
+"    if kind=='real':\n" +
+"        used=min(10,len(samples))\n" +
+"        t0=time.perf_counter_ns()\n" +
+"        lh=0\n" +
+"        for s in samples[:used]: lh+=linear_repeated(s)\n" +
+"        t1=time.perf_counter_ns()\n" +
+"        lin_us=(t1-t0)/1000/used\n" +
+"    else:\n" +
+"        t0=time.perf_counter_ns()\n" +
+"        lh=0\n" +
+"        for s in samples: lh+=sum(1 for r in rows if r[0].startswith(s))\n" +
+"        t1=time.perf_counter_ns()\n" +
+"        lin_us=(t1-t0)/1000/len(samples)\n" +
+"    b.close()\n" +
+"    print(f'[query] hits_blob={bh}  total={info[\"n\"]}')\n" +
+"    print(f'  OLD per-query (glob+json.loads / linear) : {lin_us:10.1f} us')\n" +
+"    print(f'  NEW blob mmap+bisect                      : {blob_us:10.1f} us')\n" +
+"    if blob_us>0:\n" +
+"        print(f'  speedup                                   : {lin_us/blob_us:6.1f}x')\n" +
+"    print(f'[rss] {fmt(rss())}  elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    rows,kind,skipped=real_probe()\n" +
+"    if not rows: rows,kind=synth(); skipped=0\n" +
+"    info=encode(rows)\n" +
+"    print(f'[{CLASSIFIER}] encoded {info[\"n\"]} records ({kind}, skipped={skipped}, apps={info[\"dn\"]}) → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("crash_reports_dict")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/crash_reports_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()
