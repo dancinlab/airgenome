@@ -28,21 +28,22 @@
 //
 // Action types (raw 168 minimum-viable):
 //   activate-app: 2-state activate-only on the target app (user mandate
-//                  2026-04-30 "이미 실행되있으면 활성화" / hide-on-repeat
-//                  REJECTED):
+//                  2026-04-30 "이미 실행되있으면 활성화" / no-hide):
 //                  (a) not running       → launch via NSWorkspace + activate
 //                  (b) running, inactive → activate (bring to front)
 //                  (c) running, active   → no-op (already focused)
-//                  Earlier `toggle-app` 3-state cycle was renamed and the
-//                  hide-when-active branch removed per direct user spec.
-//   show-desktop: post synthetic F11 keydown/up to delegate to macOS
-//                  Mission Control "Show Desktop" hotkey, which is itself
-//                  a toggle (press = hide windows, press again = restore).
-//                  Repeated ⌃D therefore toggles desktop visibility. Requires
-//                  user to have F11 bound to Show Desktop (default on
-//                  macOS). raw 91 honest C3: if user unbound F11 in Desktop
-//                  & Dock settings, this action becomes a no-op silently
-//                  — no fallback in this raw 168 minimum-viable iteration.
+//                  Use this for "switcher" hotkeys where repeat-press should
+//                  not hide (e.g. ⌃Q→Void, ⌃W→Safari, ⌃F→Finder).
+//   toggle-app:   3-state activate-or-hide on the target app (user mandate
+//                  2026-04-30 ⌃R 메모 토글):
+//                  (a) not running       → launch via NSWorkspace + activate
+//                  (b) running, inactive → activate (bring to front)
+//                  (c) running, active   → hide (NSRunningApplication.hide)
+//                  Use this for "popover" hotkeys where the second press
+//                  should dismiss the panel (e.g. ⌃R→Notes scratchpad).
+//   show-desktop: invoke Mission Control's native Show Desktop via private
+//                  CoreDockSendNotification "com.apple.showdesktop.awake".
+//                  Inherent toggle — system tracks desktop state.
 //
 // Hotkey conflict policy: CGEventTap consumes matched events (return NULL
 // from tap callback), so user-bound combos OVERRIDE the focused app's
@@ -62,7 +63,7 @@ extern void airgenome_hotkey_load_bindings(void);
 //   keycode    NSNumber (int kVK_*)
 //   modifiers  NSNumber (CGEventFlags packed)
 //   target     NSString (bundle path; absent for non-app actions)
-//   action     NSString ("activate-app" | "show-desktop")
+//   action     NSString ("activate-app" | "toggle-app" | "show-desktop")
 //   spec       NSString (original "ctrl+q" form, for diagnostic logs)
 static NSMutableArray<NSDictionary *> *g_hotkey_bindings = nil;
 
@@ -143,13 +144,11 @@ void airgenome_hotkey_load_bindings(void) {
         NSString *spec   = b[@"hotkey"];
         NSString *target = b[@"target"];
         NSString *action = b[@"action"] ?: @"activate-app";
-        // Backwards-compat alias: legacy "toggle-app" configs map to
-        // activate-app since that's the post-mandate semantics.
-        if ([action isEqualToString:@"toggle-app"]) action = @"activate-app";
         if (![spec isKindOfClass:[NSString class]]) continue;
-        if ([action isEqualToString:@"activate-app"]
-            && ![target isKindOfClass:[NSString class]]) {
-            NSLog(@"[airgenome_hotkey] activate-app missing target: %@", spec);
+        BOOL needsTarget = [action isEqualToString:@"activate-app"]
+                        || [action isEqualToString:@"toggle-app"];
+        if (needsTarget && ![target isKindOfClass:[NSString class]]) {
+            NSLog(@"[airgenome_hotkey] %@ missing target: %@", action, spec);
             continue;
         }
         int kc = 0;
@@ -175,19 +174,85 @@ void airgenome_hotkey_load_bindings(void) {
 }
 
 // Find the running NSRunningApplication for a bundle path. Match by
-// standardized bundleURL path (resolves trailing slash, ./.., symlinks).
-// Returns nil if the app isn't currently running.
+// canonical (symlink-resolved) bundleURL path. Tahoe-26 surfaces apps in
+// the System cryptex (Safari at /System/Volumes/Preboot/Cryptexes/App/
+// System/Applications/Safari.app) via a /Applications/Safari.app symlink;
+// URLByStandardizingPath alone leaves the user-side symlink, so the
+// running-app's canonical bundle path didn't match the binding's
+// /Applications/Safari.app — find_running returned nil even though Safari
+// was up, and every ⌃W re-entered the launch branch (NSWorkspace is
+// idempotent so this returned the same pid each time without surfacing
+// an error). URLByResolvingSymlinksInPath collapses the cryptex symlink
+// so both sides reduce to the same Cryptexes/Preboot path.
 static NSRunningApplication *hotkey_find_running(NSString *targetPath) {
     NSURL *targetURL = [NSURL fileURLWithPath:targetPath];
-    NSString *target = [[targetURL URLByStandardizingPath] path];
+    NSString *target = [[[targetURL URLByResolvingSymlinksInPath]
+                         URLByStandardizingPath] path];
     for (NSRunningApplication *a in
          [[NSWorkspace sharedWorkspace] runningApplications]) {
         NSURL *bundle = a.bundleURL;
         if (!bundle) continue;
-        NSString *p = [[bundle URLByStandardizingPath] path];
+        NSString *p = [[[bundle URLByResolvingSymlinksInPath]
+                        URLByStandardizingPath] path];
         if ([p isEqualToString:target]) return a;
     }
     return nil;
+}
+
+// Single-TCC-grant activate/hide path — no AppleEvents triggered.
+//
+// User mandate 2026-04-30 "시스템 폴더 하나허용으로 fix" — N target apps
+// previously caused N separate "airgenome would like to control X"
+// dialogs (kTCCServiceAppleEvents per target). Both primitives below
+// route through APIs that do NOT send AppleEvents, so only the existing
+// kTCCServiceAccessibility grant (already required for the CGEventTap)
+// is needed.
+//
+// activate: NSRunningApplication.activateFromApplication:options: (macOS
+// 14+) wraps the canonical private SkyLight call _SLPSSetFrontProcess-
+// WithOptions(&psn, 0, kCPSUserGenerated) — same path yabai uses
+// directly via dlsym. No AppleEvents path; just a CGS message to
+// WindowServer. Confirmed via tcc-log inspection on Tahoe-26.
+//
+// hide: AX kAXHiddenAttribute=true on the application AXUIElement. Goes
+// through Apple's AX framework (HIServices), which is bound to
+// kTCCServiceAccessibility — the same grant that already authorizes
+// airgenome's CGEventTap. NSRunningApplication.hide was REJECTED here
+// because it sends kAEHide via the AppleEvents manager, prompting
+// per-target. raw 178 stable DR: AX is a single grant covering all apps.
+static void hotkey_ax_hide(pid_t pid) {
+    AXUIElementRef appEl = AXUIElementCreateApplication(pid);
+    if (!appEl) return;
+    AXUIElementSetAttributeValue(appEl, kAXHiddenAttribute, kCFBooleanTrue);
+    CFRelease(appEl);
+}
+
+static void hotkey_activate_running(NSRunningApplication *app) {
+    if (app.isHidden) {
+        AXUIElementRef appEl =
+            AXUIElementCreateApplication(app.processIdentifier);
+        if (appEl) {
+            AXUIElementSetAttributeValue(appEl, kAXHiddenAttribute,
+                                         kCFBooleanFalse);
+            CFRelease(appEl);
+        }
+    }
+    // NSApplicationActivateAllWindows: app becomes frontmost AND every
+    // window is raised. Without it, options:0 leaves windows un-raised —
+    // app is "active" (menu bar swaps) but no visible window surfaces if
+    // the focused one was minimized / hidden / on another Space. User
+    // report 2026-04-30 "ctrl+w 누르면 갑자기 비활성화" matched this:
+    // Safari became active but no window came forward.
+    if (@available(macOS 14.0, *)) {
+        [app activateFromApplication:[NSRunningApplication currentApplication]
+                             options:NSApplicationActivateAllWindows];
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        [app activateWithOptions:NSApplicationActivateIgnoringOtherApps
+                                 | NSApplicationActivateAllWindows];
+#pragma clang diagnostic pop
+    }
 }
 
 // activate-app: not-running → launch+activate / running → activate.
@@ -216,16 +281,37 @@ static void hotkey_activate_app(NSString *targetPath) {
         NSLog(@"[airgenome_hotkey] %@ → already active (no-op)", targetPath);
         return;
     }
-    if (app.isHidden) [app unhide];
-    if (@available(macOS 14.0, *)) {
-        [app activateFromApplication:[NSRunningApplication currentApplication]
-                             options:0];
-    } else {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
-#pragma clang diagnostic pop
+    hotkey_activate_running(app);
+    NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", targetPath);
+}
+
+// toggle-app: same as activate-app for states (a)+(b), but state (c) hides
+// instead of no-op. User mandate 2026-04-30 specifically for ⌃R → Notes
+// scratchpad: pressing again from inside Notes should dismiss it.
+static void hotkey_toggle_app(NSString *targetPath) {
+    NSRunningApplication *app = hotkey_find_running(targetPath);
+    if (!app) {
+        NSURL *url = [NSURL fileURLWithPath:targetPath];
+        NSWorkspaceOpenConfiguration *cfg =
+            [NSWorkspaceOpenConfiguration configuration];
+        cfg.activates = YES;
+        [[NSWorkspace sharedWorkspace]
+            openApplicationAtURL:url
+                   configuration:cfg
+               completionHandler:^(NSRunningApplication *r, NSError *e) {
+            if (e) NSLog(@"[airgenome_hotkey] toggle launch failed: %@ (%@)",
+                         targetPath, e.localizedDescription);
+            else   NSLog(@"[airgenome_hotkey] toggle launched: %@ pid=%d",
+                         targetPath, r.processIdentifier);
+        }];
+        return;
     }
+    if (app.isActive) {
+        hotkey_ax_hide(app.processIdentifier);
+        NSLog(@"[airgenome_hotkey] %@ → hide (was active)", targetPath);
+        return;
+    }
+    hotkey_activate_running(app);
     NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", targetPath);
 }
 
@@ -278,6 +364,10 @@ BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
         if ([action isEqualToString:@"activate-app"]) {
             hotkey_activate_app(b[@"target"]);
             return YES;  // CONSUME — global override per user mandate
+        }
+        if ([action isEqualToString:@"toggle-app"]) {
+            hotkey_toggle_app(b[@"target"]);
+            return YES;
         }
         if ([action isEqualToString:@"show-desktop"]) {
             hotkey_show_desktop();
