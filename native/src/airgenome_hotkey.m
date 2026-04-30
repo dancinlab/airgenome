@@ -55,6 +55,30 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <Carbon/Carbon.h>
 
+// SkyLight private API — canonical app activation from background process.
+// Symbol still exported on Tahoe-26 SDK (verified at SkyLight.tbd line 928).
+// Used by yabai/chunkwm/skhd for ~10 years across macOS 10.x → 26.
+//
+// Why we need this: AppKit activation paths (NSRunningApplication.activate-
+// FromApplication: / NSWorkspace.openApplicationAtURL:) go through "polite
+// yield" policy on macOS 14+/Tahoe-26 — when called from a background
+// daemon, the OS silently drops the request. Symptom: ⌃R does NOTHING
+// (Notes neither raises nor menu-bar-swaps). User report 2026-04-30
+// "아예 안나오는 문제 였어". SkyLight bypasses AppKit entirely and posts
+// to WindowServer directly with kCPSUserGenerated flag, which marks the
+// activation as user-initiated → no background-source rate-limiting.
+//
+// raw 213 Tier-C exempt: this module already calls private API (Core-
+// DockSendNotification for show-desktop, line 414). Single TCC grant
+// preserved: SkyLight call is in-process, no AppleEvents, no admin auth.
+extern CGError _SLPSSetFrontProcessWithOptions(ProcessSerialNumber *psn,
+                                                uint32_t wid, uint32_t mode);
+// kCPSUserGenerated 0x200: marks activation as user-initiated → bypasses
+// background-source "polite yield". Stable Carbon constant since 10.x.
+#ifndef kCPSUserGenerated
+#define kCPSUserGenerated 0x200
+#endif
+
 // Public API — extern'd by airgenome_tap.m and main() startup.
 extern BOOL airgenome_hotkey_handle_keydown(CGEventRef event);
 extern void airgenome_hotkey_load_bindings(void);
@@ -299,23 +323,25 @@ static void hotkey_ax_hide(pid_t pid) {
     CFRelease(appEl);
 }
 
-// User report 2026-04-30 "ctrl+r 메모 안뜰때가 있거든 / 뒤로 활성화 되는것
-// 같아": NSRunningApplication.activateFromApplication:options: is "polite"
-// on macOS 14+/Tahoe-26 — when the source process (airgenome daemon) is
-// not currently frontmost, the OS swaps the menu bar (target becomes
-// active) but refuses to raise the target's windows above the previously-
-// frontmost app. Result: Notes is "active" yet visually hidden behind
-// Safari/Finder. NSApplicationActivateAllWindows alone does not fix this;
-// the activation token itself is what's missing.
+// User report 2026-04-30 "ctrl+r 메모 아예 안나오는 문제 였어": AppKit
+// activation (activateFromApplication: / NSWorkspace.openApplicationAtURL:)
+// silently drops on macOS 14+/Tahoe-26 when called from a background
+// daemon — the OS "polite yield" policy decides Notes shouldn't be
+// activated and produces NO visible state change (no menu bar swap, no
+// raise, no error).
 //
-// Fix: route activation through NSWorkspace.openApplicationAtURL: with
-// cfg.activates=YES — same API the not-running-launch path already uses
-// (line 337). LaunchServices issues a system-level activation token, so
-// the raise survives even when airgenome is a background process. On an
-// already-running app, this is a no-op-launch + activate (no second
-// instance, no relaunch). raw 274-294 single-TCC-grant property is
-// preserved: NSWorkspace.open routes through LaunchServices, NOT
-// AppleEvents — same as the existing launch path.
+// Canonical fix (yabai/chunkwm/skhd pattern, ~10 years stable): post
+// directly to WindowServer via SkyLight's _SLPSSetFrontProcessWithOptions
+// with kCPSUserGenerated flag. This bypasses AppKit entirely; the flag
+// marks the activation as user-initiated so WindowServer doesn't apply
+// background-source rate-limiting. PSN comes from Carbon's GetProcess-
+// ForPID, which is deprecated since 10.9 but still functional on
+// Tahoe-26 (yabai uses the same family of Carbon process APIs).
+//
+// raw 91 honest C3: if GetProcessForPID fails (extremely unlikely for a
+// process we just discovered via NSRunningApplication), fall back to
+// NSWorkspace.openApplicationAtURL: — even a "polite" attempt is better
+// than silent failure.
 static void hotkey_activate_running(NSRunningApplication *app) {
     if (app.isHidden) {
         AXUIElementRef appEl =
@@ -326,23 +352,30 @@ static void hotkey_activate_running(NSRunningApplication *app) {
             CFRelease(appEl);
         }
     }
-    NSURL *url = app.bundleURL;
-    if (!url) {
-        // Fallback if bundleURL is unexpectedly nil (shouldn't happen for
-        // app-bundle processes; defensive only). raw 91 honest C3.
-        if (@available(macOS 14.0, *)) {
-            [app activateFromApplication:
-                [NSRunningApplication currentApplication]
-                                 options:NSApplicationActivateAllWindows];
-        } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            [app activateWithOptions:NSApplicationActivateIgnoringOtherApps
-                                     | NSApplicationActivateAllWindows];
+    ProcessSerialNumber psn = { 0, 0 };
+    OSStatus s = GetProcessForPID(app.processIdentifier, &psn);
 #pragma clang diagnostic pop
+    if (s == noErr) {
+        CGError e = _SLPSSetFrontProcessWithOptions(&psn, 0,
+                                                    kCPSUserGenerated);
+        if (e == kCGErrorSuccess) {
+            NSLog(@"[airgenome_hotkey] %@ → activate via SkyLight (pid=%d)",
+                  app.bundleIdentifier, app.processIdentifier);
+            return;
         }
-        return;
+        NSLog(@"[airgenome_hotkey] SkyLight activate err=%d, falling back",
+              e);
+    } else {
+        NSLog(@"[airgenome_hotkey] GetProcessForPID(%d) err=%d, falling back",
+              app.processIdentifier, (int)s);
     }
+    // Fallback: NSWorkspace.openApplicationAtURL: with cfg.activates=YES.
+    // LaunchServices path — less reliable from background but better than
+    // nothing if SkyLight ever stops working on a future macOS.
+    NSURL *url = app.bundleURL;
+    if (!url) return;
     NSWorkspaceOpenConfiguration *cfg =
         [NSWorkspaceOpenConfiguration configuration];
     cfg.activates = YES;
@@ -350,7 +383,7 @@ static void hotkey_activate_running(NSRunningApplication *app) {
         openApplicationAtURL:url
                configuration:cfg
            completionHandler:^(NSRunningApplication *r, NSError *e) {
-        if (e) NSLog(@"[airgenome_hotkey] activate failed: %@ (%@)",
+        if (e) NSLog(@"[airgenome_hotkey] fallback activate failed: %@ (%@)",
                      url.path, e.localizedDescription);
         (void)r;
     }];

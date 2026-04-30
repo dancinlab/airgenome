@@ -33,8 +33,18 @@ LOG_DIR       = $(HOME)/Library/Logs/$(APP_NAME).app
 # both ARC-clean). NEVER drop -fobjc-arc without re-auditing every static
 # strong-typed pointer in the .m sources for retain semantics.
 CFLAGS        = -O2 -Wall -Wextra -ObjC -fobjc-arc
+# SkyLight is a private framework — added 2026-04-30 for canonical app
+# activation from background process (_SLPSSetFrontProcessWithOptions in
+# airgenome_hotkey.m). On Tahoe-26 the binary lives in the dyld shared
+# cache and only SkyLight.tbd ships on disk; the .tbd's symbol export
+# list is what the linker resolves against (verified at SDK path
+# System/Library/PrivateFrameworks/SkyLight.framework/SkyLight.tbd).
+# Required by yabai/chunkwm/skhd for ~10 years; symbol stable across
+# macOS 10.x → 26. raw 213 Tier-C exempt: in-process private API call,
+# no admin auth, no shell-out.
 FRAMEWORKS    = -framework ApplicationServices -framework Carbon \
-                -framework Cocoa -framework AppKit -framework IOKit
+                -framework Cocoa -framework AppKit -framework IOKit \
+                -F /System/Library/PrivateFrameworks -framework SkyLight
 
 .PHONY: all build app icon install uninstall status logs selftest \
         restart rebuild clean setup-signing launcher-status launcher-restore \
