@@ -381,5 +381,3 @@ fn main() {
 
     let _ = exec("rm -f " + LOCK)
 }
-
-main()

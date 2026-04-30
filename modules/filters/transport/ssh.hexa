@@ -282,5 +282,3 @@ fn main() {
     println("ssh_gate: unknown command '" + cmd + "'")
     println("Usage: ssh_gate <status|test|exec> [host] [command]")
 }
-
-main()
