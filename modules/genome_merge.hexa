@@ -93,5 +93,3 @@ fn main() -> void {
     let n = run_merge()
     println("genome_merge done — total=" + to_string(n))
 }
-
-main()
