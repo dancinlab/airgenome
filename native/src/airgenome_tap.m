@@ -95,6 +95,7 @@ static int g_debug       = 0;   // set via AIRG_TAP_DEBUG=1, logs every event
 extern BOOL airgenome_launcher_handle_keydown(CGEventRef event);
 // hive raw 209 sister axis - declared in airgenome_winctl.m, same binary.
 extern BOOL airgenome_winctl_handle_keydown(CGEventRef event);
+extern void airgenome_winctl_reset_dock_tilesize(void);
 
 // Magnet thresholds (pixels). Generous defaults for multi-monitor and
 // 4K/5K layouts -- a 20px reach feels invisible at high pixel densities.
@@ -910,6 +911,93 @@ static NSString *menubar_state_path(void) {
     return [menubar_state_dir() stringByAppendingPathComponent:@"menubar.state"];
 }
 
+// raw 180 capture/restore: screencapture shadow-disable on startup.
+// Disables the ~50px drop shadow that macOS adds to ⌘⇧4-space window
+// screenshots. Captures the ORIGINAL pref value to system_state.plist on
+// first run only (later toggle-during-uptime won't be misrecorded as
+// original). Idempotent: re-call with already-true pref is a fast skip.
+//
+// No SystemUIServer kill needed — screencapture reads the pref live on
+// each invocation (verified macOS 11+). Avoiding the kill prevents the
+// menubar-icons flicker that would otherwise happen every airgenome boot.
+static void apply_screenshot_shadow_disable(void) {
+    NSString *statePath = [menubar_state_dir()
+        stringByAppendingPathComponent:@"system_state.plist"];
+    NSMutableDictionary *st = [NSMutableDictionary
+        dictionaryWithContentsOfFile:statePath];
+    if (!st) st = [NSMutableDictionary dictionary];
+    if (!st[@"screencapture_shadow_disable_original"]) {
+        CFPropertyListRef cur = CFPreferencesCopyAppValue(
+            CFSTR("disable-shadow"), CFSTR("com.apple.screencapture"));
+        if (cur && CFGetTypeID(cur) == CFBooleanGetTypeID()) {
+            st[@"screencapture_shadow_disable_original"] =
+                CFBooleanGetValue((CFBooleanRef)cur) ? @"true" : @"false";
+        } else {
+            st[@"screencapture_shadow_disable_original"] = @"absent";
+        }
+        if (cur) CFRelease(cur);
+        [[NSFileManager defaultManager] createDirectoryAtPath:menubar_state_dir()
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:NULL];
+        [st writeToFile:statePath atomically:YES];
+    }
+    CFPropertyListRef cur = CFPreferencesCopyAppValue(
+        CFSTR("disable-shadow"), CFSTR("com.apple.screencapture"));
+    BOOL already = (cur && CFGetTypeID(cur) == CFBooleanGetTypeID()
+                    && CFBooleanGetValue((CFBooleanRef)cur));
+    if (cur) CFRelease(cur);
+    if (already) {
+        fprintf(stderr, "screencapture: shadow already disabled (skip)\n");
+        fflush(stderr);
+        return;
+    }
+    CFPreferencesSetAppValue(CFSTR("disable-shadow"), kCFBooleanTrue,
+                             CFSTR("com.apple.screencapture"));
+    CFPreferencesAppSynchronize(CFSTR("com.apple.screencapture"));
+    fprintf(stderr, "screencapture: shadow disabled (window screenshots)\n");
+    fflush(stderr);
+}
+
+// raw 180 capture/restore: dock tilesize reset on FIRST install only.
+// Unlike screenshot-shadow (always-true preference), tilesize is something
+// the user may legitimately customize after install — so this runs once,
+// gated by a sentinel in system_state.plist, then NEVER again on subsequent
+// boots. Manual ⌥6 still works any time.
+//
+// Capture original tilesize before write so a future restore subcommand
+// can reverse the install-time mutation (raw 181 uninstall symmetry).
+static void apply_dock_tilesize_reset_once(void) {
+    NSString *statePath = [menubar_state_dir()
+        stringByAppendingPathComponent:@"system_state.plist"];
+    NSMutableDictionary *st = [NSMutableDictionary
+        dictionaryWithContentsOfFile:statePath];
+    if (!st) st = [NSMutableDictionary dictionary];
+    if (st[@"dock_tilesize_reset_done"]) {
+        // Already applied once; respect any subsequent user dock resizing.
+        return;
+    }
+    CFPropertyListRef cur = CFPreferencesCopyAppValue(
+        CFSTR("tilesize"), CFSTR("com.apple.dock"));
+    if (cur && CFGetTypeID(cur) == CFNumberGetTypeID()) {
+        int origVal = 0;
+        CFNumberGetValue((CFNumberRef)cur, kCFNumberIntType, &origVal);
+        st[@"dock_tilesize_original"] = @(origVal);
+    } else {
+        st[@"dock_tilesize_original"] = @"absent";
+    }
+    if (cur) CFRelease(cur);
+    airgenome_winctl_reset_dock_tilesize();   // shared logic in winctl.m
+    st[@"dock_tilesize_reset_done"] = @YES;
+    [[NSFileManager defaultManager] createDirectoryAtPath:menubar_state_dir()
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:NULL];
+    [st writeToFile:statePath atomically:YES];
+    fprintf(stderr, "dock: tilesize reset (one-time on first install)\n");
+    fflush(stderr);
+}
+
 // Legacy LaunchAgent path — cleaned up at first launch of the new binary so
 // the legacy caffeinate process is not left running alongside the in-process
 // IOPMAssertion (raw 91 honest C3: avoid double-effect during migration).
@@ -1326,7 +1414,7 @@ static void install_status_item(void) {
     [menu addItem:g_item_magnet];
 
     g_item_winctl = [[NSMenuItem alloc]
-        initWithTitle:@"Window arrange (⌥1..5)"
+        initWithTitle:@"Window arrange (⌥1..6)"
                action:@selector(toggleWinctl:)
         keyEquivalent:@""];
     g_item_winctl.target = g_menu_target;
@@ -1375,6 +1463,13 @@ int main(int argc, char **argv) {
         g_debug             = env_flag("AIRG_TAP_DEBUG",          g_debug);
         // Persisted menubar state overrides env defaults (raw 168 minimum-viable).
         load_menubar_state();
+        // raw 180 capture/restore: disable screenshot drop-shadow on startup.
+        // Idempotent; captures original pref value on first run.
+        apply_screenshot_shadow_disable();
+        // raw 180 capture/restore: dock tilesize reset — one-time only,
+        // gated by system_state.plist sentinel (won't override user
+        // resizing on subsequent boots).
+        apply_dock_tilesize_reset_once();
         // raw 213: one-time legacy LaunchAgent cleanup (com.airgenome.wake
         // running caffeinate -dimsu) so the new in-process IOPMAssertion is
         // not running alongside the legacy caffeinate process.

@@ -50,6 +50,9 @@
 #import <Carbon/Carbon.h>
 
 extern BOOL airgenome_winctl_handle_keydown(CGEventRef event);
+// Dock tilesize reset — exposed so tap.m's startup can run the same logic
+// once on first-install (without duplicating the prefs+killall sequence).
+extern void airgenome_winctl_reset_dock_tilesize(void);
 
 // Hotkey table: keycode → action id 1..6.
 // kVK_ANSI_1..5 = 0x12,0x13,0x14,0x15,0x17 (5 is 0x17 not 0x16); 6 = 0x16.
@@ -74,7 +77,7 @@ static int winctl_keycode_to_action(int64_t kc) {
 // com.apple.dock.plist; CFPreferencesAppSynchronize flushes; killall Dock
 // causes launchd to immediately respawn it with new prefs. raw 91 honest
 // C3: every step NSLog'd; failures non-fatal (next reset retry will work).
-static void winctl_reset_dock_tilesize(void) {
+void airgenome_winctl_reset_dock_tilesize(void) {
     int tile = 48;
     const char *env = getenv("AIRG_TAP_WINCTL_DOCK_TILE");
     if (env && *env) {
@@ -265,7 +268,7 @@ BOOL airgenome_winctl_handle_keydown(CGEventRef event) {
     // Bypass the focused-window pipeline entirely (works even with no
     // focused app, e.g. on Desktop / Mission Control).
     if (action == 6) {
-        winctl_reset_dock_tilesize();
+        airgenome_winctl_reset_dock_tilesize();
         return YES;
     }
 
