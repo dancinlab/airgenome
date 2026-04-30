@@ -1,0 +1,109 @@
+// tool/bench/bench_site3.hexa — own 5 site-3 baseline (append_ring per-line exec vs append_file batch)
+//
+// modules/harvest.hexa#append_ring 는 per-process exec("printf '%s\n' LINE >> RING") 호출 (30 fork/cycle).
+// 직접 적용: TOP_N 라인 buffer build → 단일 append_file(RING, buffer) 호출 (0 fork).
+// own 1 heredoc-arg-max-guard 자연 만족 (write_file builtin 사용).
+
+use "../../core/core"
+
+let BENCH_FILE_OLD = "/tmp/airgenome_bench_site3_old.ring"
+let BENCH_FILE_NEW = "/tmp/airgenome_bench_site3_new.ring"
+let LINES_PER_RUN = 30
+let K = 5
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn make_line(n: int) -> str {
+    return "{\"ts\":\"2026-04-30T00:00:00Z\",\"pid\":" + to_string(1000 + n) + ",\"comm\":\"proc" + to_string(n) + "\",\"rss_kb\":1024,\"vitals\":[" + to_string(n) + "," + to_string(n) + ",0,0,0,0],\"ema\":[" + to_string(n) + "," + to_string(n) + ",0,0,0,0]}"
+}
+
+// OLD: per-line exec(printf >>) — modules/harvest.hexa#append_ring L238-240
+fn old_append_ring(path: str, line: str) -> void {
+    let _ = exec("printf '%s\\n' '" + line + "' >> '" + path + "'")
+}
+
+// NEW: buffer build + single append_file (0 fork)
+fn new_append_ring_batch(path: str, lines: list) -> void {
+    let mut buf = ""
+    let mut i = 0
+    while i < len(lines) {
+        buf = buf + lines[i] + "\n"
+        i = i + 1
+    }
+    if buf != "" {
+        append_file(path, buf)
+    }
+}
+
+fn run_old() -> void {
+    let _rm = exec("rm -f '" + BENCH_FILE_OLD + "'")
+    let mut k = 0
+    while k < K {
+        let mut n = 0
+        while n < LINES_PER_RUN {
+            old_append_ring(BENCH_FILE_OLD, make_line(n))
+            n = n + 1
+        }
+        k = k + 1
+    }
+}
+
+fn run_new() -> void {
+    let _rm = exec("rm -f '" + BENCH_FILE_NEW + "'")
+    let mut k = 0
+    while k < K {
+        let mut lines = []
+        let mut n = 0
+        while n < LINES_PER_RUN {
+            lines = lines + [make_line(n)]
+            n = n + 1
+        }
+        new_append_ring_batch(BENCH_FILE_NEW, lines)
+        k = k + 1
+    }
+}
+
+// Lossless: 두 파일 byte-identical
+fn diff_test() -> int {
+    let cmp = exec("cmp -s '" + BENCH_FILE_OLD + "' '" + BENCH_FILE_NEW + "' && echo OK || echo DIFF").trim()
+    if cmp == "OK" { return 0 }
+    return 1
+}
+
+fn main() -> void {
+    println("airgenome bench/site-3 — append_ring (per-line exec vs append_file batch)")
+    println("  files=[" + BENCH_FILE_OLD + ", " + BENCH_FILE_NEW + "]  LINES_PER_RUN=" + to_string(LINES_PER_RUN) + "  K=" + to_string(K))
+
+    // Bench OLD
+    let t0_old = now_ns()
+    run_old()
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    let writes_old = K * LINES_PER_RUN
+    println("  OLD (per-line exec)    total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / writes_old) + "  forks=" + to_string(writes_old))
+
+    // Bench NEW
+    let t0_new = now_ns()
+    run_new()
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    let writes_new = K  // 1 batch per cycle
+    println("  NEW (append_file batch) total_ns=" + to_string(ns_new) + "  per_batch_ns=" + to_string(ns_new / writes_new) + "  per_line_ns=" + to_string(ns_new / writes_old) + "  forks=0")
+
+    // Lossless
+    let mm = diff_test()
+    println("  diff_test (cmp -s files): " + to_string(mm))
+    if mm != 0 { panic("BENCH FAIL [byte-level diff between OLD and NEW output]") }
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
