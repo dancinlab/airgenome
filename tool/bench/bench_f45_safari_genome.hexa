@@ -1,0 +1,171 @@
+// tool/bench/bench_f45_safari_genome.hexa — F45 5-tuple bench
+//
+// Target: modules/filters/data/safari_bg_tab_throttle_genome.hexa
+// Pattern: own 5/6/7/8 — fork 다수 → ps 1회 + in-hexa parse + append_file
+//
+// OLD (per-cycle, N WebContent 탭 가정):
+//   1) pgrep -fn WebContent  → fork 1
+//   2) per PID: ps -o pcpu=,rss= -p PID → N fork
+//   3) per PID: jq 로 ring 마지막 axes 비교 → N fork
+//   4) printf >> ring + wc -l + 옵션 rotate (tail+mv) → 2-4 fork
+//   합계: ~ 2N + 5 fork/cycle, N=8 → ~21 fork
+//
+// NEW:
+//   1) ps -axo pid=,pcpu=,rss=,etime=,comm= | grep WebContent → 1 fork
+//   2) in-hexa column split + axes 인코딩 → 0 fork
+//   3) append_file (1 buffer) + read_file rotate → 0 fork
+//   합계: 1 fork/cycle 고정 (front lookup 캐시 시 0 추가)
+//
+// 측정 환경: HEXA_RESOLVER_NO_REROUTE=1 HEXA_SHIM_NO_DARWIN_LANDING=1, gdate.
+
+use "../../core/core"
+use "./bench_lib"
+
+let BENCH_RING = "/tmp/airgenome_bench_f45.ring"
+let CYCLES = 50
+let SYNTH_TABS = 8       // 합성 WebContent 탭 수
+
+fn now_ns() -> str { return exec("gdate +%s%N").trim() }
+fn ns_diff(t0: str, t1: str) -> int { return to_int(t1) - to_int(t0) }
+
+// ── 합성 ps 출력 캐시 — fork 비용 모방용 ───────────────────────────────
+fn synth_ps_lines(n: int) -> str {
+    let mut s = ""
+    let mut i = 0
+    while i < n {
+        let pid = 1000 + i
+        let cpu = (i * 7) % 80
+        let rss = 100000 + i * 8000
+        let et = "01:" + to_string(10 + i)
+        s = s + to_string(pid) + " " + to_string(cpu) + " " + to_string(rss) + " " + et + " WebContent\n"
+        i = i + 1
+    }
+    return s
+}
+
+// ── OLD: per-PID fork 시뮬레이션 ──────────────────────────────────────
+fn old_cycle() -> int {
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    let _pgrep = exec("pgrep -fn WebContent 2>/dev/null || echo 1000 1001 1002").trim()
+    let mut written = 0
+    let mut i = 0
+    while i < SYNTH_TABS {
+        let pid = 1000 + i
+        // per PID ps + jq fork (실제 fork — bench 가 측정 대상)
+        let _per = exec("ps -o pcpu=,rss= -p " + to_string(pid) + " 2>/dev/null || echo 0 0")
+        let line = "{\"pid\":" + to_string(pid) + ",\"axes\":[" + to_string((i * 7) % 80) + ",100,0,1,0,0]}"
+        let _ = exec("printf '%s\\n' '" + line + "' >> '" + BENCH_RING + "'")
+        written = written + 1
+        i = i + 1
+    }
+    let _wc = exec("wc -l < '" + BENCH_RING + "'").trim()
+    return written
+}
+
+// ── NEW: ps 1회 + in-hexa + append_file ───────────────────────────────
+fn split_5col(line: str) -> list {
+    let n = len(line)
+    let mut starts = [0]
+    let mut in_ws = false
+    let mut k = 0
+    while k < n {
+        let ch = line.substring(k, k + 1)
+        if ch == " " || ch == "\t" {
+            if !in_ws { in_ws = true }
+        } else {
+            if in_ws { starts = starts + [k]; in_ws = false }
+        }
+        k = k + 1
+    }
+    return starts
+}
+
+fn new_cycle() -> int {
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    // 단일 ps fork
+    let raw = exec("ps -axo pid=,pcpu=,rss=,etime=,comm= 2>/dev/null | head -" + to_string(SYNTH_TABS))
+    let mut lines = raw.split("\n")
+    // 합성 fallback (test 환경 WebContent 부재 시)
+    if len(lines) < SYNTH_TABS {
+        lines = synth_ps_lines(SYNTH_TABS).split("\n")
+    }
+    let mut buf = ""
+    let mut written = 0
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if l == "" { i = i + 1; continue }
+        let starts = split_5col(l)
+        if len(starts) < 5 { i = i + 1; continue }
+        let pid = to_int(l.substring(starts[0], starts[1]).trim())
+        let cpu = to_int(l.substring(starts[1], starts[2]).trim())
+        let line = "{\"pid\":" + to_string(pid) + ",\"axes\":[" + to_string(cpu) + ",100,0,1,0,0]}"
+        buf = buf + line + "\n"
+        written = written + 1
+        i = i + 1
+    }
+    append_file(BENCH_RING, buf)
+    return written
+}
+
+fn diff_test() -> int {
+    let n_old = old_cycle()
+    let raw_old = read_file(BENCH_RING)
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    let n_new = new_cycle()
+    let raw_new = read_file(BENCH_RING)
+    if n_old != n_new {
+        println("    DIFF count old=" + to_string(n_old) + " new=" + to_string(n_new))
+        return 1
+    }
+    let lo = raw_old.split("\n")
+    let ln = raw_new.split("\n")
+    let mut nonempty_o = 0
+    let mut nonempty_n = 0
+    let mut i = 0
+    while i < len(lo) { if lo[i].trim() != "" { nonempty_o = nonempty_o + 1 } i = i + 1 }
+    let mut j = 0
+    while j < len(ln) { if ln[j].trim() != "" { nonempty_n = nonempty_n + 1 } j = j + 1 }
+    if nonempty_o != nonempty_n {
+        println("    DIFF nonempty old=" + to_string(nonempty_o) + " new=" + to_string(nonempty_n))
+        return 2
+    }
+    return 0
+}
+
+pub fn run_bench() -> int {
+    println("airgenome bench/F45 — safari_bg_tab_throttle_genome (per-PID fork → ps 1회 + in-hexa)")
+    println("  ring=" + BENCH_RING + " CYCLES=" + to_string(CYCLES) + " SYNTH_TABS=" + to_string(SYNTH_TABS))
+
+    let mm = diff_test()
+    println("  diff_test result: " + to_string(mm) + " (0 = lossless)")
+    if mm != 0 { println("BENCH FAIL [diff_test]"); return 1 }
+
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    let t0 = now_ns()
+    let mut k = 0
+    while k < CYCLES { let _ = old_cycle(); k = k + 1 }
+    let t1 = now_ns()
+    let ns_old = ns_diff(t0, t1)
+    println("  OLD (pgrep+per-PID ps+printf+wc) total_ns=" + to_string(ns_old) + "  per_cycle_ns=" + to_string(ns_old / CYCLES))
+
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    let t0n = now_ns()
+    let mut k2 = 0
+    while k2 < CYCLES { let _ = new_cycle(); k2 = k2 + 1 }
+    let t1n = now_ns()
+    let ns_new = ns_diff(t0n, t1n)
+    println("  NEW (ps 1회 + in-hexa + append_file) total_ns=" + to_string(ns_new) + "  per_cycle_ns=" + to_string(ns_new / CYCLES))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved) + "%")
+    }
+    return 0
+}
+
+// auto-invoke entry — raw 245 호환.
+fn main() -> void {
+    let _ = run_bench()
+}

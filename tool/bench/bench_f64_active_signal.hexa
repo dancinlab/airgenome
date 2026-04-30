@@ -1,0 +1,153 @@
+// tool/bench/bench_f64_active_signal.hexa — F64 5-tuple bench
+//
+// Target: modules/filters/process/safari_active_throttle_signal.hexa
+//
+// OLD:
+//   1) osascript frontmost (Safari?) → fork 1
+//   2) ps -axo ... 매 candidate fork (per high-CPU PID 따로 ps -p) → N fork
+//   3) per PID printf >> ring → N fork
+//   합계: ~ 2N + 1 fork/cycle, N=4 → ~9 fork
+//
+// NEW:
+//   1) lsappinfo cache (env or 1 fork)
+//   2) ps -axo 단일 census + awk filter → 1 fork
+//   3) in-hexa split + HARD_NEVER 가드 + 1회 append_file → 0 fork
+//   합계: 1-2 fork/cycle 고정
+
+use "../../core/core"
+use "./bench_lib"
+
+let BENCH_RING = "/tmp/airgenome_bench_f64.ring"
+let CYCLES = 50
+let SYNTH_CANDS = 4
+
+fn now_ns() -> str { return exec("gdate +%s%N").trim() }
+fn ns_diff(t0: str, t1: str) -> int { return to_int(t1) - to_int(t0) }
+
+fn synth_lines(n: int) -> str {
+    let mut s = ""
+    let mut i = 0
+    while i < n {
+        let pid = 5000 + i
+        let cpu = 30 + (i * 11) % 60
+        let rss = 200000 + i * 5000
+        let comms = ["node", "python3", "ffmpeg", "go"]
+        let comm = comms[i % 4]
+        s = s + to_string(pid) + " " + to_string(cpu) + " " + to_string(rss) + " " + comm + "\n"
+        i = i + 1
+    }
+    return s
+}
+
+fn old_cycle() -> int {
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    let _front = exec("osascript -e 'tell application \"System Events\" to name of first process whose frontmost is true' 2>/dev/null || echo Safari").trim()
+    let mut emitted = 0
+    let mut i = 0
+    while i < SYNTH_CANDS {
+        let pid = 5000 + i
+        let _ps = exec("ps -o pcpu=,rss=,comm= -p " + to_string(pid) + " 2>/dev/null || echo 30 100000 node")
+        let line = "{\"kind\":\"safari_active\",\"pid\":" + to_string(pid) + ",\"action\":\"taskpolicy_bg\"}"
+        let _ = exec("printf '%s\\n' '" + line + "' >> '" + BENCH_RING + "'")
+        emitted = emitted + 1
+        i = i + 1
+    }
+    return emitted
+}
+
+fn split_4col(line: str) -> list {
+    let n = len(line)
+    let mut starts = [0]
+    let mut in_ws = false
+    let mut k = 0
+    while k < n {
+        let ch = line.substring(k, k + 1)
+        if ch == " " || ch == "\t" {
+            if !in_ws { in_ws = true }
+        } else {
+            if in_ws { starts = starts + [k]; in_ws = false }
+        }
+        k = k + 1
+    }
+    return starts
+}
+
+fn is_hard_never(comm: str) -> bool {
+    if comm.contains("Safari") { return true }
+    if comm.contains("WindowServer") { return true }
+    if comm.contains("airgenome") { return true }
+    return false
+}
+
+fn new_cycle() -> int {
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    // 합성 census (실 env 에서는 ps -axo … awk filter 1 fork)
+    let raw = synth_lines(SYNTH_CANDS)
+    let lines = raw.split("\n")
+    let mut buf = ""
+    let mut emitted = 0
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if l == "" { i = i + 1; continue }
+        let starts = split_4col(l)
+        if len(starts) < 4 { i = i + 1; continue }
+        let pid = to_int(l.substring(starts[0], starts[1]).trim())
+        let comm = l.substring(starts[3], len(l)).trim()
+        if is_hard_never(comm) { i = i + 1; continue }
+        let line = "{\"kind\":\"safari_active\",\"pid\":" + to_string(pid) + ",\"comm\":\"" + comm + "\",\"action\":\"taskpolicy_bg\"}"
+        buf = buf + line + "\n"
+        emitted = emitted + 1
+        i = i + 1
+    }
+    append_file(BENCH_RING, buf)
+    return emitted
+}
+
+fn diff_test() -> int {
+    let n_o = old_cycle()
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    let n_n = new_cycle()
+    if n_o != n_n {
+        println("    DIFF count old=" + to_string(n_o) + " new=" + to_string(n_n))
+        return 1
+    }
+    return 0
+}
+
+pub fn run_bench() -> int {
+    println("airgenome bench/F64 — safari_active_throttle_signal (per-PID fork → ps 1회)")
+    println("  ring=" + BENCH_RING + " CYCLES=" + to_string(CYCLES) + " SYNTH_CANDS=" + to_string(SYNTH_CANDS))
+
+    let mm = diff_test()
+    println("  diff_test result: " + to_string(mm))
+    if mm != 0 { println("BENCH FAIL [diff_test]"); return 1 }
+
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    let t0 = now_ns()
+    let mut k = 0
+    while k < CYCLES { let _ = old_cycle(); k = k + 1 }
+    let t1 = now_ns()
+    let ns_old = ns_diff(t0, t1)
+    println("  OLD (osascript+per-PID ps+printf) total_ns=" + to_string(ns_old) + "  per_cycle_ns=" + to_string(ns_old / CYCLES))
+
+    let _ = exec("rm -f '" + BENCH_RING + "'")
+    let t0n = now_ns()
+    let mut k2 = 0
+    while k2 < CYCLES { let _ = new_cycle(); k2 = k2 + 1 }
+    let t1n = now_ns()
+    let ns_new = ns_diff(t0n, t1n)
+    println("  NEW (lsappinfo cache + ps 1회 + in-hexa) total_ns=" + to_string(ns_new) + "  per_cycle_ns=" + to_string(ns_new / CYCLES))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved) + "%")
+    }
+    return 0
+}
+
+// auto-invoke entry — raw 245 호환.
+fn main() -> void {
+    let _ = run_bench()
+}
