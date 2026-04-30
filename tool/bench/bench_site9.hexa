@@ -1,0 +1,189 @@
+// tool/bench/bench_site9.hexa — own 7 site-9 baseline (label jq_field jq vs hexa-split)
+//
+// Replaces per-rule-per-genome exec("echo LINE | jq -r '.field'") with in-hexa
+// "key":<val> anchor + slice. label.hexa#parse_rule (8 fields/rule) + extract_meta
+// (4 fields/genome) 가 jq_field 의 dominant caller. RULES × genomes 이중루프에서
+// per-rule-per-genome ~100K jq fork/cycle 추정 (bg agent a950e0115b7eba7ab 분석).
+//
+// Diff test: OLD jq output vs NEW hexa-split output 모두 일치해야 함 (string equality).
+// 측정 필드:
+//   label (string)   axis (number)    op (string)        threshold (number)
+//   host (optional)  pid (number)     comm (string)      ts (string)
+
+use "../../core/core"
+
+let BENCH_RING = "/tmp/airgenome_bench_site9.ring"
+let LINES = 200      // synthetic genomes
+let PIDS_N = 30
+let RULES_N = 8      // 8 fields per rule (parse_rule full path)
+let K = 2            // 2 cycles (절대 호출 수 = LINES * RULES_N * K = 3200)
+
+// 8 fields parse_rule 가 호출하는 expr 목록.
+fn rule_exprs() -> list {
+    return [".label", ".axis", ".op", ".threshold", ".and_axis", ".and_op", ".and_threshold", ".host"]
+}
+
+fn build_ring() -> void {
+    let _rm = exec("rm -f '" + BENCH_RING + "'")
+    let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(LINES) + ";i++) { pid=1000+(i%" + to_string(PIDS_N) + "); cpu=i%100; ram=i%50; pw=i%30; printf \"{\\\"ts\\\":\\\"2026-04-30T00:00:00Z\\\",\\\"pid\\\":%d,\\\"comm\\\":\\\"proc%d\\\",\\\"rss_kb\\\":1024,\\\"vitals\\\":[%d,%d,0,0,%d,0],\\\"ema\\\":[%d,%d,0,0,%d,0],\\\"host\\\":\\\"mac\\\",\\\"label\\\":\\\"CPU_SPIKE\\\",\\\"axis\\\":0,\\\"op\\\":\\\"gt\\\",\\\"threshold\\\":80,\\\"and_op\\\":\\\"\\\",\\\"and_threshold\\\":0}\\n\", pid, pid, cpu, ram, pw, cpu, ram, pw } }' > '" + BENCH_RING + "'"
+    let _ = exec(cmd)
+}
+
+fn read_lines() -> list {
+    let raw = exec("cat '" + BENCH_RING + "' 2>/dev/null")
+    let xs = raw.split("\n")
+    let mut out = []
+    let mut i = 0
+    while i < len(xs) {
+        if xs[i] != "" { out = out + [xs[i]] }
+        i = i + 1
+    }
+    return out
+}
+
+// OLD: per-call exec(echo|jq) — current modules/label.hexa#jq_field L38-41 정확 복제.
+fn old_jq_field(line: str, expr: str) -> str {
+    let cmd = "echo '" + line + "' | jq -r '" + expr + " // \"\"' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+// NEW: anchor "key":<value> 로 in-hexa 추출. 0 fork.
+//   - expr 형식 ".key" 만 지원 (label.hexa parse_rule + extract_meta 은 모두 top-level scalar).
+//   - 값이 문자열 ("..."), 숫자 (digits), 또는 missing → 빈 문자열.
+fn new_jq_field(line: str, expr: str) -> str {
+    if line == "" { return "" }
+    if len(expr) < 2 { return "" }
+    // expr[0] = '.' assumption; key = expr[1..].
+    let key = expr.substring(1, len(expr))
+    let anchor = "\"" + key + "\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return "" }
+    let after = parts[1]
+    if len(after) == 0 { return "" }
+    let c0 = after.substring(0, 1)
+    if c0 == "\"" {
+        // string: until next "
+        let body = after.substring(1, len(after))
+        let end_split = body.split("\"")
+        if len(end_split) < 1 { return "" }
+        return end_split[0]
+    }
+    // bare value: until first delimiter , } ] (whitespace strip)
+    // jq -r 출력은 unquoted scalar 형식.
+    let mut i = 0
+    let n = len(after)
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return after.substring(0, i).trim() }
+        if ch == "}" { return after.substring(0, i).trim() }
+        if ch == "]" { return after.substring(0, i).trim() }
+        i = i + 1
+    }
+    return after.trim()
+}
+
+fn run_old(lines: list, exprs: list) -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let mut p = 0
+        while p < len(lines) {
+            let mut e = 0
+            while e < len(exprs) {
+                let s = old_jq_field(lines[p], exprs[e])
+                total = total + len(s)
+                e = e + 1
+            }
+            p = p + 1
+        }
+        k = k + 1
+    }
+    return total
+}
+
+fn run_new(lines: list, exprs: list) -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let mut p = 0
+        while p < len(lines) {
+            let mut e = 0
+            while e < len(exprs) {
+                let s = new_jq_field(lines[p], exprs[e])
+                total = total + len(s)
+                e = e + 1
+            }
+            p = p + 1
+        }
+        k = k + 1
+    }
+    return total
+}
+
+fn diff_test(lines: list, exprs: list) -> int {
+    let mut mismatches = 0
+    let mut p = 0
+    while p < len(lines) {
+        let mut e = 0
+        while e < len(exprs) {
+            let vo = old_jq_field(lines[p], exprs[e])
+            let vn = new_jq_field(lines[p], exprs[e])
+            if vo != vn {
+                mismatches = mismatches + 1
+                if mismatches <= 3 {
+                    println("    DIFF expr=" + exprs[e] + " old=[" + vo + "] new=[" + vn + "]")
+                }
+            }
+            e = e + 1
+        }
+        p = p + 1
+    }
+    return mismatches
+}
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn main() -> void {
+    println("airgenome bench/site-9 — label jq_field (jq vs hexa-split)")
+    println("  ring=" + BENCH_RING + " LINES=" + to_string(LINES) + " RULES_N=" + to_string(RULES_N) + " K=" + to_string(K))
+    build_ring()
+    let cnt_str = exec("wc -l < '" + BENCH_RING + "'").trim()
+    println("  ring lines built: " + cnt_str)
+
+    let lines = read_lines()
+    let exprs = rule_exprs()
+    println("  prefetched lines: " + to_string(len(lines)) + "  exprs: " + to_string(len(exprs)))
+
+    let mm = diff_test(lines, exprs)
+    let total_pairs = len(lines) * len(exprs)
+    println("  diff_test mismatches: " + to_string(mm) + " / " + to_string(total_pairs))
+    if mm != 0 {
+        println("BENCH FAIL [diff_test mismatches > 0]")
+        return
+    }
+
+    let t0_old = now_ns()
+    let _o = run_old(lines, exprs)
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    let calls = K * len(lines) * len(exprs)
+    println("  OLD (jq)         total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / calls))
+
+    let t0_new = now_ns()
+    let _n = run_new(lines, exprs)
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (hexa-split) total_ns=" + to_string(ns_new) + "  per_call_ns=" + to_string(ns_new / calls))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}

@@ -211,5 +211,6 @@ own 7 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M5 l
   note own 5 = harvest, own 6 = forecast, own 7 = label — capture/forecast/label triad 의 site-axis 3-stage 완성. own 4 placement-axis (capture-pre-vs-post / forecast-pre-vs-post / label-pre-vs-post) 와 직교 — gate-cycle dispatch dimension (role × placement × stage × site × runtime) 5축 분리 완성.
   note site-9 의 100K calls × 614× magnitude = 단일 사이트로 가장 큰 절대 win 후보 — bench_site9.hexa 우선 산출 권장.
   follow-up modules/label.hexa#self_test 확장 (jq_field / load_rules / read_recent_genomes / append_out differential test)
-  follow-up tool/bench/bench_site9.hexa (우선) + bench_site10.hexa + bench_site11.hexa + bench_site12.hexa 산출
+  status site-9 DONE 2026-04-30 — modules/label.hexa#jq_field jq fork → in-hexa anchor + slice. tool/bench/bench_site9.hexa 측정: 6.79ms→2.08μs/call (3269×, 99%↓), diff_test=0/1600. bench_all.sh 재측정 7169× (cache-warm variance). vit_at 도 own 5 site-2 패턴으로 동시 이식. label self_test PASS. proof state/bench_results.jsonl own7-site-9 row.
+  follow-up tool/bench/bench_site10.hexa + bench_site11.hexa + bench_site12.hexa 산출 (site-9 완료 → 잔여 3 사이트)
   follow-up predictive_throttle.hexa (M14, throttle_history.jsonl 별도 stream) 은 cross-stage 아님 — 독립 own 8 후보 (forecast 와 동시 실행되는 별도 모듈)
