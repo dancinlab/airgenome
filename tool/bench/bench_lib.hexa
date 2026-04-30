@@ -1,0 +1,70 @@
+// tool/bench/bench_lib.hexa — own 5 B 단계 hexa-native bench 공통 helpers
+//
+// 사용: tool/bench/bench_*.hexa 가 use "./bench_lib" 로 import.
+// 책임:
+//   - ns 타임스탬프 + diff (gdate +%s%N 의존)
+//   - synthetic ring 생성 (LINES × PIDS_N awk 직생성)
+//   - 결과 보고 표준 (per-call ns / speedup / saved% / diff_test)
+//
+// 측정 환경 가정:
+//   - HEXA_RESOLVER_NO_REROUTE=1 HEXA_SHIM_NO_DARWIN_LANDING=1 (bare Mac)
+//   - gdate (homebrew coreutils) 가용
+//   - awk 가용 (awk POSIX 표준 BEGIN{} 만 사용)
+
+use "../../core/core"
+
+// ─── timing ──────────────────────────────────────────────
+
+fn bench_now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn bench_ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+// ─── synthetic ring ──────────────────────────────────────
+
+// encode_genome 형식과 byte-identical 한 합성 ring 생성.
+// JSONL 한 줄: {"ts":"...","pid":N,"comm":"procN","rss_kb":1024,"vitals":[cpu,ram,0,0,pw,0],"ema":[cpu,ram,0,0,pw,0]}
+// path: 출력 파일. lines: 총 줄 수. pids_n: 순환할 unique PID 개수 (1000..1000+pids_n-1).
+fn bench_build_ring(path: str, lines: int, pids_n: int) -> void {
+    let _rm = exec("rm -f '" + path + "'")
+    let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(lines) + ";i++) { pid=1000+(i%" + to_string(pids_n) + "); cpu=i%100; ram=i%50; pw=i%30; printf \"{\\\"ts\\\":\\\"2026-04-30T00:00:00Z\\\",\\\"pid\\\":%d,\\\"comm\\\":\\\"proc%d\\\",\\\"rss_kb\\\":1024,\\\"vitals\\\":[%d,%d,0,0,%d,0],\\\"ema\\\":[%d,%d,0,0,%d,0]}\\n\", pid, pid, cpu, ram, pw, cpu, ram, pw } }' > '" + path + "'"
+    let _ = exec(cmd)
+}
+
+fn bench_ring_stat(path: str) -> str {
+    let bytes = exec("wc -c < '" + path + "'").trim()
+    let cnt = exec("wc -l < '" + path + "'").trim()
+    return "bytes=" + bytes + " lines=" + cnt
+}
+
+// ─── reporting ───────────────────────────────────────────
+
+fn bench_report_one(label: str, ns: int, calls: int) -> void {
+    if calls > 0 {
+        println("  " + label + "  total_ns=" + to_string(ns) + "  per_call_ns=" + to_string(ns / calls))
+    } else {
+        println("  " + label + "  total_ns=" + to_string(ns))
+    }
+}
+
+// speedup 보고 — old_ns, new_ns 둘 다 양수 가정. 음수 / 0 처리는 caller 책임.
+fn bench_report_speedup(ns_old: int, ns_new: int) -> void {
+    if ns_new <= 0 { return }
+    if ns_old <= 0 { return }
+    let ratio = ns_old / ns_new
+    let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+    println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+}
+
+// ─── ledger emit ─────────────────────────────────────────
+
+// site: own5-site-N. ROI: ["#5","#64",...] formatted "[\"#5\",\"#64\"]".
+// state/bench_results.jsonl 에 한 줄 append.
+fn bench_emit_ledger(site: str, what: str, bench_path: str, old_ns: int, new_ns: int, ratio: int, saved_pct: int, diff_mismatches: int, diff_total: int, roi_csv: str, note: str) -> void {
+    let ts = exec("gdate -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let row = "{\"ts\":\"" + ts + "\",\"site\":\"" + site + "\",\"what\":\"" + what + "\",\"bench\":\"" + bench_path + "\",\"old_ns\":" + to_string(old_ns) + ",\"new_ns\":" + to_string(new_ns) + ",\"speedup\":" + to_string(ratio) + ",\"saved_pct\":" + to_string(saved_pct) + ",\"diff_mismatches\":" + to_string(diff_mismatches) + ",\"diff_total\":" + to_string(diff_total) + ",\"roi_items\":[" + roi_csv + "],\"runtime\":\"hexa 0.1.0-dispatch\",\"note\":\"" + note + "\"}\n"
+    append_file("state/bench_results.jsonl", row)
+}
