@@ -24,25 +24,79 @@ let UBU_RING = ring_path("genomes.ubu.ring")
 let HTZ_RING = ring_path("genomes.htz.ring")
 let UNIFIED  = ring_path("genomes.unified.ring")
 
-// 호스트 ring 한 개를 unified 에 append.
-// 파일 없으면 0 반환, 있으면 처리된 라인 수.
-fn merge_host(src: str, host: str, out: str) -> int {
-    let chk = exec("[ -f '" + src + "' ] && echo ok || echo no").trim()
-    if chk != "ok" { return 0 }
-    let cmd = "jq -c '. + {host:\"" + host + "\", pid:(\"" + host + ".\" + (.pid|tostring))}' '" + src + "' >> '" + out + "'"
-    exec(cmd)
-    return to_int(exec("wc -l < '" + src + "' 2>/dev/null || echo 0").trim())
+// own 6 site-8b: per-host (jq -c + wc -l + [-f]) 9 forks/cycle
+// → read_file + in-hexa text transform + append_file + counter (5 fork/cycle, rm/mv 만).
+// 측정 (bench_site8b.hexa, 100 lines × 3 hosts × K=5): 55.5ms → 6.7ms/cycle (8×, 87%↓),
+// diff_byte_identical=true, count match (1500=1500). ROI #1 + #43.
+//
+// 변환:
+//   pid:N    → pid:"<host>.N"  (anchor "\"pid\":" → 다음 ',' 까지 숫자 치환)
+//   마지막 } → },"host":"<host>"}  (suffix injection)
+fn transform_line(line: str, host: str) -> str {
+    if line == "" { return "" }
+    let parts = line.split("\"pid\":")
+    if len(parts) < 2 { return "" }
+    let after = parts[1]
+    let n = len(after)
+    let mut i = 0
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { break }
+        if ch == "}" { break }
+        i = i + 1
+    }
+    let num = after.substring(0, i)
+    let tail = after.substring(i, n)
+    let new_pid = "\"pid\":\"" + host + "." + num + "\""
+    let assembled = parts[0] + new_pid + tail
+    let n2 = len(assembled)
+    if n2 < 1 { return assembled }
+    let last_char = assembled.substring(n2 - 1, n2)
+    if last_char != "}" { return assembled }
+    return assembled.substring(0, n2 - 1) + ",\"host\":\"" + host + "\"}"
+}
+
+// 호스트 ring 한 개를 buffer 에 누적 — 파일 없거나 비어있으면 buf 그대로 반환.
+fn merge_host_to_buf(src: str, host: str, buf: str) -> str {
+    let raw = read_file(src)
+    if raw == "" { return buf }
+    let lines = raw.split("\n")
+    let mut out = buf
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" {
+            let t = transform_line(l, host)
+            if t != "" { out = out + t + "\n" }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn count_lines(buf: str) -> int {
+    if buf == "" { return 0 }
+    let lines = buf.split("\n")
+    let mut n = 0
+    let mut i = 0
+    while i < len(lines) {
+        if lines[i] != "" { n = n + 1 }
+        i = i + 1
+    }
+    return n
 }
 
 fn run_merge() -> int {
     exec("mkdir -p '" + FORGE + "'")
     let tmp = UNIFIED + ".tmp"
     exec("rm -f '" + tmp + "'")
-    let m = merge_host(MAC_RING, "mac", tmp)
-    let u = merge_host(UBU_RING, "ubu", tmp)
-    let h = merge_host(HTZ_RING, "htz", tmp)
+    let mut buf = ""
+    buf = merge_host_to_buf(MAC_RING, "mac", buf)
+    buf = merge_host_to_buf(UBU_RING, "ubu", buf)
+    buf = merge_host_to_buf(HTZ_RING, "htz", buf)
+    if buf != "" { append_file(tmp, buf) }
     exec("mv -f '" + tmp + "' '" + UNIFIED + "'")
-    return m + u + h
+    return count_lines(buf)
 }
 
 fn self_test() -> void {
