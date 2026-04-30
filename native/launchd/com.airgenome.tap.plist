@@ -45,11 +45,19 @@
     <dict>
         <key>AIRG_TAP_LOOP</key>
         <string>1</string>
-        <!-- Safari 통합 wave (F45/F64/F65/F66) — own 9 mandate "재시작시 즉시
-             반영" 정신으로 default ON (commit 5a07cb50 부터 default 0,
-             own 9 등록 후 1 로 flip). 4 추가 timer (60s/60s/120s/60s,
-             raw 242 7 안전망 충족). disable 원할 시 <string>0</string>. -->
+        <!-- Safari 통합 wave (F45/F64/F65/F66) — own 9 default ON. 4 timer
+             (60s/60s/120s/60s, raw 242 7 안전망). -->
         <key>AIRG_TAP_LOOP_SAFARI</key>
+        <string>1</string>
+        <!-- own 9 BENCHMARK-COMPLETE wave: blob refresh (E4 / F18 / PTBF).
+             encode mode 주기 호출 — Safari history.db / Bookmarks.plist /
+             prefix trie 변경 감지. 3 timer (1800s / 3600s / 3600s). -->
+        <key>AIRG_TAP_LOOP_BLOBS</key>
+        <string>1</string>
+        <!-- own 9 BENCHMARK-COMPLETE wave: process gate filters.
+             6 filter (calendar/finder/mail/memo/safari/telegram) periodic
+             check. claude/compute 는 exception. 6 timer (180-300s). -->
+        <key>AIRG_TAP_LOOP_PROCS</key>
         <string>1</string>
     </dict>
 </dict>

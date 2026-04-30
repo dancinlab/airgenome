@@ -177,6 +177,7 @@ static int loop_spawn_with_watchdog(const char *bin_path,
 typedef struct {
     const char *module_name;
     const char *module_path;
+    const char *extra_arg;   // optional, NULL = no extra arg (own 9 / A9 — encode mode 등)
     int interval_s;
     int timeout_s;
 } airgenome_loop_module_t;
@@ -199,14 +200,19 @@ static dispatch_source_t loop_make_timer(const airgenome_loop_module_t *m,
                               leeway_ns);
     const char *mod_path = m->module_path;
     const char *mod_name = m->module_name;
+    const char *extra_arg = m->extra_arg;
     int timeout_s = m->timeout_s;
     dispatch_source_set_event_handler(src, ^{
-        char *args[] = {
-            (char *)HEXA_BIN,
-            "run",
-            (char *)mod_path,
-            NULL
-        };
+        // A9 — extra_arg pass-through (encode 모드 등 sub-mode 분기).
+        char *args[8];
+        int i = 0;
+        args[i++] = (char *)HEXA_BIN;
+        args[i++] = "run";
+        args[i++] = (char *)mod_path;
+        if (extra_arg != NULL && extra_arg[0] != '\0') {
+            args[i++] = (char *)extra_arg;
+        }
+        args[i] = NULL;
         loop_spawn_with_watchdog(HEXA_BIN, args, mod_name, timeout_s);
     });
     dispatch_resume(src);
@@ -227,24 +233,39 @@ static dispatch_source_t g_safari_genome_src   = NULL;
 static dispatch_source_t g_safari_active_src   = NULL;
 static dispatch_source_t g_safari_youtube_src  = NULL;
 static dispatch_source_t g_safari_battery_src  = NULL;
+// own 9 BENCHMARK-COMPLETE 결과 — production-validated 9 추가 filter (env gate).
+// AIRG_TAP_LOOP_BLOBS  → E4 / F18 / PTBF (Safari blob refresh)
+// AIRG_TAP_LOOP_PROCS  → 6 process gate filter (calendar/finder/mail/memo/safari/telegram)
+static dispatch_source_t g_blob_e4_src         = NULL;
+static dispatch_source_t g_blob_f18_src        = NULL;
+static dispatch_source_t g_blob_ptbf_src       = NULL;
+static dispatch_source_t g_proc_calendar_src   = NULL;
+static dispatch_source_t g_proc_finder_src     = NULL;
+static dispatch_source_t g_proc_mail_src       = NULL;
+static dispatch_source_t g_proc_memo_src       = NULL;
+static dispatch_source_t g_proc_safari_src     = NULL;
+static dispatch_source_t g_proc_telegram_src   = NULL;
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
     static const airgenome_loop_module_t harvest = {
         .module_name = "harvest",
         .module_path = "/Users/ghost/core/airgenome/modules/harvest.hexa",
+        .extra_arg   = NULL,
         .interval_s  = 60,
         .timeout_s   = 30,
     };
     static const airgenome_loop_module_t label = {
         .module_name = "label",
         .module_path = "/Users/ghost/core/airgenome/modules/label.hexa",
+        .extra_arg   = NULL,
         .interval_s  = 300,
         .timeout_s   = 60,
     };
     static const airgenome_loop_module_t forecast = {
         .module_name = "forecast",
         .module_path = "/Users/ghost/core/airgenome/modules/forecast.hexa",
+        .extra_arg   = NULL,
         .interval_s  = 3600,
         .timeout_s   = 120,
     };
@@ -256,25 +277,99 @@ void airgenome_loop_init(void) {
     static const airgenome_loop_module_t safari_genome = {
         .module_name = "safari-genome",
         .module_path = "/Users/ghost/core/airgenome/modules/filters/data/safari_bg_tab_throttle_genome.hexa",
+        .extra_arg   = NULL,
         .interval_s  = 60,
         .timeout_s   = 30,
     };
     static const airgenome_loop_module_t safari_active = {
         .module_name = "safari-active",
         .module_path = "/Users/ghost/core/airgenome/modules/filters/process/safari_active_throttle_signal.hexa",
+        .extra_arg   = NULL,
         .interval_s  = 60,
         .timeout_s   = 30,
     };
     static const airgenome_loop_module_t safari_youtube = {
         .module_name = "safari-youtube",
         .module_path = "/Users/ghost/core/airgenome/modules/filters/process/safari_youtube_gpu_filter.hexa",
+        .extra_arg   = NULL,
         .interval_s  = 120,
         .timeout_s   = 60,
     };
     static const airgenome_loop_module_t safari_battery = {
         .module_name = "safari-battery",
         .module_path = "/Users/ghost/core/airgenome/modules/filters/process/safari_battery_freeze_filter.hexa",
+        .extra_arg   = NULL,
         .interval_s  = 60,
+        .timeout_s   = 30,
+    };
+    // own 9 BENCHMARK-COMPLETE — Safari blob refresh (E4 / F18 / PTBF).
+    // encode mode 호출로 blob 주기 갱신. Source data (Safari history.db /
+    // Bookmarks.plist) 가 변할 때마다 blob 재생성. 이후 query 측은 mmap+bisect.
+    static const airgenome_loop_module_t blob_e4 = {
+        .module_name = "blob-e4-history",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/safari_mmap.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30 min — Safari history grows
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t blob_f18 = {
+        .module_name = "blob-f18-bookmarks",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/safari_bookmarks_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 3600,           // 1h — bookmarks change rarely
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t blob_ptbf = {
+        .module_name = "blob-ptbf-prefix-trie",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/prefix_trie_mmap.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 3600,           // 1h — prefix trie generic
+        .timeout_s   = 60,
+    };
+    // own 9 BENCHMARK-COMPLETE — process gate (Type A) filters.
+    // wave 2 측정 (commit 1218592a) 7/7 PASS exit 0, 0 panic.
+    // claude.hexa 는 session_now.json 외부 의존으로 exception (loop 미통합).
+    // compute.hexa 는 L0/AG6 frozen exception.
+    static const airgenome_loop_module_t proc_calendar = {
+        .module_name = "proc-calendar",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/process/calendar.hexa",
+        .extra_arg   = NULL,
+        .interval_s  = 300,            // 5min — calendar event 빈도 적당
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t proc_finder = {
+        .module_name = "proc-finder",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/process/finder.hexa",
+        .extra_arg   = NULL,
+        .interval_s  = 180,            // 3min — Finder helper drift
+        .timeout_s   = 30,
+    };
+    static const airgenome_loop_module_t proc_mail = {
+        .module_name = "proc-mail",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/process/mail.hexa",
+        .extra_arg   = NULL,
+        .interval_s  = 300,            // 5min
+        .timeout_s   = 30,
+    };
+    static const airgenome_loop_module_t proc_memo = {
+        .module_name = "proc-memo",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/process/memo.hexa",
+        .extra_arg   = NULL,
+        .interval_s  = 300,            // 5min
+        .timeout_s   = 30,
+    };
+    static const airgenome_loop_module_t proc_safari = {
+        .module_name = "proc-safari",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/process/safari.hexa",
+        .extra_arg   = NULL,
+        .interval_s  = 180,            // 3min — Safari WebContent drift
+        .timeout_s   = 30,
+    };
+    static const airgenome_loop_module_t proc_telegram = {
+        .module_name = "proc-telegram",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/process/telegram.hexa",
+        .extra_arg   = NULL,
+        .interval_s  = 300,            // 5min — 통화중 보호 우선
         .timeout_s   = 30,
     };
 
@@ -284,7 +379,7 @@ void airgenome_loop_init(void) {
     g_label_src    = loop_make_timer(&label,    g_loop_queue);
     g_forecast_src = loop_make_timer(&forecast, g_loop_queue);
 
-    // Safari 통합 wave gate — env AIRG_TAP_LOOP_SAFARI=1 시만.
+    // Safari 통합 wave gate — env AIRG_TAP_LOOP_SAFARI=1 시만 (own 9 default ON).
     const char *safari_env = getenv("AIRG_TAP_LOOP_SAFARI");
     int safari_on = (safari_env && safari_env[0] == '1') ? 1 : 0;
     if (safari_on) {
@@ -294,17 +389,55 @@ void airgenome_loop_init(void) {
         g_safari_battery_src = loop_make_timer(&safari_battery, g_loop_queue);
     }
 
-    NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s",
+    // own 9 BENCHMARK-COMPLETE wave — blob refresh (E4/F18/PTBF) gate.
+    const char *blobs_env = getenv("AIRG_TAP_LOOP_BLOBS");
+    int blobs_on = (blobs_env && blobs_env[0] == '1') ? 1 : 0;
+    if (blobs_on) {
+        g_blob_e4_src   = loop_make_timer(&blob_e4,   g_loop_queue);
+        g_blob_f18_src  = loop_make_timer(&blob_f18,  g_loop_queue);
+        g_blob_ptbf_src = loop_make_timer(&blob_ptbf, g_loop_queue);
+    }
+
+    // own 9 BENCHMARK-COMPLETE wave — process gate (6 filter) gate.
+    const char *procs_env = getenv("AIRG_TAP_LOOP_PROCS");
+    int procs_on = (procs_env && procs_env[0] == '1') ? 1 : 0;
+    if (procs_on) {
+        g_proc_calendar_src = loop_make_timer(&proc_calendar, g_loop_queue);
+        g_proc_finder_src   = loop_make_timer(&proc_finder,   g_loop_queue);
+        g_proc_mail_src     = loop_make_timer(&proc_mail,     g_loop_queue);
+        g_proc_memo_src     = loop_make_timer(&proc_memo,     g_loop_queue);
+        g_proc_safari_src   = loop_make_timer(&proc_safari,   g_loop_queue);
+        g_proc_telegram_src = loop_make_timer(&proc_telegram, g_loop_queue);
+    }
+
+    NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s",
           g_harvest_src  ? "ok" : "FAIL",
           g_label_src    ? "ok" : "FAIL",
           g_forecast_src ? "ok" : "FAIL",
-          safari_on ? "on" : "off");
+          safari_on ? "on" : "off",
+          blobs_on  ? "on" : "off",
+          procs_on  ? "on" : "off");
     if (safari_on) {
         NSLog(@"[airgenome_loop] safari wave: genome=%s active=%s youtube=%s battery=%s",
               g_safari_genome_src  ? "ok" : "FAIL",
               g_safari_active_src  ? "ok" : "FAIL",
               g_safari_youtube_src ? "ok" : "FAIL",
               g_safari_battery_src ? "ok" : "FAIL");
+    }
+    if (blobs_on) {
+        NSLog(@"[airgenome_loop] blob wave: e4=%s f18=%s ptbf=%s",
+              g_blob_e4_src   ? "ok" : "FAIL",
+              g_blob_f18_src  ? "ok" : "FAIL",
+              g_blob_ptbf_src ? "ok" : "FAIL");
+    }
+    if (procs_on) {
+        NSLog(@"[airgenome_loop] procs wave: cal=%s finder=%s mail=%s memo=%s safari=%s tel=%s",
+              g_proc_calendar_src ? "ok" : "FAIL",
+              g_proc_finder_src   ? "ok" : "FAIL",
+              g_proc_mail_src     ? "ok" : "FAIL",
+              g_proc_memo_src     ? "ok" : "FAIL",
+              g_proc_safari_src   ? "ok" : "FAIL",
+              g_proc_telegram_src ? "ok" : "FAIL");
     }
 }
 
@@ -342,6 +475,15 @@ void airgenome_loop_shutdown(void) {
     if (g_safari_active_src)  { dispatch_source_cancel(g_safari_active_src);  g_safari_active_src  = NULL; }
     if (g_safari_youtube_src) { dispatch_source_cancel(g_safari_youtube_src); g_safari_youtube_src = NULL; }
     if (g_safari_battery_src) { dispatch_source_cancel(g_safari_battery_src); g_safari_battery_src = NULL; }
+    if (g_blob_e4_src)        { dispatch_source_cancel(g_blob_e4_src);        g_blob_e4_src        = NULL; }
+    if (g_blob_f18_src)       { dispatch_source_cancel(g_blob_f18_src);       g_blob_f18_src       = NULL; }
+    if (g_blob_ptbf_src)      { dispatch_source_cancel(g_blob_ptbf_src);      g_blob_ptbf_src      = NULL; }
+    if (g_proc_calendar_src)  { dispatch_source_cancel(g_proc_calendar_src);  g_proc_calendar_src  = NULL; }
+    if (g_proc_finder_src)    { dispatch_source_cancel(g_proc_finder_src);    g_proc_finder_src    = NULL; }
+    if (g_proc_mail_src)      { dispatch_source_cancel(g_proc_mail_src);      g_proc_mail_src      = NULL; }
+    if (g_proc_memo_src)      { dispatch_source_cancel(g_proc_memo_src);      g_proc_memo_src      = NULL; }
+    if (g_proc_safari_src)    { dispatch_source_cancel(g_proc_safari_src);    g_proc_safari_src    = NULL; }
+    if (g_proc_telegram_src)  { dispatch_source_cancel(g_proc_telegram_src);  g_proc_telegram_src  = NULL; }
 }
 
 // ----------------------------------------------------------------------
