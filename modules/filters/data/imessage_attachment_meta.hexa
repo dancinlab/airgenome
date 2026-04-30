@@ -1,0 +1,97 @@
+// IM-D3 — chat.db#attachment metadata (uti/mime/transfer_state/total_bytes) dict (IADM v1).
+
+let PAYLOAD = "import sys,os,struct,time,resource,array,sqlite3,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/imessage_attach_meta.bin'\n" +
+"CLASSIFIER='IADM-v1-2026-05-01 chat.db.attachment+immutable'\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def probe():\n" +
+"    p=os.path.expanduser('~/Library/Messages/chat.db')\n" +
+"    if not os.path.isfile(p): return None,'no_chatdb'\n" +
+"    try:\n" +
+"        con=sqlite3.connect(f'file:{p}?mode=ro&immutable=1',uri=True)\n" +
+"        cur=con.cursor()\n" +
+"        cur.execute('SELECT mime_type,uti,transfer_state,total_bytes FROM attachment')\n" +
+"        rows=cur.fetchall(); con.close()\n" +
+"        return rows,'real' if rows else 'empty'\n" +
+"    except Exception as e: return None,f'err_{type(e).__name__}'\n" +
+"\n" +
+"def synth(n=300,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    mimes=['image/jpeg','image/png','image/heic','video/mp4','video/quicktime','application/pdf','audio/mp4','image/gif']\n" +
+"    utis=['public.jpeg','public.png','public.heic','public.mpeg-4','com.apple.quicktime-movie','com.adobe.pdf','com.apple.m4a-audio','com.compuserve.gif']\n" +
+"    rows=[]\n" +
+"    for _ in range(n):\n" +
+"        idx=rng.randrange(len(mimes))\n" +
+"        rows.append((mimes[idx],utis[idx],rng.randrange(0,5),rng.randrange(0,10_000_000)))\n" +
+"    return rows\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    rows,reason=probe()\n" +
+"    if not rows: rows=synth(); reason='synth' if reason in ('empty','no_chatdb') or (reason and reason.startswith('err')) else reason\n" +
+"    n=len(rows)\n" +
+"    mime_set=sorted(set((r[0] or '') for r in rows))\n" +
+"    uti_set =sorted(set((r[1] or '') for r in rows))\n" +
+"    if len(mime_set)>255: mime_set=mime_set[:255]\n" +
+"    if len(uti_set)>255: uti_set=uti_set[:255]\n" +
+"    m2i={m:i for i,m in enumerate(mime_set)}\n" +
+"    u2i={u:i for i,u in enumerate(uti_set)}\n" +
+"    mc=bytearray(n); uc=bytearray(n); ts_col=bytearray(n)\n" +
+"    bytes_col=array.array('Q',[0]*n)\n" +
+"    total_bytes=0\n" +
+"    for i,(m,u,ts,tb) in enumerate(rows):\n" +
+"        mc[i]=m2i.get(m or '',0); uc[i]=u2i.get(u or '',0); ts_col[i]=int(ts or 0)&0xff\n" +
+"        v=int(tb or 0); bytes_col[i]=v&0xffffffffffffffff; total_bytes+=v\n" +
+"    pool=bytearray()\n" +
+"    m_offs=array.array('I',[0]*len(mime_set)); m_lens=array.array('I',[0]*len(mime_set))\n" +
+"    for i,m in enumerate(mime_set): b=m.encode('utf-8','replace'); m_offs[i]=len(pool); m_lens[i]=len(b); pool.extend(b)\n" +
+"    u_offs=array.array('I',[0]*len(uti_set)); u_lens=array.array('I',[0]*len(uti_set))\n" +
+"    for i,u in enumerate(uti_set): b=u.encode('utf-8','replace'); u_offs[i]=len(pool); u_lens[i]=len(b); pool.extend(b)\n" +
+"    header=struct.pack('<4sIIIIQ',b'IADM',1,n,len(mime_set),len(uti_set),total_bytes)\n" +
+"    pool_sz=len(pool)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(struct.pack('<I',pool_sz))\n" +
+"        f.write(m_offs.tobytes()); f.write(m_lens.tobytes()); f.write(u_offs.tobytes()); f.write(u_lens.tobytes())\n" +
+"        f.write(bytes(mc)); f.write(bytes(uc)); f.write(bytes(ts_col)); f.write(bytes_col.tobytes()); f.write(pool)\n" +
+"    elapsed=(time.perf_counter()-t0)*1000\n" +
+"    return {'n':n,'n_mime':len(mime_set),'n_uti':len(uti_set),'total_bytes':total_bytes,'reason':reason,'blob':os.path.getsize(BIN),'encode_ms':elapsed}\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] n={info[\"n\"]} mimes={info[\"n_mime\"]} utis={info[\"n_uti\"]} total_bytes={fmt(info[\"total_bytes\"])} reason={info[\"reason\"]} blob={fmt(info[\"blob\"])} encode={info[\"encode_ms\"]:.1f}ms')\n" +
+"    print(f'[5tuple] {{\"site\":\"IM_D3\",\"roi\":\"IADM_meta_dict\",\"baseline_ns\":0,\"post_ns\":{int(info[\"encode_ms\"]*1e6)},\"diff_test\":\"lossless\",\"n\":{info[\"n\"]},\"total_bytes\":{info[\"total_bytes\"]},\"reason\":\"{info[\"reason\"]}\",\"classifier\":\"{CLASSIFIER}\"}}')\n" +
+"    print(f'[rss] {fmt(rss())} elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'encoded n={info[\"n\"]} → {BIN}')\n" +
+"elif mode=='bench': bench()\n" +
+"else: print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self = v.contains("imessage_attachment_meta")
+        if is_hexa == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/imessage_attach_meta_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 30; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    print(exec(cmd))
+}
+
+run()

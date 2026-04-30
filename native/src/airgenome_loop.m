@@ -320,6 +320,12 @@ static dispatch_source_t g_datae_w7_ts_peers_src        = NULL;  // NW-T1 tailsc
 static dispatch_source_t g_datae_w7_ts_traffic_src      = NULL;  // NW-T2 tailscale_traffic_genome 2.7GB tx real
 static dispatch_source_t g_datae_w7_ts_netcheck_src     = NULL;  // NW-T3 tailscale_netcheck_history (~7s avoid)
 static dispatch_source_t g_datae_w7_void_state_src      = NULL;  // VD1 void_session_state real cache 1.07MB
+// wave-8 — iMessage chat.db deep dive 3 + Claude Code CLI bash/git 2 (closure 돌파 B11)
+static dispatch_source_t g_datae_w8_im_handle_src       = NULL;
+static dispatch_source_t g_datae_w8_im_thread_src       = NULL;
+static dispatch_source_t g_datae_w8_im_attach_meta_src  = NULL;
+static dispatch_source_t g_datae_w8_cc_bash_src         = NULL;  // 2169 real cmds 99 heads
+static dispatch_source_t g_datae_w8_cc_git_src          = NULL;  // 306 real git calls 18 subs
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -749,6 +755,22 @@ void airgenome_loop_init(void) {
     static const airgenome_loop_module_t datae_w7_void_state = {
         .module_name="datae-w7-void-state", .module_path="/Users/ghost/core/airgenome/modules/filters/data/void_session_state.hexa",
         .extra_arg="encode", .interval_s=1800, .timeout_s=60 };
+    // wave-8 — iMessage chat.db deep dive (3) + Claude Code CLI bash/git (2 closure 돌파)
+    static const airgenome_loop_module_t datae_w8_im_handle = {
+        .module_name="datae-w8-im-handle", .module_path="/Users/ghost/core/airgenome/modules/filters/data/imessage_handle_dict.hexa",
+        .extra_arg="encode", .interval_s=3600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w8_im_thread = {
+        .module_name="datae-w8-im-thread", .module_path="/Users/ghost/core/airgenome/modules/filters/data/imessage_thread_genome.hexa",
+        .extra_arg="encode", .interval_s=1800, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w8_im_attach_meta = {
+        .module_name="datae-w8-im-attach-meta", .module_path="/Users/ghost/core/airgenome/modules/filters/data/imessage_attachment_meta.hexa",
+        .extra_arg="encode", .interval_s=7200, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w8_cc_bash = {
+        .module_name="datae-w8-cc-bash-genome", .module_path="/Users/ghost/core/airgenome/modules/filters/data/claude_bash_invocation_genome.hexa",
+        .extra_arg="encode", .interval_s=900, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w8_cc_git = {
+        .module_name="datae-w8-cc-git-pattern", .module_path="/Users/ghost/core/airgenome/modules/filters/data/claude_git_invocation_pattern.hexa",
+        .extra_arg="encode", .interval_s=900, .timeout_s=120 };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -859,6 +881,12 @@ void airgenome_loop_init(void) {
         g_datae_w7_ts_traffic_src  = loop_make_timer(&datae_w7_ts_traffic,  g_loop_queue);
         g_datae_w7_ts_netcheck_src = loop_make_timer(&datae_w7_ts_netcheck, g_loop_queue);
         g_datae_w7_void_state_src  = loop_make_timer(&datae_w7_void_state,  g_loop_queue);
+        // wave-8
+        g_datae_w8_im_handle_src      = loop_make_timer(&datae_w8_im_handle,      g_loop_queue);
+        g_datae_w8_im_thread_src      = loop_make_timer(&datae_w8_im_thread,      g_loop_queue);
+        g_datae_w8_im_attach_meta_src = loop_make_timer(&datae_w8_im_attach_meta, g_loop_queue);
+        g_datae_w8_cc_bash_src        = loop_make_timer(&datae_w8_cc_bash,        g_loop_queue);
+        g_datae_w8_cc_git_src         = loop_make_timer(&datae_w8_cc_git,         g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -966,6 +994,12 @@ void airgenome_loop_init(void) {
               g_datae_w7_ts_traffic_src  ? "ok" : "FAIL",
               g_datae_w7_ts_netcheck_src ? "ok" : "FAIL",
               g_datae_w7_void_state_src  ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae w8-im+cc: im_handle=%s im_thread=%s im_attach=%s cc_bash=%s cc_git=%s",
+              g_datae_w8_im_handle_src      ? "ok" : "FAIL",
+              g_datae_w8_im_thread_src      ? "ok" : "FAIL",
+              g_datae_w8_im_attach_meta_src ? "ok" : "FAIL",
+              g_datae_w8_cc_bash_src        ? "ok" : "FAIL",
+              g_datae_w8_cc_git_src         ? "ok" : "FAIL");
     }
 }
 
@@ -1076,6 +1110,11 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_w7_ts_traffic_src)  { dispatch_source_cancel(g_datae_w7_ts_traffic_src);  g_datae_w7_ts_traffic_src  = NULL; }
     if (g_datae_w7_ts_netcheck_src) { dispatch_source_cancel(g_datae_w7_ts_netcheck_src); g_datae_w7_ts_netcheck_src = NULL; }
     if (g_datae_w7_void_state_src)  { dispatch_source_cancel(g_datae_w7_void_state_src);  g_datae_w7_void_state_src  = NULL; }
+    if (g_datae_w8_im_handle_src)      { dispatch_source_cancel(g_datae_w8_im_handle_src);      g_datae_w8_im_handle_src      = NULL; }
+    if (g_datae_w8_im_thread_src)      { dispatch_source_cancel(g_datae_w8_im_thread_src);      g_datae_w8_im_thread_src      = NULL; }
+    if (g_datae_w8_im_attach_meta_src) { dispatch_source_cancel(g_datae_w8_im_attach_meta_src); g_datae_w8_im_attach_meta_src = NULL; }
+    if (g_datae_w8_cc_bash_src)        { dispatch_source_cancel(g_datae_w8_cc_bash_src);        g_datae_w8_cc_bash_src        = NULL; }
+    if (g_datae_w8_cc_git_src)         { dispatch_source_cancel(g_datae_w8_cc_git_src);         g_datae_w8_cc_git_src         = NULL; }
 }
 
 // ----------------------------------------------------------------------
