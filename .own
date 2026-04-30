@@ -220,3 +220,46 @@ own 7 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M5 l
   status site-11 N/A 2026-04-30 — modules/label.hexa#read_recent_genomes (SCAN_LINES=1000) 은 own 6 site-7 과 동일 패턴이라 단일 bench (bench_site7.hexa, RING_LINES=5000) 로 두 사이트 동시 검증. own 6 site-7 negative result 와 동일 결론 — patch 미적용. label SCAN_LINES=1000 환경에서 차이 더 작을 것 (read_file 비용 더 적음). proof tool/bench/bench_site7.hexa.
   follow-up predictive_throttle.hexa (M14, throttle_history.jsonl 별도 stream) 은 cross-stage 아님 — 독립 own 8 후보 (forecast 와 동시 실행되는 별도 모듈)
   status site-13+14 DONE 2026-04-30 — modules/predictive_throttle.hexa#append_history (printf >> + wc -l + 옵션 rotate tail/mv) + #read_history (tail -N | jq -r '.field') fork → append_file builtin + read_file + in-hexa rotate + jq_field_int anchor scan. tool/bench/bench_site13.hexa 측정 (50 cycles, MAX_HISTORY=30): 24.8ms→0.28ms/cycle (88×, 98%↓), diff_test=0 lossless. predictive_throttle self_test PASS (linear MAE flat=50 rise=80). bench_all.sh 13/13 ✅ (site13 재측정 42×/97% cache-warm variance). own 5 site-3 (printf >> 패턴) + own 6 site-7 부정 사례와 비교: MAX_HISTORY=30 작은 사이즈라 in-hexa concat O(n²) 안전 영역 (own 6 site-7 의 5000 라인 부정 결과와 다름). 본 commit 으로 own 8 (predictive_throttle stage) site-axis 시작 — 잔여 site-15 (whitelisted exec[-f]+grep), site-16 (gentle_bootout_mac launchctl list) 후속 가능.
+
+own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 airgenome 재시작 즉시 반영 mandate (loop dispatcher integration + env default ON)"
+  slug airgenome-data-reinterp-filter-restart-immediate-reflection
+  base raw 241 (단일 binary 단일 plist 단일 TCC entry) + raw 242 (anti-runaway 7 nets) + raw 244 (no-watcher-of-watchers) + raw 245 (no-top-level-explicit-main-call) + own 5/6/7/8 (site-axis framework) + filter Type E (data reinterp prototypes)
+  since 2026-04-30 (commit 5a07cb50 Safari wave loop integration 직후, F45/F64/F65/F66 production-validated 3.25×~33×)
+  scope airgenome 의 모든 production-validated 데이터 재해석 filter (modules/filters/{data,process,transport}/*.hexa) 가 5-tuple PASS 후 airgenome.app loop dispatcher 통합 의무. encode-once filter 는 blob refresh 주기로 timer 등록 (1800~14400s); periodic-sample filter 는 60~300s. raw 242 7 안전망 충족 + raw 245 호환 (top-level main() 0).
+  rule 새 filter 의 5-tuple (site + ROI# + baseline ns + post ns + lossless diff_test) 통과 + production --mode=run-once 측정 통과 시 다음 cycle 의 airgenome_loop.m 변경에 timer 등록 mandatory:
+    - file: native/src/airgenome_loop.m
+    - airgenome_loop_module_t entry (module_name + module_path + interval_s + timeout_s)
+    - dispatch_source_t static 변수 추가 + airgenome_loop_init 안 loop_make_timer 호출
+    - airgenome_loop_shutdown 안 dispatch_source_cancel 추가
+    - env flag 분기 (raw 241 carve-out — sub-mode 분기는 OK)
+    - launchd plist EnvironmentVariables 에 default 명시 (default ON 권장 — "재시작 즉시 반영" 정신)
+    - make build → loop-selftest 13/13 PASS 확인
+    - make install → launchctl bootout/bootstrap 으로 새 PID 진입
+    → 이 5-step 후 사용자 manual --mode=run-once 호출 없이 자동 dispatch
+  enforcement filter PR 의 description 에 다음 5-tuple mandatory:
+    (a) module path + ROI# + 측정 evidence commit hash
+    (b) airgenome_loop_module_t entry block (interval / timeout / module_name)
+    (c) raw 242 7 안전망 충족 체크 (interval ≥60s / lockfile name / timeout / KeepAlive 비변경 / EnvVar 명시 / ProcessType 비변경 / supervisor 0)
+    (d) raw 244 자기복제 0 검증 (자식 hexa 가 부모 또는 다른 자식 spawn 0)
+    (e) make build + loop-selftest + make install 으로 production 진입 검증
+  exception 본 mandate 면제:
+    - bench-only utility (perf_lab, quantum_bench, safari_bench 등) — 측정용, periodic dispatch 부적절
+    - benchmark wrapper (tool/bench/*.hexa)
+    - archive 또는 deprecated filter (claude_compress 등)
+    - on-demand 호출만 적합한 filter (autocomplete F58 — query 시점에만 의미)
+  bans 새 filter 가 5-tuple PASS 했는데 loop dispatcher 통합 follow-up 등록 없이 commit
+  bans loop integration 시 raw 242 7 안전망 일부만 충족 (interval < 60s 등)
+  bans env flag default OFF 로 land — "재시작 즉시 반영" 정신 위반. 사용자 explicit OFF 요청 시만 OFF 허용
+  bans filter 가 자체적으로 launchctl bootstrap 호출 또는 watcher self-replicate (raw 243/244 위반)
+  bans top-level main() 호출 (raw 245 위반)
+  why hexa-only filter framework Type E 의 14+ prototypes 가 본 세션 누적 (E1~E6 + F7/F18/F19/F58×2/F45/F64-F66). Safari wave (F45/F64/F65/F66) 가 commit 5a07cb50 으로 loop 통합되긴 했으나 env flag default OFF — "재시작시 자동 활성화" 보장 안 됨. 본 own 9 가 default ON mandate 로 강화 → filter 개발 사이클 (5-tuple PASS → commit → make install → restart) 이 즉시 production 활성화 직결. 사용자 manual env 토글 / plutil 명령 / launchctl kickstart 필요 0. raw 246 (hx install single entry) 정신 — 사용자 single command 후 모든 변경 자동 반영.
+  proof modules/filters/data/safari_bg_tab_throttle_genome.hexa (F45) + modules/filters/process/safari_active_throttle_signal.hexa (F64) + safari_youtube_gpu_filter.hexa (F65) + safari_battery_freeze_filter.hexa (F66) — wave 4 production-validated (commit 788e483a 3.25×/33×/7×/13×)
+  proof native/src/airgenome_loop.m (commit 5a07cb50 Safari wave loop integration scaffold)
+  proof modules/filters/data/safari_mmap.hexa (E4 SHBF, commit 04193c6a 17.9×/2.5×) + safari_bookmarks_shbf.hexa (F18, commit 5ef190b6 652×) + autocomplete_trie_mmap.hexa (F58, 9999×/137×)
+  severity warn
+  enforce-layer advisory
+  enforce-layer-rationale "advisory tier — own 9 가 자동 enforcement (per-PR loop integration 검증) 도입 전 까지 advisory. 후속 raw 47 cross-repo + raw 192 paired-lint 도입 시 enforce-layer 1 (cli-lint) 승격 가능"
+  note own 5/6/7/8 = site-axis (modules/*.hexa hot path), own 9 = filter-axis (modules/filters/*.hexa 데이터 재해석 framework). 두 axis 모두 production loop dispatch 단일 진입점 (airgenome.app).
+  note env flag default ON 정신 — Safari wave 의 AIRG_TAP_LOOP_SAFARI 가 본 own 9 commit 직후 plist default 0 → 1 으로 flip (사용자 explicit "재시작시 반영" directive verbatim 반영).
+  follow-up 잔여 production-validated filter (E4 / F18 / F58 / F7) loop 통합 검토 — encode-once 패턴 (blob refresh) 적합 시 30~60분 interval timer 추가, on-demand 패턴 (autocomplete) 부적합 시 본 mandate 면제 명시
+  follow-up new filter PR template — own 9 5-tuple (a)~(e) 자동 검증 lint (raw 192 paired-lint atomicity)
