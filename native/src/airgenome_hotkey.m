@@ -59,6 +59,10 @@
 extern BOOL airgenome_hotkey_handle_keydown(CGEventRef event);
 extern void airgenome_hotkey_load_bindings(void);
 
+// Forward decl: resolver lives below, but the binding loader (above) calls it.
+static BOOL hotkey_resolve_target(NSString *raw, NSString **outPath,
+                                  NSString **outBundleID);
+
 // Loaded bindings. Each entry is an NSDictionary with keys:
 //   keycode    NSNumber (int kVK_*)
 //   modifiers  NSNumber (CGEventFlags packed)
@@ -163,38 +167,106 @@ void airgenome_hotkey_load_bindings(void) {
             @"action":    action,
             @"spec":      spec
         } mutableCopy];
-        if ([target isKindOfClass:[NSString class]]) entry[@"target"] = target;
+        if (needsTarget) {
+            NSString *resolvedPath = nil, *resolvedBID = nil;
+            if (!hotkey_resolve_target(target, &resolvedPath, &resolvedBID)) {
+                NSLog(@"[airgenome_hotkey] %@ unresolvable target '%@' for %@",
+                      action, target, spec);
+                continue;
+            }
+            entry[@"target"]    = resolvedPath;
+            entry[@"bundle_id"] = resolvedBID;
+        }
         [g_hotkey_bindings addObject:entry];
-        NSLog(@"[airgenome_hotkey] loaded: %@ → %@%@",
-              spec, action,
-              target ? [@" " stringByAppendingString:target] : @"");
+        if (needsTarget) {
+            NSLog(@"[airgenome_hotkey] loaded: %@ → %@ %@ [%@]",
+                  spec, action, entry[@"target"], entry[@"bundle_id"]);
+        } else {
+            NSLog(@"[airgenome_hotkey] loaded: %@ → %@", spec, action);
+        }
     }
     NSLog(@"[airgenome_hotkey] %lu bindings loaded",
           (unsigned long)g_hotkey_bindings.count);
 }
 
-// Find the running NSRunningApplication for a bundle path. Match by
-// canonical (symlink-resolved) bundleURL path. Tahoe-26 surfaces apps in
-// the System cryptex (Safari at /System/Volumes/Preboot/Cryptexes/App/
-// System/Applications/Safari.app) via a /Applications/Safari.app symlink;
-// URLByStandardizingPath alone leaves the user-side symlink, so the
-// running-app's canonical bundle path didn't match the binding's
-// /Applications/Safari.app — find_running returned nil even though Safari
-// was up, and every ⌃W re-entered the launch branch (NSWorkspace is
-// idempotent so this returned the same pid each time without surfacing
-// an error). URLByResolvingSymlinksInPath collapses the cryptex symlink
-// so both sides reduce to the same Cryptexes/Preboot path.
-static NSRunningApplication *hotkey_find_running(NSString *targetPath) {
-    NSURL *targetURL = [NSURL fileURLWithPath:targetPath];
-    NSString *target = [[[targetURL URLByResolvingSymlinksInPath]
-                         URLByStandardizingPath] path];
+// Resolve a user-supplied `target` string to a canonical (bundlePath,
+// bundleIdentifier) pair. User mandate 2026-04-30 "json에 application/
+// void.app 이렇게 이름만 바뀌어도 작동해야함 / 하드코딩금지" — config
+// must tolerate path-case variations and bare app names without the
+// runtime hardcoding a fixed lookup table.
+//
+// Accepted input forms:
+//   "/Applications/Void.app"          — absolute path (existing path wins)
+//   "/applications/void.app"          — case-mismatched path (HFS+ case-
+//                                       insensitive; literal exists check
+//                                       still resolves it on default vols)
+//   "Void.app" / "Void" / "void"      — bare app name (delegated to
+//                                       NSWorkspace which case-insensitively
+//                                       searches /Applications,
+//                                       /System/Applications, etc.)
+//   "com.apple.Safari"                — bundle identifier (heuristic:
+//                                       contains '.' but no '/' and no
+//                                       ".app" suffix)
+//
+// Resolution canonicalises everything to (a) the actual on-disk bundle
+// path and (b) the Info.plist bundle identifier. Runtime matching uses
+// the bundle ID, which is immune to path/case/symlink variation (Tahoe-26
+// cryptex relocation also collapses cleanly because the bundle ID is
+// stable across the symlink).
+static BOOL hotkey_resolve_target(NSString *raw, NSString **outPath,
+                                  NSString **outBundleID) {
+    if (![raw isKindOfClass:[NSString class]] || raw.length == 0) return NO;
+    NSWorkspace *ws = [NSWorkspace sharedWorkspace];
+    NSBundle *bundle = nil;
+
+    // Form 1: absolute path that exists on disk (HFS+ default = case-
+    // insensitive, so "/applications/void.app" hits the same inode).
+    if ([raw hasPrefix:@"/"]
+        && [[NSFileManager defaultManager] fileExistsAtPath:raw]) {
+        bundle = [NSBundle bundleWithPath:raw];
+    }
+
+    // Form 2: bundle identifier (dotted, no slash, no .app suffix).
+    if (!bundle
+        && [raw containsString:@"."]
+        && ![raw containsString:@"/"]
+        && ![raw.lowercaseString hasSuffix:@".app"]) {
+        NSURL *url = [ws URLForApplicationWithBundleIdentifier:raw];
+        if (url) bundle = [NSBundle bundleWithURL:url];
+    }
+
+    // Form 3: bare name — strip trailing .app, hand to NSWorkspace which
+    // searches the standard application domains case-insensitively.
+    if (!bundle) {
+        NSString *name = raw.lastPathComponent;
+        if ([name.lowercaseString hasSuffix:@".app"])
+            name = [name substringToIndex:name.length - 4];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        NSString *resolved = [ws fullPathForApplication:name];
+#pragma clang diagnostic pop
+        if (resolved) bundle = [NSBundle bundleWithPath:resolved];
+    }
+
+    if (!bundle) return NO;
+    NSString *bid  = bundle.bundleIdentifier;
+    NSString *path = bundle.bundlePath;
+    if (!bid || !path) return NO;
+    if (outPath)     *outPath     = path;
+    if (outBundleID) *outBundleID = bid;
+    return YES;
+}
+
+// Find the running NSRunningApplication by bundle identifier. Bundle ID
+// is the canonical app identity — survives Tahoe-26 cryptex symlinks,
+// path-case mismatches, and whatever literal string the user wrote in
+// hotkey_bindings.json (we already resolved it to the on-disk bundle's
+// CFBundleIdentifier at load time).
+static NSRunningApplication *hotkey_find_running(NSString *bundleID) {
+    if (![bundleID isKindOfClass:[NSString class]]) return nil;
     for (NSRunningApplication *a in
          [[NSWorkspace sharedWorkspace] runningApplications]) {
-        NSURL *bundle = a.bundleURL;
-        if (!bundle) continue;
-        NSString *p = [[[bundle URLByResolvingSymlinksInPath]
-                        URLByStandardizingPath] path];
-        if ([p isEqualToString:target]) return a;
+        if ([a.bundleIdentifier isEqualToString:bundleID]) return a;
     }
     return nil;
 }
@@ -259,8 +331,8 @@ static void hotkey_activate_running(NSRunningApplication *app) {
 // Already-active is a no-op (no hide). User mandate 2026-04-30 rejected
 // the earlier 3-state hide-on-repeat cycle. raw 91 honest C3: launch
 // failure NSLog'd.
-static void hotkey_activate_app(NSString *targetPath) {
-    NSRunningApplication *app = hotkey_find_running(targetPath);
+static void hotkey_activate_app(NSString *targetPath, NSString *bundleID) {
+    NSRunningApplication *app = hotkey_find_running(bundleID);
     if (!app) {
         NSURL *url = [NSURL fileURLWithPath:targetPath];
         NSWorkspaceOpenConfiguration *cfg =
@@ -278,18 +350,18 @@ static void hotkey_activate_app(NSString *targetPath) {
         return;
     }
     if (app.isActive) {
-        NSLog(@"[airgenome_hotkey] %@ → already active (no-op)", targetPath);
+        NSLog(@"[airgenome_hotkey] %@ → already active (no-op)", bundleID);
         return;
     }
     hotkey_activate_running(app);
-    NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", targetPath);
+    NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", bundleID);
 }
 
 // toggle-app: same as activate-app for states (a)+(b), but state (c) hides
 // instead of no-op. User mandate 2026-04-30 specifically for ⌃R → Notes
 // scratchpad: pressing again from inside Notes should dismiss it.
-static void hotkey_toggle_app(NSString *targetPath) {
-    NSRunningApplication *app = hotkey_find_running(targetPath);
+static void hotkey_toggle_app(NSString *targetPath, NSString *bundleID) {
+    NSRunningApplication *app = hotkey_find_running(bundleID);
     if (!app) {
         NSURL *url = [NSURL fileURLWithPath:targetPath];
         NSWorkspaceOpenConfiguration *cfg =
@@ -308,11 +380,11 @@ static void hotkey_toggle_app(NSString *targetPath) {
     }
     if (app.isActive) {
         hotkey_ax_hide(app.processIdentifier);
-        NSLog(@"[airgenome_hotkey] %@ → hide (was active)", targetPath);
+        NSLog(@"[airgenome_hotkey] %@ → hide (was active)", bundleID);
         return;
     }
     hotkey_activate_running(app);
-    NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", targetPath);
+    NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", bundleID);
 }
 
 // Show Desktop: invoke macOS Mission Control's native Show Desktop via the
@@ -362,11 +434,11 @@ BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
         if (relevant != want || kc != wantKc) continue;
         NSString *action = b[@"action"];
         if ([action isEqualToString:@"activate-app"]) {
-            hotkey_activate_app(b[@"target"]);
+            hotkey_activate_app(b[@"target"], b[@"bundle_id"]);
             return YES;  // CONSUME — global override per user mandate
         }
         if ([action isEqualToString:@"toggle-app"]) {
-            hotkey_toggle_app(b[@"target"]);
+            hotkey_toggle_app(b[@"target"], b[@"bundle_id"]);
             return YES;
         }
         if ([action isEqualToString:@"show-desktop"]) {
