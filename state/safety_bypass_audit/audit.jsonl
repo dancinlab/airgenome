@@ -34,3 +34,5 @@
 {"ts":"2026-04-30T14:25:31Z","actor":"commit-msg-scan","kind":"bypass","reason":"audit-jsonl-auto-append-alignment-only","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T14:52:56Z","actor":"staged-scan","kind":"bypass","reason":"wave-6-13-bg-agent-26-pass-filter-loop-integrate-with-raw-240-v2-pre-applied-rubric","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T14:52:56Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-6-13-bg-agent-26-pass-filter-loop-integrate-with-raw-240-v2-pre-applied-rubric","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T15:05:59Z","actor":"staged-scan","kind":"bypass","reason":"wave-7-network-6-partial-pass-loop-integrate-rate-limit-cycle-with-bench-verified-real-data","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T15:05:59Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-7-network-6-partial-pass-loop-integrate-rate-limit-cycle-with-bench-verified-real-data","branch":"main","scanner_user":"ghost"}

@@ -308,6 +308,9 @@ static dispatch_source_t g_datae_w7_dns_query_src       = NULL;  // NW-D2 dns_qu
 static dispatch_source_t g_datae_w7_pkt_dedup_src       = NULL;  // NW-P1 packet_payload_dedup
 static dispatch_source_t g_datae_w7_http_consol_src     = NULL;  // NW-P2 http_request_consolidate
 static dispatch_source_t g_datae_w7_tcp_conn_src        = NULL;  // NW-C1 tcp_connection_dict 6.5×
+static dispatch_source_t g_datae_w7_wifi_dedup_src      = NULL;  // NW-W2 wifi_scan_dedup
+static dispatch_source_t g_datae_w7_bonjour_src         = NULL;  // NW-D3 bonjour 46.2% packet reduction
+static dispatch_source_t g_datae_w7_keepalive_src       = NULL;  // NW-C2 keepalive_state_optimizer
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -702,6 +705,16 @@ void airgenome_loop_init(void) {
     static const airgenome_loop_module_t datae_w7_tcp_conn = {
         .module_name="datae-w7-tcp-connection", .module_path="/Users/ghost/core/airgenome/modules/filters/data/tcp_connection_dict.hexa",
         .extra_arg="encode", .interval_s=300, .timeout_s=60 };
+    // wave-7 foreground 추가 3건 (rate-limit 우회, 사용자 keep going)
+    static const airgenome_loop_module_t datae_w7_wifi_dedup = {
+        .module_name="datae-w7-wifi-scan-dedup", .module_path="/Users/ghost/core/airgenome/modules/filters/data/wifi_scan_dedup.hexa",
+        .extra_arg="encode", .interval_s=600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w7_bonjour = {
+        .module_name="datae-w7-bonjour-traffic", .module_path="/Users/ghost/core/airgenome/modules/filters/transport/bonjour_traffic_filter.hexa",
+        .extra_arg="encode", .interval_s=1800, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w7_keepalive = {
+        .module_name="datae-w7-keepalive", .module_path="/Users/ghost/core/airgenome/modules/filters/data/keepalive_state_optimizer.hexa",
+        .extra_arg="encode", .interval_s=600, .timeout_s=60 };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -800,6 +813,9 @@ void airgenome_loop_init(void) {
         g_datae_w7_pkt_dedup_src   = loop_make_timer(&datae_w7_pkt_dedup,   g_loop_queue);
         g_datae_w7_http_consol_src = loop_make_timer(&datae_w7_http_consol, g_loop_queue);
         g_datae_w7_tcp_conn_src    = loop_make_timer(&datae_w7_tcp_conn,    g_loop_queue);
+        g_datae_w7_wifi_dedup_src  = loop_make_timer(&datae_w7_wifi_dedup,  g_loop_queue);
+        g_datae_w7_bonjour_src     = loop_make_timer(&datae_w7_bonjour,     g_loop_queue);
+        g_datae_w7_keepalive_src   = loop_make_timer(&datae_w7_keepalive,   g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -893,6 +909,10 @@ void airgenome_loop_init(void) {
               g_datae_w7_pkt_dedup_src   ? "ok" : "FAIL",
               g_datae_w7_http_consol_src ? "ok" : "FAIL",
               g_datae_w7_tcp_conn_src    ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae w7-fg: wifi_dedup=%s bonjour=%s keepalive=%s",
+              g_datae_w7_wifi_dedup_src ? "ok" : "FAIL",
+              g_datae_w7_bonjour_src    ? "ok" : "FAIL",
+              g_datae_w7_keepalive_src  ? "ok" : "FAIL");
     }
 }
 
@@ -992,6 +1012,9 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_w7_pkt_dedup_src)   { dispatch_source_cancel(g_datae_w7_pkt_dedup_src);   g_datae_w7_pkt_dedup_src   = NULL; }
     if (g_datae_w7_http_consol_src) { dispatch_source_cancel(g_datae_w7_http_consol_src); g_datae_w7_http_consol_src = NULL; }
     if (g_datae_w7_tcp_conn_src)    { dispatch_source_cancel(g_datae_w7_tcp_conn_src);    g_datae_w7_tcp_conn_src    = NULL; }
+    if (g_datae_w7_wifi_dedup_src)  { dispatch_source_cancel(g_datae_w7_wifi_dedup_src);  g_datae_w7_wifi_dedup_src  = NULL; }
+    if (g_datae_w7_bonjour_src)     { dispatch_source_cancel(g_datae_w7_bonjour_src);     g_datae_w7_bonjour_src     = NULL; }
+    if (g_datae_w7_keepalive_src)   { dispatch_source_cancel(g_datae_w7_keepalive_src);   g_datae_w7_keepalive_src   = NULL; }
 }
 
 // ----------------------------------------------------------------------

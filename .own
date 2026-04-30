@@ -419,4 +419,15 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
       production active 검증 PID 96900 — 69 timer all ok:
         log: "datae w7-net: wifi=ok dns_cache=ok dns_query=ok pkt_dedup=ok http_consol=ok tcp_conn=ok"
       proof bench evidence (foreground 직접 verify, raw 240 V2 사전 design + rubric.md + .rubric.jsonl 9건)
-    proof commit ... + b0380a27 + 본 commit + loop-selftest 13/13 PASS
+    wave-7 foreground 추가 3건 DONE 2026-05-01 (rate-limit reset 대기 중 사용자 "keep going" 직접 작성):
+      NW-W2 wifi_scan_dedup — fnv1a64 ring dedup (synth 8000 all unique, real 시 dedup 작동)
+      NW-D3 bonjour_traffic_filter — **46.2% Bonjour broadcast packet reduction** (real dns-sd browse, 14 uniq / 26 total)
+      NW-C2 keepalive_state_optimizer — real 37 conn + sysctl (keepidle 2h / keepintvl 75s / keepcnt 8)
+      production active 검증 PID 22787: "datae w7-fg: wifi_dedup=ok bonjour=ok keepalive=ok"
+      72 timer all ok (datae 56)
+    잔여 4 filter (rate-limit reset 후 또는 별도 cycle):
+      NW-W3 wifi_roaming_predictor (RSSI history + BSSID transition signal)
+      NW-B1 bandwidth_genome_throttle (netstat -ib + sysctl byte counter delta)
+      NW-B2 network_quality_history (networkQuality CLI cache)
+      NW-C3 vpn_state_filter (scutil --nc + ifconfig utun*/ipsec*)
+    proof commit b0380a27 + 19fba7d1 + 본 commit + loop-selftest 13/13 PASS
