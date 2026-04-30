@@ -262,20 +262,39 @@ static void airgenome_launcher_refresh_status(NSString *query) {
 static AirgenomeLauncherDelegate *g_launcher_delegate = nil;
 
 void airgenome_launcher_show_overlay(void) {
+    // LSUIElement=true (Info.plist) sets activation policy to .accessory at
+    // launch — accessory apps cannot receive keyboard focus reliably even on
+    // their own panels. Solution per Apple HIG: dynamically promote to
+    // .regular while overlay is visible, demote back to .accessory on hide.
+    // Found 2026-04-30 04:43 — user report still couldn't type after
+    // removing NSWindowStyleMaskNonactivatingPanel + adding activateIgnoring.
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp activateIgnoringOtherApps:YES];
+
     // Idempotent: if already shown, just bring to front + clear search.
     if (g_launcher_panel && [g_launcher_panel isVisible]) {
         [g_launcher_search_field setStringValue:@""];
         [g_launcher_panel makeKeyAndOrderFront:nil];
+        [g_launcher_panel makeFirstResponder:g_launcher_search_field];
         return;
     }
     // Lazy-create on first show; reused thereafter.
     if (!g_launcher_panel) {
         NSRect frame = NSMakeRect(0, 0, 600, 90);
+        // styleMask: borderless only. Removed NSWindowStyleMaskNonactivatingPanel
+        // 2026-04-30 04:43 — that mask blocks app activation, which prevents
+        // the panel from receiving keyboard input on LSUIElement apps even
+        // after [NSApp activateIgnoringOtherApps:YES]. User report 2026-04-30
+        // confirmed panel visible but keyboard/mouse non-responsive.
         g_launcher_panel = [[NSPanel alloc]
             initWithContentRect:frame
-                      styleMask:(NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel)
+                      styleMask:NSWindowStyleMaskBorderless
                         backing:NSBackingStoreBuffered
                           defer:NO];
+        // Borderless windows don't accept key window status by default; NSPanel
+        // overrides canBecomeKeyWindow to return YES even when borderless, but
+        // we set it explicitly via becomesKeyOnlyIfNeeded for clarity.
+        [g_launcher_panel setBecomesKeyOnlyIfNeeded:NO];
         [g_launcher_panel setLevel:NSFloatingWindowLevel];
         [g_launcher_panel setOpaque:NO];
         [g_launcher_panel setBackgroundColor:[[NSColor windowBackgroundColor] colorWithAlphaComponent:0.95]];
@@ -333,6 +352,9 @@ void airgenome_launcher_hide_overlay(void) {
     if (g_launcher_panel) {
         [g_launcher_panel orderOut:nil];
     }
+    // Demote back to accessory so airgenome stays out of Dock + Cmd-Tab while
+    // idle. Paired with the .regular promotion in show_overlay.
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     // Drop cache on hide; freshens app list on next show (apps may install/
     // uninstall between sessions). raw 65 idempotent: re-call OK.
     g_launcher_app_cache = nil;

@@ -31,5 +31,14 @@
     <true/>
     <key>NSAccessibilityUsageDescription</key>
     <string>airgenome listens to mouse + drag events to provide mouse-button 4/5 navigation, mouse-wheel scroll inversion, and 8-zone drag-to-edge window snapping. Native macOS tiling is temporarily disabled while running and restored on exit.</string>
+    <!-- hive raw 209 launcher: env vars LaunchServices applies on `open -a`. -->
+    <!-- launchctl bootstrap also reads these via LaunchAgent plist override. -->
+    <key>LSEnvironment</key>
+    <dict>
+        <key>AIRG_TAP_LAUNCHER</key>
+        <string>1</string>
+        <key>AIRG_TAP_LAUNCHER_HOTKEY</key>
+        <string>ctrl+s</string>
+    </dict>
 </dict>
 </plist>

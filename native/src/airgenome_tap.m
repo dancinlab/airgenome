@@ -22,7 +22,8 @@
 //   IOKit IOPMAssertionCreateWithName held IN-PROCESS — NO osascript admin
 //   shell-out, NO LaunchAgent indirection, NO pmset shell-out, NO admin auth
 //   dialog. Native Apple primitive (IOKit/IOPMLib.h):
-//     Wake             = kIOPMAssertionTypeNoIdleSleep        (whole-system)
+//     Wake             = kIOPMAssertionTypePreventUserIdleDisplaySleep
+//                        (display + system idle + screen-saver auto-lock)
 //     Wake-lid-closed  = kIOPMAssertionTypePreventSystemSleep (lid-close survive)
 //   raw 91 honest C3: kIOPMAssertionTypePreventSystemSleep is documented Apple
 //   side as effective only on AC power; on battery + lid close some Apple
@@ -962,15 +963,23 @@ static void save_menubar_state(void) {
 
 static int wake_assertion_create(void) {
     if (g_wake_assertion != kIOPMNullAssertionID) return 1;
+    // 2026-04-30 04:50 — upgraded from kIOPMAssertionTypeNoIdleSleep to
+    // kIOPMAssertionTypePreventUserIdleDisplaySleep (superset). User report:
+    // "wake 잠금 안된다 / 화면 자동잠금 안빠지도록". NoIdleSleep only
+    // blocks system idle sleep — display still goes dark per `displaysleep`
+    // setting (10 min default), and screen-saver-triggered auto-lock fires
+    // when display sleeps. NoDisplaySleepAssertion blocks BOTH display sleep
+    // AND keeps user-idle timer pinned, which prevents screen saver +
+    // auto-lock from kicking in. Same effect as `caffeinate -d`.
     IOReturn rc = IOPMAssertionCreateWithName(
-        kIOPMAssertionTypeNoIdleSleep,
+        kIOPMAssertionTypePreventUserIdleDisplaySleep,
         kIOPMAssertionLevelOn,
         CFSTR("airgenome.wake"),
         &g_wake_assertion);
     if (rc != kIOReturnSuccess) {
         g_wake_assertion = kIOPMNullAssertionID;
         fprintf(stderr,
-            "wake: IOPMAssertionCreateWithName(NoIdleSleep) failed rc=0x%x\n",
+            "wake: IOPMAssertionCreateWithName(NoDisplaySleep) failed rc=0x%x\n",
             (unsigned)rc);
         fflush(stderr);
         return 0;
@@ -1362,11 +1371,15 @@ int main(int argc, char **argv) {
         // menubar can flip g_*_on flags at runtime without re-creating the
         // CGEventTap. The callback gates per-event handling on the flags
         // (see tap_callback above), so an "off" feature is a cheap noop.
+        // hive raw 209: kCGEventKeyDown required for launcher hotkey hook
+        // (handle_keydown in tap_callback line ~804). Was missing in iter 14
+        // tap.m integration — silent-dead-code bug found 2026-04-30 04:38.
         CGEventMask mask = CGEventMaskBit(kCGEventOtherMouseDown)
                          | CGEventMaskBit(kCGEventScrollWheel)
                          | CGEventMaskBit(kCGEventLeftMouseDown)
                          | CGEventMaskBit(kCGEventLeftMouseDragged)
-                         | CGEventMaskBit(kCGEventLeftMouseUp);
+                         | CGEventMaskBit(kCGEventLeftMouseUp)
+                         | CGEventMaskBit(kCGEventKeyDown);
 
         // Mouse button feature needs to suppress the original button event
         // (return NULL from callback), so the tap must be in default mode
