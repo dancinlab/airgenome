@@ -263,3 +263,39 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
   note env flag default ON 정신 — Safari wave 의 AIRG_TAP_LOOP_SAFARI 가 본 own 9 commit 직후 plist default 0 → 1 으로 flip (사용자 explicit "재시작시 반영" directive verbatim 반영).
   follow-up 잔여 production-validated filter (E4 / F18 / F58 / F7) loop 통합 검토 — encode-once 패턴 (blob refresh) 적합 시 30~60분 interval timer 추가, on-demand 패턴 (autocomplete) 부적합 시 본 mandate 면제 명시
   follow-up new filter PR template — own 9 5-tuple (a)~(e) 자동 검증 lint (raw 192 paired-lint atomicity)
+
+  status own 9 BENCHMARK-COMPLETE 2026-04-30 — 23 filter 측정 완료 (wave 1 jsonl 5종 / wave 2 process 7종 / wave 3 transport+blob 6종 + wave 4 Safari 4종 + 본 wave 1 종합).
+    production-validated (loop integrate 권장):
+      F45 safari_bg_tab_throttle_genome (3.25× ✓ commit 788e483a) ← 이미 통합 (PID 51101)
+      F64 safari_active_throttle_signal (33× ✓) ← 이미 통합
+      F65 safari_youtube_gpu_filter (7× ✓) ← 이미 통합
+      F66 safari_battery_freeze_filter (13× ✓) ← 이미 통합
+      E4 safari_mmap (17.9×→21.1× cold / 2.5×→2.7× persistent ✓ wave 3 재현 stable) ← 미통합
+      F18 safari_bookmarks_shbf (652× synth → 365× real ✓ corpus-bound) ← 미통합
+      PTBF prefix_trie_mmap (bisect 13.9× / 압축 53.1% wave 3 첫 측정) ← 미통합
+      6 process gate (calendar/finder/mail/memo/safari/telegram — wave 2 PASS 0 panic) ← 미통합
+    exception (loop integrate 부적합):
+      F58 APBF/PTBF (autocomplete on-demand 호출만 의미 있음)
+      F19 topsites_mmap (1.16× ROI 미미)
+      F7 dns_blocklist (entry-point 이슈 SIGKILL, library 형 — system 통합 부재)
+      F58 autocomplete (on-demand)
+      modules/filters/data/{safari_bench, quantum_bench, perf_lab} (utility/bench)
+      modules/filters/data/{sqlite_vacuum, vacuum_watcher} (utility 또는 watcher 패턴 검토)
+      modules/filters/process/compute (L0/AG6 frozen)
+      modules/filters/process/claude (session_now.json 외부 의존)
+      modules/filters/transport/{base, ssh} (utility 또는 L0 frozen)
+    blocked (hexa-lang upstream 필요):
+      claude_quantum (E1) — try/catch (A10)
+      claude_bytes (E2) — try/catch (A10)
+      claude_runtime (E3) — try/catch (A10)
+      anomaly — try/catch (A10) + parse-warn
+      client — try/catch (A10) + nc -q invalid (A15 unix_socket)
+      columnar_projection (P3) — args pass-through (A9)
+      result_cache (P5) — args pass-through (A9)
+      F7 default encode SIGKILL — entry-point fix (A12 stderr 캡처 후 재진단)
+    proof docs/jsonl_filter_bench_2026-04-30.md (wave 1) + docs/process_gate_bench_2026-04-30.md (wave 2) + docs/transport_residual_bench_2026-04-30.md (wave 3)
+    proof docs/hexa_lang_upstream_candidates.md A9-A15 (7 신규 gap)
+  follow-up A10 + A14 hexa-lang stdlib 도입 후 5 blocked filter 재측정 (wave 5 후속 cycle)
+  follow-up A9 airgenome run-once argv pass-through 적용 후 P3/P5 재측정
+  follow-up E4 / F18 / PTBF / 6 process gate loop integrate (own 9 5-step) — env flag 분기 추가 + interval 결정
+  follow-up own 10 site-axis 등록 — process gate 의 ps fork chain (S2) / lsappinfo dedup (S3) / etc

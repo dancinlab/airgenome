@@ -214,17 +214,155 @@ fi
 
 ---
 
-## 우선순위 요약 (갱신)
+---
 
-| 후보 | API | 측정 evidence | airgenome win 추정 | hexa-lang 작업량 | 우선순위 |
+## A9 — airgenome `--mode=run-once` 추가 argv pass-through
+
+**Evidence**: 본 세션 wave 1 측정 (commit 5ef190b6 follow-up)
+- columnar_projection.hexa: args() 빈 list → usage 출력. 원래 perf_lab P3 의 2-9× 측정 재현 불가
+- result_cache.hexa: 동일 dispatch gap. 4.8-7.8× 재현 불가
+
+**Cause**: `airgenome_loop.m#airgenome_loop_run_once` 가 `{HEXA_BIN, "run", module_path, NULL}` 하드코드 — extra argv 전달 부재.
+
+**Proposed**:
+```c
+int airgenome_loop_run_once(const char *module_path, int timeout_s, int extra_argc, char *const extra_argv[]);
+// CLI: airgenome --mode=run-once=<path> --timeout=N -- <args...>
+```
+
+**Caller**: P3 (columnar) needs jsonl + field arg. P5 (result_cache) needs jsonl path.
+
+**Priority**: 🟢 **high** — P3/P5 즉시 unblock + 모든 args-needed filter 측정 가능.
+
+---
+
+## A10 — hexa `try { } catch e { }` syntax 미지원 / `exec_or` builtin
+
+**Evidence**: 본 세션 wave 1 + wave 3 동시 surface
+- E1 claude_quantum.hexa: try/catch line 204/213 → parse PANIC
+- E2 claude_bytes.hexa: try/catch line 137/143 → parse PANIC
+- E3 claude_runtime.hexa: try/catch 6 sites (line 20/200/284/300/311/320) → parse PANIC
+- modules/filters/transport/anomaly.hexa: parse-warn (try/catch 4건)
+- modules/filters/transport/client.hexa: parse-warn
+
+**Gap**: hexa runtime 이 `try { } catch e { }` 차단 — 5 filter 직접 production 측정 불가.
+
+**Proposed alternatives**:
+- Option A: hexa-lang 에 try/catch syntax 정식 도입 (large change)
+- **Option B**: `exec_or(cmd: str, default: str) -> str` builtin — try/catch 패턴의 90% 가 exec wrapper. grammar 변경 없이 동등 가능. 1 builtin 추가
+- Option C: Result<T, E> stdlib
+
+**Caller**: 5 filter 위 + 본 세션 fix 한 safari_bench/safari_mmap (이미 try/catch 제거)
+
+**Priority**: 🟢 **high** — 5 filter unblock, 가장 큰 ROI.
+
+---
+
+## A11 — hexa wrapper spawn shell BusyBox PATH 격리
+
+**Evidence**: wave 1 측정 시 surface
+- `sh: perl: not found` (perl alarm wrapper fail)
+- `sh: printenv: not found`
+- `nc -q invalid` (BusyBox vs GNU netcat)
+
+**Cause**: hexa wrapper spawn 의 `sh -c "..."` 가 PATH 정상 inherit 못함. `/usr/bin/perl` 같은 absolute path 사용 우회 가능 (본 세션 safari_bench 적용함).
+
+**Proposed**: hexa wrapper 가 user PATH inherit 보장 또는 bench 시 PATH 자동 augment.
+
+**Priority**: 🟡 medium — workaround 가능 (absolute path) 이지만 bench 작성 부담 ↑.
+
+---
+
+## A12 — A8 강화: hexa wrapper internal stderr redirect 직접 evidence
+
+**Evidence**: wave 1 측정 cycle log 에서 직접 surface:
+```
+sh: line 1: 29304 Killed: 9 ( '/Users/ghost/core/hexa-lang/.hexa-cache/<hash>/exe' 0<&3 2> '/tmp/.hexa-runtime/cache_err.<ts>.tmp' )
+```
+
+→ A8 의 가설 ("hexa wrapper 가 자체 stderr 를 tmp file 로 redirect") 직접 증명. 자식 panic 이 ~/.airgenome/loop-run-once.log 에 안 잡힘.
+
+**Priority escalate**: 🟡 medium → 🟢 **high**. F45 panic, F18/F58 timeout 등 silent 디버깅 차단 직접 영향.
+
+**Proposed (A8 그대로 유지)**: `HEXA_NO_INTERNAL_REDIRECT=1` 환경 변수 또는 hexa.real 직접 호출 path.
+
+---
+
+## A13 — `pfs_readdir_sorted` / `pfs_mtime` / `pfs_now_sec` builtin
+
+**Evidence**: wave 2 측정 (process gate 7종)
+- claude.hexa: per-instance `ls + stat + date` 3-fork 호출 chain
+- 7 process filter 가 lsappinfo / ls + stat + date 패턴 반복
+
+**Proposed**:
+```hexa
+pub fn pfs_readdir_sorted(dir: str, pattern: str) -> list  // glob + sort
+pub fn pfs_mtime(path: str) -> int                          // file mtime epoch
+pub fn pfs_now_sec() -> int                                 // monotonic seconds (vs pfs_now_ns)
+```
+
+**Caller**: claude.hexa per-instance + process gate filters.
+
+**Priority**: 🟡 medium — process gate own 10 site-S4 (per-instance 3-fork → 0 fork) 의 핵심 unblock.
+
+---
+
+## A14 — `json_field_str` / `json_field_int` / `json_field_float` builtin
+
+**Evidence**: wave 2 측정 (process gate 7종)
+- claude.hexa session_now.json 에서 substring 체인 으로 field 추출
+- own 5 site-2 의 `vit_at` 패턴 (single field hexa-split) 의 multi-field 일반화
+
+**Proposed**:
+```hexa
+pub fn json_field_str(line: str, key: str) -> str
+pub fn json_field_int(line: str, key: str) -> int
+pub fn json_field_float(line: str, key: str) -> float
+// own 7 site-9 의 jq_field 패턴 hexa builtin 화
+// (현재 5+ 모듈 local 정의 — DRY 위반)
+```
+
+**Caller**: own 5/6/7/8 의 jq_field local helper 5+ 정의, wave 1 jsonl-heavy filter 광범위.
+
+**Priority**: 🟢 **high** — jsonl 처리 모든 filter 의 광범위 영향. own 5 site-2 614× 의 일반화. A6 (to_int_safe) 와 짝.
+
+---
+
+## A15 — `core.net.unix_socket(path, payload)` builtin
+
+**Evidence**: wave 3 측정 (transport)
+- modules/filters/transport/client.hexa 의 `nc -U <socket>` 쉘 우회 → BusyBox `nc -q invalid` 직접 fail
+
+**Proposed**:
+```hexa
+pub fn unix_socket_send(path: str, payload: str) -> str  // SOCK_STREAM connect + send + read
+pub fn unix_socket_recv(path: str, max_bytes: int) -> str
+```
+
+**Caller**: client.hexa + 미래 IPC filter.
+
+**Priority**: 🟢 high (transport filter 작동 차단 직접 해소) / 🟡 medium (workaround `socat` 가능).
+
+---
+
+## 우선순위 요약 (갱신 — 16 후보)
+
+| 후보 | API | 측정 evidence | airgenome win 추정 | 작업량 | 우선순위 |
 |---|---|---|---|---|---|
-| **A6** | to_int_safe builtin | wave 4 panic 직접 차단막 | wave 4 즉시 production 가능 | low (10-line stdlib fn) | 🟢 **high** (본 commit 직후) |
-| **A7** | list O(1) append | F58 19.7s build, F18 60s timeout | wave 1 100K dataset 측정 가능 | high (interp 변경 또는 builtin) | 🟢 high |
-| A2 | xxh64 stdlib integration | site-5 (5ms→0.1ms?) | ~50× (fork 제거) | low (이미 존재) | 🟢 high |
-| A3 | pfs_tail_lines | site-1 (5ms→0.5ms?) | ~10× | medium (mmap 구현) | 🟡 medium |
-| A1 | pfs_clone | site-4 (5ms→0.1ms?) | ~50× (fork 제거) | low (syscall wrap) | 🟡 medium |
-| **A8** | HEXA_NO_INTERNAL_REDIRECT 환경 변수 | wave 4 panic silent → 디버깅 차단 | 측정 실패 silent risk 제거 | low (wrapper script 분기) | 🟡 medium |
-| A4 | bench_lib pfs_now_ns 채택 | (cleanup) | 0 (의존 제거만) | 0 (airgenome side) | 🟢 low |
+| **A10** | try/catch / exec_or builtin | 5 filter parse PANIC | 5 filter unblock | low (1 builtin) | 🟢 **highest** |
+| **A14** | json_field_* builtin | 5+ local jq_field | 모든 jsonl filter | low (3 builtin) | 🟢 high |
+| **A6** | to_int_safe builtin | wave 4 panic | wave 4 + jsonl | landed (3ea7fe69) | 🟢 done |
+| **A9** | run-once argv pass-through | P3/P5 unblock | 2 filter | low (airgenome) | 🟢 high |
+| **A12** | A8 강화 stderr redirect | silent panic 차단 | 디버깅 5× | low | 🟢 high |
+| **A2** | xxh64 stdlib integration | site-5 (5ms→0.1ms) | ~50× | low | 🟢 high |
+| **A7** | list O(1) append | F58 19.7s build | 100K dataset | high | 🟢 high |
+| **A15** | unix_socket builtin | client.hexa BusyBox fail | 1 filter | medium | 🟡 medium |
+| **A13** | pfs_readdir / mtime / now_sec | claude per-instance | own 10 S4 | medium | 🟡 medium |
+| **A3** | pfs_tail_lines | site-1 추가 | ~10× | medium | 🟡 medium |
+| **A1** | pfs_clone | site-4 fork 제거 | ~50× | low | 🟡 medium |
+| **A8** | HEXA_NO_INTERNAL_REDIRECT | (A12 와 통합) | (A12 참고) | low | 🟡 → 🟢 (A12) |
+| **A11** | wrapper PATH inherit | bench 작성 부담 | bench DRY | low | 🟡 medium |
+| A4 | bench_lib pfs_now_ns | (cleanup) | 0 | 0 | 🟢 low |
 | A5 | pfs_writev | site-3 추가 | ~5-15% | medium | 🔴 low |
 
 ---
