@@ -245,6 +245,14 @@ static dispatch_source_t g_proc_mail_src       = NULL;
 static dispatch_source_t g_proc_memo_src       = NULL;
 static dispatch_source_t g_proc_safari_src     = NULL;
 static dispatch_source_t g_proc_telegram_src   = NULL;
+// own 9 — K-wave macOS-level Type E data 재해석 (raw 240 V2 만점기준 사전 적용).
+// AIRG_TAP_LOOP_DATAE → K1 / K2 / K5 / K6 + IM1 (5 filter, encode mode timer).
+// 만점 2 (K1 400/400 / K6 400/400) + 381/380/395 3개. blob refresh 주기 등록.
+static dispatch_source_t g_datae_im1_src       = NULL;
+static dispatch_source_t g_datae_k1_src        = NULL;
+static dispatch_source_t g_datae_k2_src        = NULL;
+static dispatch_source_t g_datae_k5_src        = NULL;
+static dispatch_source_t g_datae_k6_src        = NULL;
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -372,6 +380,48 @@ void airgenome_loop_init(void) {
         .interval_s  = 300,            // 5min — 통화중 보호 우선
         .timeout_s   = 30,
     };
+    // own 9 — K-wave macOS-level Type E data 재해석 (commit 65e59eab + def7b1a4).
+    // 만점기준 사전 적용 (raw 240 V2 9-block 400pt). encode mode 호출로 blob 갱신.
+    //   IM1 imessage_chat_shbf — T1 패턴 직접 이식, ~395/400 (chat.db ?immutable=1)
+    //   K1  imessage_attachment_dedup — 400/400, smoke 151.6× (T2 verbatim lift)
+    //   K2  sharedfilelist_recent_shbf — 381/400, 158 unique paths (sfl3/sfl4)
+    //   K5  launchagents_enum_shbf — 380/400, 56 plists + btm v16
+    //   K6  zsh_history_columnar — 400/400, 524KB / 10K lines (cmd dict + line pool)
+    static const airgenome_loop_module_t datae_im1 = {
+        .module_name = "datae-im1-imessage-chat",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/imessage_chat_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — chat.db 활발 갱신
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_k1 = {
+        .module_name = "datae-k1-imessage-attachment",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/imessage_attachment_dedup.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 3600,           // 1h — 첨부 walk 비싸므로 보수적
+        .timeout_s   = 120,
+    };
+    static const airgenome_loop_module_t datae_k2 = {
+        .module_name = "datae-k2-sharedfilelist",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/sharedfilelist_recent_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — recent items drift 빠름
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_k5 = {
+        .module_name = "datae-k5-launchagents",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/launchagents_enum_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 3600,           // 1h — plist 변경 드뭄
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_k6 = {
+        .module_name = "datae-k6-zsh-history",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/zsh_history_columnar.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — shell history grows steadily
+        .timeout_s   = 60,
+    };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -410,13 +460,25 @@ void airgenome_loop_init(void) {
         g_proc_telegram_src = loop_make_timer(&proc_telegram, g_loop_queue);
     }
 
-    NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s",
+    // own 9 — K-wave macOS-level Type E (raw 240 V2 만점기준 사전 적용 5 filter).
+    const char *datae_env = getenv("AIRG_TAP_LOOP_DATAE");
+    int datae_on = (datae_env && datae_env[0] == '1') ? 1 : 0;
+    if (datae_on) {
+        g_datae_im1_src = loop_make_timer(&datae_im1, g_loop_queue);
+        g_datae_k1_src  = loop_make_timer(&datae_k1,  g_loop_queue);
+        g_datae_k2_src  = loop_make_timer(&datae_k2,  g_loop_queue);
+        g_datae_k5_src  = loop_make_timer(&datae_k5,  g_loop_queue);
+        g_datae_k6_src  = loop_make_timer(&datae_k6,  g_loop_queue);
+    }
+
+    NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
           g_harvest_src  ? "ok" : "FAIL",
           g_label_src    ? "ok" : "FAIL",
           g_forecast_src ? "ok" : "FAIL",
           safari_on ? "on" : "off",
           blobs_on  ? "on" : "off",
-          procs_on  ? "on" : "off");
+          procs_on  ? "on" : "off",
+          datae_on  ? "on" : "off");
     if (safari_on) {
         NSLog(@"[airgenome_loop] safari wave: genome=%s active=%s youtube=%s battery=%s",
               g_safari_genome_src  ? "ok" : "FAIL",
@@ -438,6 +500,14 @@ void airgenome_loop_init(void) {
               g_proc_memo_src     ? "ok" : "FAIL",
               g_proc_safari_src   ? "ok" : "FAIL",
               g_proc_telegram_src ? "ok" : "FAIL");
+    }
+    if (datae_on) {
+        NSLog(@"[airgenome_loop] datae wave: im1=%s k1=%s k2=%s k5=%s k6=%s",
+              g_datae_im1_src ? "ok" : "FAIL",
+              g_datae_k1_src  ? "ok" : "FAIL",
+              g_datae_k2_src  ? "ok" : "FAIL",
+              g_datae_k5_src  ? "ok" : "FAIL",
+              g_datae_k6_src  ? "ok" : "FAIL");
     }
 }
 
@@ -484,6 +554,11 @@ void airgenome_loop_shutdown(void) {
     if (g_proc_memo_src)      { dispatch_source_cancel(g_proc_memo_src);      g_proc_memo_src      = NULL; }
     if (g_proc_safari_src)    { dispatch_source_cancel(g_proc_safari_src);    g_proc_safari_src    = NULL; }
     if (g_proc_telegram_src)  { dispatch_source_cancel(g_proc_telegram_src);  g_proc_telegram_src  = NULL; }
+    if (g_datae_im1_src)      { dispatch_source_cancel(g_datae_im1_src);      g_datae_im1_src      = NULL; }
+    if (g_datae_k1_src)       { dispatch_source_cancel(g_datae_k1_src);       g_datae_k1_src       = NULL; }
+    if (g_datae_k2_src)       { dispatch_source_cancel(g_datae_k2_src);       g_datae_k2_src       = NULL; }
+    if (g_datae_k5_src)       { dispatch_source_cancel(g_datae_k5_src);       g_datae_k5_src       = NULL; }
+    if (g_datae_k6_src)       { dispatch_source_cancel(g_datae_k6_src);       g_datae_k6_src       = NULL; }
 }
 
 // ----------------------------------------------------------------------

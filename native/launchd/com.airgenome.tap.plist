@@ -59,6 +59,16 @@
              check. claude/compute 는 exception. 6 timer (180-300s). -->
         <key>AIRG_TAP_LOOP_PROCS</key>
         <string>1</string>
+        <!-- own 9 K-wave: macOS-level Type E data 재해석 (raw 240 V2 만점기준
+             사전 적용). 5 filter encode mode timer:
+               IM1 imessage_chat_shbf (~395) — 1800s
+               K1  imessage_attachment_dedup (400/400) — 3600s
+               K2  sharedfilelist_recent_shbf (381) — 1800s
+               K5  launchagents_enum_shbf (380) — 3600s
+               K6  zsh_history_columnar (400/400) — 1800s
+             default ON ("재시작 즉시 반영" mandate per own 9). -->
+        <key>AIRG_TAP_LOOP_DATAE</key>
+        <string>1</string>
     </dict>
 </dict>
 </plist>

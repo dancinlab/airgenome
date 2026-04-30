@@ -10,3 +10,5 @@
 {"ts":"2026-04-30T12:06:59Z","actor":"commit-msg-scan","kind":"bypass","reason":"claude-code-cli-data-reinterp-15-filter-bg-output","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T13:07:13Z","actor":"staged-scan","kind":"bypass","reason":"5-wave-type-e-19-filter-bg-output-plus-imessage-im1-plus-raw-240-retroactive-audit-docs","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T13:07:13Z","actor":"commit-msg-scan","kind":"bypass","reason":"5-wave-type-e-19-filter-bg-output-plus-imessage-im1-plus-raw-240-retroactive-audit-docs","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T13:15:01Z","actor":"staged-scan","kind":"bypass","reason":"k-wave-macos-level-5-filter-bg-output-with-raw-240-pre-applied-rubric-per-filter","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T13:15:01Z","actor":"commit-msg-scan","kind":"bypass","reason":"k-wave-macos-level-5-filter-bg-output-with-raw-240-pre-applied-rubric-per-filter","branch":"main","scanner_user":"ghost"}
