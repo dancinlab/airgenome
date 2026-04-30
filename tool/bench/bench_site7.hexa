@@ -1,0 +1,146 @@
+// tool/bench/bench_site7.hexa — own 6 site-7 + own 7 site-11 baseline
+// (read_recent_genomes: exec("tail -N RING") fork vs read_file + tail-N slice)
+//
+// modules/forecast.hexa#read_recent_genomes (SCAN_LINES=5000) 와
+// modules/label.hexa#read_recent_genomes (SCAN_LINES=1000) 가 동일 패턴
+// (per-cycle exec("tail -N RING")) 사용. 직접 적용: read_file builtin → split("\n")
+// → 마지막 N 라인 슬라이스 (0 fork). own 5 site-4 와 달리 본 사이트는 read 자체.
+//
+// 측정 ring: 5000 라인 (forecast scenario). label SCAN_LINES=1000 도 동일 패턴이므로
+// 단일 bench 로 두 사이트 동시 검증.
+
+use "../../core/core"
+
+let BENCH_RING = "/tmp/airgenome_bench_site7.ring"
+let RING_LINES = 5000     // forecast SCAN_LINES; label 도 동일 패턴
+let SCAN_LINES = 5000     // tail -N count
+let K = 5
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn build_ring() -> void {
+    let _rm = exec("rm -f '" + BENCH_RING + "'")
+    let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(RING_LINES) + ";i++) { printf \"{\\\"ts\\\":\\\"2026-04-30T00:00:00Z\\\",\\\"pid\\\":%d,\\\"comm\\\":\\\"proc%d\\\",\\\"vitals\\\":[%d,%d,0,0,0,0]}\\n\", 1000+i, i, i%100, i%50 } }' > '" + BENCH_RING + "'"
+    let _ = exec(cmd)
+}
+
+// OLD: per-cycle exec("tail -N RING") fork — modules/forecast.hexa#read_recent_genomes L143-157
+// (label.hexa#read_recent_genomes L235-247 와 동일 패턴).
+fn old_read_recent_genomes() -> list {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + BENCH_RING + "' 2>/dev/null"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let mut result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" { result = result + [l] }
+        i = i + 1
+    }
+    return result
+}
+
+// NEW: read_file builtin + 마지막 N 슬라이스 (0 fork).
+// trailing newline 으로 인한 빈 라인 회피: 비어있지 않은 라인만 모은 뒤 last-N 슬라이스.
+fn new_read_recent_genomes() -> list {
+    let raw = read_file(BENCH_RING)
+    let lines = raw.split("\n")
+    let mut all = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" { all = all + [l] }
+        i = i + 1
+    }
+    let total = len(all)
+    let mut start = total - SCAN_LINES
+    if start < 0 { start = 0 }
+    let mut result = []
+    let mut j = start
+    while j < total {
+        result = result + [all[j]]
+        j = j + 1
+    }
+    return result
+}
+
+fn run_old() -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let xs = old_read_recent_genomes()
+        total = total + len(xs)
+        k = k + 1
+    }
+    return total
+}
+
+fn run_new() -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let xs = new_read_recent_genomes()
+        total = total + len(xs)
+        k = k + 1
+    }
+    return total
+}
+
+// Lossless: 두 함수가 동일 list 반환
+fn diff_test() -> int {
+    let a = old_read_recent_genomes()
+    let b = new_read_recent_genomes()
+    if len(a) != len(b) {
+        println("    DIFF len old=" + to_string(len(a)) + " new=" + to_string(len(b)))
+        return 1
+    }
+    let mut mismatches = 0
+    let mut i = 0
+    while i < len(a) {
+        if a[i] != b[i] {
+            mismatches = mismatches + 1
+            if mismatches <= 3 {
+                println("    DIFF i=" + to_string(i))
+            }
+        }
+        i = i + 1
+    }
+    return mismatches
+}
+
+fn main() -> void {
+    println("airgenome bench/site-7 — read_recent_genomes (exec tail vs read_file + slice)")
+    println("  ring=" + BENCH_RING + " RING_LINES=" + to_string(RING_LINES) + " SCAN_LINES=" + to_string(SCAN_LINES) + " K=" + to_string(K))
+    build_ring()
+
+    let mm = diff_test()
+    println("  diff_test mismatches: " + to_string(mm))
+    if mm != 0 {
+        println("BENCH FAIL [diff_test mismatches > 0]")
+        return
+    }
+
+    let t0_old = now_ns()
+    let _o = run_old()
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    println("  OLD (exec tail)        total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / K) + "  forks=" + to_string(K))
+
+    let t0_new = now_ns()
+    let _n = run_new()
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (read_file + slice) total_ns=" + to_string(ns_new) + "  per_call_ns=" + to_string(ns_new / K) + "  forks=0")
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
