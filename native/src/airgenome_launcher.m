@@ -141,11 +141,72 @@ static void airgenome_launcher_parse_hotkey_env(void) {
 // configurations — overriding here is the deterministic guarantee per
 // Apple's own borderless-window sample code. raw 168 min-viable subclass:
 // 4 lines, single override responsibility. 2026-04-30 04:55.
+//
+// Canonical Spotlight-overlay pattern (philz.blog + cindori + fazm.ai
+// 2026-04-30): the NonactivatingPanel style-mask flag MUST be set in the
+// designated initializer's styleMask argument and NEVER changed afterward —
+// NSPanel calls -_setPreventsActivation: only during setup to propagate
+// kCGSPreventsActivationTagBit to the WindowServer. Mutating styleMask
+// post-init desynchronises the framework view and the WindowServer tag,
+// which manifests as "panel appears key visually but cannot receive
+// keyboard input" / "lingering / second-press fails". This subclass +
+// init-time styleMask in show_overlay enforce that mandate.
 @interface AirgenomeLauncherPanel : NSPanel
 @end
 @implementation AirgenomeLauncherPanel
 - (BOOL)canBecomeKeyWindow  { return YES; }
 - (BOOL)canBecomeMainWindow { return YES; }
+@end
+
+// NSTextFieldCell defaults render single-line text with the baseline near
+// the bottom of the cell — visibly off-center inside a tall row. User
+// mandate 2026-04-30 "돋보기, 입력란 세로 가운데 정렬". This subclass
+// shifts the title rect so the text bounds (font ascent + descent) land at
+// the cell's vertical midpoint, both for static draw AND while editing
+// (NSText field-editor paths).
+@interface AirgenomeVCenterTextFieldCell : NSTextFieldCell
+@end
+@implementation AirgenomeVCenterTextFieldCell
+- (NSRect)titleRectForBounds:(NSRect)theRect {
+    NSRect r = [super titleRectForBounds:theRect];
+    NSFont *f = self.font ?: [NSFont systemFontOfSize:[NSFont systemFontSize]];
+    CGFloat textHeight = f.ascender - f.descender + f.leading;
+    CGFloat offset = (theRect.size.height - textHeight) / 2.0;
+    if (offset < 0) offset = 0;
+    r.origin.y    = theRect.origin.y + offset;
+    r.size.height = textHeight;
+    return r;
+}
+- (void)drawInteriorWithFrame:(NSRect)cellFrame inView:(NSView *)v {
+    [super drawInteriorWithFrame:[self titleRectForBounds:cellFrame] inView:v];
+}
+- (void)editWithFrame:(NSRect)aRect
+               inView:(NSView *)v
+               editor:(NSText *)t
+             delegate:(id)d
+                event:(NSEvent *)e {
+    [super editWithFrame:[self titleRectForBounds:aRect]
+                  inView:v editor:t delegate:d event:e];
+}
+- (void)selectWithFrame:(NSRect)aRect
+                 inView:(NSView *)v
+                 editor:(NSText *)t
+               delegate:(id)d
+                  start:(NSInteger)selStart
+                 length:(NSInteger)selLength {
+    [super selectWithFrame:[self titleRectForBounds:aRect]
+                    inView:v editor:t delegate:d
+                     start:selStart length:selLength];
+}
+@end
+
+// NSTextField that auto-allocates the v-centered cell on init. NSControl
+// queries +cellClass when initWithFrame: builds the default cell, so any
+// instance of this class gets centered text without manual cell-swap.
+@interface AirgenomeLauncherTextField : NSTextField
+@end
+@implementation AirgenomeLauncherTextField
++ (Class)cellClass { return [AirgenomeVCenterTextFieldCell class]; }
 @end
 
 BOOL airgenome_launcher_handle_keydown(CGEventRef event) {
@@ -175,6 +236,14 @@ static NSTextField *g_launcher_status_label = nil;
 static NSImageView *g_launcher_status_icon = nil;
 static NSArray<NSURL *> *g_launcher_current_results = nil;
 static NSUInteger g_launcher_selection_index = 0;
+
+// Outside-click dismiss monitor. Canonical Spotlight pattern (fazm.ai +
+// cindori): NSEvent +addGlobalMonitorForEvents fires the dismiss callback
+// for left/right mouse-down events occurring OUTSIDE airgenome's process,
+// which is exactly the surface we want for "click anywhere else to close".
+// Installed in show_overlay, removed in hide_overlay. Strong reference
+// retained on the global so we can pair add/remove symmetrically.
+static id g_launcher_click_monitor = nil;
 
 // Lazy-install minimal main menu so Cmd+A/C/V/X/Z dispatch via the standard
 // responder chain to NSTextField's field editor. Without a main menu, macOS
@@ -208,14 +277,16 @@ static void airgenome_launcher_install_main_menu(void) {
     [NSApp setMainMenu:mainMenu];
 }
 
-// Saved frontmost app (captured on show, restored on hide unless launching).
-// User mandate 2026-04-30: "검색창 닫았을때 원래 창으로 다시 포커싱". When
-// the overlay closes via Esc / ctrl+s-toggle / Enter-with-no-results, the
-// app that was frontmost BEFORE we activated airgenome must regain focus.
-// On Enter-with-launch the new app should keep focus instead — the
-// g_launcher_launching flag suppresses restore for that path.
-static NSRunningApplication *g_launcher_prev_app = nil;
-static int g_launcher_launching = 0;
+// Focus-restore bookkeeping (g_launcher_prev_app / g_launcher_launching)
+// REMOVED 2026-04-30 (canonical NonactivatingPanel migration). The previous
+// approach captured the frontmost NSRunningApplication on show and called
+// -activateFromApplication: on hide; layered hacks (NSApp activate /
+// NSApp hide / unhide) caused (a) "second ⌃S 한번에 안됨" race and
+// (b) panel-lingering instability after style-mask was added post-init.
+// The canonical NonactivatingPanel pattern (philz.blog) makes airgenome
+// NEVER become the active app, so there is nothing to restore — focus
+// stays on the user's prior app for the entire show/hide cycle. Dead-code
+// removal per raw 91 honest C3 (don't leave dead state behind).
 
 // Saved input source for restore on hide. User report 2026-04-30 04:59:
 // "검색해도 안됨 / 초기 언어는 무조건 영어 고정 / 한영키 상태면 영어로".
@@ -369,16 +440,11 @@ void airgenome_launcher_show_overlay(void) {
         return;
     }
 
-    // Capture previously-frontmost app BEFORE we activate ourselves —
-    // hide_overlay restores this on dismiss so the user's prior context
-    // (terminal, editor, browser, etc.) regains focus. Skipped when the
-    // dismiss path is a successful launch (the new app keeps focus).
-    g_launcher_prev_app = [[NSWorkspace sharedWorkspace] frontmostApplication];
-
-    // LSUIElement removed 2026-04-30 04:55 per raw 168 min-viable + raw 173
-    // determinism. App is now a regular Dock-visible app. activateIgnoring
-    // brings panel to foreground reliably; no policy switching needed.
-    [NSApp activateIgnoringOtherApps:YES];
+    // No NSApp activation here — the panel is a NonactivatingPanel, so
+    // makeKeyAndOrderFront below brings the overlay to the front WITHOUT
+    // making airgenome the active app. The user's prior app stays
+    // frontmost, which is exactly the focus-restore semantics we want
+    // and avoids the hide/unhide-race second-press bug entirely.
 
     // Lazy main menu install — required for Cmd+A/C/V/X/Z dispatch.
     airgenome_launcher_install_main_menu();
@@ -402,12 +468,51 @@ void airgenome_launcher_show_overlay(void) {
         const CGFloat W = 600.0;
         const CGFloat H = 56.0;
         NSRect frame = NSMakeRect(0, 0, W, H);
+        // CANONICAL Spotlight-overlay panel recipe (philz.blog +
+        // cindori.com + fazm.ai, validated 2026-04-30). All
+        // NonactivatingPanel-related properties are set HERE in the
+        // designated init or immediately after — and never mutated again,
+        // per philz.blog "set at init, never change" caveat. Mutating
+        // styleMask post-init desyncs the kCGSPreventsActivationTagBit
+        // WindowServer tag and produces the "lingering / can't dismiss /
+        // second-press fails" symptom cluster we just escaped.
+        //
+        // Property-by-property reasoning:
+        //   styleMask: Borderless | NonactivatingPanel
+        //     - Borderless: pure-black stadium, no titlebar chrome.
+        //     - NonactivatingPanel: panel becomes key WITHOUT activating
+        //       airgenome — prior app stays frontmost the whole time, so
+        //       no NSApp.activate / NSApp.hide bookkeeping is needed.
+        //   level = NSFloatingWindowLevel: above normal windows.
+        //   collectionBehavior:
+        //     - CanJoinAllSpaces: ⌃S works in any Space without forcing
+        //       a Space switch (Spotlight/Alfred parity).
+        //     - FullScreenAuxiliary: visible on top of fullscreen apps.
+        //     - Stationary: don't slide with Mission Control.
+        //   isFloatingPanel = YES: explicit auxiliary marker (cindori).
+        //   becomesKeyOnlyIfNeeded = YES: panel only takes keyboard focus
+        //     when a control inside it (the search field) needs input —
+        //     preserves the prior app's keyboard ownership otherwise.
+        //   hidesOnDeactivate = NO: airgenome never activates anyway, but
+        //     setting this NO is the canonical pairing that prevents
+        //     spurious orderOut on app-level events.
+        //   isReleasedWhenClosed = NO: keep panel alive across hide/show
+        //     cycles so we don't leak NSPanel allocations on every ⌃S.
         g_launcher_panel = [[AirgenomeLauncherPanel alloc]
             initWithContentRect:frame
                       styleMask:NSWindowStyleMaskBorderless
+                              | NSWindowStyleMaskNonactivatingPanel
                         backing:NSBackingStoreBuffered
                           defer:NO];
         [g_launcher_panel setLevel:NSFloatingWindowLevel];
+        [g_launcher_panel setCollectionBehavior:
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+          | NSWindowCollectionBehaviorFullScreenAuxiliary
+          | NSWindowCollectionBehaviorStationary];
+        [g_launcher_panel setFloatingPanel:YES];
+        [g_launcher_panel setBecomesKeyOnlyIfNeeded:YES];
+        [g_launcher_panel setHidesOnDeactivate:NO];
+        [g_launcher_panel setReleasedWhenClosed:NO];
         [g_launcher_panel setOpaque:NO];
         [g_launcher_panel setBackgroundColor:[NSColor clearColor]];
         [g_launcher_panel setHasShadow:YES];
@@ -437,7 +542,13 @@ void airgenome_launcher_show_overlay(void) {
                                     accessibilityDescription:@"search"];
             if (mg) {
                 searchIcon.image = mg;
-                searchIcon.contentTintColor = [NSColor whiteColor];
+                // User mandate 2026-04-30 "돋보기 굵고 투명도 50%":
+                // Bold SF symbol weight + 50%-alpha white tint.
+                searchIcon.symbolConfiguration = [NSImageSymbolConfiguration
+                    configurationWithPointSize:iconSz
+                                        weight:NSFontWeightBold];
+                searchIcon.contentTintColor =
+                    [NSColor colorWithWhite:1.0 alpha:0.5];
             }
         }
         [searchIcon setImageScaling:NSImageScaleProportionallyDown];
@@ -448,7 +559,8 @@ void airgenome_launcher_show_overlay(void) {
         const CGFloat fieldH = 30.0;
         NSRect fieldFrame = NSMakeRect(fieldX, (H - fieldH) / 2,
                                        W - fieldX - iconPadX, fieldH);
-        g_launcher_search_field = [[NSTextField alloc] initWithFrame:fieldFrame];
+        g_launcher_search_field =
+            [[AirgenomeLauncherTextField alloc] initWithFrame:fieldFrame];
         [g_launcher_search_field setBezeled:NO];
         [g_launcher_search_field setBordered:NO];
         [g_launcher_search_field setDrawsBackground:NO];
@@ -457,7 +569,7 @@ void airgenome_launcher_show_overlay(void) {
                                                weight:NSFontWeightRegular]];
         [g_launcher_search_field setTextColor:[NSColor whiteColor]];
         g_launcher_search_field.placeholderAttributedString =
-            [[NSAttributedString alloc] initWithString:@"Type app name..."
+            [[NSAttributedString alloc] initWithString:@"Search"
                 attributes:@{
                     NSForegroundColorAttributeName:
                         [NSColor colorWithWhite:1.0 alpha:0.4],
@@ -490,9 +602,30 @@ void airgenome_launcher_show_overlay(void) {
     airgenome_launcher_refresh_recent_set();
     [g_launcher_panel makeKeyAndOrderFront:nil];
     [g_launcher_panel makeFirstResponder:g_launcher_search_field];
+
+    // Canonical outside-click dismiss (fazm.ai + cindori). Global monitor
+    // fires for mouse-down events in OTHER processes — we don't see clicks
+    // inside our own panel here, so clicking the search field is unaffected.
+    // Pair with the orderOut + monitor-removal in hide_overlay (raw 65
+    // idempotent: removing nil monitor is a no-op via guard below).
+    if (!g_launcher_click_monitor) {
+        g_launcher_click_monitor = [NSEvent
+            addGlobalMonitorForEventsMatchingMask:
+                NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown
+            handler:^(NSEvent * _Nonnull e) {
+                (void)e;
+                airgenome_launcher_hide_overlay();
+            }];
+    }
 }
 
 void airgenome_launcher_hide_overlay(void) {
+    // Remove outside-click monitor BEFORE orderOut — symmetry with the
+    // install in show_overlay. raw 65 idempotent: nil-guarded.
+    if (g_launcher_click_monitor) {
+        [NSEvent removeMonitor:g_launcher_click_monitor];
+        g_launcher_click_monitor = nil;
+    }
     if (g_launcher_panel) {
         [g_launcher_panel orderOut:nil];
     }
@@ -503,19 +636,12 @@ void airgenome_launcher_hide_overlay(void) {
     g_launcher_app_cache = nil;
     g_launcher_current_results = nil;
     [g_launcher_icon_cache removeAllObjects];
-    // Restore focus to the previously-frontmost app. User report 2026-04-30
-    // "안돌아온다 포커싱" — explicit activateFromApplication:options:0 was
-    // not enough because NSApp itself remained active (orderOut just hides
-    // the panel, doesn't deactivate the app). The macOS-canonical fix:
-    // [NSApp hide:nil] marks airgenome as hidden, and the system naturally
-    // surfaces whichever app was frontmost before — no explicit prev-app
-    // tracking needed. Skipped when launch_app is the dismiss trigger
-    // (the just-opened app's NSWorkspace activate wins instead).
-    if (!g_launcher_launching) {
-        [NSApp hide:nil];
-    }
-    g_launcher_prev_app = nil;
-    g_launcher_launching = 0;
+    // Canonical NonactivatingPanel: airgenome was never frontmost while
+    // the overlay was visible, so there's nothing to deactivate / restore.
+    // orderOut alone hands keyboard focus straight back to the user's
+    // prior app. No NSApp.hide / NSApp.activate / NSRunningApplication
+    // bookkeeping is needed (and prior attempts at it produced the
+    // "second-press fails" + "panel lingers" bugs we just retired).
 }
 
 // Enumerate installed .app bundles from canonical macOS locations.
@@ -683,10 +809,10 @@ static void airgenome_launcher_append_history(NSURL *appURL, BOOL success) {
 
 BOOL airgenome_launcher_launch_app(NSURL *appBundleURL) {
     if (!appBundleURL) return NO;
-    // Suppress focus-restore in hide_overlay — the just-launched app
-    // (configured below with cfg.activates=YES) should keep focus, not
-    // the previously-frontmost app captured on show.
-    g_launcher_launching = 1;
+    // No focus-restore bookkeeping — canonical NonactivatingPanel means
+    // airgenome was never frontmost, so the just-launched app (configured
+    // below with cfg.activates=YES) takes focus directly via NSWorkspace
+    // without us needing to suppress an out-of-band restore step.
     // Modern macOS 10.15+ API: openApplicationAtURL:configuration:completionHandler:
     // Returns immediately; activation happens async. We hide the launcher overlay
     // synchronously (UX: user sees overlay close + app launch in one motion).
