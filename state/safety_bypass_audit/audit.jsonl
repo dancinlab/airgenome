@@ -54,3 +54,5 @@
 {"ts":"2026-04-30T16:21:19Z","actor":"commit-msg-scan","kind":"bypass","reason":"raw-240-v3-inflation-exhaustion-v26-800-final-ceiling-b33-termination-cc-bg6-800-implicit","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T16:31:11Z","actor":"staged-scan","kind":"bypass","reason":"canonical-tool-term-disambiguation-raw-proposal-800-of-800-v26-with-15-term-canonical-mapping-kick-equiv-omega-cycle","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T16:31:11Z","actor":"commit-msg-scan","kind":"bypass","reason":"canonical-tool-term-disambiguation-raw-proposal-800-of-800-v26-with-15-term-canonical-mapping-kick-equiv-omega-cycle","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T16:32:13Z","actor":"staged-scan","kind":"bypass","reason":"audit-jsonl-auto-append-after-8f7e05d2-canonical-term-disambiguation-proposal","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T16:32:13Z","actor":"commit-msg-scan","kind":"bypass","reason":"audit-jsonl-auto-append-after-8f7e05d2-canonical-term-disambiguation-proposal","branch":"main","scanner_user":"ghost"}

@@ -514,3 +514,22 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
         G2 false-positive 자연어 idiom (literary "kick the ball" carve-out)
         G3 cross-repo 비대칭 (nexus 8/15 dominant)
       Migration: Phase A airgenome local DONE → Phase B 30d baseline + anima absorb (cycle +1-2) → Phase C hive PR (cycle +3-5)
+    Phase B+C artifact DONE 2026-05-01 (사용자 mandate "go"):
+      30d baseline (state/canonical_term_baseline_audit/baseline_30d_2026-05-01.jsonl):
+        5662 transcripts walked / 1307 hit / 4744 total mentions
+        **canonical 126 (2.66%) / alternative 4618 (97.34% fail)**
+        14/15 term 5% threshold 위반 (free/label 100% fail / blowup 99.45% / kick 93.59% / drill 92.63%)
+        kick-tree zero hits (no_data, preventive class)
+        → raw 강화 압도적 정당화 evidence
+      anima registry row (docs/anima_registry_row_canonical_term_disambiguation.jsonl): raw 135 auto-absorption format
+      hive PR-ready 3 artifacts:
+        docs/hive_pr_ready_canonical_term_disambiguation_2026-05-01.raw_entry.txt (raw 258 entry, 12.6KB, raw 102 ADD-new pattern)
+        tool/apply_canonical_term_raw_to_hive.sh (executable, dry-run default + HIVE_PR_APPLY_CONFIRMED=yes gate)
+        docs/hive_pr_description_canonical_term_disambiguation.md (gh pr create body)
+      hive/.raw 현재 last=raw 257, 다음 등록 raw 258
+      honest C3:
+        single-host transcript only (Mac local, cross-host ubu1/ubu2/hetzner 미커버 → follow-up)
+        canonical-pattern false-negative (Bash subprocess kick 인용 시 regex miss → understates canonical rate)
+        free term NL idiom 25/767 (lint v1.1 NL-pre-filter 필요)
+        advisory-tier 등록 (raw 256/257 패턴, 30d zero-violation streak 후 hard-block 승급)
+      hive .raw direct mutation은 사용자 explicit approval 시점 별도 (apply script chflags 잠금 + env var gate)
