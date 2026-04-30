@@ -253,6 +253,8 @@ static dispatch_source_t g_datae_k1_src        = NULL;
 static dispatch_source_t g_datae_k2_src        = NULL;
 static dispatch_source_t g_datae_k5_src        = NULL;
 static dispatch_source_t g_datae_k6_src        = NULL;
+static dispatch_source_t g_datae_k4_src        = NULL;  // K4 v2 (snappy 352/400)
+static dispatch_source_t g_datae_dklc_src      = NULL;  // DKLC docker (420/420)
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -422,6 +424,24 @@ void airgenome_loop_init(void) {
         .interval_s  = 1800,           // 30min — shell history grows steadily
         .timeout_s   = 60,
     };
+    // K4 v2 unlock cycle (commit aafc957e, 352/400 with pure-python snappy 38 LOC).
+    // Discord LOCK 안전망: pgrep guard 가 filter 내부에서 Discord 실행 시 synth-only.
+    static const airgenome_loop_module_t datae_k4 = {
+        .module_name = "datae-k4-discord-localstorage",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/discord_localstorage_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 7200,           // 2h — Discord LOCK race 회피, snappy 비용 high
+        .timeout_s   = 120,
+    };
+    // DKLC docker_backend_log_columnar (commit e3ca3fbd, 420/420 ceiling 확장 with B10).
+    // Docker Desktop 실행 시만 의미 — 미실행 시 synth fallback.
+    static const airgenome_loop_module_t datae_dklc = {
+        .module_name = "datae-dklc-docker-backend-log",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/docker_backend_log_columnar.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 3600,           // 1h — log rotation 따라잡기
+        .timeout_s   = 60,
+    };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -464,11 +484,13 @@ void airgenome_loop_init(void) {
     const char *datae_env = getenv("AIRG_TAP_LOOP_DATAE");
     int datae_on = (datae_env && datae_env[0] == '1') ? 1 : 0;
     if (datae_on) {
-        g_datae_im1_src = loop_make_timer(&datae_im1, g_loop_queue);
-        g_datae_k1_src  = loop_make_timer(&datae_k1,  g_loop_queue);
-        g_datae_k2_src  = loop_make_timer(&datae_k2,  g_loop_queue);
-        g_datae_k5_src  = loop_make_timer(&datae_k5,  g_loop_queue);
-        g_datae_k6_src  = loop_make_timer(&datae_k6,  g_loop_queue);
+        g_datae_im1_src  = loop_make_timer(&datae_im1,  g_loop_queue);
+        g_datae_k1_src   = loop_make_timer(&datae_k1,   g_loop_queue);
+        g_datae_k2_src   = loop_make_timer(&datae_k2,   g_loop_queue);
+        g_datae_k5_src   = loop_make_timer(&datae_k5,   g_loop_queue);
+        g_datae_k6_src   = loop_make_timer(&datae_k6,   g_loop_queue);
+        g_datae_k4_src   = loop_make_timer(&datae_k4,   g_loop_queue);
+        g_datae_dklc_src = loop_make_timer(&datae_dklc, g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -502,12 +524,14 @@ void airgenome_loop_init(void) {
               g_proc_telegram_src ? "ok" : "FAIL");
     }
     if (datae_on) {
-        NSLog(@"[airgenome_loop] datae wave: im1=%s k1=%s k2=%s k5=%s k6=%s",
-              g_datae_im1_src ? "ok" : "FAIL",
-              g_datae_k1_src  ? "ok" : "FAIL",
-              g_datae_k2_src  ? "ok" : "FAIL",
-              g_datae_k5_src  ? "ok" : "FAIL",
-              g_datae_k6_src  ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae wave: im1=%s k1=%s k2=%s k5=%s k6=%s k4=%s dklc=%s",
+              g_datae_im1_src  ? "ok" : "FAIL",
+              g_datae_k1_src   ? "ok" : "FAIL",
+              g_datae_k2_src   ? "ok" : "FAIL",
+              g_datae_k5_src   ? "ok" : "FAIL",
+              g_datae_k6_src   ? "ok" : "FAIL",
+              g_datae_k4_src   ? "ok" : "FAIL",
+              g_datae_dklc_src ? "ok" : "FAIL");
     }
 }
 
@@ -559,6 +583,8 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_k2_src)       { dispatch_source_cancel(g_datae_k2_src);       g_datae_k2_src       = NULL; }
     if (g_datae_k5_src)       { dispatch_source_cancel(g_datae_k5_src);       g_datae_k5_src       = NULL; }
     if (g_datae_k6_src)       { dispatch_source_cancel(g_datae_k6_src);       g_datae_k6_src       = NULL; }
+    if (g_datae_k4_src)       { dispatch_source_cancel(g_datae_k4_src);       g_datae_k4_src       = NULL; }
+    if (g_datae_dklc_src)     { dispatch_source_cancel(g_datae_dklc_src);     g_datae_dklc_src     = NULL; }
 }
 
 // ----------------------------------------------------------------------

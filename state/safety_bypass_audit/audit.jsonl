@@ -18,3 +18,5 @@
 {"ts":"2026-04-30T13:24:43Z","actor":"commit-msg-scan","kind":"bypass","reason":"own-8-site-15-323x-patch-plus-site-16-na-with-bg-agent-uchg-cycle-and-own-9-K-wave-row","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T13:26:00Z","actor":"staged-scan","kind":"bypass","reason":"k4-discord-unlock-v2-pure-python-snappy-decoder-352-of-400-real-data-29-blocks-decoded","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T13:26:00Z","actor":"commit-msg-scan","kind":"bypass","reason":"k4-discord-unlock-v2-pure-python-snappy-decoder-352-of-400-real-data-29-blocks-decoded","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T13:28:45Z","actor":"staged-scan","kind":"bypass","reason":"docker-filter-iterate-to-420-of-420-with-new-b10-rotated-source-stream-fold-correctness-block","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T13:28:45Z","actor":"commit-msg-scan","kind":"bypass","reason":"docker-filter-iterate-to-420-of-420-with-new-b10-rotated-source-stream-fold-correctness-block","branch":"main","scanner_user":"ghost"}

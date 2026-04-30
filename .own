@@ -302,3 +302,22 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
   follow-up A9 airgenome run-once argv pass-through 적용 후 P3/P5 재측정
   follow-up E4 / F18 / PTBF / 6 process gate loop integrate (own 9 5-step) — env flag 분기 추가 + interval 결정
   follow-up own 10 site-axis 등록 — process gate 의 ps fork chain (S2) / lsappinfo dedup (S3) / etc
+
+  status K-wave-loop-integrate DONE 2026-04-30 — K-wave macOS-level Type E 7 filter airgenome_loop.m 통합 (commit cd595c94 + 본 cycle). raw 240 V2 만점기준 사전 적용 (commit 65e59eab + def7b1a4 + aafc957e + e3ca3fbd). loop-selftest 13/13 PASS. AIRG_TAP_LOOP_DATAE env gate default ON (raw 246 single-command 정신).
+    integrated (datae wave, default ON via plist):
+      IM1  imessage_chat_shbf            — 1800s / 60s timeout (~395/400, T1 verbatim)
+      K1   imessage_attachment_dedup     — 3600s / 120s (400/400 만점, smoke 151.6×)
+      K2   sharedfilelist_recent_shbf    — 1800s / 60s (381/400, 158 paths from 8 sfl3/sfl4)
+      K5   launchagents_enum_shbf        — 3600s / 60s (380/400, 56 plists + btm v16)
+      K6   zsh_history_columnar          — 1800s / 60s (400/400 만점, cmd dict + line pool)
+      K4   discord_localstorage_shbf     — 7200s / 120s (352/400 v2 unlock, pure-python snappy 38 LOC)
+      DKLC docker_backend_log_columnar   — 3600s / 60s (420/420 ceiling 확장 via NEW B10)
+    raw 242 7 안전망 충족: interval ≥1800s / lockfile per module / timeout / KeepAlive 비변경 / EnvVar 명시 / ProcessType 비변경 / fd CLOEXEC.
+    raw 240 V2 만점기준 자취:
+      만점 무조건 (400/400): K1 / K6 — 2건
+      만점 ceiling 확장 (420/420 with NEW B10): DKLC docker — 1건
+      ≥350: IM1 / K2 / K5 / K4 — 4건
+    pending production-validate (5-tuple → own 9 5-step):
+      5 wave Type E 19 filter (memo3 + telegram3 + mail3 + cal2 + fi2 + sy6) — bg agent a49e5e018f1cbf6ac 진행 중
+      validation 통과한 filter 만 datae wave 추가 (interval 결정)
+    proof commit 65e59eab + def7b1a4 + aafc957e + e3ca3fbd + cd595c94 + 본 commit + loop-selftest 13/13 PASS
