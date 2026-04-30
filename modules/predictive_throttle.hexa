@@ -43,28 +43,72 @@ fn ts_epoch() -> int {
     return to_int(exec("date +%s").trim())
 }
 
+// own 8 site-13: per-cycle exec(printf >>) + exec(wc -l) + 옵션 rotate (tail+mv)
+// → append_file builtin + read_file + in-hexa rotate (0 fork). MAX_HISTORY=30
+// 라 in-hexa concat O(n²) 안전. 측정 (bench_site13.hexa, 50 cycles):
+// 24.8ms→0.28ms/cycle (88×, 98%↓), lossless.
 fn append_history(cpu: int, ram: int, swap: int) -> void {
     let _ = exec("mkdir -p '" + forge_dir() + "'")
     let line = "{\"ts\":\"" + ts_iso() + "\",\"cpu\":" + to_string(cpu)
              + ",\"ram\":" + to_string(ram) + ",\"swap\":" + to_string(swap) + "}"
-    let _ = exec("printf '%s\\n' '" + line + "' >> '" + HISTORY + "'")
-    // rotate: 마지막 MAX_HISTORY 만 유지
-    let count = to_int(exec("wc -l < '" + HISTORY + "' 2>/dev/null").trim())
-    if count > MAX_HISTORY {
-        let _ = exec("tail -" + to_string(MAX_HISTORY) + " '" + HISTORY + "' > '" + HISTORY + ".tmp' && mv '" + HISTORY + ".tmp' '" + HISTORY + "'")
+    append_file(HISTORY, line + "\n")
+    // rotate: 마지막 MAX_HISTORY 만 유지 — read_file + in-hexa slice + write_file
+    let raw = read_file(HISTORY)
+    let lines = raw.split("\n")
+    let mut all = []
+    let mut i = 0
+    while i < len(lines) {
+        if lines[i] != "" { all = all + [lines[i]] }
+        i = i + 1
+    }
+    if len(all) > MAX_HISTORY {
+        let start = len(all) - MAX_HISTORY
+        let mut out = ""
+        let mut j = start
+        while j < len(all) {
+            out = out + all[j] + "\n"
+            j = j + 1
+        }
+        write_file(HISTORY, out)
     }
 }
 
+// own 8 site-14: per-call exec(tail | jq) → read_file + in-hexa anchor extract
+// (0 fork). own 5 site-2 / own 6 site-6 / own 7 site-9 패턴 직접 이식.
+// run_throttle 가 cpu/ram 2번 호출 — 2 fork/cycle 제거.
+fn jq_field_int(line: str, key: str) -> int {
+    let anchor = "\"" + key + "\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return 0 }
+    let after = parts[1]
+    let n = len(after)
+    let mut i = 0
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return to_int(after.substring(0, i).trim()) }
+        if ch == "}" { return to_int(after.substring(0, i).trim()) }
+        i = i + 1
+    }
+    return to_int(after.trim())
+}
+
 fn read_history(field: str) -> list {
-    let cmd = "tail -" + to_string(MAX_HISTORY) + " '" + HISTORY + "' 2>/dev/null | jq -r '." + field + " // 0'"
-    let raw = exec(cmd)
+    let raw = read_file(HISTORY)
     let lines = raw.split("\n")
-    let result = []
+    let mut all = []
     let mut i = 0
     while i < len(lines) {
-        let l = lines[i].trim()
-        if l != "" { result = result + [to_int(l)] }
+        if lines[i] != "" { all = all + [lines[i]] }
         i = i + 1
+    }
+    let total = len(all)
+    let mut start = total - MAX_HISTORY
+    if start < 0 { start = 0 }
+    let mut result = []
+    let mut j = start
+    while j < total {
+        result = result + [jq_field_int(all[j], field)]
+        j = j + 1
     }
     return result
 }

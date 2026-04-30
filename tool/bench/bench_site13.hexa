@@ -1,0 +1,207 @@
+// tool/bench/bench_site13.hexa — own 8 site-13 + site-14 baseline
+// (predictive_throttle append_history + read_history fork → in-hexa)
+//
+// modules/predictive_throttle.hexa#append_history (L46-56) + #read_history (L58-70):
+//   site-13 OLD: per-cycle exec(printf '%s\n' >> HISTORY)  + exec(wc -l)  + 옵션 rotate (tail+mv)
+//                = 2-4 fork/cycle
+//   site-14 OLD: read_history per call exec("tail -N HISTORY | jq -r '.field'") = 1 fork/call,
+//                run_throttle 가 cpu/ram 2번 호출 = 2 fork/cycle
+//   합계 OLD: ~5 fork/cycle
+//   NEW: append_file (0 fork) + read_file + in-hexa scan (0 fork) + jq_field 패턴 추출
+//
+// MAX_HISTORY=30 라 in-hexa list concat O(n²) 안전 영역 (own 6 site-7 5000 라인
+// 부정 사례 와 다름 — 30 elements = 900 ops, 무시).
+
+use "../../core/core"
+
+let BENCH_HISTORY = "/tmp/airgenome_bench_site13.jsonl"
+let MAX_HISTORY = 30
+let CYCLES = 50  // 50 cycles 시뮬레이션 (rotate 다수 trigger)
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn make_line(n: int) -> str {
+    return "{\"ts\":\"2026-04-30T00:00:00Z\",\"cpu\":" + to_string(n % 100) + ",\"ram\":" + to_string(n % 80) + ",\"swap\":" + to_string(n % 50) + "}"
+}
+
+// OLD append_history: 정확 복제
+fn old_append_history(cpu: int, ram: int, swap: int) -> void {
+    let line = "{\"cpu\":" + to_string(cpu) + ",\"ram\":" + to_string(ram) + ",\"swap\":" + to_string(swap) + "}"
+    let _ = exec("printf '%s\\n' '" + line + "' >> '" + BENCH_HISTORY + "'")
+    let count = to_int(exec("wc -l < '" + BENCH_HISTORY + "' 2>/dev/null").trim())
+    if count > MAX_HISTORY {
+        let _ = exec("tail -" + to_string(MAX_HISTORY) + " '" + BENCH_HISTORY + "' > '" + BENCH_HISTORY + ".tmp' && mv '" + BENCH_HISTORY + ".tmp' '" + BENCH_HISTORY + "'")
+    }
+}
+
+// OLD read_history: tail+jq
+fn old_read_history(field: str) -> list {
+    let cmd = "tail -" + to_string(MAX_HISTORY) + " '" + BENCH_HISTORY + "' 2>/dev/null | jq -r '." + field + " // 0'"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let mut result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if l != "" { result = result + [to_int(l)] }
+        i = i + 1
+    }
+    return result
+}
+
+// NEW append_history: append_file builtin + in-hexa rotate
+fn new_append_history(cpu: int, ram: int, swap: int) -> void {
+    let line = "{\"cpu\":" + to_string(cpu) + ",\"ram\":" + to_string(ram) + ",\"swap\":" + to_string(swap) + "}"
+    append_file(BENCH_HISTORY, line + "\n")
+    // rotate: read_file + line count + 마지막 MAX_HISTORY write_file
+    let raw = read_file(BENCH_HISTORY)
+    let lines = raw.split("\n")
+    let mut all = []
+    let mut i = 0
+    while i < len(lines) {
+        if lines[i] != "" { all = all + [lines[i]] }
+        i = i + 1
+    }
+    if len(all) > MAX_HISTORY {
+        let start = len(all) - MAX_HISTORY
+        let mut out = ""
+        let mut j = start
+        while j < len(all) {
+            out = out + all[j] + "\n"
+            j = j + 1
+        }
+        write_file(BENCH_HISTORY, out)
+    }
+}
+
+// NEW read_history: read_file + in-hexa anchor extract
+fn jq_field_int(line: str, key: str) -> int {
+    let anchor = "\"" + key + "\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return 0 }
+    let after = parts[1]
+    let n = len(after)
+    let mut i = 0
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return to_int(after.substring(0, i).trim()) }
+        if ch == "}" { return to_int(after.substring(0, i).trim()) }
+        i = i + 1
+    }
+    return to_int(after.trim())
+}
+
+fn new_read_history(field: str) -> list {
+    let raw = read_file(BENCH_HISTORY)
+    let lines = raw.split("\n")
+    let mut all = []
+    let mut i = 0
+    while i < len(lines) {
+        if lines[i] != "" { all = all + [lines[i]] }
+        i = i + 1
+    }
+    let total = len(all)
+    let mut start = total - MAX_HISTORY
+    if start < 0 { start = 0 }
+    let mut result = []
+    let mut j = start
+    while j < total {
+        result = result + [jq_field_int(all[j], field)]
+        j = j + 1
+    }
+    return result
+}
+
+fn run_old() -> int {
+    let _ = exec("rm -f '" + BENCH_HISTORY + "'")
+    let mut k = 0
+    let mut total_read = 0
+    while k < CYCLES {
+        old_append_history(k, k, k)
+        let xs = old_read_history("cpu")
+        let ys = old_read_history("ram")
+        total_read = total_read + len(xs) + len(ys)
+        k = k + 1
+    }
+    return total_read
+}
+
+fn run_new() -> int {
+    let _ = exec("rm -f '" + BENCH_HISTORY + "'")
+    let mut k = 0
+    let mut total_read = 0
+    while k < CYCLES {
+        new_append_history(k, k, k)
+        let xs = new_read_history("cpu")
+        let ys = new_read_history("ram")
+        total_read = total_read + len(xs) + len(ys)
+        k = k + 1
+    }
+    return total_read
+}
+
+fn diff_test() -> int {
+    // 두 경로가 동일 final state + 동일 read_history 결과 반환?
+    let _ = exec("rm -f '" + BENCH_HISTORY + "'")
+    run_old()
+    let old_cpu = old_read_history("cpu")
+    let old_ram = old_read_history("ram")
+    let _ = exec("rm -f '" + BENCH_HISTORY + "'")
+    run_new()
+    let new_cpu = new_read_history("cpu")
+    let new_ram = new_read_history("ram")
+
+    if len(old_cpu) != len(new_cpu) { return 1 }
+    if len(old_ram) != len(new_ram) { return 2 }
+    let mut i = 0
+    while i < len(old_cpu) {
+        if old_cpu[i] != new_cpu[i] {
+            println("    DIFF cpu i=" + to_string(i) + " old=" + to_string(old_cpu[i]) + " new=" + to_string(new_cpu[i]))
+            return 3
+        }
+        if old_ram[i] != new_ram[i] {
+            println("    DIFF ram i=" + to_string(i) + " old=" + to_string(old_ram[i]) + " new=" + to_string(new_ram[i]))
+            return 4
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn main() -> void {
+    println("airgenome bench/site-13 — predictive_throttle append+read_history (fork → in-hexa)")
+    println("  history=" + BENCH_HISTORY + " MAX_HISTORY=" + to_string(MAX_HISTORY) + " CYCLES=" + to_string(CYCLES))
+
+    let mm = diff_test()
+    println("  diff_test result: " + to_string(mm) + " (0 = lossless)")
+    if mm != 0 {
+        println("BENCH FAIL [diff_test ≠ 0]")
+        return
+    }
+
+    let _ = exec("rm -f '" + BENCH_HISTORY + "'")
+    let t0_old = now_ns()
+    let _o = run_old()
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    println("  OLD (printf+wc+tail+jq)   total_ns=" + to_string(ns_old) + "  per_cycle_ns=" + to_string(ns_old / CYCLES))
+
+    let _ = exec("rm -f '" + BENCH_HISTORY + "'")
+    let t0_new = now_ns()
+    let _n = run_new()
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (append_file + slice) total_ns=" + to_string(ns_new) + "  per_cycle_ns=" + to_string(ns_new / CYCLES))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
