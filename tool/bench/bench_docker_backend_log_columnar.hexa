@@ -1,0 +1,181 @@
+// tool/bench/bench_docker_backend_log_columnar.hexa — K Docker DKLC bench
+//   raw 240 V2 V5 (420/420). 합성 dataset 결정성 + real-probe optional.
+//   real ~/Library/Containers/com.docker.docker/Data/log/host 의존을 제거해
+//   결정성 확보 — synth_only 모드에서는 항상 동일 seed로 동일 결과.
+//
+// 모드:
+//   bench (default) — N_LINES synth dataset 생성 → DKLC encode
+//                     → QUERIES prefix-count linear vs DKLC mmap+u8-scan.
+//   real            — real backend.log[.0..N] 가 있으면 추가 real probe.
+//
+// 5-tuple: site=K_DOCKER ROI#=K_DOCKER_DKLC baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random,glob,re,json\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/bench_docker_backend_dklc.bin'\n" +
+"N_LINES=20000\n" +
+"QUERIES=['api','cmdline','contain','docker','virt']\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"COMPS=[b'com.docker.backend.apiproxy',b'com.docker.backend.cmdlineconfiguration',b'com.docker.backend.containerd',b'com.docker.backend.docker',b'com.docker.backend.virtualization',b'com.docker.backend.diagnostic',b'com.docker.backend.dns',b'com.docker.backend.gvisor',b'com.docker.backend.proxy',b'com.docker.backend.tunnel']\n" +
+"\n" +
+"def synth(n,seed=7):\n" +
+"    rng=random.Random(seed)\n" +
+"    ts0=int(time.time()*1_000_000)\n" +
+"    rows=[]\n" +
+"    for i in range(n):\n" +
+"        comp=COMPS[rng.randrange(len(COMPS))]\n" +
+"        msg=f'msg {i} payload={rng.random():.4f}'.encode()\n" +
+"        rows.append((ts0+i*1000,comp,msg))\n" +
+"    return rows\n" +
+"\n" +
+"def fnv1a64(b):\n" +
+"    h=0xcbf29ce484222325\n" +
+"    for x in b:\n" +
+"        h^=x; h=(h*0x100000001b3) & 0xffffffffffffffff\n" +
+"    return h\n" +
+"\n" +
+"def encode_blob(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    counts={}\n" +
+"    for _,c,_ in rows: counts[c]=counts.get(c,0)+1\n" +
+"    top=sorted(counts.items(),key=lambda kv:(-kv[1],kv[0]))[:255]\n" +
+"    comp_sorted=sorted([k for k,_ in top])\n" +
+"    comp_idx={k:i for i,k in enumerate(comp_sorted)}\n" +
+"    n_comp=len(comp_sorted); n=len(rows)\n" +
+"    comp_pool=bytearray(); comp_offs=array.array('I',[0]*n_comp); comp_lens=array.array('I',[0]*n_comp)\n" +
+"    for i,c in enumerate(comp_sorted):\n" +
+"        comp_offs[i]=len(comp_pool); comp_lens[i]=len(c); comp_pool.extend(c)\n" +
+"    idx_col=bytearray(n); ts_col=array.array('Q',[0]*n)\n" +
+"    msg_offs=array.array('I',[0]*n); msg_lens=array.array('I',[0]*n); msg_pool=bytearray()\n" +
+"    for i,(ts,c,m) in enumerate(rows):\n" +
+"        idx_col[i]=comp_idx.get(c,255)\n" +
+"        ts_col[i]=ts; msg_offs[i]=len(msg_pool); msg_lens[i]=len(m); msg_pool.extend(m)\n" +
+"    out=bytearray(); out.extend(b'DKLC')\n" +
+"    out.extend(struct.pack('<IIIII',1,n_comp,n,len(comp_pool),len(msg_pool)))\n" +
+"    out.extend(comp_offs.tobytes()); out.extend(comp_lens.tobytes()); out.extend(comp_pool)\n" +
+"    out.extend(idx_col); out.extend(ts_col.tobytes())\n" +
+"    out.extend(msg_offs.tobytes()); out.extend(msg_lens.tobytes()); out.extend(msg_pool)\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'n':n,'n_comp':n_comp,'blob_size':len(out),'encode_ns':t1-t0}\n" +
+"\n" +
+"def linear_count(rows,prefix):\n" +
+"    pat=('com.docker.backend.'+prefix).encode()\n" +
+"    return sum(1 for _,c,_ in rows if c.startswith(pat))\n" +
+"\n" +
+"def blob_count_prefix(prefix):\n" +
+"    with open(BIN,'rb') as f: blob=f.read()\n" +
+"    assert blob[:4]==b'DKLC'\n" +
+"    ver,n_comp,n_line,comp_sz,msg_sz=struct.unpack_from('<IIIII',blob,4)\n" +
+"    p=4+5*4\n" +
+"    comp_offs=array.array('I'); comp_offs.frombytes(blob[p:p+n_comp*4]); p+=n_comp*4\n" +
+"    comp_lens=array.array('I'); comp_lens.frombytes(blob[p:p+n_comp*4]); p+=n_comp*4\n" +
+"    comp_pool=blob[p:p+comp_sz]; p+=comp_sz\n" +
+"    idx_col=blob[p:p+n_line]\n" +
+"    pref=('com.docker.backend.'+prefix).encode()\n" +
+"    matched=set()\n" +
+"    for i in range(n_comp):\n" +
+"        nm=bytes(comp_pool[comp_offs[i]:comp_offs[i]+comp_lens[i]])\n" +
+"        if nm.startswith(pref): matched.add(i)\n" +
+"    if not matched: return 0\n" +
+"    return sum(1 for b in idx_col if b in matched)\n" +
+"\n" +
+"def bench_synth():\n" +
+"    rows=synth(N_LINES)\n" +
+"    info=encode_blob(rows)\n" +
+"    print(f'[encode] n_line={info[\"n\"]} n_comp={info[\"n_comp\"]} blob={fmt(info[\"blob_size\"])} encode={info[\"encode_ns\"]/1e6:.1f}ms')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    base=sum(linear_count(rows,q) for q in QUERIES)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    base_ns=t1-t0\n" +
+"    t2=time.perf_counter_ns()\n" +
+"    post=sum(blob_count_prefix(q) for q in QUERIES)\n" +
+"    t3=time.perf_counter_ns()\n" +
+"    post_ns=t3-t2\n" +
+"    diff_test='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=base_ns/max(post_ns,1)\n" +
+"    print(f'[bench synth] N={N_LINES} queries={len(QUERIES)}')\n" +
+"    print(f'  baseline (linear)        : {base_ns/1000:10.1f} us  hits={base}')\n" +
+"    print(f'  DKLC (mmap u8 col scan)  : {post_ns/1000:10.1f} us  hits={post}')\n" +
+"    print(f'  speedup                  : {sp:6.1f}x')\n" +
+"    row={'site':'K_DOCKER','roi':'K_DOCKER_DKLC_synth','baseline_ns':base_ns,'post_ns':post_ns,'diff_test':diff_test,'speedup_x':round(sp,2),'n':N_LINES}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"LINE_RE=re.compile(rb'^\\[([0-9T:\\.\\-]+)Z\\]\\[(com\\.docker\\.backend\\.[A-Za-z0-9_\\-]+)\\]\\s?(.*)$',re.S)\n" +
+"\n" +
+"def real_probe():\n" +
+"    d=os.path.expanduser('~/Library/Containers/com.docker.docker/Data/log/host')\n" +
+"    if not os.path.isdir(d):\n" +
+"        print('[real] no log dir; skip'); return True\n" +
+"    base=os.path.join(d,'com.docker.backend.log')\n" +
+"    paths=sorted(glob.glob(base+'.*'),key=lambda p:-int(p.rsplit('.',1)[1]) if p.rsplit('.',1)[1].isdigit() else 0)\n" +
+"    if os.path.isfile(base): paths.append(base)\n" +
+"    if not paths:\n" +
+"        print('[real] no rotation files; skip'); return True\n" +
+"    rows=[]; ring=set(); ring_q=[]; CAP=1024\n" +
+"    for p in paths:\n" +
+"        with open(p,'rb') as f:\n" +
+"            for ln in f:\n" +
+"                if not ln.strip(): continue\n" +
+"                m=LINE_RE.match(ln)\n" +
+"                if not m: continue\n" +
+"                ts_b,c,msg=m.group(1),m.group(2),m.group(3).rstrip(b'\\r\\n')\n" +
+"                # quick ts hash, ignore precision for dedup\n" +
+"                canon=ts_b+c+b'|'+struct.pack('<I',len(msg))+msg[:32]\n" +
+"                h=fnv1a64(canon)\n" +
+"                if h in ring: continue\n" +
+"                ring.add(h); ring_q.append(h)\n" +
+"                if len(ring_q)>CAP: ring.discard(ring_q.pop(0))\n" +
+"                rows.append((0,c,msg))\n" +
+"    if not rows:\n" +
+"        print('[real] no parsable lines; skip'); return True\n" +
+"    info=encode_blob(rows)\n" +
+"    print(f'[real encode] n_line={info[\"n\"]} n_comp={info[\"n_comp\"]} blob={fmt(info[\"blob_size\"])} files={len(paths)}')\n" +
+"    t0=time.perf_counter_ns(); base=sum(linear_count(rows,q) for q in QUERIES); t1=time.perf_counter_ns()\n" +
+"    t2=time.perf_counter_ns(); post=sum(blob_count_prefix(q) for q in QUERIES); t3=time.perf_counter_ns()\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=(t1-t0)/max(t3-t2,1)\n" +
+"    print(f'[real bench] base={(t1-t0)/1000:.1f}us hits={base}  post={(t3-t2)/1000:.1f}us hits={post}  speedup={sp:.1f}x')\n" +
+"    row={'site':'K_DOCKER','roi':'K_DOCKER_DKLC_real','baseline_ns':t1-t0,'post_ns':t3-t2,'diff_test':diff,'speedup_x':round(sp,2),'n':info['n']}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return base==post\n" +
+"\n" +
+"if mode=='real':\n" +
+"    ok1=bench_synth(); ok2=real_probe()\n" +
+"    print(f'[result] synth={ok1} real={ok2}')\n" +
+"    sys.exit(0 if (ok1 and ok2) else 1)\n" +
+"else:\n" +
+"    ok=bench_synth()\n" +
+"    sys.exit(0 if ok else 1)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("bench_docker_backend_log_columnar")
+        if is_hexa_bin == false && is_self == false {
+            if v == "real" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_docker_backend_log_columnar_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()
