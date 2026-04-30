@@ -29,6 +29,33 @@
 
 use "../../../core/core"
 
+// A6 RFC interim — to_int_safe local helper (label.hexa pattern 직접 이식).
+// `to_int("0.0")` panic 회피. A6 hexa-lang stdlib promote 후 제거 예정.
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
+
 let RING = ring_path("throttle_signals.ring")
 let MAX_RING = 480
 let CPU_TRIGGER = 25      // pcpu > 25 → 후보
@@ -88,9 +115,9 @@ fn split_4col(line: str) -> ProcRow {
     if len(starts) < 4 {
         return ProcRow { pid: 0, cpu: 0, rss_kb: 0, comm: "" }
     }
-    let pid = to_int(line.substring(starts[0], starts[1]).trim())
-    let cpu = to_int(line.substring(starts[1], starts[2]).trim())
-    let rss = to_int(line.substring(starts[2], starts[3]).trim())
+    let pid = to_int_safe(line.substring(starts[0], starts[1]).trim())
+    let cpu = to_int_safe(line.substring(starts[1], starts[2]).trim())
+    let rss = to_int_safe(line.substring(starts[2], starts[3]).trim())
     let comm = line.substring(starts[3], n).trim()
     return ProcRow { pid: pid, cpu: cpu, rss_kb: rss, comm: comm }
 }

@@ -34,6 +34,33 @@
 
 use "../../../core/core"
 
+// A6 RFC interim — to_int_safe local helper (label.hexa pattern 직접 이식).
+// `to_int("0.0")` panic 회피. A6 hexa-lang stdlib promote 후 제거 예정.
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
+
 let RING = ring_path("throttle_signals.ring")
 let GPU_TRIGGER = 70                  // ioreg PerformanceStatistics busy %
 let MAX_EMIT_PER_CYCLE = 4
@@ -72,7 +99,7 @@ fn gpu_busy_pct() -> int {
     // 형식: "Device Utilization %" = 47
     let parts = line.split("=")
     if len(parts) < 2 { return 0 }
-    return to_int(parts[1].trim())
+    return to_int_safe(parts[1].trim())
 }
 
 // ── GPU 사용 의심 프로세스 census ─────────────────────────────────────
@@ -124,9 +151,9 @@ fn split_4col(line: str) -> GpuCand {
         return GpuCand { pid: 0, cpu: 0, rss_kb: 0, comm: "" }
     }
     return GpuCand {
-        pid: to_int(line.substring(starts[0], starts[1]).trim()),
-        cpu: to_int(line.substring(starts[1], starts[2]).trim()),
-        rss_kb: to_int(line.substring(starts[2], starts[3]).trim()),
+        pid: to_int_safe(line.substring(starts[0], starts[1]).trim()),
+        cpu: to_int_safe(line.substring(starts[1], starts[2]).trim()),
+        rss_kb: to_int_safe(line.substring(starts[2], starts[3]).trim()),
         comm: line.substring(starts[3], n).trim()
     }
 }

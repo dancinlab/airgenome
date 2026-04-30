@@ -15,6 +15,31 @@
 //   합계: 1-2 fork/cycle 고정
 
 use "../../core/core"
+
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
 use "./bench_lib"
 
 let BENCH_RING = "/tmp/airgenome_bench_f64.ring"
@@ -22,7 +47,7 @@ let CYCLES = 50
 let SYNTH_CANDS = 4
 
 fn now_ns() -> str { return exec("gdate +%s%N").trim() }
-fn ns_diff(t0: str, t1: str) -> int { return to_int(t1) - to_int(t0) }
+fn ns_diff(t0: str, t1: str) -> int { return to_int_safe(t1) - to_int_safe(t0) }
 
 fn synth_lines(n: int) -> str {
     let mut s = ""
@@ -92,7 +117,7 @@ fn new_cycle() -> int {
         if l == "" { i = i + 1; continue }
         let starts = split_4col(l)
         if len(starts) < 4 { i = i + 1; continue }
-        let pid = to_int(l.substring(starts[0], starts[1]).trim())
+        let pid = to_int_safe(l.substring(starts[0], starts[1]).trim())
         let comm = l.substring(starts[3], len(l)).trim()
         if is_hard_never(comm) { i = i + 1; continue }
         let line = "{\"kind\":\"safari_active\",\"pid\":" + to_string(pid) + ",\"comm\":\"" + comm + "\",\"action\":\"taskpolicy_bg\"}"

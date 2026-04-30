@@ -18,6 +18,31 @@
 //   합계: 2 fork/cycle 고정
 
 use "../../core/core"
+
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
 use "./bench_lib"
 
 let BENCH_RING_TABS = "/tmp/airgenome_bench_f66_tabs.ring"
@@ -26,7 +51,7 @@ let CYCLES = 50
 let SYNTH_TABS = 8
 
 fn now_ns() -> str { return exec("gdate +%s%N").trim() }
-fn ns_diff(t0: str, t1: str) -> int { return to_int(t1) - to_int(t0) }
+fn ns_diff(t0: str, t1: str) -> int { return to_int_safe(t1) - to_int_safe(t0) }
 
 fn build_tabs_ring() -> void {
     let _ = exec("rm -f '" + BENCH_RING_TABS + "'")
@@ -74,7 +99,7 @@ fn extract_axis(line: str, idx: int) -> int {
     let inside = bp[0]
     let nums = inside.split(",")
     if idx >= len(nums) { return 0 }
-    return to_int(nums[idx].trim())
+    return to_int_safe(nums[idx].trim())
 }
 
 fn jq_field_int(line: str, key: str) -> int {
@@ -86,11 +111,11 @@ fn jq_field_int(line: str, key: str) -> int {
     let mut i = 0
     while i < n {
         let ch = after.substring(i, i + 1)
-        if ch == "," { return to_int(after.substring(0, i).trim()) }
-        if ch == "}" { return to_int(after.substring(0, i).trim()) }
+        if ch == "," { return to_int_safe(after.substring(0, i).trim()) }
+        if ch == "}" { return to_int_safe(after.substring(0, i).trim()) }
         i = i + 1
     }
-    return to_int(after.trim())
+    return to_int_safe(after.trim())
 }
 
 fn new_cycle() -> int {

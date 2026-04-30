@@ -19,6 +19,31 @@
 // 측정 환경: HEXA_RESOLVER_NO_REROUTE=1 HEXA_SHIM_NO_DARWIN_LANDING=1, gdate.
 
 use "../../core/core"
+
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
 use "./bench_lib"
 
 let BENCH_RING = "/tmp/airgenome_bench_f45.ring"
@@ -26,7 +51,7 @@ let CYCLES = 50
 let SYNTH_TABS = 8       // 합성 WebContent 탭 수
 
 fn now_ns() -> str { return exec("gdate +%s%N").trim() }
-fn ns_diff(t0: str, t1: str) -> int { return to_int(t1) - to_int(t0) }
+fn ns_diff(t0: str, t1: str) -> int { return to_int_safe(t1) - to_int_safe(t0) }
 
 // ── 합성 ps 출력 캐시 — fork 비용 모방용 ───────────────────────────────
 fn synth_ps_lines(n: int) -> str {
@@ -97,8 +122,8 @@ fn new_cycle() -> int {
         if l == "" { i = i + 1; continue }
         let starts = split_5col(l)
         if len(starts) < 5 { i = i + 1; continue }
-        let pid = to_int(l.substring(starts[0], starts[1]).trim())
-        let cpu = to_int(l.substring(starts[1], starts[2]).trim())
+        let pid = to_int_safe(l.substring(starts[0], starts[1]).trim())
+        let cpu = to_int_safe(l.substring(starts[1], starts[2]).trim())
         let line = "{\"pid\":" + to_string(pid) + ",\"axes\":[" + to_string(cpu) + ",100,0,1,0,0]}"
         buf = buf + line + "\n"
         written = written + 1

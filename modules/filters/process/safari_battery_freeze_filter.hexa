@@ -41,6 +41,33 @@
 
 use "../../../core/core"
 
+// A6 RFC interim — to_int_safe local helper (label.hexa pattern 직접 이식).
+// `to_int("0.0")` panic 회피. A6 hexa-lang stdlib promote 후 제거 예정.
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
+
 let RING_TABS = ring_path("safari_tabs.ring")
 let RING_OUT = ring_path("throttle_signals.ring")
 let BATT_TRIGGER = 20         // < 20% → 발동
@@ -81,7 +108,7 @@ fn read_battery() -> BattState {
             else { i = i - 1 }
         }
         let num = pre.substring(start, n).trim()
-        pct = to_int(num)
+        pct = to_int_safe(num)
     }
     return BattState { pct: pct, on_ac: on_ac, raw: raw }
 }
@@ -97,11 +124,11 @@ fn jq_field_int(line: str, key: str) -> int {
     let mut i = 0
     while i < n {
         let ch = after.substring(i, i + 1)
-        if ch == "," { return to_int(after.substring(0, i).trim()) }
-        if ch == "}" { return to_int(after.substring(0, i).trim()) }
+        if ch == "," { return to_int_safe(after.substring(0, i).trim()) }
+        if ch == "}" { return to_int_safe(after.substring(0, i).trim()) }
         i = i + 1
     }
-    return to_int(after.trim())
+    return to_int_safe(after.trim())
 }
 
 // axes 추출: line 에 "\"axes\":[a,b,c,d,e,f]"
@@ -116,7 +143,7 @@ fn extract_axis(line: str, idx: int) -> int {
     let inside = bp[0]
     let nums = inside.split(",")
     if idx >= len(nums) { return 0 }
-    return to_int(nums[idx].trim())
+    return to_int_safe(nums[idx].trim())
 }
 
 struct TabCand {
@@ -195,8 +222,8 @@ fn collect_from_ps(is_safari_front: bool, max_active_pid: int) -> list {
             k = k + 1
         }
         if len(starts) < 3 { i = i + 1; continue }
-        let pid = to_int(l.substring(starts[0], starts[1]).trim())
-        let cpu = to_int(l.substring(starts[1], starts[2]).trim())
+        let pid = to_int_safe(l.substring(starts[0], starts[1]).trim())
+        let cpu = to_int_safe(l.substring(starts[1], starts[2]).trim())
         let comm = l.substring(starts[2], n).trim()
         let active = is_safari_front && pid == max_active_pid
         out = out + [TabCand { pid: pid, comm: comm, cpu: cpu, is_active: active }]
