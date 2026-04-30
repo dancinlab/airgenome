@@ -1,0 +1,261 @@
+// airgenome/modules/filters/data/safari_topsites_mmap.hexa
+//   F19 — Safari TopSites.plist 의 byte-reinterpret mmap blob.
+//
+//   목적: TopSites.plist (binary plist, FDA 필요) — Safari new tab tile metadata.
+//         매번 plistlib parse + dict walk 하던 prefetch hint hot path 를
+//         단일 mmap blob 으로 치환. tile index lookup O(1).
+//
+//   blob layout (little-endian):
+//     magic  : 4B  "STBF"          (Safari TopSites Blob Filter)
+//     version: 4B  u32             (1)
+//     n      : 4B  u32             tile 개수
+//     str_sz : 4B  u32             string pool 바이트 길이
+//     [n*4]  : u32 url_offsets     pool 내 URL 오프셋 (입력 plist 순서)
+//     [n*4]  : u32 url_lens        URL 길이
+//     [n*4]  : u32 title_offsets   pool 내 title 오프셋
+//     [n*4]  : u32 title_lens      title 길이
+//     [n*4]  : u32 visit_weight    visit_count 또는 plist 순위 fallback
+//     [str_sz]: utf-8 string pool  url||title 의 raw bytes
+//
+// 모드:
+//   encode : TopSites.plist → /tmp/safari_topsites.bin
+//   bench  : encode + plistlib parse + dict walk vs blob mmap + index lookup (100 query)
+//
+// E4 와 다른 점:
+//   - source = sqlite3 가 아닌 plistlib (binary plist 일반)
+//   - TopSites schema: TopSites[].TopSiteURLString + TopSiteTitle (Apple internal)
+//   - URL 정렬 X — plist 입력 순서 = Safari new-tab 표시 순위 보존 (index lookup)
+//   - 검색 패턴 = 인덱스 조회 (i 번째 tile) + URL exact match
+//
+// R1 HEXA-FIRST: 신규 .py/.sh 금지. 인라인 python3 페이로드.
+
+let PAYLOAD = "import sys,os,plistlib,tempfile,struct,time,resource,mmap,array\n" +
+"mode=sys.argv[1]; src=sys.argv[2]\n" +
+"BIN='/tmp/safari_topsites.bin'\n" +
+"if not os.path.exists(src):\n" +
+"    print('ERROR: not found: '+src); sys.exit(1)\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def safe_copy(src):\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.plist',delete=False); tmp.close()\n" +
+"    with open(src,'rb') as fr, open(tmp.name,'wb') as fw:\n" +
+"        fw.write(fr.read())\n" +
+"    return tmp.name\n" +
+"\n" +
+"def parse_plist(path):\n" +
+"    with open(path,'rb') as f:\n" +
+"        return plistlib.load(f)\n" +
+"\n" +
+"def extract_tiles(root):\n" +
+"    # TopSites.plist schema 변형: TopSites[] 또는 root list 자체.\n" +
+"    # 각 tile dict 에서 TopSiteURLString + TopSiteTitle + (있으면) VisitCount 추출.\n" +
+"    out=[]\n" +
+"    cands=[]\n" +
+"    if isinstance(root,dict):\n" +
+"        for key in ('TopSites','BannedURLStrings'):\n" +
+"            v=root.get(key)\n" +
+"            if isinstance(v,list): cands.extend(v)\n" +
+"        # fallback: dict values\n" +
+"        if not cands:\n" +
+"            for v in root.values():\n" +
+"                if isinstance(v,list): cands.extend(v)\n" +
+"    elif isinstance(root,list):\n" +
+"        cands=root\n" +
+"    for idx,t in enumerate(cands):\n" +
+"        if isinstance(t,dict):\n" +
+"            u=t.get('TopSiteURLString') or t.get('URLString') or t.get('URL') or ''\n" +
+"            ttl=t.get('TopSiteTitle') or t.get('Title') or ''\n" +
+"            vc=t.get('VisitCount')\n" +
+"            if vc is None:\n" +
+"                vc=max(1, 1000-idx*10)  # fallback: rank-based weight\n" +
+"            if isinstance(u,str) and u:\n" +
+"                out.append((u,str(ttl),int(vc)))\n" +
+"    return out\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter()\n" +
+"    copy=safe_copy(src)\n" +
+"    raw_size=os.path.getsize(copy)\n" +
+"    root=parse_plist(copy)\n" +
+"    os.unlink(copy)\n" +
+"    tiles=extract_tiles(root)\n" +
+"    n=len(tiles)\n" +
+"    pool=bytearray()\n" +
+"    url_offs=array.array('I',[0]*n)\n" +
+"    url_lens=array.array('I',[0]*n)\n" +
+"    ttl_offs=array.array('I',[0]*n)\n" +
+"    ttl_lens=array.array('I',[0]*n)\n" +
+"    vws     =array.array('I',[0]*n)\n" +
+"    for i,(u,ttl,vc) in enumerate(tiles):\n" +
+"        ub=u.encode('utf-8','replace')\n" +
+"        tb=ttl.encode('utf-8','replace')\n" +
+"        url_offs[i]=len(pool); url_lens[i]=len(ub); pool.extend(ub)\n" +
+"        ttl_offs[i]=len(pool); ttl_lens[i]=len(tb); pool.extend(tb)\n" +
+"        vws[i]=int(vc)\n" +
+"    header=struct.pack('<4sIII',b'STBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(url_offs.tobytes())\n" +
+"        f.write(url_lens.tobytes())\n" +
+"        f.write(ttl_offs.tobytes())\n" +
+"        f.write(ttl_lens.tobytes())\n" +
+"        f.write(vws.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter()\n" +
+"    blob_size=os.path.getsize(BIN)\n" +
+"    return {'encode_s':t1-t0,'n':n,'raw_size':raw_size,'blob_size':blob_size}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        assert magic==b'STBF' and ver==1\n" +
+"        self.n=n; self.pool_sz=pool_sz\n" +
+"        base=16\n" +
+"        self.url_offs_off=base\n" +
+"        self.url_lens_off=base+4*n\n" +
+"        self.ttl_offs_off=base+8*n\n" +
+"        self.ttl_lens_off=base+12*n\n" +
+"        self.vws_off     =base+16*n\n" +
+"        self.pool_off    =base+20*n\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        def arr(off,nn):\n" +
+"            a=array.array('I'); a.frombytes(bytes(self.mv[off:off+4*nn])); return a\n" +
+"        self.url_offs=arr(self.url_offs_off,n)\n" +
+"        self.url_lens=arr(self.url_lens_off,n)\n" +
+"        self.ttl_offs=arr(self.ttl_offs_off,n)\n" +
+"        self.ttl_lens=arr(self.ttl_lens_off,n)\n" +
+"        self.vws     =arr(self.vws_off,n)\n" +
+"        self.pool    =bytes(self.mv[self.pool_off:self.pool_off+pool_sz])\n" +
+"        # url → idx hash for exact-match lookup\n" +
+"        self._idx={}\n" +
+"        for i in range(n):\n" +
+"            u=bytes(self.pool[self.url_offs[i]:self.url_offs[i]+self.url_lens[i]])\n" +
+"            self._idx[u]=i\n" +
+"    def tile(self,i):\n" +
+"        u=self.pool[self.url_offs[i]:self.url_offs[i]+self.url_lens[i]].decode('utf-8','replace')\n" +
+"        t=self.pool[self.ttl_offs[i]:self.ttl_offs[i]+self.ttl_lens[i]].decode('utf-8','replace')\n" +
+"        return (u,t,int(self.vws[i]))\n" +
+"    def lookup(self,url):\n" +
+"        ub=url.encode('utf-8') if isinstance(url,str) else url\n" +
+"        i=self._idx.get(ub)\n" +
+"        if i is None: return None\n" +
+"        return self.tile(i)\n" +
+"    def close(self):\n" +
+"        try: self.mv.release()\n" +
+"        except Exception: pass\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def plist_lookup(tiles,url):\n" +
+"    for u,t,v in tiles:\n" +
+"        if u==url: return (u,t,v)\n" +
+"    return None\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  tiles={info[\"n\"]}  blob={fmt(info[\"blob_size\"])} ({100*info[\"blob_size\"]/max(info[\"raw_size\"],1):.1f}% of {fmt(info[\"raw_size\"])})')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no tiles — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    import random\n" +
+"    random.seed(42)\n" +
+"    samples=[]\n" +
+"    for _ in range(100):\n" +
+"        i=random.randrange(b.n)\n" +
+"        samples.append(b.tile(i)[0])\n" +
+"    rss_blob=rss()\n" +
+"    for u in samples[:5]: b.lookup(u)\n" +
+"    t0=time.perf_counter()\n" +
+"    blob_hits=0\n" +
+"    for u in samples:\n" +
+"        r=b.lookup(u)\n" +
+"        if r is not None: blob_hits+=1\n" +
+"    t1=time.perf_counter()\n" +
+"    blob_us=(t1-t0)*1e6/len(samples)\n" +
+"    b.close()\n" +
+"    copy=safe_copy(src)\n" +
+"    # OLD cold: per-query parse + linear scan\n" +
+"    t0=time.perf_counter()\n" +
+"    pl_hits=0\n" +
+"    for u in samples:\n" +
+"        root=parse_plist(copy)\n" +
+"        tiles=extract_tiles(root)\n" +
+"        r=plist_lookup(tiles,u)\n" +
+"        if r is not None: pl_hits+=1\n" +
+"    t1=time.perf_counter()\n" +
+"    plist_cold_us=(t1-t0)*1e6/len(samples)\n" +
+"    # OLD persistent: parse 1회 + linear scan\n" +
+"    root=parse_plist(copy)\n" +
+"    tiles=extract_tiles(root)\n" +
+"    for u in samples[:5]: plist_lookup(tiles,u)\n" +
+"    t0=time.perf_counter()\n" +
+"    for u in samples:\n" +
+"        plist_lookup(tiles,u)\n" +
+"    t1=time.perf_counter()\n" +
+"    plist_persistent_us=(t1-t0)*1e6/len(samples)\n" +
+"    rss_plist=rss()\n" +
+"    os.unlink(copy)\n" +
+"    print(f'[query] 100 lookup  (hits blob={blob_hits}, plist={pl_hits})')\n" +
+"    print(f'  plistlib cold (per-query parse+scan): {plist_cold_us:10.1f} us')\n" +
+"    print(f'  plistlib persistent (parsed once)   : {plist_persistent_us:10.1f} us')\n" +
+"    print(f'  blob mmap + index lookup            : {blob_us:10.1f} us')\n" +
+"    if blob_us>0:\n" +
+"        print(f'  speedup vs cold      : {plist_cold_us/blob_us:6.1f}x')\n" +
+"        print(f'  speedup vs persistent: {plist_persistent_us/blob_us:6.1f}x')\n" +
+"    print(f'[rss] after blob only      : {fmt(rss_blob)}')\n" +
+"    print(f'[rss] after plist as well  : {fmt(rss_plist)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} tiles in {info[\"encode_s\"]*1000:.1f} ms → {BIN} ({fmt(info[\"blob_size\"])}, {100*info[\"blob_size\"]/max(info[\"raw_size\"],1):.1f}% of raw {fmt(info[\"raw_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench <TopSites.plist>'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("safari_topsites_mmap")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".plist") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        let candidate1 = env("HOME") + "/Library/Safari/TopSites.plist"
+        let candidate2 = env("HOME") + "/Library/Containers/com.apple.Safari/Data/Library/Safari/TopSites.plist"
+        if file_exists(candidate1) {
+            target = candidate1
+        } else {
+            target = candidate2
+        }
+        println("(default target: " + target + ")")
+    }
+    if file_exists(target) == false {
+        println("ERROR: not found: " + target)
+        return
+    }
+    let tmp_py = "/tmp/safari_topsites_mmap_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

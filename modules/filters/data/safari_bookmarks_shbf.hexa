@@ -1,0 +1,242 @@
+// airgenome/modules/filters/data/safari_bookmarks_shbf.hexa
+//   F18 — Safari Bookmarks.plist 의 byte-reinterpret SHBF.
+//
+//   목적: Bookmarks.plist (XML 또는 binary plist) 를 매번 plistlib parse +
+//         재귀 walk + linear prefix scan 하던 hot path 를, 단일 mmap blob 으로
+//         치환. prefix bisect O(log n) 로 즉답.
+//
+//   blob layout (little-endian):
+//     magic  : 4B  "SBBF"          (Safari Bookmarks Blob Filter)
+//     version: 4B  u32             (1)
+//     n      : 4B  u32             URL 개수
+//     str_sz : 4B  u32             string pool 바이트 길이
+//     [n*4]  : u32 offsets         pool 내 시작 오프셋 (정렬된 URL 순)
+//     [n*4]  : u32 lens            각 URL 길이
+//     [n*4]  : u32 visit_count     fallback: tree depth 기반 weight
+//     [str_sz]: utf-8 string pool  정렬된 URL 의 raw bytes (NUL 없음)
+//
+// 모드:
+//   encode : Bookmarks.plist → /tmp/safari_bookmarks.bin
+//   bench  : encode + plistlib parse + linear scan vs blob mmap + bisect (100 query)
+//
+// E4 와 다른 점:
+//   - source = sqlite3 가 아닌 plistlib (XML/binary plist 자동 감지)
+//   - bookmarks 트리는 재귀 — Children[].URLString 만 leaf 로 채집
+//   - visit_count 는 plist 에 없으므로 tree depth 의 reciprocal 을 weight 로 사용
+//
+// R1 HEXA-FIRST: 신규 .py/.sh 금지. 인라인 python3 페이로드.
+
+let PAYLOAD = "import sys,os,plistlib,tempfile,struct,time,bisect,heapq,resource,mmap,array\n" +
+"mode=sys.argv[1]; src=sys.argv[2]\n" +
+"BIN='/tmp/safari_bookmarks.bin'\n" +
+"if not os.path.exists(src):\n" +
+"    print('ERROR: not found: '+src); sys.exit(1)\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def safe_copy(src):\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.plist',delete=False); tmp.close()\n" +
+"    with open(src,'rb') as fr, open(tmp.name,'wb') as fw:\n" +
+"        fw.write(fr.read())\n" +
+"    return tmp.name\n" +
+"\n" +
+"def walk_bookmarks(node, depth, out):\n" +
+"    # Bookmarks.plist 트리: Children[] 재귀 → URLString leaf 채집\n" +
+"    if isinstance(node, dict):\n" +
+"        u=node.get('URLString')\n" +
+"        if isinstance(u,str) and u:\n" +
+"            # weight = max(1, 100-depth*10)  — 얕은 북마크 우선\n" +
+"            w=max(1, 100-depth*10)\n" +
+"            out.append((u,w))\n" +
+"        ch=node.get('Children')\n" +
+"        if isinstance(ch,list):\n" +
+"            for c in ch:\n" +
+"                walk_bookmarks(c, depth+1, out)\n" +
+"    elif isinstance(node, list):\n" +
+"        for c in node:\n" +
+"            walk_bookmarks(c, depth+1, out)\n" +
+"\n" +
+"def parse_plist(path):\n" +
+"    with open(path,'rb') as f:\n" +
+"        return plistlib.load(f)\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter()\n" +
+"    copy=safe_copy(src)\n" +
+"    raw_size=os.path.getsize(copy)\n" +
+"    root=parse_plist(copy)\n" +
+"    os.unlink(copy)\n" +
+"    rows=[]\n" +
+"    walk_bookmarks(root, 0, rows)\n" +
+"    # dedup + sort\n" +
+"    seen={}\n" +
+"    for u,w in rows:\n" +
+"        if u not in seen or seen[u]<w: seen[u]=w\n" +
+"    rows=sorted(seen.items(), key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    vcs =array.array('I',[0]*n)\n" +
+"    for i,(u,w) in enumerate(rows):\n" +
+"        ub=u.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(ub); vcs[i]=int(w)\n" +
+"        pool.extend(ub)\n" +
+"    header=struct.pack('<4sIII',b'SBBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes())\n" +
+"        f.write(lens.tobytes())\n" +
+"        f.write(vcs.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter()\n" +
+"    blob_size=os.path.getsize(BIN)\n" +
+"    return {'encode_s':t1-t0,'n':n,'raw_size':raw_size,'blob_size':blob_size}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        assert magic==b'SBBF' and ver==1\n" +
+"        self.n=n; self.pool_sz=pool_sz\n" +
+"        base=16\n" +
+"        self.offs_off=base\n" +
+"        self.lens_off=base+4*n\n" +
+"        self.vcs_off =base+8*n\n" +
+"        self.pool_off=base+12*n\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(self.mv[self.offs_off:self.offs_off+4*n]))\n" +
+"        lens=array.array('I'); lens.frombytes(bytes(self.mv[self.lens_off:self.lens_off+4*n]))\n" +
+"        vcs =array.array('I'); vcs.frombytes(bytes(self.mv[self.vcs_off :self.vcs_off +4*n]))\n" +
+"        pool=bytes(self.mv[self.pool_off:self.pool_off+pool_sz])\n" +
+"        self.urls=[pool[offs[i]:offs[i]+lens[i]] for i in range(n)]\n" +
+"        self.vcs=vcs\n" +
+"    def url(self,i):\n" +
+"        return self.urls[i]\n" +
+"    def prefix_topk(self,prefix,k=10):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        urls=self.urls\n" +
+"        start=bisect.bisect_left(urls,pb)\n" +
+"        end=bisect.bisect_left(urls,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        if end==start: return []\n" +
+"        if end-start<=k:\n" +
+"            idxs=list(range(start,end))\n" +
+"        else:\n" +
+"            idxs=heapq.nlargest(k,range(start,end),key=lambda i:self.vcs[i])\n" +
+"        idxs.sort(key=lambda i:-self.vcs[i])\n" +
+"        return [(self.url(i).decode('utf-8','replace'),int(self.vcs[i])) for i in idxs]\n" +
+"    def close(self):\n" +
+"        try: self.mv.release()\n" +
+"        except Exception: pass\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def plist_topk(rows, prefix, k=10):\n" +
+"    # OLD path: linear scan over plist-walked rows + sort\n" +
+"    hits=[(u,w) for (u,w) in rows if u.startswith(prefix)]\n" +
+"    hits.sort(key=lambda r:-r[1])\n" +
+"    return hits[:k]\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  urls={info[\"n\"]}  blob={fmt(info[\"blob_size\"])} ({100*info[\"blob_size\"]/max(info[\"raw_size\"],1):.1f}% of {fmt(info[\"raw_size\"])})')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no bookmarks — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    import random\n" +
+"    random.seed(42)\n" +
+"    samples=[]\n" +
+"    for _ in range(100):\n" +
+"        i=random.randrange(b.n)\n" +
+"        u=b.url(i).decode('utf-8','replace')\n" +
+"        s=u.find('://')\n" +
+"        start=s+3 if s>=0 else 0\n" +
+"        plen=random.choice([4,5,6,7,8])\n" +
+"        pref=u[:start+plen] if len(u)>=start+plen else u\n" +
+"        samples.append(pref)\n" +
+"    rss_blob=rss()\n" +
+"    for p in samples[:5]: b.prefix_topk(p,10)\n" +
+"    t0=time.perf_counter()\n" +
+"    total_hits=0\n" +
+"    for p in samples:\n" +
+"        r=b.prefix_topk(p,10); total_hits+=len(r)\n" +
+"    t1=time.perf_counter()\n" +
+"    blob_us=(t1-t0)*1e6/len(samples)\n" +
+"    b.close()\n" +
+"    # OLD: per-query plistlib parse + linear scan (Safari hot-path 모사)\n" +
+"    copy=safe_copy(src)\n" +
+"    t0=time.perf_counter()\n" +
+"    pl_hits=0\n" +
+"    for p in samples:\n" +
+"        root=parse_plist(copy)\n" +
+"        rows=[]; walk_bookmarks(root,0,rows)\n" +
+"        r=plist_topk(rows,p,10); pl_hits+=len(r)\n" +
+"    t1=time.perf_counter()\n" +
+"    plist_cold_us=(t1-t0)*1e6/len(samples)\n" +
+"    # OLD persistent: parse 1회 + linear scan per-query\n" +
+"    root=parse_plist(copy)\n" +
+"    rows=[]; walk_bookmarks(root,0,rows)\n" +
+"    for p in samples[:5]: plist_topk(rows,p,10)\n" +
+"    t0=time.perf_counter()\n" +
+"    for p in samples:\n" +
+"        plist_topk(rows,p,10)\n" +
+"    t1=time.perf_counter()\n" +
+"    plist_persistent_us=(t1-t0)*1e6/len(samples)\n" +
+"    rss_plist=rss()\n" +
+"    os.unlink(copy)\n" +
+"    print(f'[query] 100 prefix-topK-10  (hits blob={total_hits}, plist={pl_hits})')\n" +
+"    print(f'  plistlib cold (per-query parse+scan): {plist_cold_us:10.1f} us')\n" +
+"    print(f'  plistlib persistent (parsed once)   : {plist_persistent_us:10.1f} us')\n" +
+"    print(f'  blob mmap + bisect                  : {blob_us:10.1f} us')\n" +
+"    if blob_us>0:\n" +
+"        print(f'  speedup vs cold      : {plist_cold_us/blob_us:6.1f}x')\n" +
+"        print(f'  speedup vs persistent: {plist_persistent_us/blob_us:6.1f}x')\n" +
+"    print(f'[rss] after blob only      : {fmt(rss_blob)}')\n" +
+"    print(f'[rss] after plist as well  : {fmt(rss_plist)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} urls in {info[\"encode_s\"]*1000:.1f} ms → {BIN} ({fmt(info[\"blob_size\"])}, {100*info[\"blob_size\"]/max(info[\"raw_size\"],1):.1f}% of raw {fmt(info[\"raw_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench <Bookmarks.plist>'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("safari_bookmarks_shbf")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".plist") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/Library/Safari/Bookmarks.plist"
+        println("(default target: " + target + ")")
+    }
+    if file_exists(target) == false {
+        println("ERROR: not found: " + target)
+        return
+    }
+    let tmp_py = "/tmp/safari_bookmarks_shbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

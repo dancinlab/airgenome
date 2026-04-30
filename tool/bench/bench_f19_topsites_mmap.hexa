@@ -1,0 +1,188 @@
+// tool/bench/bench_f19_topsites_mmap.hexa — F19 topsites mmap
+//   OLD (plistlib parse + linear scan) vs NEW (blob mmap + index lookup).
+//
+// TopSites.plist FDA 차단 시 synthetic dataset (TILES_N tile + visit_weight).
+// E4 패턴 (commit 04440090) 동일: hash index 로 exact-match O(1) 즉답.
+//
+// 5-tuple: site=F19 + ROI#=19 + baseline_ns + post_ns + diff_test=lossless
+
+use "../../core/core"
+
+let TILES_N = 200      // synthetic top-sites tile count
+let QUERIES = 100      // exact-match lookups
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+// deterministic top-sites: 도메인 × tile rank × visit_count
+fn build_dataset() -> list {
+    let mut tiles = []
+    let mut i = 0
+    let domains = ["github.com", "google.com", "stackoverflow.com", "youtube.com",
+                   "wikipedia.org", "reddit.com", "developer.mozilla.org",
+                   "docs.python.org", "news.ycombinator.com", "twitter.com",
+                   "apple.com", "macrumors.com", "hexa-lang.org", "anthropic.com"]
+    while i < TILES_N {
+        let d = domains[i % len(domains)]
+        let path = "/tile" + to_string(i)
+        let visit = 1000 - i
+        tiles = tiles + ["https://" + d + path + " " + to_string(visit)]
+        i = i + 1
+    }
+    return tiles
+}
+
+// OLD: linear scan per-query (plistlib walk 모사)
+fn old_lookup(tiles: list, url: str) -> int {
+    let mut i = 0
+    while i < len(tiles) {
+        let t = tiles[i]
+        // tile entry = "URL VISIT" — split on space
+        let sp = t.split(" ")
+        if len(sp) >= 1 {
+            if sp[0] == url { return i }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// NEW: index lookup (blob mmap + hash). hexa list 는 dict 미보유 →
+// 사전 build_index 로 url→idx pair list 정렬 + bisect 으로 O(log n) 근사.
+fn build_index(tiles: list) -> list {
+    // 정렬된 (url, idx) pair string list 반환: "url\tidx"
+    let mut idx = []
+    let mut i = 0
+    while i < len(tiles) {
+        let t = tiles[i]
+        let sp = t.split(" ")
+        if len(sp) >= 1 {
+            idx = idx + [sp[0] + "\t" + to_string(i)]
+        }
+        i = i + 1
+    }
+    // sort by URL prefix (string sort 자동)
+    return sort_strings(idx)
+}
+
+fn sort_strings(xs: list) -> list {
+    let mut sorted = []
+    let mut i = 0
+    while i < len(xs) {
+        let x = xs[i]
+        let mut lo = 0
+        let mut hi = len(sorted)
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if sorted[mid] < x { lo = mid + 1 }
+            else { hi = mid }
+        }
+        let mut new_sorted = []
+        let mut k = 0
+        while k < lo {
+            new_sorted = new_sorted + [sorted[k]]
+            k = k + 1
+        }
+        new_sorted = new_sorted + [x]
+        while k < len(sorted) {
+            new_sorted = new_sorted + [sorted[k]]
+            k = k + 1
+        }
+        sorted = new_sorted
+        i = i + 1
+    }
+    return sorted
+}
+
+fn new_lookup(index: list, url: str) -> int {
+    // bisect_left for url + "\t" prefix
+    let needle = url + "\t"
+    let mut lo = 0
+    let mut hi = len(index)
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if index[mid] < needle { lo = mid + 1 }
+        else { hi = mid }
+    }
+    if lo >= len(index) { return -1 }
+    let entry = index[lo]
+    if len(entry) < len(needle) { return -1 }
+    if entry.substring(0, len(needle)) != needle { return -1 }
+    let idx_str = entry.substring(len(needle), len(entry))
+    return to_int(idx_str)
+}
+
+fn diff_test(tiles: list, index: list, queries: list) -> int {
+    let mut mismatches = 0
+    let mut i = 0
+    while i < len(queries) {
+        let q = queries[i]
+        let o = old_lookup(tiles, q)
+        let n = new_lookup(index, q)
+        if o != n {
+            mismatches = mismatches + 1
+            println("    DIFF url=" + q + " old=" + to_string(o) + " new=" + to_string(n))
+        }
+        i = i + 1
+    }
+    return mismatches
+}
+
+fn main() -> void {
+    println("airgenome bench/F19 — topsites mmap (plistlib linear vs blob index)")
+    println("  TILES_N=" + to_string(TILES_N) + " QUERIES=" + to_string(QUERIES))
+    println("  source: synthetic (TopSites.plist FDA fallback)")
+
+    let tiles = build_dataset()
+    println("  built: " + to_string(len(tiles)) + " tiles")
+
+    let t0_idx = now_ns()
+    let index = build_index(tiles)
+    let t1_idx = now_ns()
+    let ns_idx = ns_diff(t0_idx, t1_idx)
+    println("  encode (index build): " + to_string(ns_idx / 1000000) + "ms (amortized over QUERIES)")
+
+    // sample queries: 일부는 hit, 일부는 miss
+    let queries = ["https://github.com/tile0", "https://google.com/tile1", "https://reddit.com/tile5", "https://hexa-lang.org/tile12", "https://miss.example.com/x"]
+    let mm = diff_test(tiles, index, queries)
+    println("  diff_test mismatches: " + to_string(mm) + " / " + to_string(len(queries)))
+    if mm != 0 {
+        println("BENCH FAIL [diff_test ≠ 0]")
+        return
+    }
+
+    let t0_old = now_ns()
+    let mut k = 0
+    while k < QUERIES {
+        let qi = k % len(queries)
+        let _ = old_lookup(tiles, queries[qi])
+        k = k + 1
+    }
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    println("  OLD (plistlib + linear) total_ns=" + to_string(ns_old) + "  per_query_ns=" + to_string(ns_old / QUERIES))
+
+    let t0_new = now_ns()
+    let mut k2 = 0
+    while k2 < QUERIES {
+        let qi = k2 % len(queries)
+        let _ = new_lookup(index, queries[qi])
+        k2 = k2 + 1
+    }
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (blob mmap+index)   total_ns=" + to_string(ns_new) + "  per_query_ns=" + to_string(ns_new / QUERIES))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+        println("  + encode cost amortized: " + to_string(ns_idx / QUERIES) + "ns/query (1회 index / " + to_string(QUERIES) + " queries)")
+    }
+    println("  5-tuple: site=F19 ROI#=19 baseline_ns=" + to_string(ns_old / QUERIES) + " post_ns=" + to_string(ns_new / QUERIES) + " diff_test=lossless")
+}

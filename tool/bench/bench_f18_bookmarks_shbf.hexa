@@ -1,0 +1,176 @@
+// tool/bench/bench_f18_bookmarks_shbf.hexa — F18 bookmarks SHBF
+//   OLD (plistlib parse + linear scan) vs NEW (blob mmap + bisect prefix).
+//
+// Bookmarks.plist FDA 차단 시 synthetic dataset (URLS_N URL + tree depth weight).
+// E4 패턴 (commit 04440090) 동일: pre-sort + bisect_left/right 로 prefix range
+// O(log n) 즉답.
+//
+// 5-tuple: site=F18 + ROI#=18 + baseline_ns + post_ns + diff_test=lossless
+
+use "../../core/core"
+
+let URLS_N = 5000     // synthetic bookmark count (FDA 차단 fallback)
+let QUERIES = 100     // prefix queries
+let TOP_K = 5
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+// deterministic 북마크 시뮬레이션: 도메인 × path × tree-depth weight
+fn build_dataset() -> list {
+    let mut urls = []
+    let mut i = 0
+    let domains = ["github.com", "google.com", "stackoverflow.com", "youtube.com",
+                   "wikipedia.org", "reddit.com", "developer.mozilla.org",
+                   "docs.python.org", "news.ycombinator.com", "twitter.com",
+                   "apple.com", "macrumors.com"]
+    while i < URLS_N {
+        let d = domains[i % len(domains)]
+        let depth = (i / 100) % 10
+        let path = "/folder" + to_string(depth) + "/page" + to_string(i)
+        let w = 100 - depth * 10
+        urls = urls + ["https://" + d + path + " " + to_string(w)]
+        i = i + 1
+    }
+    return urls
+}
+
+// OLD: plistlib parse 모사 — 매 query 마다 dataset 전체 linear scan + sort
+fn old_prefix_query(urls: list, prefix: str) -> int {
+    let mut hits = 0
+    let mut i = 0
+    while i < len(urls) {
+        let u = urls[i]
+        if len(u) >= len(prefix) {
+            if u.substring(0, len(prefix)) == prefix {
+                hits = hits + 1
+            }
+        }
+        i = i + 1
+    }
+    return hits
+}
+
+fn bisect_left(sorted: list, prefix: str) -> int {
+    let mut lo = 0
+    let mut hi = len(sorted)
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if sorted[mid] < prefix { lo = mid + 1 }
+        else { hi = mid }
+    }
+    return lo
+}
+
+// NEW: pre-sorted 에서 bisect_left + range walk. blob mmap + bisect 와 동치.
+fn new_prefix_query(sorted: list, prefix: str) -> int {
+    let start = bisect_left(sorted, prefix)
+    let mut hits = 0
+    let mut i = start
+    while i < len(sorted) {
+        let u = sorted[i]
+        if len(u) < len(prefix) { break }
+        if u.substring(0, len(prefix)) != prefix { break }
+        hits = hits + 1
+        i = i + 1
+    }
+    return hits
+}
+
+fn sort_urls(urls: list) -> list {
+    let mut sorted = []
+    let mut i = 0
+    while i < len(urls) {
+        let u = urls[i]
+        let pos = bisect_left(sorted, u)
+        let mut new_sorted = []
+        let mut k = 0
+        while k < pos {
+            new_sorted = new_sorted + [sorted[k]]
+            k = k + 1
+        }
+        new_sorted = new_sorted + [u]
+        while k < len(sorted) {
+            new_sorted = new_sorted + [sorted[k]]
+            k = k + 1
+        }
+        sorted = new_sorted
+        i = i + 1
+    }
+    return sorted
+}
+
+fn diff_test(urls: list, sorted: list, prefixes: list) -> int {
+    let mut mismatches = 0
+    let mut i = 0
+    while i < len(prefixes) {
+        let p = prefixes[i]
+        let o = old_prefix_query(urls, p)
+        let n = new_prefix_query(sorted, p)
+        if o != n {
+            mismatches = mismatches + 1
+            println("    DIFF prefix=" + p + " old=" + to_string(o) + " new=" + to_string(n))
+        }
+        i = i + 1
+    }
+    return mismatches
+}
+
+fn main() -> void {
+    println("airgenome bench/F18 — bookmarks SHBF (plistlib linear vs blob bisect)")
+    println("  URLS_N=" + to_string(URLS_N) + " QUERIES=" + to_string(QUERIES))
+    println("  source: synthetic (Bookmarks.plist FDA fallback)")
+
+    let urls = build_dataset()
+    println("  built: " + to_string(len(urls)) + " bookmarks")
+
+    let t0_sort = now_ns()
+    let sorted = sort_urls(urls)
+    let t1_sort = now_ns()
+    let ns_sort = ns_diff(t0_sort, t1_sort)
+    println("  encode (sort once): " + to_string(ns_sort / 1000000) + "ms (amortized over QUERIES)")
+
+    let prefixes = ["https://github.com/folder", "https://google.com/folder1", "https://youtube.com/folder2", "https://news.", "https://wiki", "https://apple", "https://macrum"]
+    let mm = diff_test(urls, sorted, prefixes)
+    let total_pairs = len(prefixes)
+    println("  diff_test mismatches: " + to_string(mm) + " / " + to_string(total_pairs))
+    if mm != 0 {
+        println("BENCH FAIL [diff_test ≠ 0]")
+        return
+    }
+
+    let t0_old = now_ns()
+    let mut k = 0
+    while k < QUERIES {
+        let pi = k % len(prefixes)
+        let _ = old_prefix_query(urls, prefixes[pi])
+        k = k + 1
+    }
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    println("  OLD (plistlib + linear) total_ns=" + to_string(ns_old) + "  per_query_ns=" + to_string(ns_old / QUERIES))
+
+    let t0_new = now_ns()
+    let mut k2 = 0
+    while k2 < QUERIES {
+        let pi = k2 % len(prefixes)
+        let _ = new_prefix_query(sorted, prefixes[pi])
+        k2 = k2 + 1
+    }
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (blob mmap+bisect)  total_ns=" + to_string(ns_new) + "  per_query_ns=" + to_string(ns_new / QUERIES))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+        println("  + encode cost amortized: " + to_string(ns_sort / QUERIES) + "ns/query (1회 sort / " + to_string(QUERIES) + " queries)")
+    }
+    println("  5-tuple: site=F18 ROI#=18 baseline_ns=" + to_string(ns_old / QUERIES) + " post_ns=" + to_string(ns_new / QUERIES) + " diff_test=lossless")
+}

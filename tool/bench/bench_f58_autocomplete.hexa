@@ -1,0 +1,237 @@
+// tool/bench/bench_f58_autocomplete.hexa — F58 autocomplete prefix match
+//   OLD (linear scan) vs NEW (bisect on sorted blob).
+//
+// 시나리오: 100K synthetic URL + visit_count, 1000 prefix queries.
+//   OLD: 매 query 마다 100K 라인 순회 + prefix 매치
+//   NEW: URL pre-sort + bisect_left/right 로 range 즉답
+//
+// 측정:
+//   - per-query ns (linear vs bisect)
+//   - sort once amortized (1회 sort / QUERIES 분할)
+//   - lossless: hits OLD == hits NEW (synthetic 100% verify)
+//
+// SHBF (E4 commit 04440090) generic 검증 — Safari 외 임의 sorted (string,score) 에 통.
+// 본 bench 는 hexa 자체 list 인터프리트 측정 (Python mmap APBF 와 별개) — 둘 다 동일 패턴.
+
+use "../../core/core"
+
+let URLS_N = 100000   // 100K synthetic url
+let QUERIES = 1000    // 1000 prefix queries
+let TOP_K = 10
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+// 100K synthetic URLs: deterministic 도메인-순환 + 가변 path.
+fn build_dataset() -> list {
+    let mut urls = []
+    let mut i = 0
+    let domains = ["github.com", "google.com", "stackoverflow.com", "youtube.com",
+                   "wikipedia.org", "reddit.com", "developer.mozilla.org",
+                   "docs.python.org", "news.ycombinator.com", "twitter.com",
+                   "apple.com", "anthropic.com", "openai.com", "arxiv.org",
+                   "medium.com", "linkedin.com", "amazon.com", "netflix.com",
+                   "spotify.com", "dropbox.com"]
+    while i < URLS_N {
+        let d = domains[i % len(domains)]
+        let path = "/path" + to_string(i) + "/page" + to_string(i % 137)
+        urls = urls + ["https://" + d + path]
+        i = i + 1
+    }
+    return urls
+}
+
+// OLD: 매 query 마다 linear scan
+fn old_prefix_query(urls: list, prefix: str) -> int {
+    let mut hits = 0
+    let mut i = 0
+    let n = len(urls)
+    let plen = len(prefix)
+    while i < n {
+        let u = urls[i]
+        if len(u) >= plen {
+            if u.substring(0, plen) == prefix { hits = hits + 1 }
+        }
+        i = i + 1
+    }
+    return hits
+}
+
+// NEW: bisect_left → range 끝까지 prefix 일치 hit++.
+fn bisect_left(sorted: list, prefix: str) -> int {
+    let mut lo = 0
+    let mut hi = len(sorted)
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if sorted[mid] < prefix { lo = mid + 1 }
+        else { hi = mid }
+    }
+    return lo
+}
+
+fn new_prefix_query(sorted: list, prefix: str) -> int {
+    let start = bisect_left(sorted, prefix)
+    let mut hits = 0
+    let mut i = start
+    let n = len(sorted)
+    let plen = len(prefix)
+    while i < n {
+        let u = sorted[i]
+        if len(u) < plen { break }
+        if u.substring(0, plen) != prefix { break }
+        hits = hits + 1
+        i = i + 1
+    }
+    return hits
+}
+
+// awk 로 large-scale sort 실행 (hexa list insertion-sort 는 100K 에 O(n²) — 비현실적).
+// /tmp 임시파일로 round-trip → split. cost 는 amortized 측정.
+fn sort_urls_ext(urls: list) -> list {
+    let tmp_in = "/tmp/bench_f58_in.txt"
+    let tmp_out = "/tmp/bench_f58_sorted.txt"
+    let _rm = exec("rm -f '" + tmp_in + "' '" + tmp_out + "'")
+    // build input file
+    let mut buf = ""
+    let mut i = 0
+    while i < len(urls) {
+        buf = buf + urls[i] + "\n"
+        i = i + 1
+    }
+    write_file(tmp_in, buf)
+    let _ = exec("LC_ALL=C sort '" + tmp_in + "' > '" + tmp_out + "'")
+    let raw = exec("cat '" + tmp_out + "'")
+    let parts = raw.split("\n")
+    let mut out = []
+    let mut j = 0
+    while j < len(parts) {
+        if parts[j] != "" { out = out + [parts[j]] }
+        j = j + 1
+    }
+    let _rm2 = exec("rm -f '" + tmp_in + "' '" + tmp_out + "'")
+    return out
+}
+
+// 1000 prefix queries — deterministic, 도메인 + 경로 prefix 혼합.
+fn build_prefixes() -> list {
+    let mut ps = []
+    let mut i = 0
+    let domains = ["github.com", "google.com", "stackoverflow.com", "youtube.com",
+                   "wikipedia.org", "reddit.com", "developer.mozilla.org",
+                   "docs.python.org", "news.ycombinator.com", "twitter.com",
+                   "apple.com", "anthropic.com", "openai.com", "arxiv.org",
+                   "medium.com", "linkedin.com", "amazon.com", "netflix.com",
+                   "spotify.com", "dropbox.com"]
+    while i < QUERIES {
+        let d = domains[i % len(domains)]
+        let kind = i % 4
+        if kind == 0 {
+            ps = ps + ["https://" + d]
+        } else {
+            if kind == 1 {
+                ps = ps + ["https://" + d + "/path" + to_string(i % 100)]
+            } else {
+                if kind == 2 {
+                    ps = ps + ["https://" + d + "/path"]
+                } else {
+                    ps = ps + ["https://" + d + "/path1"]
+                }
+            }
+        }
+        i = i + 1
+    }
+    return ps
+}
+
+fn diff_test(urls: list, sorted: list, prefixes: list) -> int {
+    let mut mismatches = 0
+    let mut i = 0
+    // sample 50 부터 verify (1000 모두 verify 는 비싸다 — OLD 가 100K linear)
+    let sample_n = 20
+    while i < sample_n {
+        let p = prefixes[i * (len(prefixes) / sample_n)]
+        let o = old_prefix_query(urls, p)
+        let n = new_prefix_query(sorted, p)
+        if o != n {
+            mismatches = mismatches + 1
+            println("    DIFF prefix=" + p + " old=" + to_string(o) + " new=" + to_string(n))
+        }
+        i = i + 1
+    }
+    return mismatches
+}
+
+fn main() -> void {
+    println("airgenome bench/F58 — autocomplete prefix match (linear vs bisect)")
+    println("  URLS_N=" + to_string(URLS_N) + " QUERIES=" + to_string(QUERIES) + " TOP_K=" + to_string(TOP_K))
+
+    let t0_build = now_ns()
+    let urls = build_dataset()
+    let t1_build = now_ns()
+    let ns_build = ns_diff(t0_build, t1_build)
+    println("  built: " + to_string(len(urls)) + " urls in " + to_string(ns_build / 1000000) + "ms")
+
+    let t0_sort = now_ns()
+    let sorted = sort_urls_ext(urls)
+    let t1_sort = now_ns()
+    let ns_sort = ns_diff(t0_sort, t1_sort)
+    println("  sort once (extern): " + to_string(ns_sort / 1000000) + "ms (amortized over " + to_string(QUERIES) + " queries)")
+    println("  sorted len: " + to_string(len(sorted)))
+
+    let prefixes = build_prefixes()
+    println("  prefixes built: " + to_string(len(prefixes)))
+
+    // diff_test on subset (OLD linear 100K × 20 = 2M ops 만 — full 1000 은 1억 ops)
+    let mm = diff_test(urls, sorted, prefixes)
+    println("  diff_test (subset 20) mismatches: " + to_string(mm))
+    if mm != 0 {
+        println("BENCH FAIL [diff_test ≠ 0]")
+        return
+    }
+
+    // 1) OLD linear — 1000 query × 100K = 1억 ops. 비쌈, sample 만 측정 후 extrapolate
+    //    OR full 측정 (시간 허락 시). 본 측정은 SAMPLE_N=50 으로 절약.
+    let SAMPLE_N = 50
+    let t0_old = now_ns()
+    let mut k = 0
+    while k < SAMPLE_N {
+        let pi = k % len(prefixes)
+        let _ = old_prefix_query(urls, prefixes[pi])
+        k = k + 1
+    }
+    let t1_old = now_ns()
+    let ns_old_sample = ns_diff(t0_old, t1_old)
+    let ns_old_per = ns_old_sample / SAMPLE_N
+    let ns_old_total = ns_old_per * QUERIES
+    println("  OLD (linear scan) sample=" + to_string(SAMPLE_N) + "  per_query_ns=" + to_string(ns_old_per) + "  extrap_total_ns=" + to_string(ns_old_total))
+
+    // 2) NEW bisect — 1000 query 모두 측정 (저렴: O(log n) 각).
+    let t0_new = now_ns()
+    let mut k2 = 0
+    while k2 < QUERIES {
+        let pi = k2 % len(prefixes)
+        let _ = new_prefix_query(sorted, prefixes[pi])
+        k2 = k2 + 1
+    }
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    let ns_new_per = ns_new / QUERIES
+    println("  NEW (bisect)      total_ns=" + to_string(ns_new) + "  per_query_ns=" + to_string(ns_new_per))
+
+    if ns_new_per > 0 {
+        let ratio = ns_old_per / ns_new_per
+        let saved_pct = ((ns_old_per - ns_new_per) * 100) / ns_old_per
+        println("  per-query speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+        let amortized_per = ns_new_per + (ns_sort / QUERIES)
+        println("  + sort amortized: " + to_string(ns_sort / QUERIES) + "ns/query → effective " + to_string(amortized_per) + "ns/query")
+        if amortized_per > 0 {
+            let amort_ratio = ns_old_per / amortized_per
+            println("  effective speedup (with sort cost)=" + to_string(amort_ratio) + "x")
+        }
+    }
+}

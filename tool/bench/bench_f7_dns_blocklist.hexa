@@ -1,0 +1,469 @@
+// tool/bench/bench_f7_dns_blocklist.hexa — F7 DNS blocklist 4-way comparison
+//
+// 5-tuple:
+//   OLD-1 linear scan      O(N * Q) baseline (substring match per pattern)
+//   OLD-2 hashset exact    O(1) but exact-match only (no subdomain)
+//   NEW-1 AC trie          O(query_len) multi-pattern simultaneous (#32)
+//   NEW-2 Rabin-Karp       O(query_len) rolling hash, big-pattern oriented (#70)
+//
+// dataset:
+//   blocklist = synthetic 10K domains (block00000.example.com ... block09999.example.com)
+//   queries   = 1000 = 500 blocked + 300 allowed + 200 subdomain-of-blocked
+//
+// lossless verify:
+//   exact-match domain 만으로 baseline → 4-way 모두 동일 hit 수 must.
+//   subdomain match 의미: AC trie 는 reversed insert + suffix terminal → "sub.x.block00007..."
+//   query 의 trailing "block00007.example.com" 에서 terminal 발화 → BLOCK.
+//   hashset exact 는 본 능력 없음 → 별도 verify axis.
+//
+// 측정:
+//   per-query ns (gdate +%s%N)
+//   memory footprint = approximate (node count × 32B + pattern bytes)
+//
+// 본 bench = 수치 estimate.  실 prod resolver throughput 은 별도 axis.
+
+let TMPDIR_RAW = exec("echo ${TMPDIR:-/tmp}").trim()
+let RING_BLOCK = TMPDIR_RAW + "/airgenome_bench_f7_blocklist.txt"
+let RING_QUERY = TMPDIR_RAW + "/airgenome_bench_f7_queries.txt"
+
+let N_BLOCK = 10000
+let N_QUERY = 1000
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DATASET BUILD
+// ═══════════════════════════════════════════════════════════════════════
+
+fn build_blocklist(path: str, n: int) -> void {
+    let _rm = exec("rm -f '" + path + "'")
+    let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(n) + ";i++) printf \"block%05d.example.com\\n\", i }' > '" + path + "'"
+    let _ = exec(cmd)
+}
+
+fn build_queries(path: str, n_total: int, nblock: int) -> void {
+    let _rm = exec("rm -f '" + path + "'")
+    let nb = n_total / 2
+    let na = (n_total * 3) / 10
+    let ns = n_total - nb - na
+    let cmd = "awk 'BEGIN { nb=" + to_string(nb) + "; na=" + to_string(na) + "; ns=" + to_string(ns) + "; nblock=" + to_string(nblock) + "; for (i=0;i<nb;i++) printf \"block%05d.example.com\\n\", (i*7)%nblock; for (i=0;i<na;i++) printf \"allowed%05d.example.org\\n\", i; for (i=0;i<ns;i++) printf \"sub%d.block%05d.example.com\\n\", i, (i*13)%nblock }' > '" + path + "'"
+    let _ = exec(cmd)
+}
+
+fn read_lines(path: str) -> list {
+    let raw = read_file(path)
+    let xs = raw.split("\n")
+    let mut out = []
+    let mut i = 0
+    while i < len(xs) {
+        let s = xs[i].trim()
+        if len(s) > 0 { out = out + [s] }
+        i = i + 1
+    }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  OLD-1  LINEAR SCAN  (baseline: per-query iterate all patterns)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 매 query 마다 blocklist 전체 순회.  exact match 또는 suffix match (".pat" 으로 끝남)
+// 둘 다 BLOCK 으로 판정 → AC trie 와 동일 결정 규칙.
+
+fn old_linear_scan(query: str, patterns: list) -> int {
+    let mut i = 0
+    let n = len(patterns)
+    while i < n {
+        let p = patterns[i]
+        if query == p { return 1 }
+        if query.ends_with("." + p) { return 1 }
+        i = i + 1
+    }
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  OLD-2  HASHSET EXACT  (exact match only — subdomain miss)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// hexa-lang dict 미지원 → "string contains" via raw blob 으로 O(1)+ 효과 simul.
+// 정확한 hash 구현 불가 → "\n" + p + "\n" 을 blob 에 contains 검사 = 사실상 substring
+// 이지만 OLD-2 의 핵심 한계 (no subdomain) 는 보존됨: subdomain query 는 통과.
+
+let mut HASH_BLOB = ""
+
+fn build_hashblob(patterns: list) -> void {
+    HASH_BLOB = "\n"
+    let mut i = 0
+    while i < len(patterns) {
+        HASH_BLOB = HASH_BLOB + patterns[i] + "\n"
+        i = i + 1
+    }
+}
+
+fn old_hashset_exact(query: str) -> int {
+    if HASH_BLOB.contains("\n" + query + "\n") { return 1 }
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  NEW-1  AC TRIE  (catalog #32 Aho-Corasick byte trie)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 간소화 구현: reversed-byte insert → query 도 reversed traversal.
+// suffix match 가 prefix match 와 등가.  failure link 미적용 (단일 pattern fanout
+// 이 도메인 trie 에서 reversed 라 fail 효과 적음 — sibling patterns 가 ".com" 공유).
+
+let mut t_children_k = [[]]
+let mut t_children_v = [[]]
+let mut t_terminal = [0]
+let mut t_node_count = 1
+let mut t_total_bytes = 0
+
+fn t_reset() -> void {
+    t_children_k = [[]]
+    t_children_v = [[]]
+    t_terminal = [0]
+    t_node_count = 1
+    t_total_bytes = 0
+}
+
+fn t_byte(c: str) -> int {
+    if c == "a" { return 97 }  if c == "b" { return 98 }  if c == "c" { return 99 }
+    if c == "d" { return 100 } if c == "e" { return 101 } if c == "f" { return 102 }
+    if c == "g" { return 103 } if c == "h" { return 104 } if c == "i" { return 105 }
+    if c == "j" { return 106 } if c == "k" { return 107 } if c == "l" { return 108 }
+    if c == "m" { return 109 } if c == "n" { return 110 } if c == "o" { return 111 }
+    if c == "p" { return 112 } if c == "q" { return 113 } if c == "r" { return 114 }
+    if c == "s" { return 115 } if c == "t" { return 116 } if c == "u" { return 117 }
+    if c == "v" { return 118 } if c == "w" { return 119 } if c == "x" { return 120 }
+    if c == "y" { return 121 } if c == "z" { return 122 }
+    if c == "0" { return 48 }  if c == "1" { return 49 }  if c == "2" { return 50 }
+    if c == "3" { return 51 }  if c == "4" { return 52 }  if c == "5" { return 53 }
+    if c == "6" { return 54 }  if c == "7" { return 55 }  if c == "8" { return 56 }
+    if c == "9" { return 57 }
+    if c == "." { return 46 }  if c == "-" { return 45 }
+    return 0
+}
+
+fn t_child(node: int, b: int) -> int {
+    let ks = t_children_k[node]
+    let vs = t_children_v[node]
+    let mut i = 0
+    let n = len(ks)
+    while i < n {
+        if ks[i] == b { return vs[i] }
+        i = i + 1
+    }
+    return -1
+}
+
+fn t_insert(pattern: str) -> void {
+    let n = len(pattern)
+    if n == 0 { return }
+    let mut node = 0
+    let mut i = n - 1
+    while i >= 0 {
+        let ch = pattern.substring(i, i + 1)
+        let b = t_byte(ch)
+        let nxt = t_child(node, b)
+        if nxt < 0 {
+            t_children_k = t_children_k + [[]]
+            t_children_v = t_children_v + [[]]
+            t_terminal = t_terminal + [0]
+            let new_id = t_node_count
+            t_node_count = t_node_count + 1
+            t_children_k[node] = t_children_k[node] + [b]
+            t_children_v[node] = t_children_v[node] + [new_id]
+            node = new_id
+        } else {
+            node = nxt
+        }
+        i = i - 1
+    }
+    t_terminal[node] = 1
+    t_total_bytes = t_total_bytes + n
+}
+
+// query: reversed traversal.  terminal 만나는 즉시 BLOCK.  단, 도메인 경계 보존:
+// terminal 발화 시점의 다음 byte 가 '.' 또는 query 끝이어야 진짜 suffix match.
+fn t_query(domain: str) -> int {
+    let n = len(domain)
+    if n == 0 { return 0 }
+    let mut node = 0
+    let mut i = n - 1
+    while i >= 0 {
+        let ch = domain.substring(i, i + 1)
+        let b = t_byte(ch)
+        let nxt = t_child(node, b)
+        if nxt < 0 { return 0 }
+        node = nxt
+        if t_terminal[node] == 1 {
+            // 도메인 경계 검증
+            if i == 0 { return 1 }
+            let prev = domain.substring(i - 1, i)
+            if prev == "." { return 1 }
+        }
+        i = i - 1
+    }
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  NEW-2  RABIN-KARP rolling hash  (catalog #70)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// 다중 pattern length 처리: pattern length set 별로 rolling hash 비교.
+// blocklist 도메인 길이가 다양 → length bucket 별로 hash 테이블 (parallel arrays).
+// 본 구현은 single-bucket simul: 가장 흔한 length 만 처리하고, miss 시 hashset fallback.
+// (실 prod 는 multi-length RK + fingerprint table — 본 task = surface estimate 만)
+
+let mut RK_LEN = 0
+let mut RK_HASHES = []      // pattern hash list (RK_LEN 길이 패턴들만)
+let mut RK_PATTERNS = []    // 같은 index 에서 원본 pattern (collision verify 용)
+
+let RK_BASE = 131
+let RK_MOD = 1000003
+
+fn rk_hash(s: str) -> int {
+    let n = len(s)
+    let mut h = 0
+    let mut i = 0
+    while i < n {
+        let c = s.substring(i, i + 1)
+        h = (h * RK_BASE + t_byte(c)) % RK_MOD
+        i = i + 1
+    }
+    return h
+}
+
+// blocklist 에서 가장 흔한 길이를 RK_LEN 으로.  같은 길이만 RK_HASHES 에 등록.
+fn rk_build(patterns: list) -> void {
+    // length histogram (parallel arrays)
+    let mut lens = []
+    let mut counts = []
+    let mut i = 0
+    while i < len(patterns) {
+        let pl = len(patterns[i])
+        let mut found = -1
+        let mut j = 0
+        while j < len(lens) {
+            if lens[j] == pl { found = j }
+            j = j + 1
+        }
+        if found < 0 {
+            lens = lens + [pl]
+            counts = counts + [1]
+        } else {
+            counts[found] = counts[found] + 1
+        }
+        i = i + 1
+    }
+    // dominant length pick
+    let mut best = 0
+    let mut best_len = 0
+    let mut k = 0
+    while k < len(lens) {
+        if counts[k] > best { best = counts[k]; best_len = lens[k] }
+        k = k + 1
+    }
+    RK_LEN = best_len
+    RK_HASHES = []
+    RK_PATTERNS = []
+    let mut m = 0
+    while m < len(patterns) {
+        if len(patterns[m]) == RK_LEN {
+            RK_HASHES = RK_HASHES + [rk_hash(patterns[m])]
+            RK_PATTERNS = RK_PATTERNS + [patterns[m]]
+        }
+        m = m + 1
+    }
+}
+
+// query: rolling window of RK_LEN 길이.  hash 매치 시 collision 확인.
+// 본 구현은 단순화 — query 전체에 대해 hash 한 번 + suffix window 만 확인.
+// (도메인 blocklist 의 핵심 매치는 suffix 임)
+fn rk_query(domain: str) -> int {
+    let n = len(domain)
+    if n < RK_LEN { return 0 }
+    // exact: query 전체 match
+    if n == RK_LEN {
+        let h = rk_hash(domain)
+        let mut i = 0
+        while i < len(RK_HASHES) {
+            if RK_HASHES[i] == h {
+                if RK_PATTERNS[i] == domain { return 1 }
+            }
+            i = i + 1
+        }
+        return 0
+    }
+    // suffix: ".pattern" 으로 끝나는지
+    let suffix = domain.substring(n - RK_LEN, n)
+    let h = rk_hash(suffix)
+    // 도메인 경계 (앞 char 가 '.')
+    let prev = domain.substring(n - RK_LEN - 1, n - RK_LEN)
+    if prev != "." { return 0 }
+    let mut i = 0
+    while i < len(RK_HASHES) {
+        if RK_HASHES[i] == h {
+            if RK_PATTERNS[i] == suffix { return 1 }
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  RUNNERS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn run_linear(queries: list, patterns: list) -> int {
+    let mut hits = 0
+    let mut i = 0
+    while i < len(queries) {
+        if old_linear_scan(queries[i], patterns) == 1 { hits = hits + 1 }
+        i = i + 1
+    }
+    return hits
+}
+
+fn run_hashset(queries: list) -> int {
+    let mut hits = 0
+    let mut i = 0
+    while i < len(queries) {
+        if old_hashset_exact(queries[i]) == 1 { hits = hits + 1 }
+        i = i + 1
+    }
+    return hits
+}
+
+fn run_actrie(queries: list) -> int {
+    let mut hits = 0
+    let mut i = 0
+    while i < len(queries) {
+        if t_query(queries[i]) == 1 { hits = hits + 1 }
+        i = i + 1
+    }
+    return hits
+}
+
+fn run_rk(queries: list) -> int {
+    let mut hits = 0
+    let mut i = 0
+    while i < len(queries) {
+        if rk_query(queries[i]) == 1 { hits = hits + 1 }
+        i = i + 1
+    }
+    return hits
+}
+
+fn now_ns() -> str { return exec("gdate +%s%N").trim() }
+fn ns_diff(t0: str, t1: str) -> int { return to_int(t1) - to_int(t0) }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ENTRY (top-level main() 금지 → run() 1회 호출)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn run() -> void {
+    println("airgenome bench/f7 — DNS blocklist 4-way (linear vs hashset vs AC trie vs Rabin-Karp)")
+    println("  N_BLOCK=" + to_string(N_BLOCK) + "  N_QUERY=" + to_string(N_QUERY))
+
+    build_blocklist(RING_BLOCK, N_BLOCK)
+    build_queries(RING_QUERY, N_QUERY, N_BLOCK)
+    println("  blocklist: " + RING_BLOCK)
+    println("  queries:   " + RING_QUERY)
+
+    let patterns = read_lines(RING_BLOCK)
+    let queries = read_lines(RING_QUERY)
+    println("  patterns_loaded=" + to_string(len(patterns)) + "  queries_loaded=" + to_string(len(queries)))
+
+    // build
+    let tb0 = now_ns()
+    build_hashblob(patterns)
+    let tb1 = now_ns()
+    println("  hashblob_build_ns=" + to_string(ns_diff(tb0, tb1)))
+
+    let tt0 = now_ns()
+    t_reset()
+    let mut i = 0
+    while i < len(patterns) {
+        t_insert(patterns[i])
+        i = i + 1
+    }
+    let tt1 = now_ns()
+    println("  ac_trie_build_ns=" + to_string(ns_diff(tt0, tt1)) + "  nodes=" + to_string(t_node_count))
+
+    let tr0 = now_ns()
+    rk_build(patterns)
+    let tr1 = now_ns()
+    println("  rk_build_ns=" + to_string(ns_diff(tr0, tr1)) + "  rk_len=" + to_string(RK_LEN) + "  rk_pats=" + to_string(len(RK_HASHES)))
+
+    // verify (lossless on exact-match query subset only — hashset 은 subdomain 못 잡음)
+    println("  --- lossless verify (linear=ground truth) ---")
+    let h_lin = run_linear(queries, patterns)
+    let h_hash = run_hashset(queries)
+    let h_ac = run_actrie(queries)
+    let h_rk = run_rk(queries)
+    println("  linear_hits=" + to_string(h_lin))
+    println("  hashset_hits=" + to_string(h_hash) + "  (exact-only, expected < linear due to subdomain miss)")
+    println("  ac_trie_hits=" + to_string(h_ac) + "  (must == linear)")
+    println("  rk_hits=" + to_string(h_rk) + "       (single-length bucket, may < linear)")
+
+    let mut verify_pass = 1
+    if h_ac != h_lin {
+        println("  VERIFY FAIL: AC trie diverges from linear baseline")
+        verify_pass = 0
+    } else {
+        println("  VERIFY OK:   AC trie == linear")
+    }
+
+    // measure (warmup 1 pass + measured 1 pass — synthetic, no JIT 효과 없음)
+    println("  --- per-query timing ---")
+
+    let t0a = now_ns()
+    let _ha = run_linear(queries, patterns)
+    let t1a = now_ns()
+    let ns_lin = ns_diff(t0a, t1a)
+    println("  OLD-1 linear   total_ns=" + to_string(ns_lin) + "  per_query_ns=" + to_string(ns_lin / len(queries)))
+
+    let t0b = now_ns()
+    let _hb = run_hashset(queries)
+    let t1b = now_ns()
+    let ns_hash = ns_diff(t0b, t1b)
+    println("  OLD-2 hashset  total_ns=" + to_string(ns_hash) + "  per_query_ns=" + to_string(ns_hash / len(queries)))
+
+    let t0c = now_ns()
+    let _hc = run_actrie(queries)
+    let t1c = now_ns()
+    let ns_ac = ns_diff(t0c, t1c)
+    println("  NEW-1 AC trie  total_ns=" + to_string(ns_ac) + "  per_query_ns=" + to_string(ns_ac / len(queries)))
+
+    let t0d = now_ns()
+    let _hd = run_rk(queries)
+    let t1d = now_ns()
+    let ns_rk = ns_diff(t0d, t1d)
+    println("  NEW-2 RK       total_ns=" + to_string(ns_rk) + "  per_query_ns=" + to_string(ns_rk / len(queries)))
+
+    // memory footprint estimate
+    println("  --- memory footprint estimate ---")
+    let lin_kb = 0  // patterns list 만 (read_file 직접 — bench 외 0)
+    let hash_kb = len(HASH_BLOB) / 1024
+    let ac_kb = (t_node_count * 32 + t_total_bytes) / 1024
+    let rk_kb = (len(RK_HASHES) * 8 + len(RK_PATTERNS) * RK_LEN) / 1024
+    println("  linear_kb=" + to_string(lin_kb) + "  hashset_kb=" + to_string(hash_kb) + "  ac_trie_kb=" + to_string(ac_kb) + "  rk_kb=" + to_string(rk_kb))
+
+    // speedups (vs linear)
+    println("  --- speedup vs OLD-1 linear ---")
+    if ns_lin > 0 {
+        if ns_hash > 0 { println("  hashset:  " + to_string(ns_lin / ns_hash) + "x") }
+        if ns_ac > 0 { println("  AC trie:  " + to_string(ns_lin / ns_ac) + "x") }
+        if ns_rk > 0 { println("  RK:       " + to_string(ns_lin / ns_rk) + "x") }
+    }
+
+    if verify_pass == 0 {
+        println("BENCH FAIL [AC trie verify diverged]")
+        return
+    }
+    println("BENCH OK")
+}
+
+run()
