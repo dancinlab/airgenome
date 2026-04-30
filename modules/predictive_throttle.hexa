@@ -152,9 +152,21 @@ fn predict_series(series: list, h: int) -> int {
     return forecast_h(s, h)
 }
 
+// own 8 site-15: per-call exec("[ -f X ] && grep -Fxq Y X") (1 fork × N agents)
+// → read_file 한 번 + in-hexa membership scan (0 fork). 측정 (bench_site15.hexa,
+// 100 cycles × 10 agents = 1000 calls): 4726μs→14.6μs/call (323×, 99%↓), lossless.
+// gentle_bootout_mac 가 라이브 system 의 com.airgenome.* agent 갯수만큼 호출 →
+// per-cycle 5+ fork 제거.
 fn whitelisted(agent: str) -> bool {
-    let chk = exec("[ -f '" + WHITELIST + "' ] && grep -Fxq '" + agent + "' '" + WHITELIST + "' && echo y || echo n").trim()
-    return chk == "y"
+    let raw = read_file(WHITELIST)
+    if raw == "" { return false }
+    let lines = raw.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        if lines[i] == agent { return true }
+        i = i + 1
+    }
+    return false
 }
 
 // 비핵심 com.airgenome.* LaunchAgent bootout

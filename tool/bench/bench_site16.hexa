@@ -1,0 +1,167 @@
+// tool/bench/bench_site16.hexa — own 8 site-16 baseline
+// (predictive_throttle gentle_bootout_mac launchctl list awk filter)
+//
+// modules/predictive_throttle.hexa#gentle_bootout_mac (L162-178):
+//   site-16 OLD: exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./{print $3}'")
+//                = launchctl fork (필수 system query) + awk fork (제거 가능)
+//   NEW:        exec("launchctl list 2>/dev/null") + in-hexa column-3 startswith scan
+//                = launchctl fork (잔존) + 0 awk fork
+//
+// launchctl 자체 fork 는 system query 라 제거 불가 — awk 필터만 in-hexa 화.
+// 실제 launchctl 출력 (M14 기준) 약 546 라인, awk 필터 결과 ~3-5 com.airgenome.* 라인.
+// per-call cost 분석:
+//   OLD = launchctl fork + pipe + awk fork + 출력 parse
+//   NEW = launchctl fork + read 출력 + in-hexa scan (split tab + startswith "com.airgenome.")
+// awk fork 1회 제거 (~ms 단위) — launchctl 자체가 dominant 일 수 있어 negative 가능성.
+// 측정 후 결정.
+
+use "../../core/core"
+
+let CYCLES = 50  // 50 cycles — gentle_bootout_mac 는 발화 시점에만 호출 (rare path)
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+// OLD: exec("launchctl list | awk ...") — modules/predictive_throttle.hexa#gentle_bootout_mac L163 정확 복제
+fn old_list_airgenome() -> list {
+    let raw = exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./{print $3}'")
+    let lines = raw.split("\n")
+    let mut result = []
+    let mut i = 0
+    while i < len(lines) {
+        let agent = lines[i].trim()
+        if agent != "" { result = result + [agent] }
+        i = i + 1
+    }
+    return result
+}
+
+// NEW: launchctl list → in-hexa column-3 startswith scan
+fn new_list_airgenome() -> list {
+    let raw = exec("launchctl list 2>/dev/null")
+    let lines = raw.split("\n")
+    let prefix = "com.airgenome."
+    let plen = len(prefix)
+    let mut result = []
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i]
+        // tab-separated: PID \t Status \t Label
+        let cols = line.split("\t")
+        if len(cols) >= 3 {
+            let label = cols[2].trim()
+            if len(label) >= plen {
+                if label.substring(0, plen) == prefix {
+                    result = result + [label]
+                }
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn run_old() -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < CYCLES {
+        let xs = old_list_airgenome()
+        total = total + len(xs)
+        k = k + 1
+    }
+    return total
+}
+
+fn run_new() -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < CYCLES {
+        let xs = new_list_airgenome()
+        total = total + len(xs)
+        k = k + 1
+    }
+    return total
+}
+
+fn list_eq(a: list, b: list) -> bool {
+    if len(a) != len(b) { return false }
+    let mut i = 0
+    while i < len(a) {
+        if a[i] != b[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+fn diff_test() -> int {
+    // launchctl 자체는 동일 system 상태라 같은 cycle 동안 동일 출력 가정.
+    // 100 호출 × OLD/NEW 비교 — 둘 다 같은 라이브 system 을 query.
+    let mut mismatches = 0
+    let mut i = 0
+    while i < 100 {
+        let o = old_list_airgenome()
+        let n = new_list_airgenome()
+        if !list_eq(o, n) {
+            mismatches = mismatches + 1
+            if mismatches <= 3 {
+                println("    DIFF i=" + to_string(i) + " old.len=" + to_string(len(o)) + " new.len=" + to_string(len(n)))
+                let mut j = 0
+                while j < len(o) {
+                    println("      old[" + to_string(j) + "]=" + o[j])
+                    j = j + 1
+                }
+                let mut k = 0
+                while k < len(n) {
+                    println("      new[" + to_string(k) + "]=" + n[k])
+                    k = k + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+    return mismatches
+}
+
+fn main() -> void {
+    println("airgenome bench/site-16 — predictive_throttle gentle_bootout_mac (launchctl|awk vs launchctl + in-hexa)")
+    println("  CYCLES=" + to_string(CYCLES))
+
+    // 첫 호출로 캐시 워밍 + 실제 갯수 표시
+    let probe = old_list_airgenome()
+    println("  probe airgenome agents found: " + to_string(len(probe)))
+    let mut p = 0
+    while p < len(probe) {
+        println("    [" + to_string(p) + "] " + probe[p])
+        p = p + 1
+    }
+
+    let mm = diff_test()
+    println("  diff_test mismatches: " + to_string(mm) + " / 100")
+    if mm != 0 {
+        println("BENCH FAIL [diff_test ≠ 0]")
+        return
+    }
+
+    let t0_old = now_ns()
+    let _o = run_old()
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    println("  OLD (launchctl|awk) total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / CYCLES))
+
+    let t0_new = now_ns()
+    let _n = run_new()
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (launchctl+in-hexa scan) total_ns=" + to_string(ns_new) + "  per_call_ns=" + to_string(ns_new / CYCLES))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
