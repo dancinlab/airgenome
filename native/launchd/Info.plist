@@ -19,12 +19,14 @@
     <string>1.0.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
-    <!-- LSUIElement REMOVED 2026-04-30 04:55 per raw 168 min-viable + raw 173
-         determinism. Was true (background-only). Made NSPanel keyboard focus
-         non-deterministic on launcher overlay even with dynamic activation
-         policy switching (.regular on show, .accessory on hide). User report
-         "ctrl+s 후 검색입력이 안됨" 2026-04-30 04:53 — third real-user
-         keyboard interaction failing. Trade-off: Dock icon now visible. -->
+    <!-- LSUIElement 재 ENABLED 2026-05-01 — Dock 아이콘 제거 (menubar daemon).
+         이전 2026-04-30 제거 사유는 launcher Ctrl+S NSPanel 포커스 이슈.
+         재발 시 별도 해결 (e.g., NSApplicationActivationPolicyRegular 으로
+         show / Accessory 으로 hide 명시 transition).
+         Dock 아이콘은 .exe Finder dispatch 시에도 불필요 — application:openFile:
+         delegate 는 LSUIElement=true 에서도 정상 동작. -->
+    <key>LSUIElement</key>
+    <true/>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>

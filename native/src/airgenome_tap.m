@@ -1564,9 +1564,15 @@ static void install_status_item(void) {
     update_menu_states();   // sync checkmarks to current real state
 
     [menu addItem:[NSMenuItem separatorItem]];
-    [menu addItemWithTitle:@"Quit airgenome"
-                    action:@selector(terminate:)
-             keyEquivalent:@"q"];
+    // intentional quit only — Dock quit / Cmd+Q 은 applicationShouldTerminate
+    // 에서 차단됨. menubar 의 본 항목만 g_intentional_quit flag 설정 후 통과.
+    // delegate 는 파일 끝쪽 g_exe_handler_delegate 정의 — runtime lookup OK.
+    id quitTarget = (id)NSApp.delegate;
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit airgenome"
+                                                      action:@selector(intentionalQuit:)
+                                               keyEquivalent:@"q"];
+    quitItem.target = quitTarget;
+    [menu addItem:quitItem];
 
     item.menu = menu;
     g_status_item = item;   // strong reference to keep alive
@@ -1584,9 +1590,34 @@ static void install_status_item(void) {
 //
 // → posix_spawn 으로 `hexa run airgenome/modules/exe_dispatch.hexa <path>`
 //   실행 — tap 메인 thread 블록 안 함.
+//
+// Dock quit 차단:
+//   Dock 우클릭 Quit / Cmd+Q 으로 종료 시도 → applicationShouldTerminate:
+//   가 NSTerminateCancel 반환. 오직 menubar "Quit airgenome" 항목만
+//   intentional flag 켜고 통과 → tap 데몬 무한 유지 (launchd 가 KeepAlive 처리).
+//   SIGTERM/SIGINT (launchctl bootout 등) 은 install_signal_handlers 가
+//   별도 처리 — terminate: 거치지 않으므로 intentional flag 무관.
+static BOOL g_intentional_quit = NO;
+
 @interface AirgenomeExeHandlerDelegate : NSObject <NSApplicationDelegate>
+- (void)intentionalQuit:(id)sender;
 @end
 @implementation AirgenomeExeHandlerDelegate
+- (void)intentionalQuit:(id)sender {
+    g_intentional_quit = YES;
+    [NSApp terminate:sender];
+}
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    if (g_intentional_quit) return NSTerminateNow;
+    fprintf(stderr,
+            "airgenome_tap: terminate request blocked (Dock Quit / Cmd+Q). "
+            "Use menubar 'Quit airgenome' to actually quit.\n");
+    fflush(stderr);
+    return NSTerminateCancel;
+}
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
+    return NO;  // last window closing 으로 종료 X — 데몬 유지
+}
 - (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
     fprintf(stderr, "airgenome_tap: openFile event — %s\n", [filename UTF8String]);
     fflush(stderr);
