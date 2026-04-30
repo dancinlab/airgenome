@@ -38,12 +38,13 @@ fn main() {
         return
     }
     // nc -U <sock>: stdin → socket, socket → stdout.
-    // A10 interim: macOS BSD nc 는 -q 미지원 (invalid option) — Linux GNU nc 만 지원.
-    //   macOS bench/dry-run 에서는 -N (close on EOF) 으로 대체. Linux gate worker 는 -q 0 사용.
-    //   런타임 분기: uname=Darwin → -N, else → -q 0
+    // A10 interim: macOS BSD nc 는 -q/-N 모두 미지원 (invalid option).
+    //   macOS BSD nc 는 stdin EOF 시 기본 종료 — flag 불필요.
+    //   Linux GNU nc(ncat) 는 -q 0 으로 EOF 즉시 종료.
+    //   런타임 분기: uname=Darwin → no flag, else → -q 0
     // A10 interim: try/catch 제거 — exec failure 는 stdout/stderr 로 emit
     let kernel = exec("/usr/bin/uname -s").trim()
-    let nc_flag = if kernel == "Darwin" { "-N" } else { "-q 0" }
-    let cmd = "exec /usr/bin/nc " + nc_flag + " -U " + sock
+    let nc_flag = if kernel == "Darwin" { "" } else { "-q 0 " }
+    let cmd = "exec /usr/bin/nc " + nc_flag + "-U " + sock
     exec(cmd)
 }
