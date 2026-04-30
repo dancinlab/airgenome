@@ -32,5 +32,19 @@
 
     <key>ProcessType</key>
     <string>Interactive</string>
+
+    <!-- raw 240 § B C4: in-process harvest/forecast/label dispatcher.
+         AIRG_TAP_LOOP=1 (default 활성) → 60s/300s/3600s timer + posix_spawn 자식.
+         AIRG_TAP_LOOP=0              → tap 만 동작, dispatch 비활성, 자식 spawn 0.
+         단일 binary, 단일 plist (com.airgenome.tap), 단일 TCC client 정책 보존.
+         7 안전망 (interval 60s 컴파일 상수, flock NB, watchdog SIGTERM→SIGKILL,
+         KeepAlive=crash-only, StartInterval 미설정, ProcessType=Interactive,
+         자식 fd redirect+CLOEXEC) 활성. 비활성화는 본 키 0 으로 변경 후
+         `launchctl kickstart -k gui/$(id -u)/com.airgenome.tap`. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AIRG_TAP_LOOP</key>
+        <string>1</string>
+    </dict>
 </dict>
 </plist>

@@ -91,10 +91,12 @@ static int g_launcher_on = 1;   // ctrl+s app launcher overlay; hive raw 209
                                  // is "installed = working"; menubar can OFF)
 static int g_winctl_on   = 1;   // alt+1..5 window arrange; raw 209 sister axis
 static int g_hotkey_on   = 1;   // user-defined hotkey-action binder; raw 209 sister #3
-static int g_loop_on     = 0;   // raw 240 § B C4 — in-process harvest/forecast/label
-                                 // dispatcher. default OFF (보수적 — env AIRG_TAP_LOOP=1
-                                 // 명시 시만 활성화). 단일 binary, 단일 plist, 단일
-                                 // TCC client 정책 보존.
+static int g_loop_on     = 1;   // raw 240 § B C4 — in-process harvest/forecast/label
+                                 // dispatcher. default ON (사용자 mandate "airgenome
+                                 // 시작시 바로 반영"). plist 의 AIRG_TAP_LOOP env 가
+                                 // override (=0 으로 비활성화 가능). 7 안전망 적용
+                                 // (interval 60s 컴파일 상수, flock NB, watchdog
+                                 // SIGTERM→SIGKILL 등) — runaway 방지.
 static int g_debug       = 0;   // set via AIRG_TAP_DEBUG=1, logs every event
 
 // hive raw 209 reference impl - declared in airgenome_launcher.m, linked
