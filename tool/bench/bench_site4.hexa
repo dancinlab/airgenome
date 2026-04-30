@@ -1,0 +1,87 @@
+// tool/bench/bench_site4.hexa — own 5 site-4 (rotate_if_full clonefile snapshot 안전망)
+//
+// modules/harvest.hexa#rotate_if_full 은 MAX_LINES 초과 시 tail|>tmp|mv 로 head 절반 truncate.
+// 직접 적용: pre-truncate APFS clonefile (`cp -c`) 로 0-time backup → 안전망 + 회복 가능.
+// 측정: 2.5MB synthetic ring (5000-line × ~500B) — full cp vs clonefile (cp -c).
+// docs/gate_filter_bench_results.md 의 40MB Bun 측정값 (cp -c 2.62ms, cp 18.47ms = 7.06×) 의
+// hexa 환경 + 스케일된 코퍼스 재측정.
+
+use "../../core/core"
+
+let BENCH_RING = "/tmp/airgenome_bench_site4.ring"
+let BAK_CP = "/tmp/airgenome_bench_site4.cp.bak"
+let BAK_CLONE = "/tmp/airgenome_bench_site4.clone.bak"
+let LINES = 5000
+let K = 5
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn build_ring() -> void {
+    let _rm = exec("rm -f '" + BENCH_RING + "'")
+    let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(LINES) + ";i++) { pid=1000+(i%30); cpu=i%100; ram=i%50; printf \"{\\\"ts\\\":\\\"2026-04-30T00:00:00Z\\\",\\\"pid\\\":%d,\\\"comm\\\":\\\"proc%d\\\",\\\"rss_kb\\\":1024,\\\"vitals\\\":[%d,%d,0,0,0,0],\\\"ema\\\":[%d,%d,0,0,0,0]}\\n\", pid, pid, cpu, ram, cpu, ram } }' > '" + BENCH_RING + "'"
+    let _ = exec(cmd)
+}
+
+fn run_full_cp() -> int {
+    let _rm = exec("rm -f '" + BAK_CP + "'")
+    let mut k = 0
+    let t0 = now_ns()
+    while k < K {
+        let _ = exec("cp '" + BENCH_RING + "' '" + BAK_CP + "'")
+        k = k + 1
+    }
+    let t1 = now_ns()
+    return ns_diff(t0, t1)
+}
+
+fn run_clonefile() -> int {
+    let _rm = exec("rm -f '" + BAK_CLONE + "'")
+    let mut k = 0
+    let t0 = now_ns()
+    while k < K {
+        let _ = exec("cp -c '" + BENCH_RING + "' '" + BAK_CLONE + "'")
+        k = k + 1
+    }
+    let t1 = now_ns()
+    return ns_diff(t0, t1)
+}
+
+// Lossless: 두 backup 의 byte-identical 확인 + ring 자체는 수정 안 됨
+fn diff_test() -> int {
+    let cmp1 = exec("cmp -s '" + BENCH_RING + "' '" + BAK_CP + "' && echo OK || echo DIFF").trim()
+    let cmp2 = exec("cmp -s '" + BENCH_RING + "' '" + BAK_CLONE + "' && echo OK || echo DIFF").trim()
+    if cmp1 != "OK" { return 1 }
+    if cmp2 != "OK" { return 2 }
+    return 0
+}
+
+fn main() -> void {
+    println("airgenome bench/site-4 — rotate snapshot (cp vs clonefile cp -c)")
+    println("  ring=" + BENCH_RING + " LINES=" + to_string(LINES) + " K=" + to_string(K))
+    build_ring()
+    let sz = exec("wc -c < '" + BENCH_RING + "'").trim()
+    let cnt = exec("wc -l < '" + BENCH_RING + "'").trim()
+    println("  ring built: bytes=" + sz + " lines=" + cnt)
+
+    let ns_cp = run_full_cp()
+    println("  cp (full)       total_ns=" + to_string(ns_cp) + "  per_op_ns=" + to_string(ns_cp / K))
+
+    let ns_cl = run_clonefile()
+    println("  cp -c (clone)   total_ns=" + to_string(ns_cl) + "  per_op_ns=" + to_string(ns_cl / K))
+
+    let mm = diff_test()
+    println("  diff_test (both backups vs ring): " + to_string(mm))
+    if mm != 0 { panic("BENCH FAIL [backup not byte-identical to ring]") }
+
+    if ns_cl > 0 {
+        let ratio = ns_cp / ns_cl
+        let saved_pct = ((ns_cp - ns_cl) * 100) / ns_cp
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
