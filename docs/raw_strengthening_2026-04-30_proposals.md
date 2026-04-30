@@ -1,6 +1,6 @@
 # Raw Strengthening Proposals — 2026-04-30
 
-**Origin**: airgenome session 2026-04-30 (~3h). 5 patterns surfaced that the current hive raw catalog does not yet bind tightly. This document drafts 5 raw entries in hive `.raw` registry format so the user can copy them into a hive PR. **This file is a proposal — `/Users/ghost/core/hive/.raw` is read-only from this session.**
+**Origin**: airgenome session 2026-04-30 (~3h). 6 patterns surfaced that the current hive raw catalog does not yet bind tightly. This document drafts 6 raw entries in hive `.raw` registry format so the user can copy them into a hive PR. **This file is a proposal — `/Users/ghost/core/hive/.raw` is read-only from this session.**
 
 Each proposal:
 - conforms to raw 193 14-element rich format
@@ -32,6 +32,7 @@ User directives quoted verbatim throughout (raw 33 carve-out for verbatim user i
 > "airgenome 단독 진입점임"
 > "장시간 실행 데몬 만들지 마라 ... cron/launchd 자동 재시작 항목을 새로 추가하지 마라"
 > "한 번 죽으면 끝나야 한다"
+> "hx install <...> 단일진입점만 허용"
 
 ---
 
@@ -519,20 +520,134 @@ allowed source canonical form (post-migration airgenome modules/genome_merge.hex
 
 ---
 
-## Cross-cutting notes
-
-### Pairing across the 5 raws
+## R-F. raw N+5 — `hx-install-single-entry-point-mandate`
 
 ```
-hive-hexa-bin runaway prevention chain:
+raw N+5 new "hx-install-single-entry-point-mandate - hexa ecosystem package installation MUST go through `hx install <target>` as the sole user-invocable entry point. Direct invocations of `make install`, ad-hoc shell scripts that call launchctl bootstrap, side-channel paths like `cd <project>/native && make install`, and installation via foreign package managers (npm install / pip install / brew install) targeting hexa packages are banned as user-facing flows. The `hx install` path passes through the install.hexa build hook which composes the standard verification chain (codesign + plist render + launchctl bootstrap + registry update) consistently across packages; bypass paths skip parts of that chain and produce silent partial-install / permission-missing / regression states. Distinct from raw 99 (canonical-CLI single entry per project — runtime CLI scope) and raw 177 (single-TCC-grant entry per project — TCC consent scope) — raw N+5 = package-installation pipeline single-entry mandate at the deployment-time scope. Sourced from airgenome 2026-04-30 cycle. user directive verbatim: 'hx install <...> 단일진입점만 허용'. Anchored on commit 8b882a92 (install.hexa hook composing native make install under hx install airgenome) + cd1754da (launchd_install_guide.md noting manual procedure is interim, hx install is canonical). Genus slug per raw 106. Cross-repo per raw 47."
+  slug hx-install-single-entry-point-mandate
+  enforce tool/hx_install_single_entry_lint.hexa
+  enforce-layer cli-lint
+  enforce-layer-secondary hive-agent
+  enforce-layer-tertiary advisory
+  enforce-layer-rationale tri-layer (raw 95). cli-lint: hx_install_single_entry_lint scans README / docs / install guides for forbidden patterns (`make install` / `cd <X> && make install` / `./install.sh` / `./bootstrap.sh`) presented as primary user instruction without a paired `hx install <pkg>` instruction or `@internal-build-target` marker; also asserts every hexa package declaring launchd plist artifacts has an install.hexa hook present; hive-agent: PR review fails when launchd plist registration code path lacks install.hexa hook integration; advisory: 30d post-promotion drift over hexa package READMEs measuring `make install` direct exposure ratio.
+  scope every hexa-lang governed package that produces user-installable artifacts (binary in /Applications, launchd plist, CLI shim in PATH, any cdhash / TCC-keyed identity). Excludes pure compile-only `make build` targets (no deploy step), single-binary selftest fixtures (loop-selftest, etc), `make uninstall` symmetric cleanup target, packages with no install footprint (pure libraries imported by other hexa packages).
+  decl tool/hx_install_single_entry_lint.hexa
+  proof tool/hx_install_single_entry_lint.hexa --selftest
+  proof state/hx_install_single_entry_audit/audit.jsonl
+  why a single canonical install entry composes the standard verification chain (codesign + plist render + launchctl bootstrap + registry/shim update) deterministically. Bypass paths invoked by users (e.g. `cd native && make install`) skip whichever sub-step is not present in that subtree's Makefile, producing partial-install states that look successful but lack codesign, lack plist registration, or lack registry update. Single entry also gives explicit user consent visibility (raw 12 silent-error-ban — user typed `hx install <pkg>` so the system mutation is auditable to a typed command). User directive 'hx install <...> 단일진입점만 허용' is the canonical anchor; airgenome 2026-04-30 commit 8b882a92 demonstrates the install.hexa hook composing native make install under hx install airgenome.
+  realization-channels README of every hexa package documents `hx install <pkg>` as the user-facing install command (raw 33 verbatim quote allowed inline)
+  realization-channels install.hexa hook present per package, composing all sub-steps (build → codesign → plist render → launchctl bootstrap → registry update)
+  realization-channels registry.tsv entry confirming the package is hx-install registered (raw 47 cross-project consistency)
+  realization-channels post-install entry CLI (`airgenome <subcmd>` etc) operates only after `hx install` succeeded, never bootstraps itself
+  realization-channels bypass targets (`make install`, `install.sh`) labeled in README as `@internal-build-target` with explicit "not for end-user invocation" disclaimer
+  cognitive-frameworks raw-0-single-source-of-truth-deployment-pipeline
+  cognitive-frameworks raw-12-silent-error-ban-explicit-user-consent-for-system-mutation
+  cognitive-frameworks raw-99-single-canonical-CLI-entry-point
+  cognitive-frameworks Rust-cargo-Node-npm-Python-pip-package-manager-monoculture-pattern
+  cognitive-frameworks user-2026-04-30-hx-install-single-entry-canonical-anchor
+  counter-example pure compile-only `make build` target with no deploy step — exempt
+  counter-example single-binary selftest fixture (loop-selftest, etc) — exempt
+  counter-example `make uninstall` symmetric cleanup target — exempt (install action is what is gated, not cleanup)
+  ceiling-type semantic
+  breakthrough-grade APPROACH
+  deps raw:design-honesty-triad-process-quality
+  deps raw:strategy-multi-realizability-mandate
+  deps raw:cross-project-mandate
+  deps raw:hexa-only
+  deps raw:raw-paired-lint-atomicity-mandate
+  deps raw:canonical-CLI-per-project-mandate
+  deps raw:silent-error-ban
+  strategy-source airgenome 2026-04-30 cycle. user directive verbatim: "hx install <...> 단일진입점만 허용". commit 8b882a92 (install.hexa hook composing native make install under hx install airgenome). commit cd1754da (launchd_install_guide.md noting manual install is interim; long-term consolidation under hx install). raw 102 ADD-new direct-implant signer manual-user-via-direct-directive.
+  cross-repo-trawl-witness state/raw_addition_requests/registry.jsonl req-rawF-hx-install-single-entry
+  measurement-axis make-install-direct-invocation-count-per-30d — invocations of `make install` by users other than the package owner during development — target ≤ 3
+  measurement-axis package-install-via-hx-ratio — ratio of `hx install` invocations to total install events across hexa packages — target ≥ 0.95
+  measurement-axis readme-with-make-install-as-primary-count — hexa package READMEs documenting `make install` (without `hx install` paired primary instruction) — target = 0
+  witness state/hx_install_single_entry_audit/audit.jsonl
+  classifier-version hx_install_single_entry_lint.v1
+  measurement-threshold make-install-direct-invocation-count-per-30d<=3 package-install-via-hx-ratio>=0.95 readme-with-make-install-as-primary-count=0
+  proof-obligations tool/hx_install_single_entry_lint.hexa-selftest-PASS-fixtures (README with hx install primary PASS / README with make install primary FAIL / README with `@internal-build-target` labeled make install PASS / package missing install.hexa hook FAIL / package with install.hexa hook PASS) + paired-lint-bundled-same-commit-raw-192-atomicity + 30d post-promotion measurement closure
+  spec-form forward-spec
+  paired-roadmap-id PF.RAW-N+5
+  falsifier F-RAWN+5-1 30d post: any new hexa package README documents `make install` / `cd <X> && make install` / `./install.sh` as primary instruction without `hx install` paired — mandate ineffective, retire OR strengthen lint regex
+  falsifier F-RAWN+5-2 install.hexa hook absent or incompatible with hx install — `hx install` cannot route through hook = mandate substrate failure, escalate to hexa-lang upstream OR retire
+  falsifier F-RAWN+5-3 escape-hatch discovered: `hx install` itself bypassable via env (e.g. HX_NO_HOOK skipping install.hexa hook) — mandate undermined at the substrate, fix upstream before propagating
+  falsifier F-RAWN+5-4 user-observed regression: direct `make install` is faster / more reliable than `hx install` in practice → user adopts bypass → mandate breaks empirically — investigate hx install reliability gap before retiring
+  omega-stop fixpoint-convergence
+  category meta-triad
+  applies-to deployment
+  applies-to install-time
+  phase pre-install
+  phase pre-merge
+  triad-exempt forward-spec-meta-rule
+  severity warn
+  promoted-at 2026-04-30
+  note FORWARD SPEC. self-applied raw 117 5-check ALL PASS: genus slug ✓ + 5 cognitive-frameworks ✓ + 5 realization-channels ✓ + 3 counter-examples ✓ + 4 falsifiers ✓ + raw 95 triad ✓ + raw 175 English-only ✓ (Korean user quote preserved under raw 33 carve-out) + raw 192 paired-lint atomicity (5-fixture selftest scheduled at registration) + raw 193 14-element rich format ✓ + raw 230 positive-canonical-only ✓.
+  follow-up bootstrap state/hx_install_single_entry_audit/audit.jsonl per raw 77 schema
+  follow-up cross-repo propagation per raw 47 (every hexa package with user-installable artifacts inherits the mandate)
+  follow-up new → warn at 30d once readme-with-make-install-as-primary-count = 0; warn → live at 90d once package-install-via-hx-ratio ≥ 0.95 maintained 14d straight
+```
+
+### Flow report (raw 231)
+
+```
+banned (bypass paths, side-channel installation):
+  user runs: cd ~/core/airgenome/native && make install
+    → native/Makefile install target
+      → places binary in /Applications/AirGenome.app
+      → places ~/Library/LaunchAgents/com.airgenome.plist
+      → invokes launchctl bootstrap
+    → registry.tsv NOT updated
+    → codesign step skipped (subtree Makefile lacks it)
+    → partial-install state, hx list shows nothing
+    → silent regression on next hx upgrade (hook expectations diverge)
+
+  user runs: ./install.sh
+    → ad-hoc script
+      → launchctl bootstrap directly
+    → no install.hexa hook traversal
+    → no audit ledger entry, no consent gate, no registry update
+
+allowed (hx install single entry):
+  user types: hx install airgenome
+    → hx canonical CLI binary (annotated @user-explicit-entry per raw N+2)
+      → resolves package airgenome via registry.tsv
+        → invokes install.hexa hook
+          → build step (native make build, no install)
+          → codesign step
+          → plist render step
+          → launchctl bootstrap (single plist per raw N+0)
+          → registry update + audit ledger entry (raw 77)
+      → exit 0, package live, hx list shows airgenome
+
+allowed counter-examples (exempt):
+  developer: make build                 (compile only, no deploy)
+  developer: make selftest              (single-binary test fixture)
+  user: hx uninstall airgenome → make uninstall  (symmetric cleanup)
+```
+
+### Counter-arguments considered
+
+- "Power users will always invoke `make install` directly during development." → falsifier F-RAWN+5-1 measures this with a tolerance threshold (≤ 3 per 30d for non-owner invocations). Owner-developer invocations are out of scope under the `@internal-build-target` carve-out.
+- "What if hx install is slower or less reliable than make install?" → falsifier F-RAWN+5-4 explicitly covers the empirical-bypass case; if users adopt the bypass for legitimate reliability reasons, fix the hx install path BEFORE retiring this raw — do not let measurement gaming retire a sound mandate.
+- "Won't this lock out brew / npm / pip cross-ecosystem packaging?" → out of scope: this mandate addresses hexa-ecosystem packages installed by users on their own machine via the hexa toolchain. brew formulas wrapping a hexa package CAN exist; the brew formula's post-install hook would invoke `hx install <pkg>` rather than running plist registration directly.
+
+---
+
+## Cross-cutting notes
+
+### Pairing across the 6 raws
+
+```
+hive-hexa-bin runaway prevention + install pipeline integrity chain:
   raw N+0 single-binary single-plist single-TCC-client    (deployment surface)
     → raw N+1 7 anti-runaway safety nets                  (composition gate)
       → raw N+2 no auto-bootstrap from tool-script        (registration-time gate)
         → raw N+3 no watcher-of-watchers self-replicate   (process-graph topology gate)
           → raw N+4 no top-level explicit main call       (source-canonical-form gate)
+            → raw N+5 hx install single entry point       (install-pipeline gate)
 ```
 
-Each raw closes a distinct axis; together they bind 5 layers (deployment / runtime / install-time / topology / source) so a single-bug at any one layer cannot ignite a cascade equivalent to the hive-hexa-bin runaway.
+Each raw closes a distinct axis; together they bind 6 layers (deployment / runtime / install-time / topology / source / install-pipeline) so a single-bug at any one layer cannot ignite a cascade equivalent to the hive-hexa-bin runaway, and the canonical user-invocable install path is provably the only fan-in point for system mutation.
 
 ### Self-applied raw 117 5-check summary
 
@@ -543,10 +658,11 @@ Each raw closes a distinct axis; together they bind 5 layers (deployment / runti
 | N+2 | OK | 5 | 5 | 3 | 4 | cli-lint / hive-agent / advisory |
 | N+3 | OK | 5 | 5 | 3 | 4 | cli-lint / hive-agent / advisory |
 | N+4 | OK | 5 | 5 | 3 | 4 | cli-lint / hive-agent / parser-owner-self-test |
+| N+5 | OK | 5 | 5 | 3 | 4 | cli-lint / hive-agent / advisory |
 
 ### Disposition per raw 102
 
-All 5 = ADD-new direct-implant signer manual-user-via-direct-directive. User explicitly directed each axis during the 2026-04-30 airgenome session via the verbatim quotes preserved above.
+All 6 = ADD-new direct-implant signer manual-user-via-direct-directive. User explicitly directed each axis during the 2026-04-30 airgenome session via the verbatim quotes preserved above.
 
 ### What this proposal is NOT
 
