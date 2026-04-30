@@ -87,11 +87,14 @@ static int g_scroll_on   = 1;
 static int g_magnet_on   = 1;
 static int g_disable_native = 1;
 static int g_launcher_on = 0;   // set via AIRG_TAP_LAUNCHER=1; hive raw 209
+static int g_winctl_on   = 1;   // alt+1..5 window arrange; raw 209 sister axis
 static int g_debug       = 0;   // set via AIRG_TAP_DEBUG=1, logs every event
 
 // hive raw 209 reference impl - declared in airgenome_launcher.m, linked
 // into the same binary (raw 177 single TCC entry per project).
 extern BOOL airgenome_launcher_handle_keydown(CGEventRef event);
+// hive raw 209 sister axis - declared in airgenome_winctl.m, same binary.
+extern BOOL airgenome_winctl_handle_keydown(CGEventRef event);
 
 // Magnet thresholds (pixels). Generous defaults for multi-monitor and
 // 4K/5K layouts -- a 20px reach feels invisible at high pixel densities.
@@ -165,6 +168,7 @@ static NSMenuItem         *g_item_mouse  = nil;
 static NSMenuItem         *g_item_magnet = nil;
 static NSMenuItem         *g_item_wake   = nil;
 static NSMenuItem         *g_item_lid    = nil;
+static NSMenuItem         *g_item_winctl = nil;
 static AirgenomeMenuTarget *g_menu_target = nil;
 
 // Snap-preview overlay -- a borderless transparent window with a white
@@ -806,6 +810,12 @@ static CGEventRef tap_callback(CGEventTapProxy proxy,
         if (airgenome_launcher_handle_keydown(event)) return NULL;
     }
 
+    // (a1) hive raw 209 sister axis: alt+1..5 window arrangement on focused
+    // window via AX. Per-event opt-in via AIRG_TAP_WINCTL env flag.
+    if (g_winctl_on && type == kCGEventKeyDown) {
+        if (airgenome_winctl_handle_keydown(event)) return NULL;
+    }
+
     // (a) Mouse button: button 4 / 5 -> Cmd+[ / Cmd+]
     if (g_buttons_on && type == kCGEventOtherMouseDown) {
         if (handle_mouse_button(event)) return NULL;   // consumed
@@ -933,6 +943,8 @@ static void load_menubar_state(void) {
             g_wake_on = on;
         } else if ([k isEqualToString:@"lid_closed"]) {
             g_lid_closed_on = on;
+        } else if ([k isEqualToString:@"winctl"]) {
+            g_winctl_on = on;
         }
     }
 }
@@ -945,11 +957,12 @@ static void save_menubar_state(void) {
                                                     error:NULL];
     int mouse_on = (g_buttons_on || g_scroll_on) ? 1 : 0;
     NSString *content = [NSString stringWithFormat:
-        @"mouse=%s\nmagnet=%s\nwake=%s\nlid_closed=%s\n",
+        @"mouse=%s\nmagnet=%s\nwake=%s\nlid_closed=%s\nwinctl=%s\n",
         mouse_on        ? "on" : "off",
         g_magnet_on     ? "on" : "off",
         g_wake_on       ? "on" : "off",
-        g_lid_closed_on ? "on" : "off"];
+        g_lid_closed_on ? "on" : "off",
+        g_winctl_on     ? "on" : "off"];
     [content writeToFile:menubar_state_path()
               atomically:YES
                 encoding:NSUTF8StringEncoding
@@ -1115,6 +1128,30 @@ static void update_menu_states(void);
     fflush(stderr);
 }
 
+// raw 209 sister axis: alt+1..5 focused-window arrangement. Same AX
+// permission gate as magnet (kAXPositionAttribute / kAXSizeAttribute writes
+// require the same Accessibility grant). raw 91 honest C3: refuse with a
+// pointer to System Settings instead of silently no-op'ing the toggle.
+- (void)toggleWinctl:(id)sender {
+    (void)sender;
+    if (!g_winctl_on) {
+        if (!AXIsProcessTrusted()) {
+            fprintf(stderr,
+                "menubar: winctl toggle refused (AX permission missing)\n"
+                "  fix: System Settings -> Privacy & Security -> Accessibility -> enable airgenome\n");
+            fflush(stderr);
+            return;
+        }
+        g_winctl_on = 1;
+    } else {
+        g_winctl_on = 0;
+    }
+    save_menubar_state();
+    update_menu_states();
+    fprintf(stderr, "menubar: winctl -> %s\n", g_winctl_on ? "ON" : "off");
+    fflush(stderr);
+}
+
 - (void)toggleWake:(id)sender {
     (void)sender;
     // raw 213: in-process IOPMAssertion (kIOPMAssertionTypeNoIdleSleep).
@@ -1219,6 +1256,7 @@ static void update_menu_states(void) {
     if (g_item_magnet) g_item_magnet.state = g_magnet_on ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_wake)   g_item_wake.state   = query_wake_state()             ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_lid)    g_item_lid.state    = query_lid_closed_awake_state() ? NSControlStateValueOn : NSControlStateValueOff;
+    if (g_item_winctl) g_item_winctl.state = g_winctl_on ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 // ---------------------------------------------------------------------------
@@ -1287,6 +1325,13 @@ static void install_status_item(void) {
     g_item_magnet.target = g_menu_target;
     [menu addItem:g_item_magnet];
 
+    g_item_winctl = [[NSMenuItem alloc]
+        initWithTitle:@"Window arrange (⌥1..5)"
+               action:@selector(toggleWinctl:)
+        keyEquivalent:@""];
+    g_item_winctl.target = g_menu_target;
+    [menu addItem:g_item_winctl];
+
     g_item_mouse = [[NSMenuItem alloc]
         initWithTitle:@"Mouse (buttons + scroll)"
                action:@selector(toggleMouse:)
@@ -1326,6 +1371,7 @@ int main(int argc, char **argv) {
         g_magnet_on         = env_flag("AIRG_TAP_MAGNET",         g_magnet_on);
         g_disable_native    = env_flag("AIRG_TAP_DISABLE_NATIVE", g_disable_native);
         g_launcher_on       = env_flag("AIRG_TAP_LAUNCHER",       g_launcher_on);
+        g_winctl_on         = env_flag("AIRG_TAP_WINCTL",         g_winctl_on);
         g_debug             = env_flag("AIRG_TAP_DEBUG",          g_debug);
         // Persisted menubar state overrides env defaults (raw 168 minimum-viable).
         load_menubar_state();

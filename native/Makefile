@@ -18,8 +18,10 @@ ICON_PNG_1024 = build/AppIcon_1024.png
 ICON_SCRIPT   = scripts/build_icon.applescript
 
 BIN           = build/$(APP_NAME)
-# raw 177 single-TCC: launcher.m linked into same binary (NOT separate exe).
-SRC           = src/airgenome_tap.m src/airgenome_launcher.m
+# raw 177 single-TCC: launcher.m + winctl.m linked into same binary
+# (NOT separate exes — one bundle id, one TCC row).
+SRC           = src/airgenome_tap.m src/airgenome_launcher.m \
+                src/airgenome_winctl.m
 PLIST_TPL     = launchd/com.airgenome.tap.plist
 INSTALL_PLIST = $(HOME)/Library/LaunchAgents/com.airgenome.tap.plist
 LOG_DIR       = $(HOME)/Library/Logs/$(APP_NAME).app
