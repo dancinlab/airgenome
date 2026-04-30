@@ -247,3 +247,103 @@ void airgenome_loop_shutdown(void) {
     if (g_label_src)    { dispatch_source_cancel(g_label_src);    g_label_src = NULL;    }
     if (g_forecast_src) { dispatch_source_cancel(g_forecast_src); g_forecast_src = NULL; }
 }
+
+// ----------------------------------------------------------------------
+// self-test — Makefile `loop-selftest` 타깃이 단독 binary 로 컴파일.
+// production binary 에는 #ifdef 으로 격리, 코드만 함수로 항상 컴파일됨
+// (AIRGENOME_LOOP_SELFTEST_MAIN 미정의 시 standalone main 부재).
+// ----------------------------------------------------------------------
+
+#if AIRGENOME_LOOP_MIN_INTERVAL_S < 60
+#error "AIRGENOME_LOOP_MIN_INTERVAL_S must be >= 60 (raw 240 R2 안전망 #1)"
+#endif
+
+static int g_st_pass = 0;
+static int g_st_fail = 0;
+
+#define ST_ASSERT(cond, name) do { \
+    if (cond) { fprintf(stderr, "  PASS: %s\n", (name)); g_st_pass++; } \
+    else      { fprintf(stderr, "  FAIL: %s\n", (name)); g_st_fail++; } \
+} while (0)
+
+int airgenome_loop_selftest(void) {
+    fprintf(stderr, "airgenome_loop selftest (raw 240 § B.7 step 2):\n");
+
+    // Test 1: lockfile 정상 acquire + release
+    {
+        unlink("/tmp/airgenome-loop-st1.lock");
+        int fd = loop_acquire_lockfile("st1");
+        ST_ASSERT(fd >= 0, "lockfile_acquire_clean_state");
+        loop_release_lockfile(fd);
+    }
+
+    // Test 2: lockfile overlap (LOCK_NB 가 즉시 -1 반환)
+    {
+        int fd1 = loop_acquire_lockfile("st2");
+        ST_ASSERT(fd1 >= 0, "lockfile_acquire_first");
+        int fd2 = loop_acquire_lockfile("st2");
+        ST_ASSERT(fd2 == -1, "lockfile_overlap_blocked");
+        if (fd2 >= 0) loop_release_lockfile(fd2);
+        loop_release_lockfile(fd1);
+    }
+
+    // Test 3: release 후 재취득
+    {
+        int fd1 = loop_acquire_lockfile("st3");
+        loop_release_lockfile(fd1);
+        int fd2 = loop_acquire_lockfile("st3");
+        ST_ASSERT(fd2 >= 0, "lockfile_reacquire_after_release");
+        loop_release_lockfile(fd2);
+    }
+
+    // Test 4: interval guard — 60s 미만 거부 (안전망 #1)
+    {
+        dispatch_queue_t q = dispatch_queue_create("st_q4",
+                                                    DISPATCH_QUEUE_SERIAL);
+        airgenome_loop_module_t bad = {
+            .module_name = "st_bad",
+            .module_path = "/tmp/never.hexa",
+            .interval_s  = 30,
+            .timeout_s   = 5,
+        };
+        dispatch_source_t s = loop_make_timer(&bad, q);
+        ST_ASSERT(s == NULL, "interval_guard_30s_refused");
+        if (s) dispatch_source_cancel(s);
+    }
+
+    // Test 5: interval guard — 60s 정확히 허용
+    {
+        dispatch_queue_t q = dispatch_queue_create("st_q5",
+                                                    DISPATCH_QUEUE_SERIAL);
+        airgenome_loop_module_t ok = {
+            .module_name = "st_ok",
+            .module_path = "/tmp/never.hexa",
+            .interval_s  = 60,
+            .timeout_s   = 5,
+        };
+        dispatch_source_t s = loop_make_timer(&ok, q);
+        ST_ASSERT(s != NULL, "interval_guard_60s_accepted");
+        // 첫 fire 전에 (60s) cancel — selftest 종료 시점이 60s 미만 보장
+        if (s) dispatch_source_cancel(s);
+    }
+
+    // Cleanup leftover lockfiles
+    unlink("/tmp/airgenome-loop-st1.lock");
+    unlink("/tmp/airgenome-loop-st2.lock");
+    unlink("/tmp/airgenome-loop-st3.lock");
+    unlink("/tmp/airgenome-loop-st_bad.lock");
+    unlink("/tmp/airgenome-loop-st_ok.lock");
+
+    fprintf(stderr, "airgenome_loop selftest: %d pass / %d fail\n",
+            g_st_pass, g_st_fail);
+    return g_st_fail > 0 ? 1 : 0;
+}
+
+#ifdef AIRGENOME_LOOP_SELFTEST_MAIN
+int main(int argc, char **argv) {
+    (void)argc; (void)argv;
+    @autoreleasepool {
+        return airgenome_loop_selftest();
+    }
+}
+#endif

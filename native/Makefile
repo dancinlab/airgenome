@@ -37,7 +37,8 @@ FRAMEWORKS    = -framework ApplicationServices -framework Carbon \
                 -framework Cocoa -framework AppKit -framework IOKit
 
 .PHONY: all build app icon install uninstall status logs selftest \
-        restart rebuild clean setup-signing launcher-status launcher-restore
+        restart rebuild clean setup-signing launcher-status launcher-restore \
+        loop-selftest
 
 # One-time per-user signing cert provisioning. Idempotent.
 setup-signing:
@@ -187,6 +188,16 @@ selftest: app
 	@grep -q "__AIRGENOME_TAP_RESULT__" build/selftest.log \
 	    && echo "selftest: PASS (sentinel observed)" \
 	    || (echo "selftest: FAIL (no sentinel)"; exit 1)
+
+# raw 240 § B.7 step 2 — airgenome_loop.m 단독 unit selftest. tap binary
+# 와 격리 (singleton lock 무관). lockfile NB 차단 + interval guard 검증.
+# 자식 spawn / watchdog 검증은 별도 stage (실 환경 mock 필요).
+loop-selftest:
+	@mkdir -p build
+	clang $(CFLAGS) -framework Foundation \
+	    -DAIRGENOME_LOOP_SELFTEST_MAIN=1 \
+	    -o build/loop-selftest src/airgenome_loop.m
+	@./build/loop-selftest && echo "loop-selftest: PASS"
 
 rebuild: app restart
 	@echo ""
