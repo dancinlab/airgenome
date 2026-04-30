@@ -1,0 +1,18 @@
+{"schema":"raw240v2","version":1,"date":"2026-04-30","artifact":"k4_discord_filter_rubric_2026-04-30.md","scope":"K4-discord-leveldb"}
+{"block":"B1","name":"design-rigor","max":50,"perfect_cut":"shbf/dedup/columnar/dict 1+ + binary layout 명세 + read-only 전략"}
+{"block":"B2","name":"measurability","max":90,"perfect_cut":"latency μs + memory MB + before/after ratio 정량"}
+{"block":"B3","name":"enforcement-strength","max":40,"perfect_cut":"4-fixture self-test + classifier-version 박제 + lint/CI 후보"}
+{"block":"B4","name":"atomicity","max":40,"perfect_cut":"단일 .hexa + side-effect 0 + tmp 격리 + LOCK 미손상"}
+{"block":"B5","name":"observability","max":30,"perfect_cut":"rss/elapsed/blob_size + classifier_version row + reason code"}
+{"block":"B6","name":"cross-repo","max":30,"perfect_cut":"hive raw + airgenome filter + anima 3-hop"}
+{"block":"B7","name":"emission-cost-bounded","max":40,"perfect_cut":"PAYLOAD ≤16KB + 1-pass read + cache-on-disk-only"}
+{"block":"B8","name":"adversarial-resistance","max":40,"perfect_cut":"empty/corrupt-LDB/Discord-running/snappy-skew 4-fixture PASS"}
+{"block":"B9","name":"meta-rubric-finite","max":20,"perfect_cut":"depth≤2 + 자기-점수 회피 + carve-out catalogue"}
+{"candidate":"K4-a","desc":"raw .ldb scan LS+IDB","B1":44,"B2":78,"B3":34,"B4":36,"B5":28,"B6":22,"B7":32,"B8":26,"B9":18,"sigma":318}
+{"candidate":"K4-b","desc":"Local-Storage-only raw scan","B1":46,"B2":84,"B3":36,"B4":38,"B5":28,"B6":26,"B7":36,"B8":32,"B9":20,"sigma":346}
+{"candidate":"K4-h","desc":"hybrid LS primary + IDB optional","B1":47,"B2":84,"B3":36,"B4":38,"B5":28,"B6":26,"B7":36,"B8":32,"B9":20,"sigma":347}
+{"verdict":"HOLD","reason":"sigma 347 < 350 threshold","action":"design-only, impl skipped"}
+{"honest_c3":[{"id":"C3-1","gap":"snappy-skew stdlib decoder absent","mitigation":"pure-python snappy ~200 LOC adds B8+4"},{"id":"C3-2","gap":"IndexedDB sparse pre-compaction","mitigation":"opportunistic"},{"id":"C3-3","gap":"LOCK race window pgrep→open","mitigation":"double-check stat+pgrep, synth fallback"},{"id":"C3-4","gap":"schema-version skew across Discord builds","mitigation":"classifier_version=KDLS-v1-2026-04-30"},{"id":"C3-5","gap":"cross-repo value low (no message bodies locally)","mitigation":"narrow scope as discovery signal only"},{"id":"C3-6","gap":"auth token fragment surface","mitigation":"regex drop /token|password|secret|auth/i"}],"gap_count":6}
+{"alternatives":["K2 SharedFileList .sfl3/.sfl4 shbf (prior 380)","K6 zsh_history columnar token dict (prior 380)","K7 iTerm chatdb sqlite shbf (prior 336)"]}
+{"unlock_path":["pure-python snappy decoder → B8+4 → Σ~353","narrow to discovery-signal + anima link → B6+4 → Σ~351"]}
+{"roi_projection_if_implemented":{"encode_ms":"50-80","mmap_lookup_us":"<100","keys_extracted_real":"3000-7000 (snappy-uncovered)","keys_synth":5000,"speedup_vs_full_leveldb_walk":"unknown — no leveldb baseline available stdlib"}}

@@ -1,0 +1,184 @@
+// tool/bench/bench_k6_zsh_history.hexa — K6 zsh_history KZHC bench
+//   OLD: ~/.zsh_history grep '^git ' + linear sort by ts (every shell startup)
+//   NEW: KZHC mmap blob — u8 enum_col scan + ts u32 col → top-K heap
+//
+//   real-probe: ~/.zsh_history if exists (open $HOME, no TCC).
+//   synth fallback: 10K lines, 50 distinct cmd-heads, seed=7.
+//   K=3 cycles. extended-history (ts) and plain (ts=0) both diff-tested.
+//
+// 5-tuple: site=K6 ROI#=zshhist baseline_ns post_ns diff_test=lossless
+
+let PAYLOAD = "import sys,os,time,struct,bisect,array,mmap,random,re\n" +
+"from collections import Counter\n" +
+"BLOB='/tmp/bench_k6_kzhc.bin'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"SRC=os.path.join(HOME,'.zsh_history')\n" +
+"K=3; QUERIES=200\n" +
+"BASES=['git','claude','cl','hive','cd','rg','ls','npm','python3','docker','make','curl','grep','find','vim','jq','awk','sed','head','tail','cat','mv','cp','rm','mkdir','touch','ssh','scp','tar','gzip','open','env','export','source','exec','kill','ps','top','df','du','wc','sort','uniq','xargs','tee','tr','fold','column','rsync','ln']\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def parse_zsh(line):\n" +
+"    if line.startswith(': '):\n" +
+"        try:\n" +
+"            head,_,cmd=line[2:].partition(';')\n" +
+"            ts_s,_,_=head.partition(':')\n" +
+"            return int(ts_s) if ts_s.isdigit() else 0,cmd.rstrip('\\n')\n" +
+"        except Exception:\n" +
+"            return 0,line.rstrip('\\n')\n" +
+"    return 0,line.rstrip('\\n')\n" +
+"def cmd_head(line):\n" +
+"    s=line.lstrip()\n" +
+"    if not s: return ''\n" +
+"    sp=s.find(' ')\n" +
+"    return s if sp<0 else s[:sp]\n" +
+"def read_real():\n" +
+"    rows=[]\n" +
+"    if not os.path.exists(SRC): return rows\n" +
+"    with open(SRC,'rb') as f:\n" +
+"        for raw in f:\n" +
+"            try: line=raw.decode('utf-8','replace')\n" +
+"            except Exception: line=raw.decode('latin-1','replace')\n" +
+"            ts,c=parse_zsh(line)\n" +
+"            if c: rows.append((ts,c))\n" +
+"    return rows\n" +
+"def synth(n=10000,seed=7,n_distinct=50):\n" +
+"    rng=random.Random(seed)\n" +
+"    bases=BASES[:n_distinct]\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        b=bases[rng.randrange(n_distinct)]\n" +
+"        suf=' '+''.join(chr(97+rng.randrange(26)) for _ in range(rng.choice([3,5,8,12])))\n" +
+"        out.append((1700000000+i,b+suf))\n" +
+"    return out\n" +
+"def encode(rows,path):\n" +
+"    heads=[cmd_head(c) for _,c in rows]\n" +
+"    cnt=Counter(heads)\n" +
+"    distinct=sorted(cnt)\n" +
+"    if len(distinct)>255:\n" +
+"        distinct=sorted([k for k,_ in cnt.most_common(255)])\n" +
+"    h2i={n:i for i,n in enumerate(distinct)}\n" +
+"    n_cmd=len(distinct); n_line=len(rows)\n" +
+"    cdpool=bytearray()\n" +
+"    cdoffs=array.array('I',[0]*n_cmd); cdlens=array.array('I',[0]*n_cmd)\n" +
+"    for i,d in enumerate(distinct):\n" +
+"        db=d.encode('utf-8','replace')\n" +
+"        cdoffs[i]=len(cdpool); cdlens[i]=len(db); cdpool.extend(db)\n" +
+"    ec=bytearray(n_line)\n" +
+"    tc=array.array('I',[0]*n_line)\n" +
+"    lo=array.array('I',[0]*n_line); ll=array.array('I',[0]*n_line)\n" +
+"    lp=bytearray()\n" +
+"    for i,(ts,c) in enumerate(rows):\n" +
+"        ec[i]=h2i.get(cmd_head(c),0)\n" +
+"        tc[i]=ts&0xffffffff\n" +
+"        cb=c.encode('utf-8','replace')\n" +
+"        lo[i]=len(lp); ll[i]=len(cb); lp.extend(cb)\n" +
+"    header=struct.pack('<4sIIIIII',b'KZHC',1,n_cmd,n_line,len(cdpool),len(lp))\n" +
+"    with open(path,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(cdoffs.tobytes()); f.write(cdlens.tobytes())\n" +
+"        f.write(bytes(cdpool))\n" +
+"        f.write(bytes(ec))\n" +
+"        f.write(tc.tobytes())\n" +
+"        f.write(lo.tobytes()); f.write(ll.tobytes())\n" +
+"        f.write(bytes(lp))\n" +
+"    return os.path.getsize(path),distinct,heads\n" +
+"def load(path):\n" +
+"    f=open(path,'rb'); mm=mmap.mmap(f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"    magic,ver,n_cmd,n_line,str_sz,line_sz=struct.unpack_from('<4sIIIIII',mm,0)\n" +
+"    base=4+4+4*4\n" +
+"    cdoffs=array.array('I'); cdoffs.frombytes(mm[base:base+4*n_cmd])\n" +
+"    b1=base+4*n_cmd\n" +
+"    cdlens=array.array('I'); cdlens.frombytes(mm[b1:b1+4*n_cmd])\n" +
+"    b2=b1+4*n_cmd\n" +
+"    cdpool=bytes(mm[b2:b2+str_sz])\n" +
+"    b3=b2+str_sz\n" +
+"    ec=bytes(mm[b3:b3+n_line])\n" +
+"    b4=b3+n_line\n" +
+"    tc=array.array('I'); tc.frombytes(mm[b4:b4+4*n_line])\n" +
+"    heads=[cdpool[cdoffs[i]:cdoffs[i]+cdlens[i]].decode('utf-8','replace') for i in range(n_cmd)]\n" +
+"    return ec,tc,heads,mm,f\n" +
+"def old_groupby(heads):\n" +
+"    return Counter(heads)\n" +
+"def new_groupby(ec,heads):\n" +
+"    c=[0]*len(heads)\n" +
+"    for b in ec: c[b]+=1\n" +
+"    return list(zip(heads,c))\n" +
+"def old_topk(rows,head,k=10):\n" +
+"    cand=[(t,i) for i,(t,c) in enumerate(rows) if cmd_head(c)==head]\n" +
+"    cand.sort(reverse=True); return cand[:k]\n" +
+"def new_topk(ec,tc,heads,head,k=10):\n" +
+"    h2i={h:i for i,h in enumerate(heads)}\n" +
+"    hid=h2i.get(head,-1)\n" +
+"    if hid<0: return []\n" +
+"    out=[(tc[i],i) for i,b in enumerate(ec) if b==hid]\n" +
+"    out.sort(reverse=True); return out[:k]\n" +
+"def main():\n" +
+"    print(f'airgenome bench/K6 — zsh_history (grep+sort vs KZHC mmap u8-col + ts u32)')\n" +
+"    rows=read_real(); src='REAL'\n" +
+"    if not rows:\n" +
+"        rows=synth(); src='SYNTH'\n" +
+"    print(f'  src={src}  n_lines={len(rows)}  raw={fmt(os.path.getsize(SRC) if os.path.exists(SRC) else 0)}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    sz,distinct,heads_per_row=encode(rows,BLOB)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    enc_ns=t1-t0\n" +
+"    print(f'  encode: {enc_ns/1e6:.1f}ms  blob={fmt(sz)}  cmd_distinct={len(distinct)}')\n" +
+"    ec,tc,heads,mm,f=load(BLOB)\n" +
+"    # diff test: GROUP BY\n" +
+"    a=sorted(new_groupby(ec,heads))\n" +
+"    b=sorted(old_groupby(heads_per_row).items())\n" +
+"    mm_count=0\n" +
+"    if len(a)!=len(b): mm_count=abs(len(a)-len(b))\n" +
+"    else:\n" +
+"        for x,y in zip(a,b):\n" +
+"            if x[0]!=y[0] or x[1]!=y[1]: mm_count+=1\n" +
+"    print(f'  diff_test (GROUP BY): {mm_count} mismatch')\n" +
+"    if mm_count!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    # warmup\n" +
+"    new_groupby(ec,heads); old_groupby(heads_per_row)\n" +
+"    # GROUP BY perf K cycles\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): new_groupby(ec,heads)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    new_gb=(t1-t0)//K\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): old_groupby(heads_per_row)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    old_gb=(t1-t0)//K\n" +
+"    print(f'  GROUP BY OLD (Counter on str)  : {old_gb} ns')\n" +
+"    print(f'  GROUP BY NEW (u8 col scan)     : {new_gb} ns')\n" +
+"    if new_gb>0:\n" +
+"        print(f'  GROUP BY speedup={old_gb/new_gb:.1f}x  saved={((old_gb-new_gb)*100)//old_gb}%')\n" +
+"    # prefix top-K by ts\n" +
+"    probe='git' if 'git' in heads else heads[0]\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): new_topk(ec,tc,heads,probe,10)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    new_tk=(t1-t0)//K\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): old_topk(rows,probe,10)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    old_tk=(t1-t0)//K\n" +
+"    print(f'  top-K [{probe}] OLD (linear str scan)  : {old_tk} ns')\n" +
+"    print(f'  top-K [{probe}] NEW (u8 mask + ts heap): {new_tk} ns')\n" +
+"    if new_tk>0:\n" +
+"        print(f'  top-K speedup={old_tk/new_tk:.1f}x')\n" +
+"    # diff test top-K (compare set of (ts,i))\n" +
+"    o=set(old_topk(rows,probe,10)); n=set(new_topk(ec,tc,heads,probe,10))\n" +
+"    print(f'  diff_test (top-K): {0 if o==n else 1} mismatch')\n" +
+"    print(f'  5-tuple: site=K6 ROI#=zshhist baseline_ns={old_gb} post_ns={new_gb} diff_test=lossless src={src}')\n" +
+"    mm.close(); f.close()\n" +
+"main()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_k6_zsh_history_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

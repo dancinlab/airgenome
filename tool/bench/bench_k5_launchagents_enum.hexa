@@ -1,0 +1,254 @@
+// tool/bench/bench_k5_launchagents_enum.hexa — K5 LaunchAgents/LoginItems Enum SHBF bench
+//   F18 패턴 재작성. classifier_version=KLAS-v1.
+//   현 hexa-pure plistlib 부재 — python3 stdlib 인라인 페이로드 (struct/array/bisect/plistlib/time).
+//
+// 모드:
+//   bench (default) — synth-200 + real-probe(56 plist) → KLAS encode → 50 prefix
+//                     query (OLD plistlib repeated-parse vs NEW blob bisect).
+//   encode          — encode only (artifact /tmp/launchagents_enum.bin)
+//
+// 5-tuple: site=K5 ROI#=K5 baseline_us post_us diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0 in hexa.
+// NO production execute. NO launchctl. NO mutation. read-only open('rb').
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random,glob,plistlib,resource,mmap\n" +
+"BIN='/tmp/bench_k5_klas.bin'\n" +
+"FLAG_RUNATLOAD=0x01;FLAG_KEEPALIVE=0x02;FLAG_USERSCOPE=0x04;FLAG_SYSSCOPE=0x08;FLAG_LOGINITEM=0x10;FLAG_DAEMON=0x20\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def synth(n=200,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    pres=['com.apple.','com.anima.','com.airgenome.','com.synth.','org.example.']\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        pre=pres[i%len(pres)]\n" +
+"        out.append((f'{pre}svc{i:03d}',f'/usr/local/bin/synth_{i}',(FLAG_USERSCOPE|(FLAG_RUNATLOAD if rng.random()<0.6 else 0)|(FLAG_KEEPALIVE if rng.random()<0.3 else 0))&0xff))\n" +
+"    return out\n" +
+"\n" +
+"def parse_plist(path,scope):\n" +
+"    try:\n" +
+"        with open(path,'rb') as f: d=plistlib.load(f)\n" +
+"    except Exception:\n" +
+"        return None\n" +
+"    if not isinstance(d,dict): return None\n" +
+"    lab=d.get('Label')\n" +
+"    if not isinstance(lab,str) or not lab:\n" +
+"        bn=os.path.basename(path); lab=bn[:-6] if bn.endswith('.plist') else bn\n" +
+"    pa=d.get('ProgramArguments'); prog=''\n" +
+"    if isinstance(pa,list) and pa and isinstance(pa[0],str): prog=pa[0]\n" +
+"    if not prog and isinstance(d.get('Program'),str): prog=d['Program']\n" +
+"    flg=scope\n" +
+"    if d.get('RunAtLoad'): flg|=FLAG_RUNATLOAD\n" +
+"    if d.get('KeepAlive'): flg|=FLAG_KEEPALIVE\n" +
+"    return (lab,prog,flg&0xff)\n" +
+"\n" +
+"def real_probe():\n" +
+"    home=os.environ.get('HOME','')\n" +
+"    rows=[]; skipped=0; kinds=[]\n" +
+"    for base,scope,kind in [\n" +
+"        (home+'/Library/LaunchAgents',FLAG_USERSCOPE,'user'),\n" +
+"        ('/Library/LaunchAgents',FLAG_SYSSCOPE,'system'),\n" +
+"        ('/Library/LaunchDaemons',FLAG_SYSSCOPE|FLAG_DAEMON,'daemon'),\n" +
+"    ]:\n" +
+"        if not base or not os.path.isdir(base): continue\n" +
+"        n0=len(rows)\n" +
+"        for p in sorted(glob.glob(base+'/*.plist')):\n" +
+"            r=parse_plist(p,scope)\n" +
+"            if r: rows.append(r)\n" +
+"            else: skipped+=1\n" +
+"        if len(rows)>n0: kinds.append(kind)\n" +
+"    btm='/var/db/com.apple.backgroundtaskmanagement/BackgroundItems-v16.btm'\n" +
+"    if os.path.isfile(btm):\n" +
+"        try:\n" +
+"            with open(btm,'rb') as f: data=f.read()\n" +
+"            if data.startswith(b'bplist00'):\n" +
+"                seen=set()\n" +
+"                for marker in (b'/Users/',b'/Applications/',b'/Library/',b'/usr/',b'/opt/'):\n" +
+"                    i=0\n" +
+"                    while True:\n" +
+"                        j=data.find(marker,i)\n" +
+"                        if j<0: break\n" +
+"                        k=j\n" +
+"                        while k<len(data) and 32<=data[k]<127 and data[k]!=0: k+=1\n" +
+"                        p=data[j:k].decode('utf-8','replace')\n" +
+"                        if 5<len(p)<2048 and p not in seen:\n" +
+"                            seen.add(p)\n" +
+"                            lab='loginitem.'+os.path.basename(p).replace(' ','_').replace('.','_')\n" +
+"                            rows.append((lab,p,(FLAG_LOGINITEM|FLAG_USERSCOPE)&0xff))\n" +
+"                        i=k+1\n" +
+"                kinds.append('btm')\n" +
+"        except Exception:\n" +
+"            skipped+=1\n" +
+"    return rows,'+'.join(kinds) if kinds else 'empty',skipped\n" +
+"\n" +
+"def encode(rows):\n" +
+"    rows=sorted(set((l,p,int(f)&0xff) for (l,p,f) in rows),key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    lpool=bytearray(); ppool=bytearray()\n" +
+"    lo=array.array('I',[0]*n); ll=array.array('I',[0]*n)\n" +
+"    po=array.array('I',[0]*n); pl=array.array('I',[0]*n)\n" +
+"    flg=bytearray(n)\n" +
+"    for i,(lab,prog,f) in enumerate(rows):\n" +
+"        lb=lab.encode('utf-8','replace'); pb=prog.encode('utf-8','replace')\n" +
+"        lo[i]=len(lpool); ll[i]=len(lb); lpool.extend(lb)\n" +
+"        po[i]=len(ppool); pl[i]=len(pb); ppool.extend(pb)\n" +
+"        flg[i]=f&0xff\n" +
+"    header=struct.pack('<4sIIII',b'KLAS',1,n,len(lpool),len(ppool))\n" +
+"    with open(BIN,'wb') as fh:\n" +
+"        fh.write(header)\n" +
+"        fh.write(lo.tobytes()); fh.write(ll.tobytes())\n" +
+"        fh.write(po.tobytes()); fh.write(pl.tobytes())\n" +
+"        fh.write(bytes(flg)); fh.write(bytes(lpool)); fh.write(bytes(ppool))\n" +
+"    return {'n':n,'blob_size':os.path.getsize(BIN),'rows':rows}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb'); self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,lps,pps=struct.unpack_from('<4sIIII',self.mm,0)\n" +
+"        assert magic==b'KLAS' and ver==1\n" +
+"        self.n=n; base=20\n" +
+"        a=base; b=a+4*n; c=b+4*n; d=c+4*n; e=d+4*n; lp=e+n; pp=lp+lps\n" +
+"        mv=memoryview(self.mm)\n" +
+"        lo=array.array('I'); lo.frombytes(bytes(mv[a:a+4*n]))\n" +
+"        ll=array.array('I'); ll.frombytes(bytes(mv[b:b+4*n]))\n" +
+"        L=bytes(mv[lp:lp+lps])\n" +
+"        self.labels=[L[lo[i]:lo[i]+ll[i]] for i in range(n)]\n" +
+"        self.flags=bytes(mv[e:e+n])\n" +
+"    def prefix_count(self,prefix):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        a=bisect.bisect_left(self.labels,pb)\n" +
+"        b=bisect.bisect_left(self.labels,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        return b-a\n" +
+"    def close(self): self.mm.close(); self.f.close()\n" +
+"\n" +
+"def linear_repeated_plistlib(prefix):\n" +
+"    home=os.environ.get('HOME','')\n" +
+"    paths=[]\n" +
+"    if home: paths+=sorted(glob.glob(home+'/Library/LaunchAgents/*.plist'))\n" +
+"    paths+=sorted(glob.glob('/Library/LaunchAgents/*.plist'))\n" +
+"    paths+=sorted(glob.glob('/Library/LaunchDaemons/*.plist'))\n" +
+"    c=0\n" +
+"    for p in paths:\n" +
+"        try:\n" +
+"            with open(p,'rb') as f: d=plistlib.load(f)\n" +
+"        except Exception:\n" +
+"            continue\n" +
+"        if not isinstance(d,dict): continue\n" +
+"        lab=d.get('Label')\n" +
+"        if not isinstance(lab,str):\n" +
+"            bn=os.path.basename(p); lab=bn[:-6] if bn.endswith('.plist') else bn\n" +
+"        if lab.startswith(prefix): c+=1\n" +
+"    return c\n" +
+"\n" +
+"def make_samples(rows,k=50):\n" +
+"    labs=[r[0] for r in rows]\n" +
+"    s=set()\n" +
+"    for l in labs:\n" +
+"        parts=l.split('.')\n" +
+"        if len(parts)>=2: s.add('.'.join(parts[:2])+'.')\n" +
+"        if len(parts)>=1: s.add(parts[0]+'.')\n" +
+"    out=list(s)\n" +
+"    if len(out)<k: out=out+[labs[i%len(labs)][:5] for i in range(k-len(out))]\n" +
+"    return out[:k]\n" +
+"\n" +
+"def run_bench():\n" +
+"    print('[classifier] KLAS-v1')\n" +
+"    # PHASE 1: synth\n" +
+"    sr=synth(200)\n" +
+"    print(f'[synth] n={len(sr)}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    info=encode(sr)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    print(f'[synth.encode] {(t1-t0)/1e6:.2f} ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    samples=make_samples(sr,50)\n" +
+"    b=Blob(BIN)\n" +
+"    for s in samples[:3]: b.prefix_count(s)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    bh=0\n" +
+"    for s in samples: bh+=b.prefix_count(s)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    blob_us=(t1-t0)/1000/len(samples)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    lh=0\n" +
+"    for s in samples:\n" +
+"        lh+=sum(1 for (l,_,_) in info['rows'] if l.startswith(s))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    lin_us=(t1-t0)/1000/len(samples)\n" +
+"    b.close()\n" +
+"    print(f'[synth.query] hits blob={bh} linear={lh}  lossless={bh==lh}')\n" +
+"    print(f'  linear scan      : {lin_us:10.1f} us')\n" +
+"    print(f'  blob mmap+bisect : {blob_us:10.1f} us')\n" +
+"    if blob_us>0: print(f'  speedup          : {lin_us/blob_us:6.1f}x')\n" +
+"    # PHASE 2: real probe attempt\n" +
+"    print('---')\n" +
+"    rr,kind,skipped=real_probe()\n" +
+"    print(f'[real] source={kind} n={len(rr)} skipped={skipped}')\n" +
+"    if not rr:\n" +
+"        print('[real] empty — skip phase2'); print(f'[rss] {fmt(rss())}'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    info=encode(rr)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    print(f'[real.encode] {(t1-t0)/1e6:.2f} ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    samples=make_samples(rr,min(50,max(10,len(rr)//2)))\n" +
+"    b=Blob(BIN)\n" +
+"    for s in samples[:3]: b.prefix_count(s)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    bh=0\n" +
+"    for s in samples: bh+=b.prefix_count(s)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    blob_us=(t1-t0)/1000/len(samples)\n" +
+"    used=min(10,len(samples))\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    lh=0\n" +
+"    for s in samples[:used]: lh+=linear_repeated_plistlib(s)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    lin_us=(t1-t0)/1000/used\n" +
+"    ral=sum(1 for x in b.flags if x&FLAG_RUNATLOAD)\n" +
+"    b.close()\n" +
+"    print(f'[real.query] hits_blob={bh} hits_linear_sample10={lh} RunAtLoad={ral}')\n" +
+"    print(f'  OLD plistlib repeated-parse : {lin_us:10.1f} us/query')\n" +
+"    print(f'  NEW blob mmap+bisect        : {blob_us:10.1f} us/query')\n" +
+"    if blob_us>0: print(f'  speedup                     : {lin_us/blob_us:6.1f}x')\n" +
+"    print(f'[rss] {fmt(rss())}  elapsed_ok')\n" +
+"\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"if mode=='encode':\n" +
+"    rr,kind,skipped=real_probe()\n" +
+"    if not rr: rr=synth(); kind='synth'\n" +
+"    info=encode(rr)\n" +
+"    print(f'[KLAS-v1] encoded {info[\"n\"]} ({kind}) → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    run_bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("bench_k5_launchagents_enum")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_k5_launchagents_enum_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

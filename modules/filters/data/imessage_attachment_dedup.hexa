@@ -1,0 +1,250 @@
+// airgenome/modules/filters/data/imessage_attachment_dedup.hexa
+//   K1 — iMessage Attachment Dedup Filter (IMDD — T2 + M2 직접 이식).
+//
+//   목적: ~/Library/Messages/Attachments/ 안에는 동일 image / sticker / video 가
+//         chat 별 GUID 디렉터리에 N번 복제되어 저장됨 (Messages.app 은 dedup 없이
+//         원본 그대로 디스크 영구 보관 — 5년 누적 시 GB 단위). content hash
+//         (blake2b 8B — wyhash_fb fallback) → cluster 로 collapse → 디스크 절감
+//         정량화 + 향후 hard-link 회수 후보 측정.
+//
+//   blob layout (little-endian, "IMDD" magic):
+//     magic    : 4B  "IMDD"
+//     version  : 4B  u32             (1)
+//     n        : 4B  u32             unique attachment 개수
+//     str_sz   : 4B  u32             path pool 바이트 길이
+//     [n*8]    : u64 hash            blake2b first-8B (정렬됨, cluster key)
+//     [n*4]    : u32 path_off        pool 내 path 시작
+//     [n*4]    : u32 path_len        path 길이
+//     [n*4]    : u32 size            file size (bytes)
+//     [str_sz] : utf-8 string pool   path raw bytes
+//
+//   query: bisect_left(hashes,h) → cluster start; cluster 안 entries dedup 후보.
+//          dup_count >= 2 cluster 의 (size * (count-1)) 합계 = 절감 추정.
+//
+// catalog #65 + #41 reference (T2 + M2 동일):
+//   #65 content-hash dedup cache + #41 mmap-able sorted blob (random-access).
+//   조합: hash 정렬 → bisect 로 cluster lookup O(log n).
+//
+// 가이드라인:
+//   - read-only (os.lstat + open('rb') 만, write 0)
+//   - head 64KB 만 hashing (T2 전략 — 큰 video/HEIC 도 head 만으로 dedup 안전성 확보)
+//   - 미존재 / TCC 차단 시 synthetic fallback (3000 files, 30% dup, seed=11)
+//   - 심볼릭 링크 무시 (os.path.islink) — APFS clone 미카운트
+//
+// macOS path probe:
+//   ~/Library/Messages/Attachments/<ID>/<chat>/...  — sandbox RW for user, our process
+//   read-only via fs API (no mutation). FDA 없으면 graceful skip → synth.
+//
+// rubric: docs/k1_imessage_attachment_dedup_rubric_2026-04-30.md (raw 240 V2 = 400/400)
+// companion: imessage_chat_shbf (IM1, 이미 commit) — chat side; 이 filter 는 attachment side.
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음). R17: alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,resource,mmap,array,glob,hashlib,random\n" +
+"mode=sys.argv[1]; src=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"BIN='/tmp/imessage_attachment_imdd.bin'\n" +
+"HEAD_BYTES=65536\n" +
+"MAX_FILES=8000\n" +
+"def fmt(b):\n" +
+"    if b>1073741824: return f'{b/1073741824:.2f}GB'\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"# T2 wyh64 — blake2b digest_size=8 keyed by size (collision avoidance for content+size)\n" +
+"def wyh64(b,sz):\n" +
+"    h=hashlib.blake2b(b,digest_size=8,key=struct.pack('<Q',sz&0xffffffffffffffff)).digest()\n" +
+"    return struct.unpack('<Q',h)[0]\n" +
+"\n" +
+"def probe_root():\n" +
+"    home=os.path.expanduser('~')\n" +
+"    cand=os.path.join(home,'Library','Messages','Attachments')\n" +
+"    return cand if os.path.isdir(cand) else ''\n" +
+"\n" +
+"def harvest(root):\n" +
+"    files=[]\n" +
+"    for dirpath,dirnames,filenames in os.walk(root,followlinks=False):\n" +
+"        for name in filenames:\n" +
+"            full=os.path.join(dirpath,name)\n" +
+"            if os.path.islink(full): continue\n" +
+"            try: st=os.lstat(full)\n" +
+"            except OSError: continue\n" +
+"            if not (st.st_mode & 0o170000)==0o100000: continue\n" +
+"            if st.st_size<=0: continue\n" +
+"            files.append((full,st.st_size))\n" +
+"            if len(files)>=MAX_FILES: return files\n" +
+"    return files\n" +
+"\n" +
+"def synth_files(n=3000,seed=11):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        # 30% duplicates by design (T2/M2 transfer)\n" +
+"        if i>0 and rng.random()<0.30:\n" +
+"            j=rng.randrange(i)\n" +
+"            out.append(out[j])\n" +
+"        else:\n" +
+"            sz=rng.choice([4096,16384,65536,262144,1048576,4194304])\n" +
+"            payload=bytes(rng.randrange(256) for _ in range(min(sz,512)))\n" +
+"            path=f'/tmp/synth/Attachments/{i//100:02x}/{i:08x}/IMG_{i}.heic'\n" +
+"            out.append((path,sz,payload))\n" +
+"    return out\n" +
+"\n" +
+"def hash_files(files):\n" +
+"    entries=[]\n" +
+"    total_bytes=0\n" +
+"    is_synth=files and isinstance(files[0],tuple) and len(files[0])==3\n" +
+"    for item in files:\n" +
+"        if is_synth:\n" +
+"            path,sz,payload=item\n" +
+"            head=payload[:HEAD_BYTES]\n" +
+"        else:\n" +
+"            path,sz=item\n" +
+"            f=open(path,'rb')\n" +
+"            head=f.read(HEAD_BYTES); f.close()\n" +
+"        h=wyh64(head,sz)\n" +
+"        total_bytes+=sz\n" +
+"        entries.append((h,path,sz))\n" +
+"    return entries,total_bytes\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter()\n" +
+"    root=src if (src and os.path.isdir(src)) else probe_root()\n" +
+"    source='real'\n" +
+"    if not root:\n" +
+"        print('[encode] ~/Library/Messages/Attachments/ not accessible — synthetic fallback')\n" +
+"        files=synth_files(3000); source='synthetic'\n" +
+"    else:\n" +
+"        files=harvest(root); source=root\n" +
+"        if not files:\n" +
+"            print('[encode] empty Attachments — synthetic fallback')\n" +
+"            files=synth_files(3000); source='synthetic'\n" +
+"    entries,total_bytes=hash_files(files)\n" +
+"    entries.sort(key=lambda e:e[0])\n" +
+"    n=len(entries)\n" +
+"    pool=bytearray()\n" +
+"    hashes=array.array('Q',[0]*n)\n" +
+"    poffs=array.array('I',[0]*n)\n" +
+"    plens=array.array('I',[0]*n)\n" +
+"    sizes=array.array('I',[0]*n)\n" +
+"    for i,(h,p,sz) in enumerate(entries):\n" +
+"        pb=p.encode('utf-8','replace')\n" +
+"        hashes[i]=h&0xffffffffffffffff\n" +
+"        poffs[i]=len(pool); plens[i]=len(pb); sizes[i]=int(sz)&0xffffffff\n" +
+"        pool.extend(pb)\n" +
+"    header=struct.pack('<4sIII',b'IMDD',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(hashes.tobytes())\n" +
+"        f.write(poffs.tobytes()); f.write(plens.tobytes()); f.write(sizes.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter()\n" +
+"    return {'encode_s':t1-t0,'n':n,'total_bytes':total_bytes,'blob_size':os.path.getsize(BIN),'source':source}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        if magic!=b'IMDD' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n=n; self.pool_sz=pool_sz\n" +
+"        base=16\n" +
+"        self.hashes_off=base\n" +
+"        self.poffs_off =base+8*n\n" +
+"        self.plens_off =base+12*n\n" +
+"        self.sizes_off =base+16*n\n" +
+"        self.pool_off  =base+20*n\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        hs=array.array('Q'); hs.frombytes(bytes(self.mv[self.hashes_off:self.hashes_off+8*n]))\n" +
+"        po=array.array('I'); po.frombytes(bytes(self.mv[self.poffs_off:self.poffs_off+4*n]))\n" +
+"        pl=array.array('I'); pl.frombytes(bytes(self.mv[self.plens_off:self.plens_off+4*n]))\n" +
+"        sz=array.array('I'); sz.frombytes(bytes(self.mv[self.sizes_off:self.sizes_off+4*n]))\n" +
+"        pool=bytes(self.mv[self.pool_off:self.pool_off+pool_sz])\n" +
+"        self.hashes=hs\n" +
+"        self.paths=[pool[po[i]:po[i]+pl[i]].decode('utf-8','replace') for i in range(n)]\n" +
+"        self.sizes=sz\n" +
+"    def find_dups(self,h):\n" +
+"        lo=bisect.bisect_left(self.hashes,h)\n" +
+"        hi=bisect.bisect_right(self.hashes,h)\n" +
+"        return list(range(lo,hi))\n" +
+"    def close(self):\n" +
+"        try: self.mv.release()\n" +
+"        except Exception: pass\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  attachments={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}  source={info[\"source\"]}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no attachments — skip dup phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    clusters={}\n" +
+"    for i in range(b.n):\n" +
+"        h=int(b.hashes[i])\n" +
+"        clusters.setdefault(h,[]).append(i)\n" +
+"    dup_clusters=[(h,ix) for h,ix in clusters.items() if len(ix)>=2]\n" +
+"    dup_files=sum(len(ix) for _,ix in dup_clusters)\n" +
+"    saved=0\n" +
+"    for _,ix in dup_clusters:\n" +
+"        sz=int(b.sizes[ix[0]])\n" +
+"        saved+=sz*(len(ix)-1)\n" +
+"    total_size=sum(int(b.sizes[i]) for i in range(b.n))\n" +
+"    print(f'[dedup] dup clusters={len(dup_clusters)}  dup files={dup_files}  unique={b.n-dup_files+len(dup_clusters)}')\n" +
+"    print(f'[disk]  total={fmt(total_size)}  recoverable={fmt(saved)} ({100*saved/max(total_size,1):.1f}%)')\n" +
+"    rng=random.Random(13)\n" +
+"    sample_h=[int(b.hashes[rng.randrange(b.n)]) for _ in range(min(1000,b.n))]\n" +
+"    rss_blob=rss()\n" +
+"    for h in sample_h[:5]: b.find_dups(h)\n" +
+"    t0=time.perf_counter()\n" +
+"    for h in sample_h: b.find_dups(h)\n" +
+"    t1=time.perf_counter()\n" +
+"    bi_us=(t1-t0)*1e6/len(sample_h)\n" +
+"    hs_list=list(b.hashes)\n" +
+"    t0=time.perf_counter()\n" +
+"    for h in sample_h:\n" +
+"        _=[i for i,hh in enumerate(hs_list) if hh==h]\n" +
+"    t1=time.perf_counter()\n" +
+"    lin_us=(t1-t0)*1e6/len(sample_h)\n" +
+"    b.close()\n" +
+"    print(f'[query] {len(sample_h)} hash-lookup')\n" +
+"    print(f'  linear scan       : {lin_us:10.2f} us')\n" +
+"    print(f'  blob mmap+bisect  : {bi_us :10.2f} us')\n" +
+"    if bi_us>0: print(f'  speedup: {lin_us/bi_us:6.1f}x')\n" +
+"    print(f'[rss] after blob loaded: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} attachments in {info[\"encode_s\"]*1000:.1f} ms -> {BIN} ({fmt(info[\"blob_size\"])}, source={info[\"source\"]})')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench [<Attachments dir>]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("imessage_attachment_dedup")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains("/") || v == "synthetic" { target = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/imessage_attachment_dedup_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

@@ -1,0 +1,7 @@
+{"site":"K6","filter":"zsh_history_columnar","candidate":"K6-a","desc":"flat sorted cmd-pool + ts u32 (F18 form)","b1":55,"b2":45,"b3":50,"b4":40,"b5":50,"b6":35,"b7":40,"b8":35,"b9":20,"total":370,"selected":false}
+{"site":"K6","filter":"zsh_history_columnar","candidate":"K6-b","desc":"cmd-head u8 dict (#99) + full-line pool + ts u32 (#65 wyhash canon)","b1":60,"b2":50,"b3":50,"b4":50,"b5":50,"b6":40,"b7":40,"b8":40,"b9":20,"total":400,"selected":true}
+{"site":"K6","gap_id":"G1","desc":"plain zsh_history on probe host — ts col zero; ROI top-K-by-ts degenerate until EXTENDED_HISTORY","severity":"medium"}
+{"site":"K6","gap_id":"G2","desc":"zsh 0x83 meta-byte escape not decoded — bytes preserved as-is","severity":"low"}
+{"site":"K6","gap_id":"G3","desc":"distinct cmd[0] >255 → most_common(255) fallback maps tail to id=0 misc bucket","severity":"low"}
+{"site":"K6","gap_id":"G4","desc":"exit-status not captured (zsh history-native limitation)","severity":"low"}
+{"site":"K6","ancestry":"C14 bash_history_mmap + MA3 mail_sender_dict","pattern":"sorted-pool prefix bisect + #99 column dict ≤255 enum","wyhash_use":"canonicalize cmd-head pre-dict-insert"}
