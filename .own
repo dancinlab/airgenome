@@ -122,3 +122,34 @@ own 4 new "airgenome-local: gate-cycle placement-axis declaration mandate (anima
   follow-up airgenome modules/*.hexa algorithm dispatch sites 에 `@placement(axis)` + `@stage(capture/forecast/label)` annotation 일괄 후속 추가
   follow-up forecast / label stage placement-axis 측정 (capture 만 측정됨; expected delta ranges to be empirically established)
   follow-up tool/*.hexa algorithm catalog cross-stage placement-axis audit
+
+own 5 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M4 harvest hot-path 5개 + ROI 항목 직접 매핑)"
+  slug airgenome-gate-filter-direct-site-application
+  base raw 91 honest-C3-measure-dont-guess + raw 95 triad-mandate + own 4 placement-axis empirical-evidence-mandate (인접 — own 4 = placement-axis 측정 mandate, own 5 = site-axis 직접 적용)
+  since 2026-04-30 (docs/gate_filter_byte_reinterpret.md + docs/gate_filter_bench_results.md hive→airgenome 이관 commit ccf39c00 직후)
+  scope modules/harvest.hexa M4 hot-path 5개 사이트 — exec()/jq fork 의존도 가장 높은 영역. forecast/label 사이트는 후속 own 에서 site-list 추가
+  rule 다음 5개 사이트는 가설/abstraction 없이 즉시 적용 대상으로 명시한다 (각 사이트 단일 PR 단위, hexa baseline 측정 → 구현 → 재측정 → differential test → merge):
+    site-1: modules/harvest.hexa#last_for_pid (L187-192) — 현 패턴: exec("tail -2000 ... | tac/tail -r | jq -c 'select(.pid==N)' | head -1") per process. 30 procs × 1 jq fork = ~30 × 60ms 추정. 직접 적용: ring 의 tail N row 를 hexa in-process bytes view 로 1회 보유, PID prefix memcmp 매칭. ROI 매핑: #5 slice view + #64 memcmp.
+    site-2: modules/harvest.hexa#vit_at (L195-204) — 현 패턴: per axis exec("echo LINE | jq -r '.vitals[i]'"). 30 procs × 6 axis = 180 jq fork. 직접 적용: site-1 의 in-process line 에서 vitals: 토큰 byte-offset 기반 추출 (raw9 hexa-only). ROI 매핑: #5 slice view + #1 string slice view.
+    site-3: modules/harvest.hexa#append_ring (L225-227) — 현 패턴: per process exec("printf '%s\\n' LINE >> RING"). 30 procs × 1 fork+write = 30 syscall. 직접 적용: TOP_N 라인 buffer build 후 1회 writev (또는 단일 append). ROI 매핑: #54 writev (실측 가설 3.22×, hexa 재측정 mandatory) + #43 N→1 batch.
+    site-4: modules/harvest.hexa#read_ring_lines (L171-184) + rotate_if_full (L230-240) — 현 패턴: 매 cycle exec("cat RING") full reload + rotate 시 tail|>tmp|mv. 직접 적용: tail-only read (마지막 K bytes), rotate snapshot 은 APFS clonefile (`cp -c`) 로 backup 후 truncate. ROI 매핑: #45 page cache + #87 madvise SEQUENTIAL + #55 APFS clonefile.
+    site-5: core/core.hexa fingerprint/cache key 신규 추가 — sha256 금지, wyhash/xxh64 binary 직접 호출 (`xxh64sum` 또는 hexa stdlib 도입 후). ROI 매핑: #65 wyhash (sha256 대비 10.86×, hexa 재측정 mandatory).
+  enforcement 위 5 사이트 변경 PR 은 description 에 (a) site-N 명시, (b) ROI 항목 # 인용, (c) hexa baseline ns/wall-time, (d) post-change ns + 절감%, (e) sigdiff_score 또는 anomaly_total 동일성 differential test (입력 동일 → 출력 동일) 5-tuple mandatory. self-test 는 기존 harvest.hexa#self_test 확장으로 충족.
+  exception modules/harvest.hexa 외 사이트 변경 면제 (forecast/label 은 후속 own). pure doc-only / < 50 LoC 측정 prototype 면제.
+  bans modules/harvest.hexa 신규 코드에서 tail+tac+jq+head 체인 추가 — site-1/site-2 패턴 직접 사용 mandate
+  bans modules/harvest.hexa 신규 per-process exec(printf >>) — site-3 batch writev mandate
+  bans modules/harvest.hexa rotate 시 cp 또는 read-and-rewrite — site-4 clonefile snapshot mandate
+  bans core/core.hexa 신규 fingerprint/cache key 에 sha256/sha1/md5 — site-5 wyhash/xxh64 mandate
+  bans docs/gate_filter_bench_results.md 의 Bun 1.3.12 측정값 (% / × ratio) 을 airgenome PR 절감 근거로 그대로 인용 — hexa 환경 재측정 결과로 대체 mandatory
+  why hive 이관 docs 는 Bun 1.3.12 측정. airgenome harvest 는 hexa-lang + exec() shell-out 의존도 매우 높음 — Bun JS 코스트 모델과 다름 (per exec fork ~ms scale, JS Buffer/V8 overhead 무관). 5 사이트 모두 exec/jq 핫스팟이라 direct ROI 매핑이 즉시 가시적. 추상 staging (C/B/A 등) 보다 site-list 명시가 PR 단위 + measurement 단위 명확. own 1~4 가 패턴-mandate (heredoc / content-class / try-revert / placement-axis) 면 own 5 는 site-mandate (harvest 5 hot-path 직접). raw 91 honest C3 (measure don't guess) — 사이트 명시 후 측정.
+  proof docs/gate_filter_byte_reinterpret.md §5 실측 재정렬 (#5 #54 #55 #64 #65) + §6 즉시 적용 후보
+  proof modules/harvest.hexa L171-240 현행 exec/jq 핫스팟 (read_ring_lines + last_for_pid + vit_at + append_ring + rotate_if_full)
+  proof 2026-04-30 hive→airgenome 이관 commit ccf39c00
+  severity warn
+  enforce-layer advisory
+  enforce-layer-rationale "advisory tier — bootstrap. raw 95 triad satisfied via {advisory + 사이트별 differential test (harvest self_test 확장) + future PR-template site-N+ROI# enforce-layer-1 lint}"
+  note own 4 = placement-axis (capture/forecast/label stage 측정), own 5 = site-axis (harvest 5 사이트 직접 매핑). 두 own 동시 적용 시 dispatch dimension (role × placement × stage × site) 4축 분리.
+  note hexa-lang upstream stdlib 후보 (wyhash binding / writev wrapper / clonefile syscall / mmap view) 는 site-1~5 적용 중 자연 surface 시 별도 own/roadmap 등록 — 본 own 5 가 trigger
+  follow-up forecast.hexa hot-path site-list own 6 등록 (forecast stage site-axis 확장)
+  follow-up label.hexa hot-path site-list own 7 등록 (label stage site-axis 확장)
+  follow-up tool/bench/ + state/bench_results.jsonl ledger 산출 (5 사이트 baseline 누적, hexa-native microbench)

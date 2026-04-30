@@ -183,12 +183,25 @@ fn read_ring_lines() -> list {
     return result
 }
 
-// 동일 PID 의 마지막 게놈 라인을 jq 로 추출 (없으면 빈 문자열)
+// 동일 PID 의 마지막 게놈 라인을 in-hexa scan 으로 추출 (없으면 빈 문자열).
+// own 5 site-1: jq fork 제거 — tail (1 fork) + backward substring scan.
+// pattern unique 보장: encode_genome 가 ts→pid 순서 고정 + comm_safe 가 quote 제거 → comm 내 ,"pid":N, 출현 불가.
+// 측정: tool/bench/bench_site1.hexa — 12.35ms→5.05ms/call (2.45×, 59%↓), diff_test=0/30.
 fn last_for_pid(pid: int) -> str {
-    // macOS tac 부재 — Linux=tac, mac=tail -r
-    let rev = "if [ \"$(uname)\" = \"Linux\" ]; then tac; else tail -r; fi"
-    let cmd = "tail -2000 '" + RING + "' 2>/dev/null | " + rev + " | jq -c 'select(.pid == " + to_string(pid) + ")' 2>/dev/null | head -1"
-    return exec(cmd).trim()
+    let raw = exec("tail -2000 '" + RING + "' 2>/dev/null")
+    let lines = raw.split("\n")
+    let pattern = ",\"pid\":" + to_string(pid) + ","
+    let mut i = len(lines) - 1
+    while i >= 0 {
+        let l = lines[i]
+        if l != "" {
+            if l.contains(pattern) {
+                return l
+            }
+        }
+        i = i - 1
+    }
+    return ""
 }
 
 // JSONL 라인에서 단일 vitals[idx] 추출

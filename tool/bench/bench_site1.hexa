@@ -1,0 +1,134 @@
+// tool/bench/bench_site1.hexa — own 5 site-1 baseline (last_for_pid jq vs hexa-scan)
+//
+// Purpose: establish hexa-environment baseline for modules/harvest.hexa#last_for_pid
+// before C site-1 implementation. Bun-measured % from docs/gate_filter_bench_results.md
+// is invalid as hexa proof per own 5 bans.
+//
+// Synthetic ring: LINES lines, PIDS_N unique PIDs cycling. K iterations × PIDS_N PIDs per run.
+// Output: gdate ns wall-time, per-call ns, speedup, lossless diff_test (must be 0).
+
+use "../../core/core"
+
+let BENCH_RING = "/tmp/airgenome_bench_site1.ring"
+let LINES = 5000
+let PIDS_N = 30
+let K = 3
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn build_ring() -> void {
+    let _rm = exec("rm -f '" + BENCH_RING + "'")
+    let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(LINES) + ";i++) { pid=1000+(i%" + to_string(PIDS_N) + "); cpu=i%100; ram=i%50; printf \"{\\\"ts\\\":\\\"2026-04-30T00:00:00Z\\\",\\\"pid\\\":%d,\\\"comm\\\":\\\"proc%d\\\",\\\"rss_kb\\\":1024,\\\"vitals\\\":[%d,%d,0,0,0,0],\\\"ema\\\":[%d,%d,0,0,0,0]}\\n\", pid, pid, cpu, ram, cpu, ram } }' > '" + BENCH_RING + "'"
+    let _ = exec(cmd)
+}
+
+// OLD: tail | tac/tail -r | jq | head — current modules/harvest.hexa#last_for_pid pattern (L189-191)
+fn old_last_for_pid(pid: int) -> str {
+    let rev = "if [ \"$(uname)\" = \"Linux\" ]; then tac; else tail -r; fi"
+    let cmd = "tail -2000 '" + BENCH_RING + "' 2>/dev/null | " + rev + " | jq -c 'select(.pid == " + to_string(pid) + ")' 2>/dev/null | head -1"
+    return exec(cmd).trim()
+}
+
+// NEW: tail (1 fork) + in-hexa backward scan with PID-prefix substring match
+//   pattern = ,"pid":<N>,  — encode_genome 가 ts 다음에 pid 두 번째 필드 보장 → leading ',' 안전
+fn new_last_for_pid(pid: int) -> str {
+    let raw = exec("tail -2000 '" + BENCH_RING + "' 2>/dev/null")
+    let lines = raw.split("\n")
+    let pattern = ",\"pid\":" + to_string(pid) + ","
+    let mut i = len(lines) - 1
+    while i >= 0 {
+        let l = lines[i]
+        if l != "" {
+            if l.contains(pattern) {
+                return l
+            }
+        }
+        i = i - 1
+    }
+    return ""
+}
+
+fn run_old() -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let mut p = 0
+        while p < PIDS_N {
+            let pid = 1000 + p
+            let s = old_last_for_pid(pid)
+            total = total + len(s)
+            p = p + 1
+        }
+        k = k + 1
+    }
+    return total
+}
+
+fn run_new() -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let mut p = 0
+        while p < PIDS_N {
+            let pid = 1000 + p
+            let s = new_last_for_pid(pid)
+            total = total + len(s)
+            p = p + 1
+        }
+        k = k + 1
+    }
+    return total
+}
+
+fn diff_test() -> int {
+    let mut mismatches = 0
+    let mut p = 0
+    while p < PIDS_N {
+        let pid = 1000 + p
+        let so = old_last_for_pid(pid)
+        let sn = new_last_for_pid(pid)
+        if so != sn { mismatches = mismatches + 1 }
+        p = p + 1
+    }
+    return mismatches
+}
+
+fn main() -> void {
+    println("airgenome bench/site-1 — last_for_pid (jq vs hexa-scan)")
+    println("  ring=" + BENCH_RING + " LINES=" + to_string(LINES) + " PIDS_N=" + to_string(PIDS_N) + " K=" + to_string(K))
+    build_ring()
+    let cnt_str = exec("wc -l < '" + BENCH_RING + "'").trim()
+    println("  ring lines built: " + cnt_str)
+
+    // Lossless diff test FIRST — own 5 enforcement (e)
+    let mm = diff_test()
+    println("  diff_test mismatches: " + to_string(mm))
+    if mm != 0 { panic("BENCH FAIL [diff_test mismatches > 0 — lossless violated]") }
+
+    // Bench OLD (current jq pattern)
+    let t0_old = now_ns()
+    let _o = run_old()
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    let calls = K * PIDS_N
+    println("  OLD (jq)        total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / calls))
+
+    // Bench NEW (hexa-scan)
+    let t0_new = now_ns()
+    let _n = run_new()
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (hexa-scan) total_ns=" + to_string(ns_new) + "  per_call_ns=" + to_string(ns_new / calls))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
