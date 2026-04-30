@@ -90,6 +90,7 @@ static int g_launcher_on = 1;   // ctrl+s app launcher overlay; hive raw 209
                                  // (default ON 2026-04-30 — user expectation
                                  // is "installed = working"; menubar can OFF)
 static int g_winctl_on   = 1;   // alt+1..5 window arrange; raw 209 sister axis
+static int g_hotkey_on   = 1;   // user-defined hotkey-action binder; raw 209 sister #3
 static int g_debug       = 0;   // set via AIRG_TAP_DEBUG=1, logs every event
 
 // hive raw 209 reference impl - declared in airgenome_launcher.m, linked
@@ -98,6 +99,9 @@ extern BOOL airgenome_launcher_handle_keydown(CGEventRef event);
 // hive raw 209 sister axis - declared in airgenome_winctl.m, same binary.
 extern BOOL airgenome_winctl_handle_keydown(CGEventRef event);
 extern void airgenome_winctl_reset_dock_tilesize(void);
+// hive raw 209 sister axis #3 - user-defined hotkey-action binder.
+extern BOOL airgenome_hotkey_handle_keydown(CGEventRef event);
+extern void airgenome_hotkey_load_bindings(void);
 
 // Magnet thresholds (pixels). Generous defaults for multi-monitor and
 // 4K/5K layouts -- a 20px reach feels invisible at high pixel densities.
@@ -173,6 +177,7 @@ static NSMenuItem         *g_item_wake   = nil;
 static NSMenuItem         *g_item_lid    = nil;
 static NSMenuItem         *g_item_winctl = nil;
 static NSMenuItem         *g_item_launcher = nil;
+static NSMenuItem         *g_item_hotkey = nil;
 static AirgenomeMenuTarget *g_menu_target = nil;
 
 // Snap-preview overlay -- a borderless transparent window with a white
@@ -820,6 +825,14 @@ static CGEventRef tap_callback(CGEventTapProxy proxy,
         if (airgenome_winctl_handle_keydown(event)) return NULL;
     }
 
+    // (a2) hive raw 209 sister axis #3: user-defined hotkey → app/system
+    // action binder. Consumes matched events globally (overrides focused
+    // app's binding — user mandate "글로벌"). Config at
+    // ~/Library/Application Support/airgenome/hotkey_bindings.json.
+    if (g_hotkey_on && type == kCGEventKeyDown) {
+        if (airgenome_hotkey_handle_keydown(event)) return NULL;
+    }
+
     // (a) Mouse button: button 4 / 5 -> Cmd+[ / Cmd+]
     if (g_buttons_on && type == kCGEventOtherMouseDown) {
         if (handle_mouse_button(event)) return NULL;   // consumed
@@ -1038,6 +1051,8 @@ static void load_menubar_state(void) {
             g_winctl_on = on;
         } else if ([k isEqualToString:@"launcher"]) {
             g_launcher_on = on;
+        } else if ([k isEqualToString:@"hotkey"]) {
+            g_hotkey_on = on;
         }
     }
 }
@@ -1050,13 +1065,14 @@ static void save_menubar_state(void) {
                                                     error:NULL];
     int mouse_on = (g_buttons_on || g_scroll_on) ? 1 : 0;
     NSString *content = [NSString stringWithFormat:
-        @"mouse=%s\nmagnet=%s\nwake=%s\nlid_closed=%s\nwinctl=%s\nlauncher=%s\n",
+        @"mouse=%s\nmagnet=%s\nwake=%s\nlid_closed=%s\nwinctl=%s\nlauncher=%s\nhotkey=%s\n",
         mouse_on        ? "on" : "off",
         g_magnet_on     ? "on" : "off",
         g_wake_on       ? "on" : "off",
         g_lid_closed_on ? "on" : "off",
         g_winctl_on     ? "on" : "off",
-        g_launcher_on   ? "on" : "off"];
+        g_launcher_on   ? "on" : "off",
+        g_hotkey_on     ? "on" : "off"];
     [content writeToFile:menubar_state_path()
               atomically:YES
                 encoding:NSUTF8StringEncoding
@@ -1239,6 +1255,15 @@ static void update_menu_states(void);
 // permission gate as magnet (kAXPositionAttribute / kAXSizeAttribute writes
 // require the same Accessibility grant). raw 91 honest C3: refuse with a
 // pointer to System Settings instead of silently no-op'ing the toggle.
+- (void)toggleHotkey:(id)sender {
+    (void)sender;
+    g_hotkey_on = !g_hotkey_on;
+    save_menubar_state();
+    update_menu_states();
+    fprintf(stderr, "menubar: hotkey -> %s\n", g_hotkey_on ? "ON" : "off");
+    fflush(stderr);
+}
+
 - (void)toggleWinctl:(id)sender {
     (void)sender;
     if (!g_winctl_on) {
@@ -1365,6 +1390,7 @@ static void update_menu_states(void) {
     if (g_item_lid)    g_item_lid.state    = query_lid_closed_awake_state() ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_winctl)   g_item_winctl.state   = g_winctl_on   ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_launcher) g_item_launcher.state = g_launcher_on ? NSControlStateValueOn : NSControlStateValueOff;
+    if (g_item_hotkey)   g_item_hotkey.state   = g_hotkey_on   ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,6 +1473,13 @@ static void install_status_item(void) {
     g_item_launcher.target = g_menu_target;
     [menu addItem:g_item_launcher];
 
+    g_item_hotkey = [[NSMenuItem alloc]
+        initWithTitle:@"Custom hotkeys (⌃Q/W/R/F/D)"
+               action:@selector(toggleHotkey:)
+        keyEquivalent:@""];
+    g_item_hotkey.target = g_menu_target;
+    [menu addItem:g_item_hotkey];
+
     g_item_mouse = [[NSMenuItem alloc]
         initWithTitle:@"Mouse (buttons + scroll)"
                action:@selector(toggleMouse:)
@@ -1487,6 +1520,7 @@ int main(int argc, char **argv) {
         g_disable_native    = env_flag("AIRG_TAP_DISABLE_NATIVE", g_disable_native);
         g_launcher_on       = env_flag("AIRG_TAP_LAUNCHER",       g_launcher_on);
         g_winctl_on         = env_flag("AIRG_TAP_WINCTL",         g_winctl_on);
+        g_hotkey_on         = env_flag("AIRG_TAP_HOTKEY",         g_hotkey_on);
         g_debug             = env_flag("AIRG_TAP_DEBUG",          g_debug);
         // Persisted menubar state overrides env defaults (raw 168 minimum-viable).
         load_menubar_state();
@@ -1497,6 +1531,10 @@ int main(int argc, char **argv) {
         // gated by system_state.plist sentinel (won't override user
         // resizing on subsequent boots).
         apply_dock_tilesize_reset_once();
+        // raw 209 sister #3: load user-defined hotkey bindings from
+        // ~/Library/Application Support/airgenome/hotkey_bindings.json.
+        // No-op if config file is missing (raw 91 honest C3 — NSLog'd).
+        airgenome_hotkey_load_bindings();
         // raw 213: one-time legacy LaunchAgent cleanup (com.airgenome.wake
         // running caffeinate -dimsu) so the new in-process IOPMAssertion is
         // not running alongside the legacy caffeinate process.
