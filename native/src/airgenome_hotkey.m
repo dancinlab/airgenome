@@ -299,6 +299,23 @@ static void hotkey_ax_hide(pid_t pid) {
     CFRelease(appEl);
 }
 
+// User report 2026-04-30 "ctrl+r 메모 안뜰때가 있거든 / 뒤로 활성화 되는것
+// 같아": NSRunningApplication.activateFromApplication:options: is "polite"
+// on macOS 14+/Tahoe-26 — when the source process (airgenome daemon) is
+// not currently frontmost, the OS swaps the menu bar (target becomes
+// active) but refuses to raise the target's windows above the previously-
+// frontmost app. Result: Notes is "active" yet visually hidden behind
+// Safari/Finder. NSApplicationActivateAllWindows alone does not fix this;
+// the activation token itself is what's missing.
+//
+// Fix: route activation through NSWorkspace.openApplicationAtURL: with
+// cfg.activates=YES — same API the not-running-launch path already uses
+// (line 337). LaunchServices issues a system-level activation token, so
+// the raise survives even when airgenome is a background process. On an
+// already-running app, this is a no-op-launch + activate (no second
+// instance, no relaunch). raw 274-294 single-TCC-grant property is
+// preserved: NSWorkspace.open routes through LaunchServices, NOT
+// AppleEvents — same as the existing launch path.
 static void hotkey_activate_running(NSRunningApplication *app) {
     if (app.isHidden) {
         AXUIElementRef appEl =
@@ -309,22 +326,34 @@ static void hotkey_activate_running(NSRunningApplication *app) {
             CFRelease(appEl);
         }
     }
-    // NSApplicationActivateAllWindows: app becomes frontmost AND every
-    // window is raised. Without it, options:0 leaves windows un-raised —
-    // app is "active" (menu bar swaps) but no visible window surfaces if
-    // the focused one was minimized / hidden / on another Space. User
-    // report 2026-04-30 "ctrl+w 누르면 갑자기 비활성화" matched this:
-    // Safari became active but no window came forward.
-    if (@available(macOS 14.0, *)) {
-        [app activateFromApplication:[NSRunningApplication currentApplication]
-                             options:NSApplicationActivateAllWindows];
-    } else {
+    NSURL *url = app.bundleURL;
+    if (!url) {
+        // Fallback if bundleURL is unexpectedly nil (shouldn't happen for
+        // app-bundle processes; defensive only). raw 91 honest C3.
+        if (@available(macOS 14.0, *)) {
+            [app activateFromApplication:
+                [NSRunningApplication currentApplication]
+                                 options:NSApplicationActivateAllWindows];
+        } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        [app activateWithOptions:NSApplicationActivateIgnoringOtherApps
-                                 | NSApplicationActivateAllWindows];
+            [app activateWithOptions:NSApplicationActivateIgnoringOtherApps
+                                     | NSApplicationActivateAllWindows];
 #pragma clang diagnostic pop
+        }
+        return;
     }
+    NSWorkspaceOpenConfiguration *cfg =
+        [NSWorkspaceOpenConfiguration configuration];
+    cfg.activates = YES;
+    [[NSWorkspace sharedWorkspace]
+        openApplicationAtURL:url
+               configuration:cfg
+           completionHandler:^(NSRunningApplication *r, NSError *e) {
+        if (e) NSLog(@"[airgenome_hotkey] activate failed: %@ (%@)",
+                     url.path, e.localizedDescription);
+        (void)r;
+    }];
 }
 
 // activate-app: not-running → launch+activate / running → activate.
