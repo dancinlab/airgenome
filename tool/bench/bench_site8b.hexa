@@ -1,0 +1,189 @@
+// tool/bench/bench_site8b.hexa — own 6 site-8b baseline
+// (genome_merge merge_host: jq -c + wc -l + [-f] forks vs in-hexa transform)
+//
+// modules/genome_merge.hexa#merge_host 는 host 마다:
+//   1. exec("[ -f SRC ] && ...")     — existence check (1 fork)
+//   2. exec("jq -c '...' SRC >> OUT") — per-line JSON transform (1 fork)
+//   3. exec("wc -l < SRC")            — line count (1 fork)
+// 총 3 forks/host × 3 hosts = 9 forks/cycle (run_merge 추가 mkdir/rm/mv 별도).
+//
+// NEW: 단일 host 처리에서 read_file + hexa text transform + append_file + 카운터.
+//   - existence: read_file 결과 검사
+//   - transform: 라인 끝 } 직전에 ,"host":"<h>" 삽입; pid:N → pid:"h.N" 변환
+//   - count: hexa loop counter
+//
+// raw 91 honest C3 — 측정 후 결정. own 5 site-4 / own 6 site-7 처럼 negative
+// 가능성 있음 (작은 ring 에서 fork 9개 비용 < hexa string concat O(n²) 비용).
+
+use "../../core/core"
+
+let TMP = "/tmp/airgenome_bench_site8b"
+let LINES_PER_RING = 100  // 호스트당 ring 라인 수 (실 환경에서 100-1000)
+let K = 5
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn build_rings() -> void {
+    let _ = exec("mkdir -p '" + TMP + "' && rm -f '" + TMP + "'/*.ring")
+    let mut h = 0
+    let hosts = ["mac", "ubu", "htz"]
+    while h < len(hosts) {
+        let host = hosts[h]
+        let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(LINES_PER_RING) + ";i++) { printf \"{\\\"ts\\\":\\\"2026-04-30T00:00:00Z\\\",\\\"pid\\\":%d,\\\"comm\\\":\\\"proc%d\\\",\\\"vitals\\\":[%d,0,0,0,0,0]}\\n\", 1000+i, i, i%100 } }' > '" + TMP + "/" + host + ".ring'"
+        let _ = exec(cmd)
+        h = h + 1
+    }
+}
+
+// OLD: modules/genome_merge.hexa#merge_host 정확 복제.
+fn old_merge_host(src: str, host: str, out: str) -> int {
+    let chk = exec("[ -f '" + src + "' ] && echo ok || echo no").trim()
+    if chk != "ok" { return 0 }
+    let cmd = "jq -c '. + {host:\"" + host + "\", pid:(\"" + host + ".\" + (.pid|tostring))}' '" + src + "' >> '" + out + "'"
+    exec(cmd)
+    return to_int(exec("wc -l < '" + src + "' 2>/dev/null || echo 0").trim())
+}
+
+fn old_run_merge(out: str) -> int {
+    let _ = exec("rm -f '" + out + "'")
+    let m = old_merge_host(TMP + "/mac.ring", "mac", out)
+    let u = old_merge_host(TMP + "/ubu.ring", "ubu", out)
+    let h = old_merge_host(TMP + "/htz.ring", "htz", out)
+    return m + u + h
+}
+
+// NEW: read_file + hexa 텍스트 변환 + append_file + 카운터. 0 fork (per host).
+// JSONL 라인 형식: {"...","pid":N,"...","..."}
+//   변환: 마지막 } 직전에 ,"host":"<h>" 삽입.
+//   pid:N → pid:"h.N" : "\"pid\":" anchor → 다음 ',' 까지 숫자 치환.
+fn transform_line(line: str, host: str) -> str {
+    if line == "" { return "" }
+    // pid 치환
+    let parts = line.split("\"pid\":")
+    if len(parts) < 2 { return "" }
+    let after = parts[1]
+    // 숫자 끝 = 다음 ','
+    let n = len(after)
+    let mut i = 0
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { break }
+        if ch == "}" { break }
+        i = i + 1
+    }
+    let num = after.substring(0, i)
+    let tail = after.substring(i, n)
+    let new_pid = "\"pid\":\"" + host + "." + num + "\""
+    let assembled = parts[0] + new_pid + tail
+    // host 필드 삽입: 마지막 } 직전
+    let n2 = len(assembled)
+    if n2 < 1 { return assembled }
+    let last_char = assembled.substring(n2 - 1, n2)
+    if last_char != "}" { return assembled }
+    return assembled.substring(0, n2 - 1) + ",\"host\":\"" + host + "\"}"
+}
+
+fn new_merge_host(src: str, host: str, out_buf: str) -> str {
+    let raw = read_file(src)
+    if raw == "" { return out_buf }
+    let lines = raw.split("\n")
+    let mut buf = out_buf
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" {
+            let t = transform_line(l, host)
+            if t != "" { buf = buf + t + "\n" }
+        }
+        i = i + 1
+    }
+    return buf
+}
+
+fn new_run_merge(out: str) -> int {
+    let _ = exec("rm -f '" + out + "'")
+    let mut buf = ""
+    buf = new_merge_host(TMP + "/mac.ring", "mac", buf)
+    buf = new_merge_host(TMP + "/ubu.ring", "ubu", buf)
+    buf = new_merge_host(TMP + "/htz.ring", "htz", buf)
+    if buf != "" { append_file(out, buf) }
+    // count: 라인 수
+    let lines = buf.split("\n")
+    let mut count = 0
+    let mut i = 0
+    while i < len(lines) {
+        if lines[i] != "" { count = count + 1 }
+        i = i + 1
+    }
+    return count
+}
+
+fn run_old() -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        total = total + old_run_merge(TMP + "/old_unified.ring")
+        k = k + 1
+    }
+    return total
+}
+
+fn run_new() -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        total = total + new_run_merge(TMP + "/new_unified.ring")
+        k = k + 1
+    }
+    return total
+}
+
+fn diff_test() -> int {
+    // sort 후 cmp — host 라인 순서는 안정적이지만 line 텍스트 동일성 검증
+    let _ = old_run_merge(TMP + "/old_unified.ring")
+    let _ = new_run_merge(TMP + "/new_unified.ring")
+    let cmp = exec("cmp -s '" + TMP + "/old_unified.ring' '" + TMP + "/new_unified.ring' && echo OK || echo DIFF").trim()
+    if cmp == "OK" { return 0 }
+    println("    DIFF — first 3 line diff:")
+    let _diff = exec("diff '" + TMP + "/old_unified.ring' '" + TMP + "/new_unified.ring' | head -20")
+    println(_diff)
+    return 1
+}
+
+fn main() -> void {
+    println("airgenome bench/site-8b — genome_merge merge_host (jq+wc+test forks vs in-hexa)")
+    println("  TMP=" + TMP + " LINES_PER_RING=" + to_string(LINES_PER_RING) + " K=" + to_string(K))
+    build_rings()
+
+    let mm = diff_test()
+    println("  diff_test (cmp -s): " + to_string(mm))
+    if mm != 0 {
+        println("BENCH FAIL [byte-level diff]")
+        return
+    }
+
+    let t0_old = now_ns()
+    let cnt_old = run_old()
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    let forks_old = K * 3 * 3  // K cycles × 3 hosts × 3 forks/host
+    println("  OLD (jq+wc+test)        total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / K) + "  forks=" + to_string(forks_old) + "  count=" + to_string(cnt_old))
+
+    let t0_new = now_ns()
+    let cnt_new = run_new()
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (in-hexa transform) total_ns=" + to_string(ns_new) + "  per_call_ns=" + to_string(ns_new / K) + "  forks=" + to_string(K) + " (rm only)" + "  count=" + to_string(cnt_new))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
