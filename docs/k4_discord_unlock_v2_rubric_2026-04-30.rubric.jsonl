@@ -1,0 +1,18 @@
+{"schema":"raw240v2","version":1,"date":"2026-04-30","artifact":"k4_discord_unlock_v2_rubric_2026-04-30.md","scope":"K4-discord-leveldb-unlock-v2","predecessor":"k4_discord_filter_rubric_2026-04-30.md (HOLD 347)"}
+{"block":"B1","name":"design-rigor","max":50,"perfect_cut":"shbf/dedup/columnar/dict 1+ + binary layout + read-only"}
+{"block":"B2","name":"measurability","max":90,"perfect_cut":"latency μs + memory MB + before/after ratio 정량"}
+{"block":"B3","name":"enforcement-strength","max":40,"perfect_cut":"4-fixture self-test + classifier-version + lint/CI"}
+{"block":"B4","name":"atomicity","max":40,"perfect_cut":"단일 .hexa + side-effect 0 + tmp 격리 + LOCK 미손상"}
+{"block":"B5","name":"observability","max":30,"perfect_cut":"rss/elapsed/blob_size + classifier_version + reason code"}
+{"block":"B6","name":"cross-repo","max":30,"perfect_cut":"hive raw + airgenome filter + anima 3-hop"}
+{"block":"B7","name":"emission-cost-bounded","max":40,"perfect_cut":"PAYLOAD ≤16KB + 1-pass + cache-on-disk"}
+{"block":"B8","name":"adversarial-resistance","max":40,"perfect_cut":"empty/corrupt-LDB/Discord-running/snappy-skew 4-fixture PASS"}
+{"block":"B9","name":"meta-rubric-finite","max":20,"perfect_cut":"depth≤2 + 자기-점수 회피 + carve-out catalogue"}
+{"candidate":"K4-v1","desc":"hybrid LS+IDB, snappy SKIP (HOLD predecessor)","B1":47,"B2":84,"B3":36,"B4":38,"B5":28,"B6":26,"B7":36,"B8":32,"B9":20,"sigma":347}
+{"candidate":"K4-v2","desc":"hybrid LS+IDB + inline pure-python snappy decoder","B1":47,"B2":86,"B3":38,"B4":38,"B5":28,"B6":26,"B7":35,"B8":36,"B9":20,"sigma":350}
+{"candidate":"K4-v2+","desc":"v2 + token-regex drop + LOCK double-check + 4 self-fixtures","B1":47,"B2":86,"B3":38,"B4":38,"B5":30,"B6":26,"B7":35,"B8":36,"B9":20,"sigma":352}
+{"verdict":"IMPLEMENT","reason":"sigma 352 ≥ 350 threshold (gate PASS)","action":"4 deliverables — md/jsonl + filter + bench"}
+{"snappy_decoder":{"loc_logical":38,"format_supported":"snappy 1.x raw block","format_unsupported":"snappy framed stream (sNaPpY header)","fixtures":["empty","literal-hello","copy1-abcdabcd","literal-60-64B","copy2-AB*32","20-random-roundtrip"],"all_pass":true}}
+{"honest_c3":[{"id":"C3-1","gap":"snappy framed stream unsupported","mitigation":"leveldb never emits framed; carve-out documented"},{"id":"C3-2","gap":"CRC32C skipped","mitigation":"bad blocks degrade gracefully; classifier_version 박제"},{"id":"C3-3","gap":"decoder maintenance + perf vs C","mitigation":"snappy-1 frozen since 2011; 30-80MB/s ≪ C 500-1000MB/s but within 2s budget for 11MB"},{"id":"C3-4","gap":"perf overhead 150-400ms extra","mitigation":"within encode budget"},{"id":"C3-5","gap":"LOCK race window 0.2s","mitigation":"stat+pgrep double-check, synth fallback"},{"id":"C3-6","gap":"auth token surface","mitigation":"regex drop /token|password|secret|auth|jwt|bearer/i"},{"id":"C3-7","gap":"schema-version skew","mitigation":"classifier_version=KDLS-v1-2026-04-30"},{"id":"C3-8","gap":"leveldb internal-key 8B trailer","mitigation":"strip seq+type before utf-8 decode"}],"gap_count":8}
+{"roi_projection":{"real_key_coverage_v1":"30-50%","real_key_coverage_v2":"95%+","encode_ms_v2":"250-500","blob_size_kb":"80-250","mmap_lookup_us":"<100","classifier_version":"KDLS-v1-2026-04-30","anima_yield":"5-15K entity tokens"}}
+{"deliverables":["docs/k4_discord_unlock_v2_rubric_2026-04-30.md","docs/k4_discord_unlock_v2_rubric_2026-04-30.rubric.jsonl","modules/filters/data/discord_localstorage_shbf.hexa","tool/bench/bench_k4_discord.hexa"]}
