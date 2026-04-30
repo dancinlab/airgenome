@@ -330,6 +330,7 @@ static dispatch_source_t g_datae_w8_cc_git_src          = NULL;  // 306 real git
 static dispatch_source_t g_datae_w8_cc_exit_src         = NULL;  // CC-BG3 2182 pairs / 2.3% err
 static dispatch_source_t g_datae_w8_cc_read_src         = NULL;  // CC-BG4 296 reads / 58.8% path_dup
 static dispatch_source_t g_datae_w8_cc_token_src        = NULL;  // CC-BG5 6616 turns / 3.18B opus tokens
+static dispatch_source_t g_datae_w8_cc_cache_src        = NULL;  // CC-BG6 V2.5 720/720 8/8 selftest 5.5× hot hit
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -784,6 +785,10 @@ void airgenome_loop_init(void) {
     static const airgenome_loop_module_t datae_w8_cc_token = {
         .module_name="datae-w8-cc-token-genome", .module_path="/Users/ghost/core/airgenome/modules/filters/data/claude_token_consumption_genome.hexa",
         .extra_arg="encode", .interval_s=1800, .timeout_s=120 };
+    // CC-BG6 raw 240 V2.5 720/720 — Read result cache layer (5중 verify + auto-learn + glob)
+    static const airgenome_loop_module_t datae_w8_cc_cache = {
+        .module_name="datae-w8-cc-read-cache", .module_path="/Users/ghost/core/airgenome/modules/filters/data/claude_read_cache_layer.hexa",
+        .extra_arg="encode", .interval_s=600, .timeout_s=60 };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -903,6 +908,7 @@ void airgenome_loop_init(void) {
         g_datae_w8_cc_exit_src        = loop_make_timer(&datae_w8_cc_exit,        g_loop_queue);
         g_datae_w8_cc_read_src        = loop_make_timer(&datae_w8_cc_read,        g_loop_queue);
         g_datae_w8_cc_token_src       = loop_make_timer(&datae_w8_cc_token,       g_loop_queue);
+        g_datae_w8_cc_cache_src       = loop_make_timer(&datae_w8_cc_cache,       g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -1016,10 +1022,11 @@ void airgenome_loop_init(void) {
               g_datae_w8_im_attach_meta_src ? "ok" : "FAIL",
               g_datae_w8_cc_bash_src        ? "ok" : "FAIL",
               g_datae_w8_cc_git_src         ? "ok" : "FAIL");
-        NSLog(@"[airgenome_loop] datae w8-cc-deep: cc_exit=%s cc_read=%s cc_token=%s",
+        NSLog(@"[airgenome_loop] datae w8-cc-deep: cc_exit=%s cc_read=%s cc_token=%s cc_cache=%s",
               g_datae_w8_cc_exit_src  ? "ok" : "FAIL",
               g_datae_w8_cc_read_src  ? "ok" : "FAIL",
-              g_datae_w8_cc_token_src ? "ok" : "FAIL");
+              g_datae_w8_cc_token_src ? "ok" : "FAIL",
+              g_datae_w8_cc_cache_src ? "ok" : "FAIL");
     }
 }
 
@@ -1138,6 +1145,7 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_w8_cc_exit_src)        { dispatch_source_cancel(g_datae_w8_cc_exit_src);        g_datae_w8_cc_exit_src        = NULL; }
     if (g_datae_w8_cc_read_src)        { dispatch_source_cancel(g_datae_w8_cc_read_src);        g_datae_w8_cc_read_src        = NULL; }
     if (g_datae_w8_cc_token_src)       { dispatch_source_cancel(g_datae_w8_cc_token_src);       g_datae_w8_cc_token_src       = NULL; }
+    if (g_datae_w8_cc_cache_src)       { dispatch_source_cancel(g_datae_w8_cc_cache_src);       g_datae_w8_cc_cache_src       = NULL; }
 }
 
 // ----------------------------------------------------------------------

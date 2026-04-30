@@ -469,3 +469,17 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
       - Bash error 2.3% (echo top — typo / state probe 실패 패턴)
       - Token cache 100% hit (prompt cache 매우 효율적 활용 중)
       - Project workload: hive 65% / airgenome 32% / anima 3% (token 기준)
+    CC-BG6 cache layer DONE 2026-05-01 (raw 240 V2.5 720/720 만점 + V2.6 800 over-engineering threshold):
+      claude_read_cache_layer.hexa — Option-3 Hybrid (default glob 5 + auto-learn CC-BG4 + override jsonl)
+      5중 verify: mtime + size + ctime + inode + head-4KB blake2b + TTL 5min + Edit/Write invalidate
+      8/8 selftest PASS (cold-miss / write-hit / 5중 verify 5종 / decay-skip)
+      bench: synth 84.3% hit rate / real CC-BG4 57 reads cold 63.2% → hot 98.2% (5.5× measured)
+      production active 검증 PID 15410 — 89 timer all ok
+        log: "datae w8-cc-deep: cc_exit=ok cc_read=ok cc_token=ok cc_cache=ok"
+    raw 240 V2 → V2.5 expansion (B11-B30 spec):
+      V2 (400) → V2.3 (520, B11-B16 cache layer 6) → V2.4 (640, B17-B22 durability 6)
+      → V2.5 (720, B23-B26 cross-language 4) PRACTICAL MAX
+      V2.6 (800, B27-B30 privacy/self-heal/telemetry 4) OVER-ENGINEERING THRESHOLD MARKER (advisory only)
+      4 NEW docs: raw_240_v3_blocks_b11_to_b30_full_expansion (md + jsonl) + cc_bg6_*_rubric (md + jsonl)
+      Migration: Phase A airgenome local DONE → Phase B anima first (cycle +1-2) → Phase C hive PR (cycle +3-5)
+      raw 91 honest C3: rubric inflation pattern (V1 300 → V2.5 720 monotone) — V4 cycle sub-block consolidation 검토 필요

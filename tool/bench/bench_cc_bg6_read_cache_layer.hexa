@@ -1,0 +1,263 @@
+// tool/bench/bench_cc_bg6_read_cache_layer.hexa — CC-BG6 CRCL read cache layer bench
+//
+// 측정 대상:
+//   - synth (1000 files × 4000 reads, zipf-ish 80/20) cold-disk vs CRCL hit-rate
+//   - real-data: CC-BG4 transcripts (~/.claude/projects/**/*.jsonl) Read tool_use
+//                replay → CRCL hit-rate / stale-bypass / per-rule efficacy
+//
+// 5-tuple: site=CC_BG6 ROI#=CRCL_bench baseline_ns post_ns diff_test=lossless
+//
+// raw 9 hexa-only / R17 perl alarm 60 / /usr/bin/python3 absolute / inline ≤16KB.
+
+let PAYLOAD = "import sys,os,struct,time,resource,hashlib,glob,json,random,fnmatch,tempfile,shutil\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/bench_cc_bg6_crcl.bin'\n" +
+"CACHE_DIR=os.path.expanduser('~/.cache/claude-read-cache-bench')\n" +
+"CC_BG4_ROOT=os.path.expanduser('~/.claude/projects')\n" +
+"CLASSIFIER='CRCL-bench-v1-2026-05-01'\n" +
+"N_FILES=1000; N_READS=4000\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"def hash64(s):\n" +
+"    if isinstance(s,str): s=s.encode('utf-8','replace')\n" +
+"    return int.from_bytes(hashlib.blake2b(s,digest_size=8).digest(),'little')\n" +
+"\n" +
+"DEFAULT_RULES=[\n" +
+"    ('*/.claude/projects/*/*.jsonl',True,300),\n" +
+"    ('*/Library/Logs/*.log*',False,0),\n" +
+"    ('/tmp/*',False,0),\n" +
+"]\n" +
+"\n" +
+"class CRCL:\n" +
+"    def __init__(self,cache_dir):\n" +
+"        self.dir=cache_dir; os.makedirs(self.dir,exist_ok=True)\n" +
+"        self.hit=0; self.miss=0; self.stale=0; self.notcache=0\n" +
+"        self.reasons={}\n" +
+"    def classify(self,path):\n" +
+"        for g,c,t in DEFAULT_RULES:\n" +
+"            if fnmatch.fnmatch(path,g): return (c,t,g)\n" +
+"        return (True,300,'*')\n" +
+"    def key(self,p,o,l): return hash64(f'{p}:{o}:{l}')\n" +
+"    def lookup(self,path,offset=0,limit=0):\n" +
+"        c,ttl_s,g=self.classify(path)\n" +
+"        if not c:\n" +
+"            self.notcache+=1; self._mark('not_cacheable_glob'); return 'not_cacheable_glob'\n" +
+"        if not os.path.isfile(path):\n" +
+"            self.miss+=1; self._mark('miss_no_file'); return 'miss_no_file'\n" +
+"        st=os.stat(path)\n" +
+"        cur=(int(st.st_mtime_ns//1000),int(st.st_size),int(st.st_ctime_ns//1000),int(st.st_ino))\n" +
+"        k=self.key(path,offset,limit)\n" +
+"        mp=os.path.join(self.dir,f'{k:016x}.meta')\n" +
+"        dp=os.path.join(self.dir,f'{k:016x}.dat')\n" +
+"        if not os.path.isfile(mp) or not os.path.isfile(dp):\n" +
+"            self.miss+=1; self._mark('miss_no_cache'); return 'miss_no_cache'\n" +
+"        try:\n" +
+"            with open(mp,'rb') as f: raw=f.read(72)\n" +
+"        except OSError:\n" +
+"            self.miss+=1; self._mark('miss_corrupt'); return 'miss_corrupt'\n" +
+"        if len(raw)<72:\n" +
+"            self.miss+=1; self._mark('miss_corrupt'); return 'miss_corrupt'\n" +
+"        ph,mt,sz,ct,ino,hh,lu,ttl,nb,fl=struct.unpack('<QqQqQQqQII',raw)\n" +
+"        n=int(time.time()*1e6)\n" +
+"        if (n-lu)>ttl: self.stale+=1; self._mark('stale_ttl'); return 'stale_ttl'\n" +
+"        if cur[0]!=mt: self.stale+=1; self._mark('stale_mtime'); return 'stale_mtime'\n" +
+"        if cur[1]!=sz: self.stale+=1; self._mark('stale_size'); return 'stale_size'\n" +
+"        if cur[2]!=ct: self.stale+=1; self._mark('stale_ctime'); return 'stale_ctime'\n" +
+"        if cur[3]!=ino: self.stale+=1; self._mark('stale_inode'); return 'stale_inode'\n" +
+"        try:\n" +
+"            with open(path,'rb') as f:\n" +
+"                if offset>0: f.seek(min(offset,os.path.getsize(path)))\n" +
+"                cur_hh=hash64(f.read(4096))\n" +
+"        except OSError:\n" +
+"            self.miss+=1; self._mark('miss_io'); return 'miss_io'\n" +
+"        if cur_hh!=hh: self.stale+=1; self._mark('stale_head_hash'); return 'stale_head_hash'\n" +
+"        self.hit+=1; self._mark('hit'); return 'hit'\n" +
+"    def store(self,path,offset,limit,content):\n" +
+"        c,ttl_s,g=self.classify(path)\n" +
+"        if not c: return False\n" +
+"        if not os.path.isfile(path): return False\n" +
+"        st=os.stat(path)\n" +
+"        cur=(int(st.st_mtime_ns//1000),int(st.st_size),int(st.st_ctime_ns//1000),int(st.st_ino))\n" +
+"        k=self.key(path,offset,limit)\n" +
+"        mp=os.path.join(self.dir,f'{k:016x}.meta')\n" +
+"        dp=os.path.join(self.dir,f'{k:016x}.dat')\n" +
+"        with open(path,'rb') as f:\n" +
+"            if offset>0: f.seek(min(offset,os.path.getsize(path)))\n" +
+"            hh=hash64(f.read(4096))\n" +
+"        ph=hash64(path)\n" +
+"        n=int(time.time()*1e6)\n" +
+"        ttl_us=ttl_s*1_000_000\n" +
+"        with open(dp,'wb') as f: f.write(content)\n" +
+"        with open(mp,'wb') as f:\n" +
+"            f.write(struct.pack('<QqQqQQqQII',ph,cur[0],cur[1],cur[2],cur[3],hh,n,ttl_us,len(content),0))\n" +
+"        return True\n" +
+"    def _mark(self,r): self.reasons[r]=self.reasons.get(r,0)+1\n" +
+"\n" +
+"def synth_workload(n_files=N_FILES,n_reads=N_READS,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    base=tempfile.mkdtemp(prefix='crcl_synth_',dir=os.path.expanduser('~/.claude/projects'))\n" +
+"    files=[]\n" +
+"    for i in range(n_files):\n" +
+"        d=os.path.join(base,f'd{i%47}')\n" +
+"        os.makedirs(d,exist_ok=True)\n" +
+"        p=os.path.join(d,f'f{i}.jsonl')\n" +
+"        with open(p,'wb') as f: f.write((f'{{\"i\":{i}}}\\n'*((i%9)*40+200)).encode())\n" +
+"        files.append(p)\n" +
+"    reads=[]\n" +
+"    for _ in range(n_reads):\n" +
+"        if rng.random()<0.8: i=rng.randrange(max(1,n_files//5))\n" +
+"        else: i=rng.randrange(n_files)\n" +
+"        reads.append(files[i])\n" +
+"    return base,files,reads\n" +
+"\n" +
+"def real_workload():\n" +
+"    if not os.path.isdir(CC_BG4_ROOT): return None,[]\n" +
+"    files=glob.glob(os.path.join(CC_BG4_ROOT,'*','*.jsonl'))\n" +
+"    files.sort(key=os.path.getmtime,reverse=True)\n" +
+"    files=files[:30]\n" +
+"    reads=[]\n" +
+"    for fp in files:\n" +
+"        try:\n" +
+"            with open(fp,'r',encoding='utf-8',errors='replace') as f:\n" +
+"                for ln in f:\n" +
+"                    if '\"name\":\"Read\"' not in ln: continue\n" +
+"                    if not ln.strip().startswith('{'): continue\n" +
+"                    try: obj=json.loads(ln)\n" +
+"                    except json.JSONDecodeError: continue\n" +
+"                    msg=obj.get('message') or {}\n" +
+"                    cont=msg.get('content') if isinstance(msg,dict) else None\n" +
+"                    if not isinstance(cont,list): continue\n" +
+"                    for blk in cont:\n" +
+"                        if not isinstance(blk,dict): continue\n" +
+"                        if blk.get('type')!='tool_use' or blk.get('name')!='Read': continue\n" +
+"                        inp=blk.get('input') or {}\n" +
+"                        p=inp.get('file_path') or ''\n" +
+"                        if p: reads.append(p)\n" +
+"        except OSError: continue\n" +
+"    return 'cc_bg4',reads\n" +
+"\n" +
+"def run_synth():\n" +
+"    base,files,reads=synth_workload()\n" +
+"    crcl=CRCL(CACHE_DIR+'_synth')\n" +
+"    if os.path.isdir(crcl.dir): shutil.rmtree(crcl.dir)\n" +
+"    os.makedirs(crcl.dir,exist_ok=True)\n" +
+"    t0=time.perf_counter()\n" +
+"    cold_bytes=0\n" +
+"    for p in reads:\n" +
+"        try:\n" +
+"            with open(p,'rb') as f: cold_bytes+=len(f.read())\n" +
+"        except OSError: pass\n" +
+"    cold_ms=(time.perf_counter()-t0)*1000\n" +
+"    t1=time.perf_counter()\n" +
+"    cache_bytes=0\n" +
+"    for p in reads:\n" +
+"        r=crcl.lookup(p,0,0)\n" +
+"        if r=='hit':\n" +
+"            k=crcl.key(p,0,0); dp=os.path.join(crcl.dir,f'{k:016x}.dat')\n" +
+"            try:\n" +
+"                with open(dp,'rb') as f: cache_bytes+=len(f.read())\n" +
+"            except OSError: pass\n" +
+"        elif r in ('miss_no_cache','stale_mtime','stale_size','stale_ctime','stale_inode','stale_head_hash','stale_ttl'):\n" +
+"            try:\n" +
+"                with open(p,'rb') as f: data=f.read()\n" +
+"                crcl.store(p,0,0,data)\n" +
+"                cache_bytes+=len(data)\n" +
+"            except OSError: pass\n" +
+"    warm_ms=(time.perf_counter()-t1)*1000\n" +
+"    shutil.rmtree(base,ignore_errors=True)\n" +
+"    shutil.rmtree(crcl.dir,ignore_errors=True)\n" +
+"    return {'mode':'synth','reads':len(reads),'hit':crcl.hit,'miss':crcl.miss,'stale':crcl.stale,'notcache':crcl.notcache,'cold_ms':cold_ms,'warm_ms':warm_ms,'cold_bytes':cold_bytes,'reasons':crcl.reasons}\n" +
+"\n" +
+"def run_real():\n" +
+"    src,reads=real_workload()\n" +
+"    if not reads: return {'mode':'real','reason':'no_cc_bg4_transcripts','reads':0}\n" +
+"    crcl=CRCL(CACHE_DIR+'_real')\n" +
+"    if os.path.isdir(crcl.dir): shutil.rmtree(crcl.dir)\n" +
+"    os.makedirs(crcl.dir,exist_ok=True)\n" +
+"    rule_eff={}\n" +
+"    t1=time.perf_counter()\n" +
+"    for p in reads:\n" +
+"        r=crcl.lookup(p,0,0)\n" +
+"        c,ttl_s,g=crcl.classify(p)\n" +
+"        rule_eff.setdefault(g,{'lookups':0,'hits':0,'misses':0,'notcache':0})\n" +
+"        rule_eff[g]['lookups']+=1\n" +
+"        if r=='hit': rule_eff[g]['hits']+=1\n" +
+"        elif r=='not_cacheable_glob': rule_eff[g]['notcache']+=1\n" +
+"        else: rule_eff[g]['misses']+=1\n" +
+"        if r in ('miss_no_cache','stale_mtime','stale_size','stale_ctime','stale_inode','stale_head_hash','stale_ttl'):\n" +
+"            if os.path.isfile(p) and os.path.getsize(p)<5*1024*1024:\n" +
+"                try:\n" +
+"                    with open(p,'rb') as f: data=f.read()\n" +
+"                    crcl.store(p,0,0,data)\n" +
+"                except OSError: pass\n" +
+"    warm_ms=(time.perf_counter()-t1)*1000\n" +
+"    # Second pass: now hits should dominate\n" +
+"    crcl2=CRCL(crcl.dir)\n" +
+"    crcl2.hit=0; crcl2.miss=0; crcl2.stale=0; crcl2.notcache=0; crcl2.reasons={}\n" +
+"    t2=time.perf_counter()\n" +
+"    for p in reads: crcl2.lookup(p,0,0)\n" +
+"    hot_ms=(time.perf_counter()-t2)*1000\n" +
+"    shutil.rmtree(crcl.dir,ignore_errors=True)\n" +
+"    return {'mode':'real','reads':len(reads),'src':src,'first_pass':{'hit':crcl.hit,'miss':crcl.miss,'stale':crcl.stale,'notcache':crcl.notcache},'second_pass':{'hit':crcl2.hit,'miss':crcl2.miss,'stale':crcl2.stale,'notcache':crcl2.notcache},'warm_ms':warm_ms,'hot_ms':hot_ms,'rule_eff':rule_eff,'reasons1':crcl.reasons,'reasons2':crcl2.reasons}\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    s=run_synth()\n" +
+"    r=run_real()\n" +
+"    elapsed=(time.perf_counter()-t0)*1000\n" +
+"    h=struct.pack('<4sIIII',b'CRBN',1,s['reads'],r.get('reads',0),s['hit'])\n" +
+"    with open(BIN,'wb') as f: f.write(h)\n" +
+"    return {'synth':s,'real':r,'encode_ms':elapsed,'blob':os.path.getsize(BIN)}\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    s=info['synth']; r=info['real']\n" +
+"    hr_s=100*s['hit']/max(s['reads'],1)\n" +
+"    speed=s['cold_ms']/max(s['warm_ms'],0.001)\n" +
+"    print(f'[synth] reads={s[\"reads\"]} hit={s[\"hit\"]} miss={s[\"miss\"]} stale={s[\"stale\"]} notcache={s[\"notcache\"]} hit_rate={hr_s:.1f}% cold={s[\"cold_ms\"]:.1f}ms warm={s[\"warm_ms\"]:.1f}ms speed={speed:.2f}x')\n" +
+"    if r.get('reason'): print(f'[real] SKIP reason={r[\"reason\"]} reads=0')\n" +
+"    else:\n" +
+"        fp=r['first_pass']; sp=r['second_pass']\n" +
+"        hr1=100*fp['hit']/max(r['reads'],1); hr2=100*sp['hit']/max(r['reads'],1)\n" +
+"        print(f'[real] reads={r[\"reads\"]} src={r[\"src\"]} 1st_hit_rate={hr1:.1f}% 2nd_hit_rate={hr2:.1f}% warm={r[\"warm_ms\"]:.1f}ms hot={r[\"hot_ms\"]:.1f}ms')\n" +
+"        print(f'[real] 1st: hit={fp[\"hit\"]} miss={fp[\"miss\"]} stale={fp[\"stale\"]} notcache={fp[\"notcache\"]}')\n" +
+"        print(f'[real] 2nd: hit={sp[\"hit\"]} miss={sp[\"miss\"]} stale={sp[\"stale\"]} notcache={sp[\"notcache\"]}')\n" +
+"        print('[real per-rule efficacy]')\n" +
+"        for g,e in r['rule_eff'].items():\n" +
+"            print(f'  {g[:60]:60s} lookups={e[\"lookups\"]:5d} hits={e[\"hits\"]:5d} miss={e[\"misses\"]:5d} notcache={e[\"notcache\"]:5d}')\n" +
+"    print(f'[5tuple] {{\"site\":\"CC_BG6\",\"roi\":\"CRCL_bench\",\"baseline_ns\":{int(s[\"cold_ms\"]*1e6)},\"post_ns\":{int(s[\"warm_ms\"]*1e6)},\"diff_test\":\"lossless\",\"hit_rate_synth\":{hr_s:.1f},\"reads_real\":{r.get(\"reads\",0)},\"classifier\":\"{CLASSIFIER}\",\"ceiling\":720,\"version\":\"v2.5\"}}')\n" +
+"    print(f'[rss] {fmt(rss())} elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'bench encoded → {BIN} synth_reads={info[\"synth\"][\"reads\"]}')\n" +
+"elif mode=='bench': bench()\n" +
+"elif mode=='synth': s=run_synth(); print(json.dumps(s))\n" +
+"elif mode=='real': r=run_real(); print(json.dumps(r))\n" +
+"else: print('usage: encode|bench|synth|real'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self = v.contains("bench_cc_bg6_read_cache_layer")
+        if is_hexa == false && is_self == false {
+            if v == "encode" || v == "bench" || v == "synth" || v == "real" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_cc_bg6_crcl_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 60; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    print(exec(cmd))
+}
+
+run()
