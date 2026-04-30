@@ -1,0 +1,74 @@
+// tool/bench/bench_site5.hexa — own 5 site-5 (fingerprint stdlib: xxh64 vs sha256)
+//
+// core/core.hexa fingerprint/cache key 신규 추가 시 sha256/sha1/md5 금지, wyhash/xxh64 binding mandate.
+// 현 caller 0 — site-5 는 stdlib API 등록 + bench. xxh64sum (Bun-side wyhash 의 CLI 등가물).
+// 코퍼스 스케일별 측정 — fork 비용이 작은 입력에 dominate.
+
+use "../../core/core"
+
+let SMALL_PATH = "/tmp/airgenome_bench_site5_small.dat"
+let BIG_PATH = "/tmp/airgenome_bench_site5_big.dat"
+let SMALL_BYTES = 1024  // 1KB — fingerprint typical use
+let BIG_MB = 10  // 10MB — corpus scale
+let K = 5
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn build_corpus() -> void {
+    let _rm = exec("rm -f '" + SMALL_PATH + "' '" + BIG_PATH + "'")
+    // 1KB pseudo-random
+    let _s = exec("dd if=/dev/urandom of='" + SMALL_PATH + "' bs=1 count=" + to_string(SMALL_BYTES) + " 2>/dev/null")
+    // 10MB
+    let _b = exec("dd if=/dev/urandom of='" + BIG_PATH + "' bs=1m count=" + to_string(BIG_MB) + " 2>/dev/null")
+}
+
+fn run_xxh64(path: str) -> int {
+    let mut k = 0
+    let t0 = now_ns()
+    while k < K {
+        let _ = exec("xxh64sum -q '" + path + "'")
+        k = k + 1
+    }
+    let t1 = now_ns()
+    return ns_diff(t0, t1)
+}
+
+fn run_sha256(path: str) -> int {
+    let mut k = 0
+    let t0 = now_ns()
+    while k < K {
+        let _ = exec("openssl sha256 -r '" + path + "'")
+        k = k + 1
+    }
+    let t1 = now_ns()
+    return ns_diff(t0, t1)
+}
+
+fn report(label: str, path: str) -> void {
+    let sz = exec("wc -c < '" + path + "'").trim()
+    println("  " + label + " (bytes=" + sz + "):")
+    let ns_xxh = run_xxh64(path)
+    let ns_sha = run_sha256(path)
+    println("    xxh64sum  total_ns=" + to_string(ns_xxh) + "  per_op_ns=" + to_string(ns_xxh / K))
+    println("    sha256    total_ns=" + to_string(ns_sha) + "  per_op_ns=" + to_string(ns_sha / K))
+    if ns_xxh > 0 {
+        let ratio = ns_sha / ns_xxh
+        let saved_pct = ((ns_sha - ns_xxh) * 100) / ns_sha
+        println("    speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
+
+fn main() -> void {
+    println("airgenome bench/site-5 — fingerprint (xxh64sum vs openssl sha256)")
+    println("  K=" + to_string(K))
+    build_corpus()
+
+    report("SMALL", SMALL_PATH)
+    report("BIG", BIG_PATH)
+}

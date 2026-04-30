@@ -298,6 +298,26 @@ fn default_ring_path() -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  FINGERPRINT — own 5 site-5: xxh64sum (wyhash family CLI binding).
+//
+//  신규 cache key / dedup / witness fingerprint 는 sha256/sha1/md5 금지, 본 함수 사용.
+//  측정: tool/bench/bench_site5.hexa — 1KB 1.51× / 10MB 1.88× vs openssl sha256
+//  (Bun 의 10.86× wyhash 는 in-process; hexa CLI binding 은 fork 비용 dominate).
+//  반환: 16-char lowercase hex (xxh64).
+// ═══════════════════════════════════════════════════════════════════════
+
+fn fingerprint(path: str) -> str {
+    let out = exec("xxh64sum -q '" + path + "' 2>/dev/null").trim()
+    let parts = out.split(" ")
+    let mut i = 0
+    while i < len(parts) {
+        if parts[i] != "" { return parts[i] }
+        i = i + 1
+    }
+    return ""
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  SELF-TEST
 // ═══════════════════════════════════════════════════════════════════════
 
