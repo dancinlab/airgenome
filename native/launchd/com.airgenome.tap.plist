@@ -45,6 +45,11 @@
     <dict>
         <key>AIRG_TAP_LOOP</key>
         <string>1</string>
+        <!-- Safari 통합 wave (F45/F64/F65/F66) — default OFF (보수적).
+             enable: <string>0</string> → <string>1</string> + launchctl kickstart -k.
+             4 추가 timer (60s/60s/120s/60s, 모두 raw 242 7 안전망 충족). -->
+        <key>AIRG_TAP_LOOP_SAFARI</key>
+        <string>0</string>
     </dict>
 </dict>
 </plist>

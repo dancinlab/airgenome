@@ -220,6 +220,13 @@ static dispatch_source_t loop_make_timer(const airgenome_loop_module_t *m,
 static dispatch_source_t g_harvest_src  = NULL;
 static dispatch_source_t g_label_src    = NULL;
 static dispatch_source_t g_forecast_src = NULL;
+// Safari 통합 wave (F45/F64/F65/F66) — env AIRG_TAP_LOOP_SAFARI=1 일 때만 활성.
+// default OFF (보수적 — wave 4 production-test 통과 후 enable). raw 241/246
+// 정합 (별도 plist 0, 별도 binary 0, 모두 단일 binary in-process timer).
+static dispatch_source_t g_safari_genome_src   = NULL;
+static dispatch_source_t g_safari_active_src   = NULL;
+static dispatch_source_t g_safari_youtube_src  = NULL;
+static dispatch_source_t g_safari_battery_src  = NULL;
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -241,6 +248,35 @@ void airgenome_loop_init(void) {
         .interval_s  = 3600,
         .timeout_s   = 120,
     };
+    // Safari 통합 wave (commit 788e483a production-validated):
+    //   F45 bg_tab_throttle_genome — 60s, 30s timeout (own 8 successor, Type D)
+    //   F64 active_throttle_signal — 60s, 30s timeout (Type B, 33× speedup)
+    //   F65 youtube_gpu_filter     — 120s, 60s timeout (Type A+B, 7×)
+    //   F66 battery_freeze_filter  — 60s, 30s timeout (Type A, 13×)
+    static const airgenome_loop_module_t safari_genome = {
+        .module_name = "safari-genome",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/safari_bg_tab_throttle_genome.hexa",
+        .interval_s  = 60,
+        .timeout_s   = 30,
+    };
+    static const airgenome_loop_module_t safari_active = {
+        .module_name = "safari-active",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/process/safari_active_throttle_signal.hexa",
+        .interval_s  = 60,
+        .timeout_s   = 30,
+    };
+    static const airgenome_loop_module_t safari_youtube = {
+        .module_name = "safari-youtube",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/process/safari_youtube_gpu_filter.hexa",
+        .interval_s  = 120,
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t safari_battery = {
+        .module_name = "safari-battery",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/process/safari_battery_freeze_filter.hexa",
+        .interval_s  = 60,
+        .timeout_s   = 30,
+    };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -248,10 +284,28 @@ void airgenome_loop_init(void) {
     g_label_src    = loop_make_timer(&label,    g_loop_queue);
     g_forecast_src = loop_make_timer(&forecast, g_loop_queue);
 
-    NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s",
+    // Safari 통합 wave gate — env AIRG_TAP_LOOP_SAFARI=1 시만.
+    const char *safari_env = getenv("AIRG_TAP_LOOP_SAFARI");
+    int safari_on = (safari_env && safari_env[0] == '1') ? 1 : 0;
+    if (safari_on) {
+        g_safari_genome_src  = loop_make_timer(&safari_genome,  g_loop_queue);
+        g_safari_active_src  = loop_make_timer(&safari_active,  g_loop_queue);
+        g_safari_youtube_src = loop_make_timer(&safari_youtube, g_loop_queue);
+        g_safari_battery_src = loop_make_timer(&safari_battery, g_loop_queue);
+    }
+
+    NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s",
           g_harvest_src  ? "ok" : "FAIL",
           g_label_src    ? "ok" : "FAIL",
-          g_forecast_src ? "ok" : "FAIL");
+          g_forecast_src ? "ok" : "FAIL",
+          safari_on ? "on" : "off");
+    if (safari_on) {
+        NSLog(@"[airgenome_loop] safari wave: genome=%s active=%s youtube=%s battery=%s",
+              g_safari_genome_src  ? "ok" : "FAIL",
+              g_safari_active_src  ? "ok" : "FAIL",
+              g_safari_youtube_src ? "ok" : "FAIL",
+              g_safari_battery_src ? "ok" : "FAIL");
+    }
 }
 
 // 단일 hexa 모듈 1회 실행 — bench / filter / one-shot dispatch.
@@ -284,6 +338,10 @@ void airgenome_loop_shutdown(void) {
     if (g_harvest_src)  { dispatch_source_cancel(g_harvest_src);  g_harvest_src = NULL;  }
     if (g_label_src)    { dispatch_source_cancel(g_label_src);    g_label_src = NULL;    }
     if (g_forecast_src) { dispatch_source_cancel(g_forecast_src); g_forecast_src = NULL; }
+    if (g_safari_genome_src)  { dispatch_source_cancel(g_safari_genome_src);  g_safari_genome_src  = NULL; }
+    if (g_safari_active_src)  { dispatch_source_cancel(g_safari_active_src);  g_safari_active_src  = NULL; }
+    if (g_safari_youtube_src) { dispatch_source_cancel(g_safari_youtube_src); g_safari_youtube_src = NULL; }
+    if (g_safari_battery_src) { dispatch_source_cancel(g_safari_battery_src); g_safari_battery_src = NULL; }
 }
 
 // ----------------------------------------------------------------------
