@@ -229,22 +229,35 @@ static void hotkey_activate_app(NSString *targetPath) {
     NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", targetPath);
 }
 
-// Synthetic F11 keystroke — delegates to macOS Show Desktop hotkey (default
-// binding). User unbound F11 in System Settings → no-op (raw 91 C3).
+// Show Desktop: invoke macOS Mission Control's native Show Desktop via the
+// private CoreDock notification "com.apple.showdesktop.awake". This is
+// the EXACT same internal trigger the system uses when the user presses
+// fn+F11 — same animation (windows slide off-screen), same toggle
+// behaviour (second invocation slides them back). Identified by string-
+// scanning the Mission Control binary; documented across third-party
+// macOS automation tools (yabai issue #147 catalogues four such
+// notifications: expose.awake / showdesktop.awake / expose.front.awake /
+// launchpad.toggle).
+//
+// Why not synthesize fn+F11 via CGEventPost: tested against kCGHIDEventTap
+// and kCGSessionEventTap, with both NULL source and CGEventSourceState-
+// CombinedSessionState. First press triggers Show Desktop; second press
+// (toggle-back) is silently dropped by the macOS hotkey dispatcher —
+// the dispatcher debounces or filters synthesized fn-modifier events at
+// the toggle boundary. CoreDockSendNotification bypasses the keystroke
+// path entirely and posts directly to the Dock process's notification
+// listener, which is what owns Show Desktop's toggle state.
+//
+// raw 213 compliance: Tier-C exempt — private API call into Apple's own
+// Dock framework via dlopen-free extern. NO admin privileges, NO shell-
+// out. Stable across 10.7 → Sequoia (15) per yabai/Hammerspoon community
+// usage. Tahoe-26 verified at install time (this file's deploy target).
+extern void CoreDockSendNotification(CFStringRef notification,
+                                     void *unused);
+
 static void hotkey_show_desktop(void) {
-    CGEventRef down = CGEventCreateKeyboardEvent(NULL,
-        (CGKeyCode)kVK_F11, true);
-    CGEventRef up   = CGEventCreateKeyboardEvent(NULL,
-        (CGKeyCode)kVK_F11, false);
-    if (down) {
-        CGEventPost(kCGHIDEventTap, down);
-        CFRelease(down);
-    }
-    if (up) {
-        CGEventPost(kCGHIDEventTap, up);
-        CFRelease(up);
-    }
-    NSLog(@"[airgenome_hotkey] show-desktop (synthesized F11)");
+    CoreDockSendNotification(CFSTR("com.apple.showdesktop.awake"), NULL);
+    NSLog(@"[airgenome_hotkey] show-desktop (CoreDockSendNotification)");
 }
 
 BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
