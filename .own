@@ -317,7 +317,31 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
       만점 무조건 (400/400): K1 / K6 — 2건
       만점 ceiling 확장 (420/420 with NEW B10): DKLC docker — 1건
       ≥350: IM1 / K2 / K5 / K4 — 4건
-    pending production-validate (5-tuple → own 9 5-step):
-      5 wave Type E 19 filter (memo3 + telegram3 + mail3 + cal2 + fi2 + sy6) — bg agent a49e5e018f1cbf6ac 진행 중
-      validation 통과한 filter 만 datae wave 추가 (interval 결정)
-    proof commit 65e59eab + def7b1a4 + aafc957e + e3ca3fbd + cd595c94 + 본 commit + loop-selftest 13/13 PASS
+    wave-5 production-validation DONE 2026-04-30 (bg agent a49e5e018f1cbf6ac):
+      10 PASS / 5 FAIL / 4 SKIP (out of 19 5-wave Type E filters)
+      PASS @ 1800s (5 high-drift):
+        memo_notes_shbf (1708× ROI 최고)
+        memo_notes_search_apbf (79×)
+        telegram_chat_shbf (7.7×)
+        telegram_media_dedup (40×, 91MB dup 감지)
+        finder_recent_file_shbf (27×)
+      PASS @ 7200s (5 low-drift):
+        telegram_contact_apbf (7.2×)
+        calendar_recurring_pack (30×)
+        music_library_shbf (80× synth)
+        books_annotation_shbf (4.7×)
+        shortcuts_config_mmap (2.9×)
+      FAIL (5):
+        calendar_event_shbf — BufferError MMappedBlob.close() (PAYLOAD bug, fix required)
+        reminders_shbf — 0.5× linear beats bisect at n=48 real
+        photos_library_shbf — 0.8× synth 2K too small
+        maps_search_history_shbf — 1.1× below 1.5× threshold (n=30 real)
+        finder_alias_dedup — 1.3× synth (real-data rerun 필요)
+      SKIP (4 — 실 데이터 부재):
+        memo_attachment_dedup (Notes attachments=0)
+        mail_envelope_shbf / mail_body_dedup / mail_sender_dict (V10 inbox 0 messages)
+      proof docs/wave5_production_validation_2026-04-30.md + state/bench_results.jsonl 19 rows
+    wave-5 PASS 10 loop-integrate DONE — datae wave 17 timer 활성 (7 K-wave + 10 wave-5).
+      runtime: HEXA_RESOLVER_NO_REROUTE=1 + HEXA_SHIM_NO_DARWIN_LANDING=1 (Docker landing 우회).
+      log: "datae w5: memo_notes=ok memo_search=ok tel_chat=ok tel_media=ok fi_recent=ok tel_contact=ok cal_recur=ok music=ok books=ok shortcuts=ok"
+    proof commit 65e59eab + def7b1a4 + aafc957e + e3ca3fbd + cd595c94 + fc800207 + 본 commit + loop-selftest 13/13 PASS

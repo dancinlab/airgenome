@@ -255,6 +255,19 @@ static dispatch_source_t g_datae_k5_src        = NULL;
 static dispatch_source_t g_datae_k6_src        = NULL;
 static dispatch_source_t g_datae_k4_src        = NULL;  // K4 v2 (snappy 352/400)
 static dispatch_source_t g_datae_dklc_src      = NULL;  // DKLC docker (420/420)
+// own 9 wave-5 production-validated 10 filter (a49e5e018 validation 2026-04-30).
+// 5 PASS @ 1800s + 5 PASS @ 7200s. 5 FAIL (calendar_event BufferError, reminders/
+// photos/maps/finder_alias 1×미달) + 4 SKIP (mail/memo_attachment 실 데이터 부재).
+static dispatch_source_t g_datae_w5_memo_notes_src      = NULL;
+static dispatch_source_t g_datae_w5_memo_search_src     = NULL;
+static dispatch_source_t g_datae_w5_tel_chat_src        = NULL;
+static dispatch_source_t g_datae_w5_tel_media_src       = NULL;
+static dispatch_source_t g_datae_w5_fi_recent_src       = NULL;
+static dispatch_source_t g_datae_w5_tel_contact_src     = NULL;
+static dispatch_source_t g_datae_w5_cal_recurring_src   = NULL;
+static dispatch_source_t g_datae_w5_music_src           = NULL;
+static dispatch_source_t g_datae_w5_books_src           = NULL;
+static dispatch_source_t g_datae_w5_shortcuts_src       = NULL;
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -442,6 +455,78 @@ void airgenome_loop_init(void) {
         .interval_s  = 3600,           // 1h — log rotation 따라잡기
         .timeout_s   = 60,
     };
+    // wave-5 production-validated PASS 10 filter (a49e5e018 2026-04-30).
+    // 1800s × 5 (high drift) + 7200s × 5 (low drift). 3600s 미사용 (이 host 분포).
+    static const airgenome_loop_module_t datae_w5_memo_notes = {
+        .module_name = "datae-w5-memo-notes",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/memo_notes_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — 1708× ROI 최고
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_w5_memo_search = {
+        .module_name = "datae-w5-memo-search",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/memo_notes_search_apbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — 79×
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_w5_tel_chat = {
+        .module_name = "datae-w5-telegram-chat",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/telegram_chat_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — 7.7× (postbox 파일명 walk)
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_w5_tel_media = {
+        .module_name = "datae-w5-telegram-media",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/telegram_media_dedup.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — 40×, 91MB dup 감지
+        .timeout_s   = 120,            // wyhash blake2b 큰 파일 head 64KB
+    };
+    static const airgenome_loop_module_t datae_w5_fi_recent = {
+        .module_name = "datae-w5-finder-recent",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/finder_recent_file_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — 27×, mdfind cold-start 우회
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_w5_tel_contact = {
+        .module_name = "datae-w5-telegram-contact",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/telegram_contact_apbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 7200,           // 2h — 7.2×, contact 변경 드뭄
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_w5_cal_recurring = {
+        .module_name = "datae-w5-calendar-recurring",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/calendar_recurring_pack.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 7200,           // 2h — 30×, RRULE 변경 드뭄
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_w5_music = {
+        .module_name = "datae-w5-music",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/music_library_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 7200,           // 2h — 80× (synth), library export 드뭄
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_w5_books = {
+        .module_name = "datae-w5-books",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/books_annotation_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 7200,           // 2h — 4.7×
+        .timeout_s   = 60,
+    };
+    static const airgenome_loop_module_t datae_w5_shortcuts = {
+        .module_name = "datae-w5-shortcuts",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/shortcuts_config_mmap.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 7200,           // 2h — 2.9× (low scale n=300)
+        .timeout_s   = 60,
+    };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -491,6 +576,17 @@ void airgenome_loop_init(void) {
         g_datae_k6_src   = loop_make_timer(&datae_k6,   g_loop_queue);
         g_datae_k4_src   = loop_make_timer(&datae_k4,   g_loop_queue);
         g_datae_dklc_src = loop_make_timer(&datae_dklc, g_loop_queue);
+        // wave-5 PASS 10
+        g_datae_w5_memo_notes_src    = loop_make_timer(&datae_w5_memo_notes,    g_loop_queue);
+        g_datae_w5_memo_search_src   = loop_make_timer(&datae_w5_memo_search,   g_loop_queue);
+        g_datae_w5_tel_chat_src      = loop_make_timer(&datae_w5_tel_chat,      g_loop_queue);
+        g_datae_w5_tel_media_src     = loop_make_timer(&datae_w5_tel_media,     g_loop_queue);
+        g_datae_w5_fi_recent_src     = loop_make_timer(&datae_w5_fi_recent,     g_loop_queue);
+        g_datae_w5_tel_contact_src   = loop_make_timer(&datae_w5_tel_contact,   g_loop_queue);
+        g_datae_w5_cal_recurring_src = loop_make_timer(&datae_w5_cal_recurring, g_loop_queue);
+        g_datae_w5_music_src         = loop_make_timer(&datae_w5_music,         g_loop_queue);
+        g_datae_w5_books_src         = loop_make_timer(&datae_w5_books,         g_loop_queue);
+        g_datae_w5_shortcuts_src     = loop_make_timer(&datae_w5_shortcuts,     g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -532,6 +628,17 @@ void airgenome_loop_init(void) {
               g_datae_k6_src   ? "ok" : "FAIL",
               g_datae_k4_src   ? "ok" : "FAIL",
               g_datae_dklc_src ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae w5: memo_notes=%s memo_search=%s tel_chat=%s tel_media=%s fi_recent=%s tel_contact=%s cal_recur=%s music=%s books=%s shortcuts=%s",
+              g_datae_w5_memo_notes_src    ? "ok" : "FAIL",
+              g_datae_w5_memo_search_src   ? "ok" : "FAIL",
+              g_datae_w5_tel_chat_src      ? "ok" : "FAIL",
+              g_datae_w5_tel_media_src     ? "ok" : "FAIL",
+              g_datae_w5_fi_recent_src     ? "ok" : "FAIL",
+              g_datae_w5_tel_contact_src   ? "ok" : "FAIL",
+              g_datae_w5_cal_recurring_src ? "ok" : "FAIL",
+              g_datae_w5_music_src         ? "ok" : "FAIL",
+              g_datae_w5_books_src         ? "ok" : "FAIL",
+              g_datae_w5_shortcuts_src     ? "ok" : "FAIL");
     }
 }
 
@@ -585,6 +692,16 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_k6_src)       { dispatch_source_cancel(g_datae_k6_src);       g_datae_k6_src       = NULL; }
     if (g_datae_k4_src)       { dispatch_source_cancel(g_datae_k4_src);       g_datae_k4_src       = NULL; }
     if (g_datae_dklc_src)     { dispatch_source_cancel(g_datae_dklc_src);     g_datae_dklc_src     = NULL; }
+    if (g_datae_w5_memo_notes_src)    { dispatch_source_cancel(g_datae_w5_memo_notes_src);    g_datae_w5_memo_notes_src    = NULL; }
+    if (g_datae_w5_memo_search_src)   { dispatch_source_cancel(g_datae_w5_memo_search_src);   g_datae_w5_memo_search_src   = NULL; }
+    if (g_datae_w5_tel_chat_src)      { dispatch_source_cancel(g_datae_w5_tel_chat_src);      g_datae_w5_tel_chat_src      = NULL; }
+    if (g_datae_w5_tel_media_src)     { dispatch_source_cancel(g_datae_w5_tel_media_src);     g_datae_w5_tel_media_src     = NULL; }
+    if (g_datae_w5_fi_recent_src)     { dispatch_source_cancel(g_datae_w5_fi_recent_src);     g_datae_w5_fi_recent_src     = NULL; }
+    if (g_datae_w5_tel_contact_src)   { dispatch_source_cancel(g_datae_w5_tel_contact_src);   g_datae_w5_tel_contact_src   = NULL; }
+    if (g_datae_w5_cal_recurring_src) { dispatch_source_cancel(g_datae_w5_cal_recurring_src); g_datae_w5_cal_recurring_src = NULL; }
+    if (g_datae_w5_music_src)         { dispatch_source_cancel(g_datae_w5_music_src);         g_datae_w5_music_src         = NULL; }
+    if (g_datae_w5_books_src)         { dispatch_source_cancel(g_datae_w5_books_src);         g_datae_w5_books_src         = NULL; }
+    if (g_datae_w5_shortcuts_src)     { dispatch_source_cancel(g_datae_w5_shortcuts_src);     g_datae_w5_shortcuts_src     = NULL; }
 }
 
 // ----------------------------------------------------------------------
