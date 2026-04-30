@@ -456,3 +456,16 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
       same precedent as B10 (DKLC docker / IX1 locate). cross-repo: anima/hive/nexus 모두 transcripts 보유.
       docs/ rubric trail 약식 — 추후 cycle에서 만점기준 완전 재적용 가능.
     proof commit ... 03bc47cd + 8a7674a8 + 본 commit + loop-selftest 13/13 PASS
+    wave-8-deep DONE 2026-05-01 (claude code cli all go 추가 3건):
+      CC-BG3 claude_bash_exit_pattern — real 2182 pairs / **2.3% errors** (echo 9 / ls 7 / git 5 fail top)
+      CC-BG4 claude_read_invocation_dedup — real 296 reads / **path_dup 58.8%** (cache 후보!)
+        top: hive_kick_dispatch.hexa 25× / hive/.raw 13× / airgenome_loop.m 9×
+      CC-BG5 claude_token_consumption_genome — real **6616 turns / 9.1M output / cache_read 3.11B / 100% cache_hit**
+        per-project: hive 2.07B / airgenome 1.02B / anima 90.6M / opus-4-7 = 3.18B
+      production active 검증 PID 79075 — 88 timer all ok
+        log: "datae w8-cc-deep: cc_exit=ok cc_read=ok cc_token=ok"
+    핵심 인사이트 (closure 돌파 정량화):
+      - Read result cache → 58.8% path_dup 절감 가능
+      - Bash error 2.3% (echo top — typo / state probe 실패 패턴)
+      - Token cache 100% hit (prompt cache 매우 효율적 활용 중)
+      - Project workload: hive 65% / airgenome 32% / anima 3% (token 기준)

@@ -326,6 +326,10 @@ static dispatch_source_t g_datae_w8_im_thread_src       = NULL;
 static dispatch_source_t g_datae_w8_im_attach_meta_src  = NULL;
 static dispatch_source_t g_datae_w8_cc_bash_src         = NULL;  // 2169 real cmds 99 heads
 static dispatch_source_t g_datae_w8_cc_git_src          = NULL;  // 306 real git calls 18 subs
+// wave-8 추가 — claude code cli bash/git/read/token deep (closure 돌파 B11 reuse)
+static dispatch_source_t g_datae_w8_cc_exit_src         = NULL;  // CC-BG3 2182 pairs / 2.3% err
+static dispatch_source_t g_datae_w8_cc_read_src         = NULL;  // CC-BG4 296 reads / 58.8% path_dup
+static dispatch_source_t g_datae_w8_cc_token_src        = NULL;  // CC-BG5 6616 turns / 3.18B opus tokens
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -771,6 +775,15 @@ void airgenome_loop_init(void) {
     static const airgenome_loop_module_t datae_w8_cc_git = {
         .module_name="datae-w8-cc-git-pattern", .module_path="/Users/ghost/core/airgenome/modules/filters/data/claude_git_invocation_pattern.hexa",
         .extra_arg="encode", .interval_s=900, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w8_cc_exit = {
+        .module_name="datae-w8-cc-bash-exit", .module_path="/Users/ghost/core/airgenome/modules/filters/data/claude_bash_exit_pattern.hexa",
+        .extra_arg="encode", .interval_s=900, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w8_cc_read = {
+        .module_name="datae-w8-cc-read-dedup", .module_path="/Users/ghost/core/airgenome/modules/filters/data/claude_read_invocation_dedup.hexa",
+        .extra_arg="encode", .interval_s=600, .timeout_s=120 };
+    static const airgenome_loop_module_t datae_w8_cc_token = {
+        .module_name="datae-w8-cc-token-genome", .module_path="/Users/ghost/core/airgenome/modules/filters/data/claude_token_consumption_genome.hexa",
+        .extra_arg="encode", .interval_s=1800, .timeout_s=120 };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -887,6 +900,9 @@ void airgenome_loop_init(void) {
         g_datae_w8_im_attach_meta_src = loop_make_timer(&datae_w8_im_attach_meta, g_loop_queue);
         g_datae_w8_cc_bash_src        = loop_make_timer(&datae_w8_cc_bash,        g_loop_queue);
         g_datae_w8_cc_git_src         = loop_make_timer(&datae_w8_cc_git,         g_loop_queue);
+        g_datae_w8_cc_exit_src        = loop_make_timer(&datae_w8_cc_exit,        g_loop_queue);
+        g_datae_w8_cc_read_src        = loop_make_timer(&datae_w8_cc_read,        g_loop_queue);
+        g_datae_w8_cc_token_src       = loop_make_timer(&datae_w8_cc_token,       g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -1000,6 +1016,10 @@ void airgenome_loop_init(void) {
               g_datae_w8_im_attach_meta_src ? "ok" : "FAIL",
               g_datae_w8_cc_bash_src        ? "ok" : "FAIL",
               g_datae_w8_cc_git_src         ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae w8-cc-deep: cc_exit=%s cc_read=%s cc_token=%s",
+              g_datae_w8_cc_exit_src  ? "ok" : "FAIL",
+              g_datae_w8_cc_read_src  ? "ok" : "FAIL",
+              g_datae_w8_cc_token_src ? "ok" : "FAIL");
     }
 }
 
@@ -1115,6 +1135,9 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_w8_im_attach_meta_src) { dispatch_source_cancel(g_datae_w8_im_attach_meta_src); g_datae_w8_im_attach_meta_src = NULL; }
     if (g_datae_w8_cc_bash_src)        { dispatch_source_cancel(g_datae_w8_cc_bash_src);        g_datae_w8_cc_bash_src        = NULL; }
     if (g_datae_w8_cc_git_src)         { dispatch_source_cancel(g_datae_w8_cc_git_src);         g_datae_w8_cc_git_src         = NULL; }
+    if (g_datae_w8_cc_exit_src)        { dispatch_source_cancel(g_datae_w8_cc_exit_src);        g_datae_w8_cc_exit_src        = NULL; }
+    if (g_datae_w8_cc_read_src)        { dispatch_source_cancel(g_datae_w8_cc_read_src);        g_datae_w8_cc_read_src        = NULL; }
+    if (g_datae_w8_cc_token_src)       { dispatch_source_cancel(g_datae_w8_cc_token_src);       g_datae_w8_cc_token_src       = NULL; }
 }
 
 // ----------------------------------------------------------------------

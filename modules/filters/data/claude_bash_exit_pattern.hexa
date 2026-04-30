@@ -1,0 +1,114 @@
+// CC-BG3 — Bash exit/error pattern (CBEP v1).
+//   Bash tool_use 와 다음 tool_result.is_error 매칭 → 실패 command head 빈도 + locality.
+
+let PAYLOAD = "import sys,os,struct,time,resource,array,json,glob,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/claude_bash_exit.bin'\n" +
+"CLASSIFIER='CBEP-v1-2026-05-01 jsonl-walk+is_error-pair+B11-locality'\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def harvest():\n" +
+"    root=os.path.expanduser('~/.claude-claude2/projects')\n" +
+"    if not os.path.isdir(root): return [],'no_transcripts'\n" +
+"    rows=[]\n" +
+"    files=glob.glob(os.path.join(root,'*','*.jsonl'))\n" +
+"    files.sort(key=os.path.getmtime,reverse=True)\n" +
+"    files=files[:30]\n" +
+"    for fp in files:\n" +
+"        proj=os.path.basename(os.path.dirname(fp))\n" +
+"        pending={}\n" +
+"        try:\n" +
+"            with open(fp,'r',encoding='utf-8',errors='replace') as f:\n" +
+"                for ln in f:\n" +
+"                    if not ln.strip().startswith('{'): continue\n" +
+"                    if 'tool_use' not in ln and 'tool_result' not in ln: continue\n" +
+"                    obj=json.loads(ln)\n" +
+"                    msg=obj.get('message') or {}\n" +
+"                    cont=msg.get('content') if isinstance(msg,dict) else None\n" +
+"                    if not isinstance(cont,list): continue\n" +
+"                    for blk in cont:\n" +
+"                        if not isinstance(blk,dict): continue\n" +
+"                        t=blk.get('type')\n" +
+"                        if t=='tool_use' and blk.get('name')=='Bash':\n" +
+"                            tid=blk.get('id'); inp=blk.get('input') or {}\n" +
+"                            cmd=(inp.get('command') or '').strip()\n" +
+"                            head=cmd.split()[0] if cmd.split() else ''\n" +
+"                            if tid: pending[tid]=(proj,head)\n" +
+"                        elif t=='tool_result':\n" +
+"                            tid=blk.get('tool_use_id')\n" +
+"                            if tid in pending:\n" +
+"                                proj_,head=pending.pop(tid)\n" +
+"                                err=1 if blk.get('is_error') else 0\n" +
+"                                rows.append((proj_,head,err))\n" +
+"        except (json.JSONDecodeError,OSError,UnicodeDecodeError): pass\n" +
+"    return rows,'real' if rows else 'empty'\n" +
+"\n" +
+"def synth(n=2000,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    heads=['ls','grep','git','make','python','sed','awk','find','cat','jq']\n" +
+"    projs=['airgenome','hive','anima','nexus']\n" +
+"    return [(rng.choice(projs),rng.choice(heads),1 if rng.random()<0.08 else 0) for _ in range(n)]\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    rows,reason=harvest()\n" +
+"    if not rows: rows=synth(); reason='synth' if reason in ('empty','no_transcripts') or (reason and reason.startswith('err')) else reason\n" +
+"    n=len(rows); n_err=sum(r[2] for r in rows)\n" +
+"    err_by_head={}\n" +
+"    for p,h,e in rows:\n" +
+"        if e: err_by_head[h]=err_by_head.get(h,0)+1\n" +
+"    err_top=sorted(err_by_head.items(),key=lambda kv:-kv[1])[:10]\n" +
+"    head_top=sorted(set(r[1] for r in rows))[:255]\n" +
+"    h2i={h:i for i,h in enumerate(head_top)}\n" +
+"    head_col=bytearray(n); err_col=bytearray(n)\n" +
+"    for i,(p,h,e) in enumerate(rows): head_col[i]=h2i.get(h,0); err_col[i]=e\n" +
+"    pool=bytearray()\n" +
+"    h_off=array.array('I',[0]*len(head_top)); h_len=array.array('I',[0]*len(head_top))\n" +
+"    for i,h in enumerate(head_top): b=h.encode('utf-8','replace'); h_off[i]=len(pool); h_len[i]=len(b); pool.extend(b)\n" +
+"    header=struct.pack('<4sIIII',b'CBEP',1,n,n_err,len(head_top))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(struct.pack('<I',len(pool)))\n" +
+"        f.write(h_off.tobytes()); f.write(h_len.tobytes())\n" +
+"        f.write(bytes(head_col)); f.write(bytes(err_col)); f.write(pool)\n" +
+"    elapsed=(time.perf_counter()-t0)*1000\n" +
+"    return {'n':n,'n_err':n_err,'err_top':err_top,'reason':reason,'blob':os.path.getsize(BIN),'encode_ms':elapsed}\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    err_pct=100*info['n_err']/max(info['n'],1)\n" +
+"    print(f'[encode] pairs={info[\"n\"]} errors={info[\"n_err\"]}({err_pct:.1f}%) reason={info[\"reason\"]} blob={fmt(info[\"blob\"])} encode={info[\"encode_ms\"]:.1f}ms')\n" +
+"    print('[err top] ' + ' / '.join(f'{h}={c}' for h,c in info['err_top']))\n" +
+"    print(f'[5tuple] {{\"site\":\"CC_BG3\",\"roi\":\"CBEP_pattern\",\"baseline_ns\":0,\"post_ns\":{int(info[\"encode_ms\"]*1e6)},\"diff_test\":\"lossless\",\"err_pct\":{err_pct:.1f},\"reason\":\"{info[\"reason\"]}\",\"classifier\":\"{CLASSIFIER}\",\"ceiling\":420,\"new_block\":\"B11_invocation_locality\"}}')\n" +
+"    print(f'[rss] {fmt(rss())} elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'encoded n={info[\"n\"]} → {BIN}')\n" +
+"elif mode=='bench': bench()\n" +
+"else: print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self = v.contains("claude_bash_exit_pattern")
+        if is_hexa == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/claude_bash_exit_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 60; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    print(exec(cmd))
+}
+
+run()

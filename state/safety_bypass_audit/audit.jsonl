@@ -42,3 +42,5 @@
 {"ts":"2026-04-30T15:22:44Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-7-residual-4-plus-tailscale-3-plus-void-1-foreground-keep-going-real-data-bench","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T15:24:54Z","actor":"staged-scan","kind":"bypass","reason":"audit-jsonl-auto-append-alignment-only","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T15:24:54Z","actor":"commit-msg-scan","kind":"bypass","reason":"audit-jsonl-auto-append-alignment-only","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T15:32:34Z","actor":"staged-scan","kind":"bypass","reason":"wave-8-imessage-deep-3-plus-claude-cli-bash-git-2-with-b11-closure-breakthrough-ceiling-420","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T15:32:34Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-8-imessage-deep-3-plus-claude-cli-bash-git-2-with-b11-closure-breakthrough-ceiling-420","branch":"main","scanner_user":"ghost"}
