@@ -182,8 +182,9 @@ own 6 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M6 f
   note site-6 의 614× 잠재 ROI 가 own 5 site-2 (vit_at) 와 동일 패턴 — 검증된 win 의 forecast 이식.
   follow-up modules/forecast.hexa#self_test 확장 (jq_field / read_recent_genomes / append_out 의 differential test)
   status site-6 DONE 2026-04-30 — modules/forecast.hexa#jq_field jq fork → in-hexa anchor + slice. tool/bench/bench_site6.hexa 측정: 6.09ms→3.69μs/call (1649×, 99%↓), diff_test=0/800. bench_all.sh 재측정 1739×. vit_at 도 own 5 site-2 패턴으로 동시 이식. forecast self_test PASS — linear MAE=0% (<15%). proof state/bench_results.jsonl own6-site-6 row.
-  follow-up tool/bench/bench_site7.hexa + bench_site8.hexa 산출 (site-6 완료 → 잔여 2 사이트 + site-8b genome_merge)
-  follow-up genome_merge.hexa 측정 후 site-8b 단독 PR 또는 site-8 통합 결정
+  status site-8 DONE 2026-04-30 — modules/forecast.hexa#run_forecast per-prediction exec(printf >>) → buffer 누적 + 1회 append_file. tool/bench/bench_site8.hexa 측정: 2.79ms→55μs/line (50×, 98%↓), diff_byte_identical=true, 150 forks/cycle 제거. bench_all.sh 재측정 43× (cache-warm variance). own 5 site-3 (append_ring) 패턴 직접 이식. forecast self_test PASS. proof state/bench_results.jsonl own6-site-8 row.
+  follow-up tool/bench/bench_site7.hexa 산출 (site-6/8 완료 → 잔여 site-7 + site-8b genome_merge)
+  follow-up genome_merge.hexa 측정 후 site-8b 단독 PR 결정
 
 own 7 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M5 label hot-path 4개)"
   slug airgenome-gate-filter-direct-site-application-label

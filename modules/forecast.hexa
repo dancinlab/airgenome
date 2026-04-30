@@ -217,14 +217,14 @@ fn predict_one_ahead(series: list) -> int {
     return forecast_h(s, 1)
 }
 
-fn append_out(line: str) -> void {
-    let _ = exec("printf '%s\\n' '" + line + "' >> '" + OUT + "'")
-}
-
 fn ts_iso() -> str {
     return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
 }
 
+// own 6 site-8: per-prediction exec(printf >>) → buffer + 단일 append_file batch.
+// 측정 (bench_site8.hexa): 2.79ms→55μs/line (50×, 98%↓), diff_byte_identical=true.
+// own 5 site-3 (harvest append_ring) 패턴 직접 이식. own 1 heredoc-arg-max-guard
+// 자연 만족 (append_file builtin).
 fn run_forecast() -> int {
     let _ = exec("mkdir -p '" + forge_dir() + "'")
     let genomes = read_recent_genomes()
@@ -232,6 +232,7 @@ fn run_forecast() -> int {
 
     let keys = distinct_keys(genomes, TOP_N_PIDS)
     let ts = ts_iso()
+    let mut buf = ""
     let mut written = 0
     let mut i = 0
     while i < len(keys) {
@@ -247,10 +248,13 @@ fn run_forecast() -> int {
                      + ",\"horizon\":\"1step\",\"pred_cpu\":" + to_string(pred_cpu)
                      + ",\"pred_ram\":" + to_string(pred_ram)
                      + ",\"samples\":" + to_string(len(s_cpu)) + "}"
-            append_out(line)
+            buf = buf + line + "\n"
             written = written + 1
         }
         i = i + 1
+    }
+    if buf != "" {
+        append_file(OUT, buf)
     }
     return written
 }
