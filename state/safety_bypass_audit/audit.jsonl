@@ -56,3 +56,5 @@
 {"ts":"2026-04-30T16:31:11Z","actor":"commit-msg-scan","kind":"bypass","reason":"canonical-tool-term-disambiguation-raw-proposal-800-of-800-v26-with-15-term-canonical-mapping-kick-equiv-omega-cycle","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T16:32:13Z","actor":"staged-scan","kind":"bypass","reason":"audit-jsonl-auto-append-after-8f7e05d2-canonical-term-disambiguation-proposal","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T16:32:13Z","actor":"commit-msg-scan","kind":"bypass","reason":"audit-jsonl-auto-append-after-8f7e05d2-canonical-term-disambiguation-proposal","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T16:45:00Z","actor":"staged-scan","kind":"bypass","reason":"phase-bc-canonical-term-30d-baseline-9734pct-fail-rate-plus-anima-registry-plus-hive-pr-ready-raw-258-artifact","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T16:45:00Z","actor":"commit-msg-scan","kind":"bypass","reason":"phase-bc-canonical-term-30d-baseline-9734pct-fail-rate-plus-anima-registry-plus-hive-pr-ready-raw-258-artifact","branch":"main","scanner_user":"ghost"}
