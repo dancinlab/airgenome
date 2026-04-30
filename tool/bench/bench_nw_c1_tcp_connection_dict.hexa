@@ -1,0 +1,128 @@
+// tool/bench/bench_nw_c1_tcp_connection_dict.hexa
+//   NW-C1 TCP Connection Dict (TCDF) — synth bench (lsof-independent).
+//   1500-conn / 80-comm seed=31 → string-linear vs TCDF mmap-bisect.
+//
+// 5-tuple: site=NW-C1 ROI#=NW-C1_TCDF baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: /usr/bin/perl alarm 120s.
+// /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,array,random,json\n" +
+"CLASSIFIER='TCDF-v1-2026-04-30'\n" +
+"BIN='/tmp/bench_nw_c1_tcp_connection_dict.bin'\n" +
+"N_CONN=1500; N_COMM=80; QUERIES=200\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def fnv1a64(b):\n" +
+"    h=0xcbf29ce484222325\n" +
+"    for x in b: h^=x; h=(h*0x100000001b3) & 0xffffffffffffffff\n" +
+"    return h\n" +
+"def hp_hash(s):\n" +
+"    if isinstance(s,str): s=s.encode('ascii','replace')\n" +
+"    return fnv1a64(s)\n" +
+"\n" +
+"def synth(n_conn=N_CONN,n_comm=N_COMM,seed=31):\n" +
+"    rng=random.Random(seed)\n" +
+"    comms=[f'app{i}' for i in range(n_comm)]\n" +
+"    rows=[]\n" +
+"    for _ in range(n_conn):\n" +
+"        c=comms[rng.randrange(n_comm)]\n" +
+"        pid=rng.randrange(100,99000)\n" +
+"        host=f'{rng.randrange(1,254)}.{rng.randrange(1,254)}.{rng.randrange(1,254)}.{rng.randrange(1,254)}'\n" +
+"        port=str(rng.choice([443,80,5223,8443,53,3478,3306,5432,6379,9418]))\n" +
+"        rows.append((c,pid,host,port))\n" +
+"    return rows\n" +
+"\n" +
+"def encode(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    from collections import Counter\n" +
+"    cnt=Counter(r[0] for r in rows)\n" +
+"    distinct=sorted(cnt)\n" +
+"    if len(distinct)>255:\n" +
+"        top=cnt.most_common(254); distinct=['(OTHER)']+sorted([k for k,_ in top])\n" +
+"    name_to_id={n:i for i,n in enumerate(distinct)}\n" +
+"    enriched=[(hp_hash(f'{h}:{po}'),p,name_to_id.get(c,0)) for c,p,h,po in rows]\n" +
+"    enriched.sort(key=lambda x:x[0])\n" +
+"    n_conn=len(enriched); n_comm=len(distinct)\n" +
+"    rh=array.array('Q',[r[0] for r in enriched])\n" +
+"    pids=array.array('I',[r[1]&0xffffffff for r in enriched])\n" +
+"    enums=bytes(r[2]&0xff for r in enriched)\n" +
+"    pool=bytearray()\n" +
+"    coffs=array.array('I',[0]*n_comm); clens=array.array('I',[0]*n_comm)\n" +
+"    for i,nm in enumerate(distinct):\n" +
+"        b=nm.encode('utf-8','replace')\n" +
+"        coffs[i]=len(pool); clens[i]=len(b); pool.extend(b)\n" +
+"    out=bytearray(); out.extend(b'TCDF')\n" +
+"    out.extend(struct.pack('<IIII',1,n_conn,n_comm,len(pool)))\n" +
+"    out.extend(rh.tobytes()); out.extend(pids.tobytes()); out.extend(enums)\n" +
+"    out.extend(coffs.tobytes()); out.extend(clens.tobytes()); out.extend(bytes(pool))\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    return time.perf_counter_ns()-t0, rh, pids, enums, n_conn, n_comm\n" +
+"\n" +
+"def old_linear(rows,hp):\n" +
+"    n=0\n" +
+"    for c,p,h,po in rows:\n" +
+"        if f'{h}:{po}'==hp: n+=1\n" +
+"    return n\n" +
+"\n" +
+"def new_bisect(rh,n_conn,hh):\n" +
+"    i=bisect.bisect_left(rh,hh)\n" +
+"    return 1 if (i<n_conn and rh[i]==hh) else 0\n" +
+"\n" +
+"def diff_test(rows,rh,n_conn,queries):\n" +
+"    mm=0\n" +
+"    for hp,hh in queries:\n" +
+"        a=1 if old_linear(rows,hp)>=1 else 0\n" +
+"        b=new_bisect(rh,n_conn,hh)\n" +
+"        if a!=b:\n" +
+"            mm+=1\n" +
+"    return mm\n" +
+"\n" +
+"def main():\n" +
+"    print('airgenome bench/NW-C1 — tcp_connection_dict (TCDF synth)')\n" +
+"    print(f'  classifier_version={CLASSIFIER}')\n" +
+"    rows=synth()\n" +
+"    enc_ns,rh,pids,enums,n_conn,n_comm=encode(rows)\n" +
+"    blob_sz=os.path.getsize(BIN)\n" +
+"    print(f'  encode (sort+TCDF): {enc_ns/1e6:.1f}ms  blob={fmt(blob_sz)}  n_conn={n_conn}  n_comm={n_comm}')\n" +
+"    rng=random.Random(37)\n" +
+"    queries=[]\n" +
+"    for _ in range(QUERIES):\n" +
+"        c,p,h,po=rows[rng.randrange(len(rows))]\n" +
+"        hp=f'{h}:{po}'; queries.append((hp,hp_hash(hp)))\n" +
+"    mm=diff_test(rows,rh,n_conn,queries)\n" +
+"    print(f'  diff_test mismatches: {mm}/{len(queries)}')\n" +
+"    if mm!=0: print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    base_hits=0\n" +
+"    for hp,_ in queries: base_hits+=old_linear(rows,hp)\n" +
+"    ns_old=time.perf_counter_ns()-t0; per_old=ns_old//QUERIES\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    post_hits=0\n" +
+"    for _,hh in queries: post_hits+=new_bisect(rh,n_conn,hh)\n" +
+"    ns_new=time.perf_counter_ns()-t0; per_new=ns_new//QUERIES\n" +
+"    print(f'  OLD (string-linear scan) total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    print(f'  NEW (sorted u64 bisect)  total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved}%')\n" +
+"    print(f'  5-tuple: site=NW-C1 ROI#=NW-C1_TCDF baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"    print('[5tuple] '+json.dumps({'site':'NW-C1','ROI':'NW-C1_TCDF','baseline_ns':per_old,'post_ns':per_new,'diff_test':'lossless','classifier':CLASSIFIER,'speedup_x':round(ns_old/max(ns_new,1),2)},ensure_ascii=False))\n" +
+"\n" +
+"main()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_nw_c1_tcp_connection_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

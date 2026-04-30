@@ -1,0 +1,95 @@
+// tool/bench/bench_nw_c2_keepalive_state_optimizer.hexa
+//   NW-C2 KASO — synth bench: 600-conn rule-decision throughput.
+//   OLD: per-conn substring match in nested if/elif chain (linear-string lookup).
+//   NEW: pre-built dict { port_str: (decision, conf) } single dict get O(1).
+//
+// 5-tuple: site=NW-C2 ROI#=NW-C2_KASO baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: /usr/bin/perl alarm 120s.
+
+let PAYLOAD = "import sys,os,time,random,json\n" +
+"CLASSIFIER='KASO-v1-2026-04-30'\n" +
+"N_CONN=600; QUERIES=600\n" +
+"\n" +
+"PORTS_KEEP_TLS={'443','8443','5223','5228'}\n" +
+"PORTS_CLOSE_DNS={'53','5353'}\n" +
+"PORTS_KEEP_DB={'22','3306','5432','6379'}\n" +
+"\n" +
+"def synth(n=N_CONN,seed=43):\n" +
+"    rng=random.Random(seed)\n" +
+"    pool=['443','443','8443','80','53','5353','22','3306','5432','6379','5223','9418','12345','54321','5228']\n" +
+"    rows=[]\n" +
+"    for _ in range(n):\n" +
+"        rows.append(pool[rng.randrange(len(pool))])\n" +
+"    return rows\n" +
+"\n" +
+"def old_decide_chain(port):\n" +
+"    # nested if-chain — O(rules) per call\n" +
+"    if port=='443' or port=='8443' or port=='5223' or port=='5228':\n" +
+"        return ('KEEP','85/100')\n" +
+"    if port=='53' or port=='5353':\n" +
+"        return ('CLOSE','80/100')\n" +
+"    if port=='22' or port=='3306' or port=='5432' or port=='6379':\n" +
+"        return ('KEEP','75/100')\n" +
+"    return ('UNKNOWN','50/100')\n" +
+"\n" +
+"DECIDE_DICT={}\n" +
+"for p in PORTS_KEEP_TLS: DECIDE_DICT[p]=('KEEP','85/100')\n" +
+"for p in PORTS_CLOSE_DNS: DECIDE_DICT[p]=('CLOSE','80/100')\n" +
+"for p in PORTS_KEEP_DB: DECIDE_DICT[p]=('KEEP','75/100')\n" +
+"_UNK=('UNKNOWN','50/100')\n" +
+"\n" +
+"def new_decide_dict(port):\n" +
+"    return DECIDE_DICT.get(port,_UNK)\n" +
+"\n" +
+"def diff_test(rows):\n" +
+"    mm=0\n" +
+"    for p in rows:\n" +
+"        if old_decide_chain(p)!=new_decide_dict(p): mm+=1\n" +
+"    return mm\n" +
+"\n" +
+"def main():\n" +
+"    print('airgenome bench/NW-C2 — keepalive_state_optimizer (KASO synth)')\n" +
+"    print(f'  classifier_version={CLASSIFIER}')\n" +
+"    rows=synth()\n" +
+"    mm=diff_test(rows)\n" +
+"    print(f'  diff_test mismatches: {mm}/{len(rows)}')\n" +
+"    if mm!=0: print('BENCH FAIL'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    keep_old=close_old=unk_old=0\n" +
+"    for p in rows:\n" +
+"        d,_=old_decide_chain(p)\n" +
+"        if d=='KEEP': keep_old+=1\n" +
+"        elif d=='CLOSE': close_old+=1\n" +
+"        else: unk_old+=1\n" +
+"    ns_old=time.perf_counter_ns()-t0; per_old=ns_old//len(rows)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    keep_new=close_new=unk_new=0\n" +
+"    for p in rows:\n" +
+"        d,_=new_decide_dict(p)\n" +
+"        if d=='KEEP': keep_new+=1\n" +
+"        elif d=='CLOSE': close_new+=1\n" +
+"        else: unk_new+=1\n" +
+"    ns_new=time.perf_counter_ns()-t0; per_new=ns_new//len(rows)\n" +
+"    if (keep_old,close_old,unk_old)!=(keep_new,close_new,unk_new):\n" +
+"        print('BENCH FAIL [decision counts mismatch]'); return\n" +
+"    print(f'  decision counts KEEP={keep_new} CLOSE={close_new} UNKNOWN={unk_new}')\n" +
+"    print(f'  OLD (if-chain rule scan)  total_ns={ns_old}  per_decision_ns={per_old}')\n" +
+"    print(f'  NEW (dict O(1) lookup)    total_ns={ns_new}  per_decision_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new; saved=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved}%')\n" +
+"    print(f'  5-tuple: site=NW-C2 ROI#=NW-C2_KASO baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"    print('[5tuple] '+json.dumps({'site':'NW-C2','ROI':'NW-C2_KASO','baseline_ns':per_old,'post_ns':per_new,'diff_test':'lossless','classifier':CLASSIFIER,'speedup_x':round(ns_old/max(ns_new,1),2),'n_conn':len(rows)},ensure_ascii=False))\n" +
+"\n" +
+"main()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_nw_c2_keepalive_state_optimizer_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

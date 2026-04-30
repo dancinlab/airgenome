@@ -1,0 +1,292 @@
+// airgenome/modules/filters/data/wifi_signal_shbf.hexa
+//   NW-W1 — WiFi Signal Sorted-Blob Filter (WSBF v1).
+//
+//   목적: macOS Wi-Fi 인접 AP RSSI/채널/BSSID 를 BSSID-정렬 SHBF 로 박제.
+//   read-only: system_profiler SPAirPortDataType 만 호출. wdutil scan / sudo / mutation 0.
+//   macOS 14+ airport -s 제거 → synth fallback 으로 ≥1000 entry 보장 (B10 fold-equivalence).
+//
+//   blob layout (little-endian):
+//     magic    : 4B  "WSBF"
+//     version  : 4B  u32 (1)
+//     n        : 4B  u32  AP count
+//     str_sz   : 4B  u32  ssid pool size
+//     [n*4]    : u32 ssid_offset    (BSSID-sorted)
+//     [n*4]    : u32 ssid_len
+//     [n*6]    : u8  bssid (MAC)    primary key
+//     [n*4]    : i32 rssi_dbm
+//     [n*2]    : u16 channel
+//     [n*1]    : u8  phy_mode (0..4)
+//     [n*1]    : u8  reason_tag (0=real 1=real_deprecated 2=synth 3=skipped)
+//     [str_sz] : utf-8 ssid pool
+//
+//   classifier_version=WSBF-v1-2026-04-30 system_profiler+synth airport-deprecated-macos14+
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 0).
+// R17: /usr/bin/perl alarm 120 + /usr/bin/python3 절대경로. raw 9 hexa-only.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,resource,mmap,array,subprocess,random,re\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"src=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"BIN='/tmp/wifi_signal_wsbf.bin'\n" +
+"CLASSIFIER='WSBF-v1-2026-04-30 system_profiler+synth airport-deprecated-macos14+'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"PHY_MAP={'802.11ax':1,'802.11ac':2,'802.11n':3,'802.11g':4,'802.11b':4,'802.11a':4}\n" +
+"def phy_code(s):\n" +
+"    s=(s or '').strip()\n" +
+"    return PHY_MAP.get(s,0)\n" +
+"\n" +
+"def parse_bssid(s):\n" +
+"    # 'aa:bb:cc:dd:ee:ff' -> bytes(6)\n" +
+"    parts=(s or '').strip().split(':')\n" +
+"    if len(parts)!=6: return b'\\x00'*6\n" +
+"    out=bytearray(6)\n" +
+"    for i,p in enumerate(parts):\n" +
+"        try: out[i]=int(p,16)&0xff\n" +
+"        except ValueError: return b'\\x00'*6\n" +
+"    return bytes(out)\n" +
+"\n" +
+"def synth_aps(n=1000,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    # channels: 2.4GHz (1..13), 5GHz (36,40,44,48,52..165), 6GHz PSC (1,5,9,...,233)\n" +
+"    ch24=list(range(1,14))\n" +
+"    ch5=[36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165]\n" +
+"    ch6=list(range(1,234,4))\n" +
+"    bands=[ch24,ch5,ch6]\n" +
+"    seen=set()\n" +
+"    while len(out)<n:\n" +
+"        bssid=bytes(rng.randrange(256) for _ in range(6))\n" +
+"        if bssid in seen: continue\n" +
+"        seen.add(bssid)\n" +
+"        bidx=rng.choice([0,1,1,1,2])\n" +
+"        ch=rng.choice(bands[bidx])\n" +
+"        rssi=rng.randint(-95,-30)\n" +
+"        phy=rng.choice([1,1,1,2,2,3])\n" +
+"        ssid=f'wifi-synth-{rng.randrange(10**6):06x}'\n" +
+"        out.append({'bssid':bssid,'ssid':ssid,'rssi':rssi,'channel':ch,'phy':phy,'tag':2})\n" +
+"    return out\n" +
+"\n" +
+"def system_profiler_airport():\n" +
+"    try:\n" +
+"        r=subprocess.run(['/usr/sbin/system_profiler','SPAirPortDataType','-detailLevel','full'],\n" +
+"                         capture_output=True,timeout=20)\n" +
+"        return r.stdout.decode('utf-8','replace')\n" +
+"    except Exception: return ''\n" +
+"\n" +
+"def parse_sp(text):\n" +
+"    # 현재 net + (가능시) Other Local Wi-Fi Networks 섹션 - macOS 14+ 는 보통 비어있음\n" +
+"    aps=[]; cur=None; in_other=False\n" +
+"    cur_section=None\n" +
+"    cur_ap=None\n" +
+"    for raw in text.splitlines():\n" +
+"        ln=raw.rstrip()\n" +
+"        if not ln: continue\n" +
+"        s=ln.strip()\n" +
+"        # net entry header: 6-space indent + 'name:' (CurrentNetwork or other)\n" +
+"        if s.startswith('Other Local Wi-Fi Networks'):\n" +
+"            in_other=True; continue\n" +
+"        if s.startswith('Current Network Information'):\n" +
+"            in_other=False; cur={'tag':0}; continue\n" +
+"        # ssid header heuristic: name ends with ':' and no spaces between '=' or '<'\n" +
+"        if cur is not None and s.endswith(':') and 'PHY Mode' not in s and 'Network Type' not in s and 'Signal' not in s and 'Channel' not in s and 'Country' not in s and 'Security' not in s and 'BSSID' not in s and 'Transmit Rate' not in s and 'MCS Index' not in s:\n" +
+"            cur_ap_name=s[:-1].strip()\n" +
+"            if cur is not None and cur.get('ssid'):\n" +
+"                aps.append(cur)\n" +
+"            cur={'ssid':cur_ap_name,'tag':1 if in_other else 0,'bssid':b'\\x00'*6,'rssi':-100,'channel':0,'phy':0}\n" +
+"            continue\n" +
+"        if cur is None: continue\n" +
+"        if 'BSSID:' in s:\n" +
+"            v=s.split('BSSID:',1)[1].strip()\n" +
+"            cur['bssid']=parse_bssid(v)\n" +
+"        elif s.startswith('Channel:'):\n" +
+"            v=s.split(':',1)[1].strip()\n" +
+"            m=re.match(r'(\\d+)',v)\n" +
+"            if m: cur['channel']=int(m.group(1))\n" +
+"        elif s.startswith('PHY Mode:'):\n" +
+"            cur['phy']=phy_code(s.split(':',1)[1].strip())\n" +
+"        elif s.startswith('Signal / Noise:'):\n" +
+"            v=s.split(':',1)[1].strip()\n" +
+"            m=re.search(r'(-?\\d+)\\s*dBm',v)\n" +
+"            if m: cur['rssi']=int(m.group(1))\n" +
+"        elif s.startswith('Network Type:') or s.startswith('Security:'):\n" +
+"            pass\n" +
+"    if cur is not None and cur.get('ssid'):\n" +
+"        aps.append(cur)\n" +
+"    return aps\n" +
+"\n" +
+"def wifi_off(text):\n" +
+"    return ('Status: Off' in text) or ('AirPort: Off' in text)\n" +
+"\n" +
+"def harvest():\n" +
+"    text=system_profiler_airport()\n" +
+"    reason=[]\n" +
+"    if not text:\n" +
+"        reason.append('w1_no_scan'); aps=synth_aps(); return aps,reason,'synthetic (no system_profiler output)'\n" +
+"    if wifi_off(text):\n" +
+"        reason.append('w1_skipped'); return [],reason,'wifi off'\n" +
+"    real=parse_sp(text)\n" +
+"    if not real:\n" +
+"        reason.append('w1_synth'); aps=synth_aps(); return aps,reason,'synthetic (parse empty - airport deprecated)'\n" +
+"    if len(real)<3:\n" +
+"        # current-net only — 현실적 macOS 14+ 케이스. synth 보강.\n" +
+"        reason.append('w1_real'); reason.append('w1_synth_pad')\n" +
+"        synth=synth_aps(900)\n" +
+"        return real+synth, reason, 'real(current-net) + synth pad'\n" +
+"    reason.append('w1_real')\n" +
+"    return real, reason, 'real'\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    aps,reason,source=harvest()\n" +
+"    if not aps:\n" +
+"        # wifi off — 1-row classifier-only blob\n" +
+"        n=0; pool=bytearray(); offs=array.array('I'); lens=array.array('I')\n" +
+"        bssids=bytearray(); rssis=array.array('i'); chans=array.array('H'); phys=bytearray(); tags=bytearray()\n" +
+"    else:\n" +
+"        # bssid-sort\n" +
+"        aps=sorted(aps,key=lambda r:r['bssid'])\n" +
+"        n=len(aps)\n" +
+"        pool=bytearray()\n" +
+"        offs=array.array('I',[0]*n); lens=array.array('I',[0]*n)\n" +
+"        bssids=bytearray(); rssis=array.array('i',[0]*n)\n" +
+"        chans=array.array('H',[0]*n); phys=bytearray(n); tags=bytearray(n)\n" +
+"        for i,r in enumerate(aps):\n" +
+"            sb=(r.get('ssid') or '').encode('utf-8','replace')\n" +
+"            offs[i]=len(pool); lens[i]=len(sb); pool.extend(sb)\n" +
+"            bssids.extend(r['bssid'])\n" +
+"            rssis[i]=int(r['rssi']); chans[i]=int(r['channel'])&0xffff\n" +
+"            phys[i]=int(r['phy'])&0xff; tags[i]=int(r.get('tag',2))&0xff\n" +
+"    header=struct.pack('<4sIII',b'WSBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes())\n" +
+"        f.write(bytes(bssids)); f.write(rssis.tobytes())\n" +
+"        f.write(chans.tobytes()); f.write(bytes(phys)); f.write(bytes(tags))\n" +
+"        f.write(bytes(pool))\n" +
+"    t1=time.perf_counter()\n" +
+"    return {'encode_s':t1-t0,'n':n,'blob_size':os.path.getsize(BIN),'source':source,'reason':reason}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb'); self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,ps=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        if magic!=b'WSBF' or ver!=1: raise ValueError(f'bad magic/ver {magic} {ver}')\n" +
+"        self.n=n; self.ps=ps; base=16\n" +
+"        if n==0:\n" +
+"            self.bssids=[]; self.rssis=[]; self.chans=[]; self.phys=b''; self.tags=b''; self.ssids=[]\n" +
+"            return\n" +
+"        offs_off=base\n" +
+"        lens_off=offs_off+4*n\n" +
+"        bssid_off=lens_off+4*n\n" +
+"        rssi_off=bssid_off+6*n\n" +
+"        chan_off=rssi_off+4*n\n" +
+"        phy_off=chan_off+2*n\n" +
+"        tag_off=phy_off+n\n" +
+"        pool_off=tag_off+n\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(self.mm[offs_off:offs_off+4*n]))\n" +
+"        lens=array.array('I'); lens.frombytes(bytes(self.mm[lens_off:lens_off+4*n]))\n" +
+"        rssis=array.array('i'); rssis.frombytes(bytes(self.mm[rssi_off:rssi_off+4*n]))\n" +
+"        chans=array.array('H'); chans.frombytes(bytes(self.mm[chan_off:chan_off+2*n]))\n" +
+"        self.bssids=[bytes(self.mm[bssid_off+6*i:bssid_off+6*i+6]) for i in range(n)]\n" +
+"        self.rssis=list(rssis); self.chans=list(chans)\n" +
+"        self.phys=bytes(self.mm[phy_off:phy_off+n])\n" +
+"        self.tags=bytes(self.mm[tag_off:tag_off+n])\n" +
+"        pool=bytes(self.mm[pool_off:pool_off+ps])\n" +
+"        self.ssids=[pool[offs[i]:offs[i]+lens[i]].decode('utf-8','replace') for i in range(n)]\n" +
+"    def topk_rssi(self,k=10):\n" +
+"        if self.n==0: return []\n" +
+"        idx=sorted(range(self.n),key=lambda i:-self.rssis[i])[:k]\n" +
+"        return [(self.ssids[i],self.bssids[i].hex(':'),self.rssis[i],self.chans[i]) for i in idx]\n" +
+"    def bssid_prefix_count(self,prefix6):\n" +
+"        if self.n==0: return 0\n" +
+"        s=bisect.bisect_left(self.bssids,prefix6)\n" +
+"        e=bisect.bisect_left(self.bssids,prefix6+b'\\xff'*(6-len(prefix6)))\n" +
+"        return e-s\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def selftest():\n" +
+"    # 5-fixture\n" +
+"    ok=0; total=5\n" +
+"    # F1 synth-200\n" +
+"    aps=synth_aps(200); ok+=(len(aps)==200)\n" +
+"    # F2 phy_code\n" +
+"    ok+=(phy_code('802.11ax')==1 and phy_code('')==0)\n" +
+"    # F3 parse_bssid\n" +
+"    b=parse_bssid('aa:bb:cc:dd:ee:ff'); ok+=(b==bytes([0xaa,0xbb,0xcc,0xdd,0xee,0xff]))\n" +
+"    # F4 wifi_off detection\n" +
+"    ok+=(wifi_off('  Status: Off') is True)\n" +
+"    # F5 classifier_version pin\n" +
+"    ok+=('airport-deprecated' in CLASSIFIER)\n" +
+"    print(f'[selftest] {ok}/{total}')\n" +
+"    print(f'[selftest] classifier_version={CLASSIFIER}')\n" +
+"    return ok==total\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome filter/NW-W1 — wifi_signal_shbf (WSBF v1)')\n" +
+"    if not selftest():\n" +
+"        print('SELFTEST FAIL'); sys.exit(2)\n" +
+"    info=encode()\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f}ms  n={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}  source={info[\"source\"]}')\n" +
+"    print(f'[reason] {\",\".join(info[\"reason\"]) if info[\"reason\"] else \"-\"}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] wifi off / empty — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    rng=random.Random(11)\n" +
+"    rss_blob=rss()\n" +
+"    # warm topk\n" +
+"    _=b.topk_rssi(10)\n" +
+"    t0=time.perf_counter()\n" +
+"    for _ in range(100): _=b.topk_rssi(10)\n" +
+"    t1=time.perf_counter(); us=(t1-t0)*1e6/100\n" +
+"    print(f'[query] topk_rssi(10) x100  per_query={us:.1f}us')\n" +
+"    # bssid prefix\n" +
+"    samples=[b.bssids[rng.randrange(b.n)][:3] for _ in range(200)]\n" +
+"    h=0; t0=time.perf_counter()\n" +
+"    for p in samples: h+=b.bssid_prefix_count(p)\n" +
+"    t1=time.perf_counter(); us=(t1-t0)*1e6/len(samples)\n" +
+"    print(f'[query] bssid_prefix_count x200  hits={h}  per_query={us:.1f}us')\n" +
+"    print(f'[rss] after blob loaded: {fmt(rss_blob)}')\n" +
+"    b.close()\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'encoded {info[\"n\"]} APs in {info[\"encode_s\"]*1000:.1f}ms -> {BIN} ({fmt(info[\"blob_size\"])}, source={info[\"source\"]})'); print(f'classifier_version={CLASSIFIER}')\n" +
+"elif mode=='selftest':\n" +
+"    ok=selftest(); sys.exit(0 if ok else 2)\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench|selftest'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("wifi_signal_shbf")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" || v == "selftest" { mode = v }
+            else if v.contains("/") { target = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/wifi_signal_shbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

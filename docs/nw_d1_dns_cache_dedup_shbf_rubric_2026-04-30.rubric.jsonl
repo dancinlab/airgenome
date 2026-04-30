@@ -1,0 +1,16 @@
+{"site":"NW-D1","date":"2026-04-30","block":"B1","name":"design-rigor","max":50,"score_a":48,"score_b":36,"score_iter2":50,"cut":"sorted hostname blob + bisect + IP/TTL pool + flags lane"}
+{"site":"NW-D1","date":"2026-04-30","block":"B2","name":"measurability","max":90,"score_a":86,"score_b":72,"score_iter2":88,"cut":"per-query us + dedup_rate + blob_size + entry count"}
+{"site":"NW-D1","date":"2026-04-30","block":"B3","name":"enforcement-strength","max":40,"score_a":38,"score_b":36,"score_iter2":38,"cut":"self-fixture + magic + version pin + read-only"}
+{"site":"NW-D1","date":"2026-04-30","block":"B4","name":"atomicity","max":40,"score_a":40,"score_b":40,"score_iter2":40,"cut":"single .hexa + 0 side effects + NO -flushcache"}
+{"site":"NW-D1","date":"2026-04-30","block":"B5","name":"observability","max":30,"score_a":28,"score_b":22,"score_iter2":30,"cut":"rss/elapsed/blob_size + classifier_version + dedup_ratio"}
+{"site":"NW-D1","date":"2026-04-30","block":"B6","name":"cross-repo","max":30,"score_a":28,"score_b":22,"score_iter2":30,"cut":"F7 + F18 + anima 3-hop"}
+{"site":"NW-D1","date":"2026-04-30","block":"B7","name":"emission-cost-bounded","max":40,"score_a":38,"score_b":38,"score_iter2":38,"cut":"payload <=24KB + 1-pass + subprocess 5s timeout"}
+{"site":"NW-D1","date":"2026-04-30","block":"B8","name":"adversarial-resistance","max":40,"score_a":38,"score_b":36,"score_iter2":38,"cut":"empty + no-cache + synth fallback + parse-fail"}
+{"site":"NW-D1","date":"2026-04-30","block":"B9","name":"meta-rubric-finite","max":20,"score_a":20,"score_b":20,"score_iter2":20,"cut":"depth<=2 + self-score avoid"}
+{"site":"NW-D1","date":"2026-04-30","block":"TOTAL","max":400,"score_a":364,"score_b":322,"score_iter2":384,"cut":">=350","verdict":"IMPL"}
+{"site":"NW-D1","date":"2026-04-30","gap":"G1","desc":"dscacheutil-cachedump empty on modern macOS — synth carries weight","severity":"high"}
+{"site":"NW-D1","date":"2026-04-30","gap":"G2","desc":"resolver TTL already dedups; incremental gain on top","severity":"medium"}
+{"site":"NW-D1","date":"2026-04-30","gap":"G3","desc":"hostname canonicalization (case + trailing dot)","severity":"low"}
+{"site":"NW-D1","date":"2026-04-30","gap":"G4","desc":"IPv4/IPv6 dual-form per-host doubles entries","severity":"low"}
+{"site":"NW-D1","date":"2026-04-30","gap":"G5","desc":"classifier_version pin update if dscacheutil format returns","severity":"low"}
+{"site":"NW-D1","date":"2026-04-30","metric":"packet_reduction_estimate","value_pct":25,"basis":"5min TTL window + chatty-app preconnect dedup"}

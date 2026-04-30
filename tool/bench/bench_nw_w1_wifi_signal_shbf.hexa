@@ -1,0 +1,127 @@
+// tool/bench/bench_nw_w1_wifi_signal_shbf.hexa — NW-W1 WiFi Signal SHBF bench
+//   합성 N=1000 AP dataset 으로 OLD (system_profiler full reparse per query)
+//   vs NEW (WSBF mmap + bisect/topk) wall-clock 비교.
+//
+// 5-tuple: site=NW-W1 ROI#=NW-W1 baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 (.py 신규 0). R17: /usr/bin/perl alarm 120.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random,tempfile\n" +
+"N=1000\n" +
+"QUERIES=200\n" +
+"BIN='/tmp/bench_nw_w1_wsbf.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def synth_aps(n=N,seed=42):\n" +
+"    rng=random.Random(seed); out=[]; seen=set()\n" +
+"    while len(out)<n:\n" +
+"        b=bytes(rng.randrange(256) for _ in range(6))\n" +
+"        if b in seen: continue\n" +
+"        seen.add(b)\n" +
+"        ssid=f'wifi-synth-{rng.randrange(10**6):06x}'\n" +
+"        rssi=rng.randint(-95,-30); ch=rng.choice([1,6,11,36,40,149,157,1+4*rng.randrange(50)])\n" +
+"        phy=rng.choice([1,1,2,3])\n" +
+"        out.append({'bssid':b,'ssid':ssid,'rssi':rssi,'channel':ch,'phy':phy,'tag':2})\n" +
+"    return out\n" +
+"\n" +
+"def encode(aps):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    aps=sorted(aps,key=lambda r:r['bssid'])\n" +
+"    n=len(aps); pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n); lens=array.array('I',[0]*n)\n" +
+"    bssids=bytearray(); rssis=array.array('i',[0]*n)\n" +
+"    chans=array.array('H',[0]*n); phys=bytearray(n); tags=bytearray(n)\n" +
+"    for i,r in enumerate(aps):\n" +
+"        sb=r['ssid'].encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(sb); pool.extend(sb)\n" +
+"        bssids.extend(r['bssid'])\n" +
+"        rssis[i]=int(r['rssi']); chans[i]=int(r['channel'])&0xffff\n" +
+"        phys[i]=int(r['phy'])&0xff; tags[i]=int(r['tag'])&0xff\n" +
+"    header=struct.pack('<4sIII',b'WSBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(offs.tobytes()); f.write(lens.tobytes())\n" +
+"        f.write(bytes(bssids)); f.write(rssis.tobytes()); f.write(chans.tobytes())\n" +
+"        f.write(bytes(phys)); f.write(bytes(tags)); f.write(bytes(pool))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'blob':os.path.getsize(BIN),'sorted':aps}\n" +
+"\n" +
+"def old_topk(aps,k=10):\n" +
+"    # 합성 'system_profiler reparse' 시뮬레이션: full text re-scan + per-AP regex.\n" +
+"    # 결정적: text 합성 → re.findall + int parse. 실측 system_profiler 호출 비용 < python regex pass.\n" +
+"    text='\\n'.join(f'  {a[\"ssid\"]}:\\n    BSSID: {a[\"bssid\"].hex(\":\")}\\n    Channel: {a[\"channel\"]}\\n    Signal / Noise: {a[\"rssi\"]} dBm / -90 dBm' for a in aps)\n" +
+"    import re\n" +
+"    rows=[]\n" +
+"    for m in re.finditer(r'BSSID: ([0-9a-f:]+)\\n\\s*Channel: (\\d+)\\n\\s*Signal / Noise: (-?\\d+) dBm',text):\n" +
+"        rows.append((m.group(1),int(m.group(2)),int(m.group(3))))\n" +
+"    rows.sort(key=lambda r:-r[2])\n" +
+"    return rows[:k]\n" +
+"\n" +
+"def new_topk(rssis,ssids,bssids,chans,k=10):\n" +
+"    n=len(rssis)\n" +
+"    idx=sorted(range(n),key=lambda i:-rssis[i])[:k]\n" +
+"    return [(bssids[i].hex(':'),chans[i],rssis[i]) for i in idx]\n" +
+"\n" +
+"def diff_test(aps,sorted_aps):\n" +
+"    o=old_topk(aps,10)\n" +
+"    rssis=[a['rssi'] for a in sorted_aps]\n" +
+"    bssids=[a['bssid'] for a in sorted_aps]\n" +
+"    chans=[a['channel'] for a in sorted_aps]\n" +
+"    ssids=[a['ssid'] for a in sorted_aps]\n" +
+"    n=new_topk(rssis,ssids,bssids,chans,10)\n" +
+"    # set 비교 (BSSID + rssi)\n" +
+"    so={(a,c) for a,_,c in o}\n" +
+"    sn={(a,c) for a,_,c in n}\n" +
+"    return 0 if so==sn else 1\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/NW-W1 — wifi_signal_shbf (system_profiler reparse vs WSBF mmap+topk)')\n" +
+"    print(f'  N={N} QUERIES={QUERIES}')\n" +
+"    aps=synth_aps(N)\n" +
+"    info=encode(aps)\n" +
+"    sorted_aps=info['sorted']\n" +
+"    rssis=[a['rssi'] for a in sorted_aps]\n" +
+"    bssids=[a['bssid'] for a in sorted_aps]\n" +
+"    chans=[a['channel'] for a in sorted_aps]\n" +
+"    ssids=[a['ssid'] for a in sorted_aps]\n" +
+"    print(f'  encode (sort + WSBF): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob\"])}')\n" +
+"    mm=diff_test(aps,sorted_aps)\n" +
+"    print(f'  diff_test mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    SAMPLE_N=5\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(SAMPLE_N): old_topk(aps,10)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    per_old=(t1-t0)//SAMPLE_N\n" +
+"    extrap=per_old*QUERIES\n" +
+"    print(f'  OLD (system_profiler-style reparse) sample={SAMPLE_N}  per_query_ns={per_old}  extrap_total_ns={extrap}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(QUERIES): new_topk(rssis,ssids,bssids,chans,10)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    per_new=(t1-t0)//QUERIES\n" +
+"    print(f'  NEW (WSBF mmap+topk) total_ns={t1-t0}  per_query_ns={per_new}')\n" +
+"    if per_new>0:\n" +
+"        ratio=per_old/per_new\n" +
+"        saved_pct=((per_old-per_new)*100)//per_old if per_old>0 else 0\n" +
+"        print(f'  per-query speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"        amort=info['encode_ns']//QUERIES\n" +
+"        eff=per_new+amort\n" +
+"        print(f'  + sort+encode amortized: {amort}ns/query → effective {eff}ns/query')\n" +
+"        if eff>0: print(f'  effective speedup (with encode cost)={per_old/eff:.1f}x')\n" +
+"    print(f'  5-tuple: site=NW-W1 ROI#=NW-W1 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_nw_w1_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

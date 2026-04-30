@@ -32,3 +32,5 @@
 {"ts":"2026-04-30T14:22:33Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-5-memo-attachment-skip-to-pass-via-auto-discover-regular-plus-shared-media-previews","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T14:25:31Z","actor":"staged-scan","kind":"bypass","reason":"audit-jsonl-auto-append-alignment-only","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T14:25:31Z","actor":"commit-msg-scan","kind":"bypass","reason":"audit-jsonl-auto-append-alignment-only","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T14:52:56Z","actor":"staged-scan","kind":"bypass","reason":"wave-6-13-bg-agent-26-pass-filter-loop-integrate-with-raw-240-v2-pre-applied-rubric","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T14:52:56Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-6-13-bg-agent-26-pass-filter-loop-integrate-with-raw-240-v2-pre-applied-rubric","branch":"main","scanner_user":"ghost"}

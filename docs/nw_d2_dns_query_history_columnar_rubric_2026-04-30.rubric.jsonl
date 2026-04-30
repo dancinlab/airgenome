@@ -1,0 +1,17 @@
+{"site":"NW-D2","date":"2026-04-30","block":"B1","name":"design-rigor","max":50,"score_a":48,"score_b":36,"score_iter2":50,"cut":"column dict + ts u32 + qtype u8 + hostname enum"}
+{"site":"NW-D2","date":"2026-04-30","block":"B2","name":"measurability","max":90,"score_a":86,"score_b":70,"score_iter2":90,"cut":"per-query us + speedup + dict cardinality + blob_size"}
+{"site":"NW-D2","date":"2026-04-30","block":"B3","name":"enforcement-strength","max":40,"score_a":38,"score_b":36,"score_iter2":38,"cut":"magic + version + self-fixture + log-read-only"}
+{"site":"NW-D2","date":"2026-04-30","block":"B4","name":"atomicity","max":40,"score_a":40,"score_b":40,"score_iter2":40,"cut":"single .hexa + /tmp"}
+{"site":"NW-D2","date":"2026-04-30","block":"B5","name":"observability","max":30,"score_a":28,"score_b":22,"score_iter2":30,"cut":"rss/elapsed/blob_size + version + uniq_host_count"}
+{"site":"NW-D2","date":"2026-04-30","block":"B6","name":"cross-repo","max":30,"score_a":28,"score_b":22,"score_iter2":30,"cut":"C6 columnar + F7 dns + anima 3-hop"}
+{"site":"NW-D2","date":"2026-04-30","block":"B7","name":"emission-cost-bounded","max":40,"score_a":38,"score_b":36,"score_iter2":40,"cut":"payload <=28KB + 1-pass"}
+{"site":"NW-D2","date":"2026-04-30","block":"B8","name":"adversarial-resistance","max":40,"score_a":38,"score_b":32,"score_iter2":38,"cut":"log-rotate + TCC-deny + synth fallback + parse-fail"}
+{"site":"NW-D2","date":"2026-04-30","block":"B9","name":"meta-rubric-finite","max":20,"score_a":20,"score_b":20,"score_iter2":20,"cut":"depth<=2"}
+{"site":"NW-D2","date":"2026-04-30","block":"B10","name":"rotated-source-stream-fold","max":20,"score_a":18,"score_b":12,"score_iter2":20,"cut":"log-rotate + tail-fold + monotonic ts + dedup-on-replay"}
+{"site":"NW-D2","date":"2026-04-30","block":"TOTAL","max":420,"score_a":382,"score_b":326,"score_iter2":401,"cut":">=350","verdict":"IMPL"}
+{"site":"NW-D2","date":"2026-04-30","gap":"G1","desc":"mDNSResponder log requires TCC; real source rare without sudo","severity":"high"}
+{"site":"NW-D2","date":"2026-04-30","gap":"G2","desc":"qtype enum bounded (~10 values); column low-card","severity":"low"}
+{"site":"NW-D2","date":"2026-04-30","gap":"G3","desc":"per-host first-seen vs last-seen ts asymmetry on rotation","severity":"medium"}
+{"site":"NW-D2","date":"2026-04-30","gap":"G4","desc":"bench replay window 4s arbitrary; sweep needed in V3","severity":"low"}
+{"site":"NW-D2","date":"2026-04-30","gap":"G5","desc":"classifier pin lock-in if log format pivots","severity":"low"}
+{"site":"NW-D2","date":"2026-04-30","metric":"packet_reduction_estimate","value_pct":20,"basis":"4s window bucket dedup over chatty workloads"}

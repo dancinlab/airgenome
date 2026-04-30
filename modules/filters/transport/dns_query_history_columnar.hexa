@@ -1,0 +1,270 @@
+// airgenome/modules/filters/transport/dns_query_history_columnar.hexa
+//   NW-D2 — DNS Query History Columnar Filter (DQHC).
+//
+//   목적: DNS query timeline 을 column-dict 압축으로 fold → (host_idx u16, ts u32,
+//         qtype u8, flags u8) 4-column. hostname enum (low cardinality) → 2B/row 효율.
+//         B10: log rotation + tail-fold + monotonic ts + (host,qtype,bucket-ts) dedup.
+//
+//   MA3 #99 column-dict + C6 token columnar. Real source 가뭄(TCC) → synth-primary.
+//
+//   blob layout (little-endian):
+//     magic       : 4B   "DQHC"          (DNS Query History Columnar, classifier=DQHC-v1)
+//     version     : 4B   u32             (1)
+//     n           : 4B   u32             query 개수 (dedup 후)
+//     hn          : 4B   u32             unique hostname 개수
+//     host_pool   : 4B   u32             hostname utf-8 pool 길이
+//     [hn*4]      : u32 host_offs        sorted host 오프셋 (asc)
+//     [hn*4]      : u32 host_lens
+//     [n*2]       : u16 host_idx         row → host enum id
+//     [n*4]       : u32 ts               unix epoch (monotonic; back-edge dropped)
+//     [n*1]       : u8  qtype            1=A 28=AAAA 5=CNAME 12=PTR 16=TXT 33=SRV ...
+//     [n*1]       : u8  flags            bit0=cache-hit bit1=NXDOMAIN bit2=truncated bit3=mDNS
+//     [host_pool] : utf-8                hostname pool
+//
+// 모드:
+//   encode : real-probe (zsh egress hint / system.log) + synth merge → /tmp/dns_query_history.bin
+//   bench  : encode + per-host count query (OLD scan vs NEW columnar bisect)
+//
+// macOS source (read-only, NO TCC required):
+//   S1: zsh history grep (dig|nslookup|host) — egress hint with ts
+//   S2: ~/Library/Logs/CrashReporter/* (rare)
+//   absent → synth (1000 queries × 80 hosts × 4 qtypes; replays embedded)
+//
+// R1 HEXA-FIRST. R17: /usr/bin/perl alarm 120s. /usr/bin/python3 절대경로. try/catch 0 in hexa.
+// classifier_version=DQHC-v1
+// B10: rotated-source-stream-fold-correctness — bucket-ts dedup window 4s.
+// NO production execute. NO mDNSResponder daemon spawn. read-only subprocess.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,resource,mmap,array,random,subprocess,re\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/dns_query_history.bin'\n" +
+"CLASSIFIER='DQHC-v1'\n" +
+"BUCKET_TS=4    # B10 dedup window seconds\n" +
+"\n" +
+"FLAG_CACHE_HIT=0x01\n" +
+"FLAG_NXDOMAIN=0x02\n" +
+"FLAG_TRUNCATED=0x04\n" +
+"FLAG_MDNS=0x08\n" +
+"\n" +
+"QTYPE_A=1; QTYPE_AAAA=28; QTYPE_CNAME=5; QTYPE_PTR=12; QTYPE_TXT=16; QTYPE_SRV=33\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def synth(n=1000,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    bases=['apple.com','icloud.com','cdn-apple.com','github.com','api.github.com',\n" +
+"           'slack.com','wss-mobile.slack.com','discord.com','cdn.discordapp.com',\n" +
+"           'googleapis.com','youtube.com','google.com','cloudflare.com','fastly.net',\n" +
+"           'sentry.io','statsd.local','grafana.example','printer.local',\n" +
+"           'apple-tv.local','airpods.local','npmjs.org','registry.npmjs.org']\n" +
+"    qtypes=[QTYPE_A,QTYPE_AAAA,QTYPE_CNAME,QTYPE_PTR]\n" +
+"    base_t=int(time.time())-3600\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        h=bases[i%len(bases)]\n" +
+"        if i%4==1: h='sub'+str(i%13)+'.'+h\n" +
+"        ts=base_t+(i*3)//5  # mostly monotonic; some collisions\n" +
+"        qt=qtypes[i%len(qtypes)]\n" +
+"        flg=0\n" +
+"        if i%5==0: flg|=FLAG_CACHE_HIT\n" +
+"        if i%37==0: flg|=FLAG_NXDOMAIN\n" +
+"        if h.endswith('.local'): flg|=FLAG_MDNS\n" +
+"        out.append((h.lower().rstrip('.'),ts,qt,flg))\n" +
+"        # B10: replay within 4s window — must be deduped\n" +
+"        if i%7==2:\n" +
+"            out.append((h.lower().rstrip('.'),ts+1,qt,flg|FLAG_CACHE_HIT))\n" +
+"    # B10: simulate rotation back-edge (single ts regression)\n" +
+"    out.append(('rotated.example.com',base_t-100,QTYPE_A,0))\n" +
+"    return out\n" +
+"\n" +
+"def run_cmd(args,timeout=3):\n" +
+"    try:\n" +
+"        p=subprocess.run(args,capture_output=True,timeout=timeout,text=True)\n" +
+"        return p.stdout or ''\n" +
+"    except Exception:\n" +
+"        return ''\n" +
+"\n" +
+"def real_probe():\n" +
+"    rows=[]\n" +
+"    src=[]\n" +
+"    home=os.environ.get('HOME','')\n" +
+"    if home and os.path.isfile(home+'/.zsh_history'):\n" +
+"        try:\n" +
+"            with open(home+'/.zsh_history','rb') as f: data=f.read()\n" +
+"        except Exception: data=b''\n" +
+"        for ln in data.splitlines():\n" +
+"            try: s=ln.decode('utf-8','replace')\n" +
+"            except Exception: continue\n" +
+"            m=re.search(r'(?:dig|nslookup|host)\\s+([A-Za-z0-9.-]+)',s)\n" +
+"            if m:\n" +
+"                tm=re.match(r':\\s*(\\d+):',s)\n" +
+"                ts=int(tm.group(1)) if tm else 0\n" +
+"                h=m.group(1).lower().rstrip('.')\n" +
+"                if h: rows.append((h,ts,QTYPE_A,0))\n" +
+"        if rows: src.append('zsh-egress')\n" +
+"    if not rows: return [],'empty',0\n" +
+"    return rows,'+'.join(src),0\n" +
+"\n" +
+"def fold_b10(rows):\n" +
+"    # B10: drop ts back-edges; bucket-ts dedup (host,qtype,ts//BUCKET_TS)\n" +
+"    rows_sorted=sorted(rows,key=lambda r:r[1])\n" +
+"    last_ts=0\n" +
+"    fwd=[]\n" +
+"    drop_back=0\n" +
+"    for r in rows_sorted:\n" +
+"        if r[1]<last_ts-2:\n" +
+"            drop_back+=1\n" +
+"            continue\n" +
+"        last_ts=max(last_ts,r[1])\n" +
+"        fwd.append(r)\n" +
+"    seen={}\n" +
+"    out=[]\n" +
+"    dedup=0\n" +
+"    for (h,t,qt,fg) in fwd:\n" +
+"        k=(h,qt,t//BUCKET_TS)\n" +
+"        if k in seen:\n" +
+"            dedup+=1\n" +
+"            # merge flags\n" +
+"            idx=seen[k]\n" +
+"            ph,pt,pq,pf=out[idx]\n" +
+"            out[idx]=(ph,pt,pq,pf|fg)\n" +
+"            continue\n" +
+"        seen[k]=len(out)\n" +
+"        out.append((h,t,qt,fg))\n" +
+"    return out,drop_back,dedup\n" +
+"\n" +
+"def encode(rows):\n" +
+"    pre=len(rows)\n" +
+"    rows,drop_back,dedup_n=fold_b10(rows)\n" +
+"    hosts=sorted({r[0] for r in rows})\n" +
+"    h_idx={h:i for i,h in enumerate(hosts)}\n" +
+"    rows=sorted(rows,key=lambda r:(h_idx[r[0]],r[1]))\n" +
+"    n=len(rows); hn=len(hosts)\n" +
+"    pool=bytearray()\n" +
+"    h_off=array.array('I',[0]*hn); h_len=array.array('I',[0]*hn)\n" +
+"    for i,h in enumerate(hosts):\n" +
+"        b=h.encode('utf-8','replace')\n" +
+"        h_off[i]=len(pool); h_len[i]=len(b); pool.extend(b)\n" +
+"    hi=array.array('H',[0]*n); ts=array.array('I',[0]*n)\n" +
+"    qt_arr=bytearray(n); flg_arr=bytearray(n)\n" +
+"    for i,(h,t,qt,fg) in enumerate(rows):\n" +
+"        hi[i]=h_idx[h]&0xffff\n" +
+"        ts[i]=int(t)&0xffffffff\n" +
+"        qt_arr[i]=int(qt)&0xff\n" +
+"        flg_arr[i]=int(fg)&0xff\n" +
+"    header=struct.pack('<4sIIII',b'DQHC',1,n,hn,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(h_off.tobytes()); f.write(h_len.tobytes())\n" +
+"        f.write(hi.tobytes()); f.write(ts.tobytes())\n" +
+"        f.write(bytes(qt_arr)); f.write(bytes(flg_arr))\n" +
+"        f.write(bytes(pool))\n" +
+"    return {'n':n,'hn':hn,'pre':pre,'drop_back':drop_back,'dedup':dedup_n,\n" +
+"            'blob_size':os.path.getsize(BIN),'rows':rows,'hosts':hosts}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb'); self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,hn,ps=struct.unpack_from('<4sIIII',self.mm,0)\n" +
+"        assert magic==b'DQHC' and ver==1\n" +
+"        self.n=n; self.hn=hn\n" +
+"        base=20\n" +
+"        a=base; b=a+4*hn; c=b+4*hn\n" +
+"        d=c+2*n; e=d+4*n; g=e+n; pool_off=g+n\n" +
+"        mv=memoryview(self.mm)\n" +
+"        h_off=array.array('I'); h_off.frombytes(bytes(mv[a:a+4*hn]))\n" +
+"        h_len=array.array('I'); h_len.frombytes(bytes(mv[b:b+4*hn]))\n" +
+"        pool=bytes(mv[pool_off:pool_off+ps])\n" +
+"        self.hosts=[pool[h_off[i]:h_off[i]+h_len[i]] for i in range(hn)]\n" +
+"        self.hi=array.array('H'); self.hi.frombytes(bytes(mv[c:c+2*n]))\n" +
+"    def host_count(self,prefix):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        a=bisect.bisect_left(self.hosts,pb)\n" +
+"        b=bisect.bisect_left(self.hosts,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        if a>=b: return 0\n" +
+"        c=0\n" +
+"        for x in self.hi:\n" +
+"            if a<=x<b: c+=1\n" +
+"        return c\n" +
+"    def close(self): self.mm.close(); self.f.close()\n" +
+"\n" +
+"def linear_count(rows,prefix):\n" +
+"    return sum(1 for (h,_,_,_) in rows if h.startswith(prefix))\n" +
+"\n" +
+"def make_samples(hosts,k=50):\n" +
+"    s=[]\n" +
+"    for h in hosts:\n" +
+"        s.append(h)\n" +
+"        if len(h)>=4: s.append(h[:4])\n" +
+"    while len(s)<k: s.append(hosts[len(s)%len(hosts)][:3])\n" +
+"    return s[:k]\n" +
+"\n" +
+"def bench():\n" +
+"    rr,kind,_=real_probe()\n" +
+"    if not rr: rr=synth(); kind='synth'\n" +
+"    print(f'[classifier] {CLASSIFIER}')\n" +
+"    print(f'[source] {kind}  raw_rows={len(rr)}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    info=encode(rr)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    dedup_pct=100.0*(1.0-info['n']/max(1,info['pre']))\n" +
+"    print(f'[encode] {(t1-t0)/1e6:.2f} ms  pre={info[\"pre\"]}  fold={info[\"n\"]}  dedup={info[\"dedup\"]}  drop_back={info[\"drop_back\"]}  dedup_rate={dedup_pct:.1f}%  blob={fmt(info[\"blob_size\"])}  hosts={info[\"hn\"]}')\n" +
+"    if info['n']==0: print('[bench] empty'); return\n" +
+"    samples=make_samples(info['hosts'],50)\n" +
+"    b=Blob(BIN)\n" +
+"    for s in samples[:3]: b.host_count(s)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    bh=0\n" +
+"    for s in samples: bh+=b.host_count(s)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    blob_us=(t1-t0)/1000/len(samples)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    lh=0\n" +
+"    for s in samples: lh+=linear_count(info['rows'],s)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    lin_us=(t1-t0)/1000/len(samples)\n" +
+"    b.close()\n" +
+"    print(f'[query] hits_blob={bh}  hits_linear={lh}  lossless={bh==lh}')\n" +
+"    print(f'  OLD linear scan         : {lin_us:10.1f} us/query')\n" +
+"    print(f'  NEW blob mmap+bisect    : {blob_us:10.1f} us/query')\n" +
+"    if blob_us>0: print(f'  speedup                 : {lin_us/blob_us:6.1f}x')\n" +
+"    print(f'[packet_reduction_est] {dedup_pct:.1f}% redundant queries within {BUCKET_TS}s window')\n" +
+"    print(f'[rss] {fmt(rss())}  elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    rr,kind,_=real_probe()\n" +
+"    if not rr: rr=synth(); kind='synth'\n" +
+"    info=encode(rr)\n" +
+"    print(f'[{CLASSIFIER}] encoded n={info[\"n\"]} hosts={info[\"hn\"]} ({kind}, pre={info[\"pre\"]}) → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("dns_query_history_columnar")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/dns_query_history_columnar_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

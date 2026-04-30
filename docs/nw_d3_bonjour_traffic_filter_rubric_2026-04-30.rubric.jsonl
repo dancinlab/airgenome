@@ -1,0 +1,18 @@
+{"site":"NW-D3","date":"2026-04-30","block":"B1","name":"design-rigor","max":50,"score_a":48,"score_b":36,"score_iter2":50,"cut":"sorted (svc_type,instance) blob + dedup + flag mask"}
+{"site":"NW-D3","date":"2026-04-30","block":"B2","name":"measurability","max":90,"score_a":86,"score_b":72,"score_iter2":90,"cut":"per-event us + dedup_rate + svc cardinality + speedup"}
+{"site":"NW-D3","date":"2026-04-30","block":"B3","name":"enforcement-strength","max":40,"score_a":38,"score_b":36,"score_iter2":38,"cut":"magic + version + read-only browse + self-fixture"}
+{"site":"NW-D3","date":"2026-04-30","block":"B4","name":"atomicity","max":40,"score_a":40,"score_b":40,"score_iter2":40,"cut":"single .hexa + dns-sd 1-shot 3s timeout + /tmp"}
+{"site":"NW-D3","date":"2026-04-30","block":"B5","name":"observability","max":30,"score_a":28,"score_b":22,"score_iter2":30,"cut":"rss/elapsed/blob_size + version + dedup_ratio + svc_kinds"}
+{"site":"NW-D3","date":"2026-04-30","block":"B6","name":"cross-repo","max":30,"score_a":28,"score_b":22,"score_iter2":30,"cut":"F18 + C10 + anima 3-hop"}
+{"site":"NW-D3","date":"2026-04-30","block":"B7","name":"emission-cost-bounded","max":40,"score_a":38,"score_b":36,"score_iter2":38,"cut":"payload <=22KB + 1-pass + browse 3s"}
+{"site":"NW-D3","date":"2026-04-30","block":"B8","name":"adversarial-resistance","max":40,"score_a":38,"score_b":34,"score_iter2":38,"cut":"dns-sd missing + browse empty + synth + parse-fail"}
+{"site":"NW-D3","date":"2026-04-30","block":"B9","name":"meta-rubric-finite","max":20,"score_a":20,"score_b":20,"score_iter2":20,"cut":"depth<=2"}
+{"site":"NW-D3","date":"2026-04-30","block":"B10","name":"rotated-source-stream-fold","max":20,"score_a":18,"score_b":12,"score_iter2":20,"cut":"broadcast burst window + Add/Rmv churn fold + monotonic ts"}
+{"site":"NW-D3","date":"2026-04-30","block":"TOTAL","max":420,"score_a":382,"score_b":330,"score_iter2":402,"cut":">=350","verdict":"IMPL"}
+{"site":"NW-D3","date":"2026-04-30","gap":"G1","desc":"dns-sd browse output column layout fragile (whitespace align)","severity":"medium"}
+{"site":"NW-D3","date":"2026-04-30","gap":"G2","desc":"meta-browse only enumerates active service types — instances need 2nd browse","severity":"medium"}
+{"site":"NW-D3","date":"2026-04-30","gap":"G3","desc":"first-seen ts != first-broadcast (cache hit on prior browse)","severity":"low"}
+{"site":"NW-D3","date":"2026-04-30","gap":"G4","desc":"network-island (no peers) -> empty browse -> synth carries B8","severity":"medium"}
+{"site":"NW-D3","date":"2026-04-30","gap":"G5","desc":"classifier pin must update if dns-sd format pivots","severity":"low"}
+{"site":"NW-D3","date":"2026-04-30","metric":"packet_reduction_estimate_local_traffic_pct","value_pct":7,"basis":"Bonjour share 5-15% LAN; ~50% redundancy absorbed; B10 churn dedup +30% on noisy"}
+{"site":"NW-D3","date":"2026-04-30","metric":"bonjour_share_redundancy_pct","value_pct":50}

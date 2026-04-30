@@ -1,0 +1,138 @@
+// tool/bench/bench_nw_p2_http_request_consolidate.hexa — NW-P2 HRCF bench
+//   raw 240 V2 + B10. synth 5000-req with 45% dup ratio.
+//
+// 5-tuple JSONL: site=NW_P2 ROI#=NW_P2_HRCF baseline_ns post_ns diff_test=lossless
+
+let PAYLOAD = "import sys,os,subprocess,re,time,struct,hashlib,array,resource,json,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/bench_nw_p2_hrcf.bin'\n" +
+"N_REQ=5000\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def synth(n,seed=11,dup_ratio=0.45):\n" +
+"    rng=random.Random(seed)\n" +
+"    methods=[b'GET',b'POST',b'PUT',b'DELETE']\n" +
+"    bases=[]\n" +
+"    for _ in range(int(n*(1-dup_ratio))):\n" +
+"        meth=rng.choice(methods)\n" +
+"        path=f'/api/v{rng.randrange(1,4)}/resource/{rng.randrange(1,500)}'.encode()\n" +
+"        st=rng.choice([200,200,200,304,404,500])\n" +
+"        bases.append((meth,path,st))\n" +
+"    rows=[]; ts0=int(time.time()*1_000_000)\n" +
+"    for i in range(n):\n" +
+"        b=rng.choice(bases) if rng.random()<dup_ratio else bases[i%len(bases)]\n" +
+"        rows.append((ts0+i*1000,b[0],b[1],b[2]))\n" +
+"    return rows\n" +
+"\n" +
+"def encode_blob(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    agg={}; status_h={}\n" +
+"    for ts,m,u,st in rows:\n" +
+"        key=m+b' '+u\n" +
+"        if key in agg:\n" +
+"            e=agg[key]; e[0]+=1\n" +
+"            if ts>e[1]: e[1]=ts\n" +
+"        else:\n" +
+"            agg[key]=[1,ts]\n" +
+"        status_h[st]=status_h.get(st,0)+1\n" +
+"    keys=sorted(agg.keys()); n=len(keys)\n" +
+"    pool=bytearray()\n" +
+"    url_offs=array.array('I',[0]*n); url_lens=array.array('I',[0]*n)\n" +
+"    req_cnt=array.array('I',[0]*n); last_ts=array.array('Q',[0]*n)\n" +
+"    for i,k in enumerate(keys):\n" +
+"        url_offs[i]=len(pool); url_lens[i]=len(k); pool.extend(k); pool.append(0x0a)\n" +
+"        e=agg[k]; req_cnt[i]=e[0]; last_ts[i]=e[1]\n" +
+"    statuses=sorted(status_h.keys()); sn=len(statuses)\n" +
+"    st_code=array.array('I',[s for s in statuses])\n" +
+"    st_count=array.array('I',[status_h[s] for s in statuses])\n" +
+"    out=bytearray(); out.extend(b'HRCF')\n" +
+"    out.extend(struct.pack('<IIIII',1,n,len(pool),sn,0))\n" +
+"    out.extend(url_offs.tobytes()); out.extend(url_lens.tobytes())\n" +
+"    out.extend(req_cnt.tobytes()); out.extend(last_ts.tobytes())\n" +
+"    out.extend(pool)\n" +
+"    out.extend(st_code.tobytes()); out.extend(st_count.tobytes())\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    struct.pack_into('<I',out,4+4*4,len(out))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    total=sum(req_cnt); savings=sum(max(0,c-1) for c in req_cnt)\n" +
+"    chp=savings/max(total,1)*100\n" +
+"    return {'n':n,'total':total,'cache_hit_potential_pct':round(chp,2),'blob_size':len(out),'encode_ns':t1-t0,'savings':savings}\n" +
+"\n" +
+"def linear_scan(rows,prefix):\n" +
+"    cnt=0\n" +
+"    for ts,m,u,st in rows:\n" +
+"        if u.startswith(prefix): cnt+=1\n" +
+"    return cnt\n" +
+"\n" +
+"def blob_count_prefix(prefix):\n" +
+"    with open(BIN,'rb') as f: b=f.read()\n" +
+"    assert b[:4]==b'HRCF'\n" +
+"    ver,n,pool_sz,sn,blob_sz=struct.unpack_from('<IIIII',b,4)\n" +
+"    p=4+5*4\n" +
+"    url_offs=array.array('I'); url_offs.frombytes(b[p:p+n*4]); p+=n*4\n" +
+"    url_lens=array.array('I'); url_lens.frombytes(b[p:p+n*4]); p+=n*4\n" +
+"    req_cnt=array.array('I'); req_cnt.frombytes(b[p:p+n*4]); p+=n*4\n" +
+"    p+=n*8\n" +
+"    pool=b[p:p+pool_sz]\n" +
+"    cnt=0\n" +
+"    for i in range(n):\n" +
+"        s=bytes(pool[url_offs[i]:url_offs[i]+url_lens[i]])\n" +
+"        # skip method prefix\n" +
+"        sp=s.split(b' ',1)\n" +
+"        if len(sp)<2: continue\n" +
+"        u=sp[1]\n" +
+"        if u.startswith(prefix): cnt+=req_cnt[i]\n" +
+"    return cnt\n" +
+"\n" +
+"def bench_synth():\n" +
+"    rows=synth(N_REQ)\n" +
+"    info=encode_blob(rows)\n" +
+"    print(f'[encode] n_req={info[\"n\"]} total={info[\"total\"]} chp={info[\"cache_hit_potential_pct\"]}% savings={info[\"savings\"]} blob={fmt(info[\"blob_size\"])} encode={info[\"encode_ns\"]/1e6:.2f}ms')\n" +
+"    queries=[b'/api/v1',b'/api/v2',b'/api/v3']\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    base=sum(linear_scan(rows,q) for q in queries)\n" +
+"    t1=time.perf_counter_ns(); base_ns=t1-t0\n" +
+"    t2=time.perf_counter_ns()\n" +
+"    post=sum(blob_count_prefix(q) for q in queries)\n" +
+"    t3=time.perf_counter_ns(); post_ns=t3-t2\n" +
+"    diff='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=base_ns/max(post_ns,1)\n" +
+"    print(f'  baseline (linear)  : {base_ns/1000:10.1f} us  hits={base}')\n" +
+"    print(f'  HRCF blob query    : {post_ns/1000:10.1f} us  hits={post}')\n" +
+"    print(f'  speedup            : {sp:6.1f}x  diff={diff}')\n" +
+"    print(f'  cache_hit_potential: {info[\"cache_hit_potential_pct\"]}% (= packet reduction)')\n" +
+"    row={'site':'NW_P2','roi':'NW_P2_HRCF_synth','baseline_ns':base_ns,'post_ns':post_ns,'diff_test':diff,'speedup_x':round(sp,2),'n':N_REQ,'distinct':info['n'],'chp_pct':info['cache_hit_potential_pct']}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return diff=='lossless'\n" +
+"\n" +
+"if mode=='bench':\n" +
+"    ok=bench_synth(); sys.exit(0 if ok else 1)\n" +
+"else:\n" +
+"    print('usage: bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("bench_nw_p2_http_request_consolidate")
+        if is_hexa_bin == false && is_self == false {
+            if v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_nw_p2_hrcf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

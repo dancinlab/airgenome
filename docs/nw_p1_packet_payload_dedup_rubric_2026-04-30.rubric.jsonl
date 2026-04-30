@@ -1,0 +1,18 @@
+{"schema":"raw240v2+B10","version":1,"date":"2026-04-30","artifact":"nw_p1_packet_payload_dedup_rubric_2026-04-30.md","scope":"NW-P1-packet-payload-dedup","magic":"PPDD","pattern_ref":"T2 attachment dedup + DKLC B10 + claude_stream_chunk_rabin_karp"}
+{"block":"B1","name":"design-rigor","max":50,"perfect_cut":"sliding-window 5-tuple blake2b-64 + binary layout + read-only netstat heuristic"}
+{"block":"B2","name":"measurability","max":90,"perfect_cut":"flow_count + dedup_ratio + dup_bytes_saved + 3-axis cold-netstat / per-flow / blob"}
+{"block":"B3","name":"enforcement-strength","max":40,"perfect_cut":"5-fixture self-test + classifier-version 박제"}
+{"block":"B4","name":"atomicity","max":40,"perfect_cut":"single .hexa + 0 side-effect + tmp 격리 + sock_diag immutable + netstat read-only"}
+{"block":"B5","name":"observability","max":30,"perfect_cut":"rss/elapsed/blob_size + classifier_version + reason code"}
+{"block":"B6","name":"cross-repo","max":30,"perfect_cut":"hive raw + airgenome filter + anima flow-graph 3-hop"}
+{"block":"B7","name":"emission-cost-bounded","max":40,"perfect_cut":"PAYLOAD ≤16KB + 1-pass + cache-on-disk-only"}
+{"block":"B8","name":"adversarial-resistance","max":40,"perfect_cut":"empty/no-net/single-flow/dup-cluster/read-only 5-fixture PASS"}
+{"block":"B9","name":"meta-rubric-finite","max":20,"perfect_cut":"depth≤2 + self-scoring 회피 + carve-out catalogue"}
+{"block":"B10","name":"rotated-source-stream-fold-correctness","max":20,"perfect_cut":"snap-boundary lossless + cross-snap dedup + ts-skew + mid-snap cleanup"}
+{"candidate":"NW-P1-a","desc":"tcp only simple","B1":42,"B2":78,"B3":34,"B4":36,"B5":26,"B6":24,"B7":38,"B8":34,"B9":18,"B10":10,"sigma":340}
+{"candidate":"NW-P1-b","desc":"tcp+udp blake2b per-snap","B1":48,"B2":86,"B3":38,"B4":38,"B5":28,"B6":28,"B7":38,"B8":38,"B9":20,"B10":16,"sigma":378}
+{"candidate":"NW-P1-h","desc":"hybrid tcp+udp blake2b head-64B + sliding ring 1024 cross-snap","B1":50,"B2":90,"B3":40,"B4":40,"B5":30,"B6":30,"B7":38,"B8":40,"B9":20,"B10":20,"sigma":418}
+{"verdict":"IMPL","reason":"sigma 418 >= 410 threshold","action":"impl network_packet_payload_dedup.hexa"}
+{"honest_c3":[{"id":"C3-1","gap":"netstat counter-only no payload","mitigation":"5-tuple repetition surrogate"},{"id":"C3-2","gap":"PID attribution oos","mitigation":"lsof too costly"},{"id":"C3-3","gap":"encrypted-tunnel single 5-tuple","mitigation":"documented"},{"id":"C3-4","gap":"classifier-version","mitigation":"PPDD-v1-2026-04-30"},{"id":"C3-5","gap":"mid-snap rotation","mitigation":"fnv1a ring 1024 B10(b)"}],"gap_count":5}
+{"roi_projection":{"encode_ms":"20-40 synth, 10-30 real","dedup_ratio":"0.30-0.60 synth, 0.10-0.25 real","packet_reduction_pct":"30-60 synth signal","speedup_vs_netstat_grep":"50-100x"}}
+{"iteration":3,"final_score":418,"ceiling":420,"halt_reason":"diminishing returns; only -2 B7 remaining"}

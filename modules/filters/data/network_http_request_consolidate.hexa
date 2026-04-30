@@ -1,0 +1,248 @@
+// modules/filters/data/network_http_request_consolidate.hexa
+//   NW-P2 — http_request_consolidate (HRCF). raw 240 V2 + B10: 418/420.
+//
+// 목적: HTTP-formatted log line stream `<ts> <method> <url> <status>` 을
+//       columnar 화. (method,url) 키로 그룹 후 req_count / last_ts /
+//       status histogram 생성. duplicate request → cache-hit-potential
+//       지표로 노출 (= 패킷 감소 신호).
+//
+// blob layout (little-endian):
+//   magic    : 4B  "HRCF"
+//   version  : 4B  u32 (1)
+//   n_req    : 4B  u32  distinct (method,url) pairs
+//   pool_sz  : 4B  u32
+//   status_n : 4B  u32  distinct status codes
+//   blob_sz  : 4B  u32
+//   [n_req*4]   : u32 url_offs
+//   [n_req*4]   : u32 url_lens
+//   [n_req*4]   : u32 req_count
+//   [n_req*8]   : u64 last_ts_us
+//   [pool_sz]   : utf-8 "<METHOD> <url>\n" pool (sorted)
+//   [status_n*4]: u32 status_code
+//   [status_n*4]: u32 status_count
+//   trailer     : u64 ring_seed
+//
+// rotation walk: oldest (.log.N) → newest (.log) 순. fnv1a-64 boundary ring
+// (≥1024) 로 cross-rotation dup 제거.
+//
+// R1 HEXA-FIRST: inline python3. R17 perl alarm 120s. try/catch 0.
+
+let PAYLOAD = "import sys,os,subprocess,re,time,struct,hashlib,array,resource,json,glob\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'encode'\n" +
+"target=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"BIN='/tmp/network_http_request_consolidate_hrcf.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def fnv1a64(b):\n" +
+"    h=0xcbf29ce484222325\n" +
+"    for x in b:\n" +
+"        h^=x; h=(h*0x100000001b3) & 0xffffffffffffffff\n" +
+"    return h\n" +
+"\n" +
+"# match either: '<iso8601> METHOD url status' or 'METHOD url HTTP/1.1\" status'\n" +
+"# our normalized: capture (method,url,status,ts_us)\n" +
+"LINE_A=re.compile(rb'(?P<ts>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z?)\\s+(?P<m>GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\\s+(?P<url>\\S+)\\s+(?P<st>\\d{3})')\n" +
+"LINE_B=re.compile(rb'\"(?P<m>GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\\s+(?P<url>\\S+)\\s+HTTP/[0-9.]+\"\\s+(?P<st>\\d{3})')\n" +
+"\n" +
+"def parse_ts_us(b):\n" +
+"    s=b.decode('ascii','replace')\n" +
+"    if '.' in s:\n" +
+"        head,tail=s.split('.',1)\n" +
+"        if 'Z' in tail: tail=tail.split('Z',1)[0]\n" +
+"        tail=tail[:6].ljust(6,'0')\n" +
+"        s=head+'.'+tail\n" +
+"    else:\n" +
+"        if s.endswith('Z'): s=s[:-1]\n" +
+"        s=s+'.000000'\n" +
+"    from datetime import datetime,timezone\n" +
+"    try:\n" +
+"        dt=datetime.fromisoformat(s)\n" +
+"        if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)\n" +
+"        return int(dt.timestamp()*1_000_000)\n" +
+"    except Exception:\n" +
+"        return 0\n" +
+"\n" +
+"def parse_line(ln):\n" +
+"    m=LINE_A.search(ln)\n" +
+"    if m:\n" +
+"        return (parse_ts_us(m.group('ts')),m.group('m'),m.group('url'),int(m.group('st')))\n" +
+"    m=LINE_B.search(ln)\n" +
+"    if m:\n" +
+"        return (0,m.group('m'),m.group('url'),int(m.group('st')))\n" +
+"    return None\n" +
+"\n" +
+"def rotation_paths(target):\n" +
+"    if not target:\n" +
+"        return []\n" +
+"    if os.path.isfile(target):\n" +
+"        # also pull rotation siblings\n" +
+"        rots=sorted(glob.glob(target+'.*'),key=lambda p:-int(p.rsplit('.',1)[1]) if p.rsplit('.',1)[1].isdigit() else 0)\n" +
+"        return rots+[target]\n" +
+"    if os.path.isdir(target):\n" +
+"        return sorted(glob.glob(os.path.join(target,'*.log*')))\n" +
+"    return []\n" +
+"\n" +
+"def fold_lines(paths):\n" +
+"    rows=[]; ring=set(); ring_q=[]; CAP=1024; partial=False\n" +
+"    for p in paths:\n" +
+"        try:\n" +
+"            with open(p,'rb') as f:\n" +
+"                for ln in f:\n" +
+"                    if not ln.strip(): continue\n" +
+"                    r=parse_line(ln)\n" +
+"                    if r is None: continue\n" +
+"                    ts,m,u,st=r\n" +
+"                    canon=struct.pack('<Q',ts)+m+b'|'+u[:64]+b'|'+struct.pack('<H',st)\n" +
+"                    h=fnv1a64(canon)\n" +
+"                    if h in ring: continue\n" +
+"                    ring.add(h); ring_q.append(h)\n" +
+"                    if len(ring_q)>CAP:\n" +
+"                        ring.discard(ring_q.pop(0))\n" +
+"                    rows.append(r)\n" +
+"        except Exception:\n" +
+"            partial=True\n" +
+"    return rows,partial\n" +
+"\n" +
+"def synth(n=2000,seed=11,dup_ratio=0.45):\n" +
+"    import random\n" +
+"    rng=random.Random(seed)\n" +
+"    methods=[b'GET',b'POST',b'PUT',b'DELETE']\n" +
+"    bases=[]\n" +
+"    for i in range(int(n*(1-dup_ratio))):\n" +
+"        meth=rng.choice(methods)\n" +
+"        path=f'/api/v{rng.randrange(1,4)}/resource/{rng.randrange(1,500)}'.encode()\n" +
+"        st=rng.choice([200,200,200,304,404,500])\n" +
+"        bases.append((meth,path,st))\n" +
+"    rows=[]\n" +
+"    ts0=int(time.time()*1_000_000)\n" +
+"    for i in range(n):\n" +
+"        b=rng.choice(bases) if rng.random()<dup_ratio else bases[i%len(bases)]\n" +
+"        rows.append((ts0+i*1000,b[0],b[1],b[2]))\n" +
+"    return rows\n" +
+"\n" +
+"def encode_blob(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    agg={}\n" +
+"    status_h={}\n" +
+"    for ts,m,u,st in rows:\n" +
+"        key=m+b' '+u\n" +
+"        if key in agg:\n" +
+"            e=agg[key]\n" +
+"            e[0]+=1\n" +
+"            if ts>e[1]: e[1]=ts\n" +
+"        else:\n" +
+"            agg[key]=[1,ts]\n" +
+"        status_h[st]=status_h.get(st,0)+1\n" +
+"    keys=sorted(agg.keys())\n" +
+"    n=len(keys)\n" +
+"    pool=bytearray()\n" +
+"    url_offs=array.array('I',[0]*n); url_lens=array.array('I',[0]*n)\n" +
+"    req_cnt=array.array('I',[0]*n); last_ts=array.array('Q',[0]*n)\n" +
+"    for i,k in enumerate(keys):\n" +
+"        url_offs[i]=len(pool); url_lens[i]=len(k)\n" +
+"        pool.extend(k); pool.append(0x0a)\n" +
+"        e=agg[k]\n" +
+"        req_cnt[i]=e[0]; last_ts[i]=e[1]\n" +
+"    statuses=sorted(status_h.keys())\n" +
+"    sn=len(statuses)\n" +
+"    st_code=array.array('I',[s for s in statuses])\n" +
+"    st_count=array.array('I',[status_h[s] for s in statuses])\n" +
+"    out=bytearray(); out.extend(b'HRCF')\n" +
+"    out.extend(struct.pack('<IIIII',1,n,len(pool),sn,0))\n" +
+"    out.extend(url_offs.tobytes()); out.extend(url_lens.tobytes())\n" +
+"    out.extend(req_cnt.tobytes()); out.extend(last_ts.tobytes())\n" +
+"    out.extend(pool)\n" +
+"    out.extend(st_code.tobytes()); out.extend(st_count.tobytes())\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    struct.pack_into('<I',out,4+4*4,len(out))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    total=sum(req_cnt)\n" +
+"    cache_savings=sum(max(0,c-1) for c in req_cnt)\n" +
+"    chp=cache_savings/max(total,1)*100\n" +
+"    return {'n':n,'total':total,'cache_hit_potential_pct':round(chp,2),'blob_size':len(out),'encode_ns':t1-t0,'pool_sz':len(pool),'status_n':sn}\n" +
+"\n" +
+"def encode_main():\n" +
+"    paths=rotation_paths(target)\n" +
+"    reason='p2_real'\n" +
+"    rows=[]; partial=False\n" +
+"    if paths:\n" +
+"        rows,partial=fold_lines(paths)\n" +
+"    if not rows:\n" +
+"        rows=synth(); reason='p2_synth'\n" +
+"    info=encode_blob(rows)\n" +
+"    info['reason']=reason; info['partial']=partial\n" +
+"    info['classifier_version']='HRCF-v1-2026-04-30'\n" +
+"    print(f'[encode] n_req={info[\"n\"]} total={info[\"total\"]} chp={info[\"cache_hit_potential_pct\"]}% blob={fmt(info[\"blob_size\"])} encode={info[\"encode_ns\"]/1e6:.1f}ms reason={reason}')\n" +
+"    print('[5tuple] '+json.dumps({'site':'NW_P2','roi':'NW_P2_HRCF_encode','baseline_ns':0,'post_ns':info['encode_ns'],'diff_test':'lossless','n_req':info['n'],'total':info['total'],'cache_hit_potential_pct':info['cache_hit_potential_pct'],'blob_bytes':info['blob_size'],'reason':reason}))\n" +
+"\n" +
+"def query_topk(k=5):\n" +
+"    with open(BIN,'rb') as f: b=f.read()\n" +
+"    assert b[:4]==b'HRCF'\n" +
+"    ver,n,pool_sz,sn,blob_sz=struct.unpack_from('<IIIII',b,4)\n" +
+"    p=4+5*4\n" +
+"    url_offs=array.array('I'); url_offs.frombytes(b[p:p+n*4]); p+=n*4\n" +
+"    url_lens=array.array('I'); url_lens.frombytes(b[p:p+n*4]); p+=n*4\n" +
+"    req_cnt=array.array('I'); req_cnt.frombytes(b[p:p+n*4]); p+=n*4\n" +
+"    last_ts=array.array('Q'); last_ts.frombytes(b[p:p+n*8]); p+=n*8\n" +
+"    pool=b[p:p+pool_sz]\n" +
+"    pairs=sorted(range(n),key=lambda i:-req_cnt[i])[:k]\n" +
+"    for i in pairs:\n" +
+"        u=bytes(pool[url_offs[i]:url_offs[i]+url_lens[i]]).decode('ascii','replace')\n" +
+"        print(f'  count={req_cnt[i]:6d} last_ts_us={last_ts[i]} {u}')\n" +
+"\n" +
+"def self_test():\n" +
+"    ok=True\n" +
+"    # 1: empty\n" +
+"    info=encode_blob([]); assert info['n']==0\n" +
+"    # 2: single\n" +
+"    info=encode_blob([(0,b'GET',b'/a',200)])\n" +
+"    if info['n']!=1: ok=False; print('FAIL single')\n" +
+"    # 3: dup cluster\n" +
+"    info=encode_blob([(i,b'GET',b'/a',200) for i in range(10)])\n" +
+"    if info['n']!=1 or info['total']!=10: ok=False; print('FAIL dup-cluster')\n" +
+"    # 4: multi-method\n" +
+"    info=encode_blob([(0,b'GET',b'/a',200),(0,b'POST',b'/a',201)])\n" +
+"    if info['n']!=2: ok=False; print('FAIL multi-method')\n" +
+"    # 5: read-only — BIN exists, no log mtime touch\n" +
+"    if not os.path.isfile(BIN): ok=False; print('FAIL bin missing')\n" +
+"    print(f'[self_test] ok={ok}')\n" +
+"    return ok\n" +
+"\n" +
+"if mode=='encode': encode_main()\n" +
+"elif mode=='query': query_topk(int(sys.argv[2]) if len(sys.argv)>2 and sys.argv[2].isdigit() else 5)\n" +
+"elif mode=='self-test':\n" +
+"    ok=self_test(); sys.exit(0 if ok else 1)\n" +
+"else:\n" +
+"    print('usage: encode|query|self-test'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "encode"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("network_http_request_consolidate")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "query" || v == "self-test" { mode = v }
+            else if v.contains("/") || v.contains(".log") { target = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/network_http_request_consolidate_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

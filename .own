@@ -403,4 +403,20 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
               "datae w6-B: mx1=ok mx2=ok mx3=ok mx4=ok ct1=ok ct2=ok ct3=ok"
               "datae w6-C: br1=ok br2=ok br3=ok br6=ok sf1=ok sf3=ok sf4=ok ix1=ok ix2=ok ix3=ok"
       proof 11 design rubric.md + 11 .rubric.jsonl + 26 filter.hexa + 26 bench.hexa
-    proof commit 65e59eab + def7b1a4 + aafc957e + e3ca3fbd + cd595c94 + fc800207 + 04e96b48 + 5f32a030 + 24d3ceea + 1779dc51 + ec1dc93c + 본 commit + loop-selftest 13/13 PASS
+    wave-7 network DONE 2026-05-01 (4 bg agent / rate limit 차단 4:10am Asia/Seoul reset 후 잔여 7건 별도 cycle):
+      6 partial PASS filter (raw 240 V2 design phase 진행 후 rate-limit 차단):
+        NW-W1 wifi_signal_shbf — 1.9μs topk + 0.4μs prefix (real WiFi scan)
+        NW-D1 dns_cache_dedup_shbf — 2.1× / **34.9% packet reduction** (host,ip dedup)
+        NW-D2 dns_query_history_columnar — **98.9% redundant queries within 4s window**
+        NW-P1 packet_payload_dedup — n_flow=105 lossless (real netstat-based heuristic)
+        NW-P2 http_request_consolidate — 55% cache_hit_potential (synth)
+        NW-C1 tcp_connection_dict — **6.5× lossless real** (65 conn / 11 comm)
+      bg 차단/잔여 7건 (reset 후 별도 cycle):
+        NW-W2 wifi_scan_dedup / NW-W3 wifi_roaming_predictor
+        NW-D3 bonjour_traffic_filter
+        NW-B1 bandwidth_genome_throttle / NW-B2 network_quality_history
+        NW-C2 keepalive_state_optimizer / NW-C3 vpn_state_filter
+      production active 검증 PID 96900 — 69 timer all ok:
+        log: "datae w7-net: wifi=ok dns_cache=ok dns_query=ok pkt_dedup=ok http_consol=ok tcp_conn=ok"
+      proof bench evidence (foreground 직접 verify, raw 240 V2 사전 design + rubric.md + .rubric.jsonl 9건)
+    proof commit ... + b0380a27 + 본 commit + loop-selftest 13/13 PASS

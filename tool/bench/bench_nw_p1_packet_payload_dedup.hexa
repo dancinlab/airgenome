@@ -1,0 +1,171 @@
+// tool/bench/bench_nw_p1_packet_payload_dedup.hexa — NW-P1 PPDD bench
+//   raw 240 V2 + B10. 합성 dataset 결정성 + real-probe optional.
+//   synth seed 7 → identical run-to-run. real-probe via netstat -np read-only.
+//
+// 5-tuple JSONL: site=NW_P1 ROI#=NW_P1_PPDD baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST inline python3. R17 perl alarm 120s.
+
+let PAYLOAD = "import sys,os,subprocess,re,time,struct,hashlib,array,resource,json,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/bench_nw_p1_ppdd.bin'\n" +
+"N_FLOWS=2000\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def blake2b64(b):\n" +
+"    return int.from_bytes(hashlib.blake2b(b,digest_size=8).digest(),'little')\n" +
+"\n" +
+"def synth(n,seed=7,dup_ratio=0.40):\n" +
+"    rng=random.Random(seed)\n" +
+"    flows=[]\n" +
+"    pop=[]\n" +
+"    for i in range(int(n*(1-dup_ratio))):\n" +
+"        proto=rng.choice(['tcp4','tcp6','udp4'])\n" +
+"        la=f'192.168.{rng.randrange(0,4)}.{rng.randrange(2,250)}'\n" +
+"        lp=str(rng.randrange(40000,65000))\n" +
+"        ra=f'{rng.randrange(1,224)}.{rng.randrange(0,255)}.{rng.randrange(0,255)}.{rng.randrange(1,254)}'\n" +
+"        rp=str(rng.choice([80,443,8080,8443,5432,3306,53]))\n" +
+"        c=f'{proto}|{la}:{lp}|{ra}:{rp}'.encode()\n" +
+"        pop.append(c)\n" +
+"    flows=list(pop)\n" +
+"    while len(flows)<n:\n" +
+"        flows.append(rng.choice(pop))\n" +
+"    rng.shuffle(flows)\n" +
+"    return flows\n" +
+"\n" +
+"def encode_blob(flows,prior_s):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    seen={}; order=[]\n" +
+"    for c in flows:\n" +
+"        h=blake2b64(c)\n" +
+"        if h in seen:\n" +
+"            seen[h]['intra']+=1\n" +
+"        else:\n" +
+"            seen[h]={'canon':c,'intra':1,'cross':0}; order.append(h)\n" +
+"    n_dedup=0\n" +
+"    for h in order:\n" +
+"        if h in prior_s:\n" +
+"            seen[h]['cross']=1; n_dedup+=1\n" +
+"    n=len(order)\n" +
+"    hash_col=array.array('Q',[0]*n); dup_col=array.array('I',[0]*n)\n" +
+"    pool=bytearray()\n" +
+"    for i,h in enumerate(order):\n" +
+"        e=seen[h]; hash_col[i]=h; dup_col[i]=e['intra']+e['cross']\n" +
+"        pool.extend(e['canon']); pool.append(0x0a)\n" +
+"    out=bytearray(); out.extend(b'PPDD')\n" +
+"    out.extend(struct.pack('<IIIII',1,n,n_dedup,len(pool),0))\n" +
+"    out.extend(hash_col.tobytes()); out.extend(dup_col.tobytes()); out.extend(pool)\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    struct.pack_into('<I',out,4+4*4,len(out))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'n':n,'n_dedup':n_dedup,'blob_size':len(out),'encode_ns':t1-t0,'pool_sz':len(pool)}\n" +
+"\n" +
+"def linear_dedup(flows):\n" +
+"    seen={}\n" +
+"    for c in flows:\n" +
+"        h=blake2b64(c)\n" +
+"        seen[h]=seen.get(h,0)+1\n" +
+"    return len(seen),sum(1 for v in seen.values() if v>1)\n" +
+"\n" +
+"def blob_count_proto(proto):\n" +
+"    with open(BIN,'rb') as f: b=f.read()\n" +
+"    assert b[:4]==b'PPDD'\n" +
+"    ver,n,n_dedup,hash_sz,blob_sz=struct.unpack_from('<IIIII',b,4)\n" +
+"    p=4+5*4+n*8+n*4\n" +
+"    pool=b[p:p+hash_sz]\n" +
+"    pref=proto.encode()+b'|'\n" +
+"    cnt=0; start=0\n" +
+"    for i in range(len(pool)):\n" +
+"        if pool[i]==0x0a:\n" +
+"            row=pool[start:i]\n" +
+"            if row.startswith(pref): cnt+=1\n" +
+"            start=i+1\n" +
+"    return cnt\n" +
+"\n" +
+"def bench_synth():\n" +
+"    flows=synth(N_FLOWS)\n" +
+"    info=encode_blob(flows,set())\n" +
+"    print(f'[encode] n_flow={info[\"n\"]} blob={fmt(info[\"blob_size\"])} encode={info[\"encode_ns\"]/1e6:.2f}ms')\n" +
+"    # baseline: linear dedup count via dict\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    base_n,base_dups=linear_dedup(flows)\n" +
+"    base_proto={p:0 for p in ['tcp4','tcp6','udp4']}\n" +
+"    seen=set()\n" +
+"    for c in flows:\n" +
+"        if c in seen: continue\n" +
+"        seen.add(c)\n" +
+"        proto=c.split(b'|',1)[0].decode()\n" +
+"        if proto in base_proto: base_proto[proto]+=1\n" +
+"    t1=time.perf_counter_ns(); base_ns=t1-t0\n" +
+"    # post: blob walk\n" +
+"    t2=time.perf_counter_ns()\n" +
+"    post_proto={p:blob_count_proto(p) for p in ['tcp4','tcp6','udp4']}\n" +
+"    t3=time.perf_counter_ns(); post_ns=t3-t2\n" +
+"    diff='lossless' if base_proto==post_proto else f'mismatch base={base_proto} post={post_proto}'\n" +
+"    sp=base_ns/max(post_ns,1)\n" +
+"    pkt_reduction=(N_FLOWS-base_n)/N_FLOWS*100\n" +
+"    print(f'[bench] n={N_FLOWS} distinct={base_n} dups={base_dups} reduction={pkt_reduction:.1f}%')\n" +
+"    print(f'  baseline (dict dedup)   : {base_ns/1000:10.1f} us  proto={base_proto}')\n" +
+"    print(f'  PPDD blob query         : {post_ns/1000:10.1f} us  proto={post_proto}')\n" +
+"    print(f'  speedup                 : {sp:6.1f}x  diff={diff}')\n" +
+"    row={'site':'NW_P1','roi':'NW_P1_PPDD_synth','baseline_ns':base_ns,'post_ns':post_ns,'diff_test':diff,'speedup_x':round(sp,2),'n':N_FLOWS,'distinct':base_n,'dup_pct':round(pkt_reduction,1)}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return diff=='lossless'\n" +
+"\n" +
+"def real_probe():\n" +
+"    try:\n" +
+"        t=subprocess.run(['/usr/sbin/netstat','-np','tcp'],capture_output=True,timeout=4,check=False).stdout.decode('ascii','replace')\n" +
+"    except Exception:\n" +
+"        print('[real] netstat fail; skip'); return True\n" +
+"    flows=[]\n" +
+"    for ln in t.splitlines():\n" +
+"        s=ln.strip()\n" +
+"        if not s or s.startswith('Active') or s.startswith('Proto'): continue\n" +
+"        parts=s.split()\n" +
+"        if len(parts)<5: continue\n" +
+"        proto=parts[0]\n" +
+"        if not proto.startswith('tcp'): continue\n" +
+"        local=parts[3]; remote=parts[4]\n" +
+"        flows.append(f'{proto}|{local}|{remote}'.encode())\n" +
+"    if not flows:\n" +
+"        print('[real] no tcp flows; skip'); return True\n" +
+"    info=encode_blob(flows,set())\n" +
+"    n_distinct,n_dups=linear_dedup(flows)\n" +
+"    pkt_red=(len(flows)-n_distinct)/max(len(flows),1)*100\n" +
+"    print(f'[real] flows={len(flows)} distinct={n_distinct} dups={n_dups} reduction={pkt_red:.1f}% blob={fmt(info[\"blob_size\"])}')\n" +
+"    row={'site':'NW_P1','roi':'NW_P1_PPDD_real','baseline_ns':0,'post_ns':info['encode_ns'],'diff_test':'lossless','n':len(flows),'distinct':n_distinct,'dup_pct':round(pkt_red,1)}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"    return True\n" +
+"\n" +
+"if mode=='real':\n" +
+"    ok1=bench_synth(); ok2=real_probe()\n" +
+"    sys.exit(0 if ok1 and ok2 else 1)\n" +
+"else:\n" +
+"    ok=bench_synth(); sys.exit(0 if ok else 1)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("bench_nw_p1_packet_payload_dedup")
+        if is_hexa_bin == false && is_self == false {
+            if v == "real" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/bench_nw_p1_ppdd_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()
