@@ -562,5 +562,3 @@ fn main() -> void {
         }
     }
 }
-
-main()
