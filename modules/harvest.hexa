@@ -204,16 +204,26 @@ fn last_for_pid(pid: int) -> str {
     return ""
 }
 
-// JSONL 라인에서 단일 vitals[idx] 추출
+// JSONL 라인에서 단일 vitals[idx] 추출 — own 5 site-2: jq fork 0회.
+// anchor "vitals":[ → split(",") → idx → .split(".")[0] int parse.
+// 측정: tool/bench/bench_site2.hexa — 6.00ms→9.76μs/call (614×, 99%↓), diff_test=0/180.
 fn vit_at(line: str, idx: int) -> int {
     if line == "" { return 0 }
-    let cmd = "echo '" + line + "' | jq -r '.vitals[" + to_string(idx) + "] // 0' 2>/dev/null"
-    let out = exec(cmd).trim()
-    if out == "" { return 0 }
-    let parts = out.split(".")
-    if len(parts) == 0 { return 0 }
-    if parts[0] == "" { return 0 }
-    return to_int(parts[0])
+    let parts = line.split("\"vitals\":[")
+    if len(parts) < 2 { return 0 }
+    let after_open = parts[1]
+    let close_split = after_open.split("]")
+    if len(close_split) < 1 { return 0 }
+    let inner = close_split[0]
+    let nums = inner.split(",")
+    if idx < 0 { return 0 }
+    if idx >= len(nums) { return 0 }
+    let s = nums[idx].trim()
+    if s == "" { return 0 }
+    let dot_parts = s.split(".")
+    if len(dot_parts) == 0 { return 0 }
+    if dot_parts[0] == "" { return 0 }
+    return to_int(dot_parts[0])
 }
 
 fn abs_int(x: int) -> int {

@@ -1,0 +1,175 @@
+// tool/bench/bench_site2.hexa — own 5 site-2 baseline (vit_at jq vs hexa-split)
+//
+// Replaces per-axis exec("echo LINE | jq -r '.vitals[i] // 0'") with in-hexa
+// "vitals":[ anchor + split(",") + .split(".")[0] int parse. 30 procs × 6 axis
+// = 180 jq fork per cycle (run_harvest L289-299). Diff test must match for
+// idx ∈ [0,5] across all PID lines.
+
+use "../../core/core"
+
+let BENCH_RING = "/tmp/airgenome_bench_site2.ring"
+let LINES = 5000
+let PIDS_N = 30
+let K = 3
+let AXES = 6
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn build_ring() -> void {
+    let _rm = exec("rm -f '" + BENCH_RING + "'")
+    let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(LINES) + ";i++) { pid=1000+(i%" + to_string(PIDS_N) + "); cpu=i%100; ram=i%50; pw=i%30; printf \"{\\\"ts\\\":\\\"2026-04-30T00:00:00Z\\\",\\\"pid\\\":%d,\\\"comm\\\":\\\"proc%d\\\",\\\"rss_kb\\\":1024,\\\"vitals\\\":[%d,%d,0,0,%d,0],\\\"ema\\\":[%d,%d,0,0,%d,0]}\\n\", pid, pid, cpu, ram, pw, cpu, ram, pw } }' > '" + BENCH_RING + "'"
+    let _ = exec(cmd)
+}
+
+// In-hexa last_for_pid (post-site-1 form) — fixture only
+fn fetch_line(pid: int) -> str {
+    let raw = exec("tail -2000 '" + BENCH_RING + "' 2>/dev/null")
+    let lines = raw.split("\n")
+    let pattern = ",\"pid\":" + to_string(pid) + ","
+    let mut i = len(lines) - 1
+    while i >= 0 {
+        let l = lines[i]
+        if l != "" {
+            if l.contains(pattern) { return l }
+        }
+        i = i - 1
+    }
+    return ""
+}
+
+// OLD: per-axis exec(echo|jq) — current modules/harvest.hexa#vit_at L208-217
+fn old_vit_at(line: str, idx: int) -> int {
+    if line == "" { return 0 }
+    let cmd = "echo '" + line + "' | jq -r '.vitals[" + to_string(idx) + "] // 0' 2>/dev/null"
+    let out = exec(cmd).trim()
+    if out == "" { return 0 }
+    let parts = out.split(".")
+    if len(parts) == 0 { return 0 }
+    if parts[0] == "" { return 0 }
+    return to_int(parts[0])
+}
+
+// NEW: anchor "vitals":[ → split(",") → idx → .split(".")[0] int parse. 0 fork.
+fn new_vit_at(line: str, idx: int) -> int {
+    if line == "" { return 0 }
+    let parts = line.split("\"vitals\":[")
+    if len(parts) < 2 { return 0 }
+    let after_open = parts[1]
+    let close_split = after_open.split("]")
+    if len(close_split) < 1 { return 0 }
+    let inner = close_split[0]
+    let nums = inner.split(",")
+    if idx < 0 { return 0 }
+    if idx >= len(nums) { return 0 }
+    let s = nums[idx].trim()
+    if s == "" { return 0 }
+    let dot_parts = s.split(".")
+    if len(dot_parts) == 0 { return 0 }
+    if dot_parts[0] == "" { return 0 }
+    return to_int(dot_parts[0])
+}
+
+// Pre-fetch 30 lines so inner loops measure pure vit_at (not last_for_pid)
+fn prefetch_lines() -> list {
+    let mut lines = []
+    let mut p = 0
+    while p < PIDS_N {
+        let pid = 1000 + p
+        let l = fetch_line(pid)
+        lines = lines + [l]
+        p = p + 1
+    }
+    return lines
+}
+
+fn run_old(lines: list) -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let mut p = 0
+        while p < PIDS_N {
+            let mut a = 0
+            while a < AXES {
+                total = total + old_vit_at(lines[p], a)
+                a = a + 1
+            }
+            p = p + 1
+        }
+        k = k + 1
+    }
+    return total
+}
+
+fn run_new(lines: list) -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let mut p = 0
+        while p < PIDS_N {
+            let mut a = 0
+            while a < AXES {
+                total = total + new_vit_at(lines[p], a)
+                a = a + 1
+            }
+            p = p + 1
+        }
+        k = k + 1
+    }
+    return total
+}
+
+fn diff_test(lines: list) -> int {
+    let mut mismatches = 0
+    let mut p = 0
+    while p < PIDS_N {
+        let mut a = 0
+        while a < AXES {
+            let vo = old_vit_at(lines[p], a)
+            let vn = new_vit_at(lines[p], a)
+            if vo != vn { mismatches = mismatches + 1 }
+            a = a + 1
+        }
+        p = p + 1
+    }
+    return mismatches
+}
+
+fn main() -> void {
+    println("airgenome bench/site-2 — vit_at (jq vs hexa-split)")
+    println("  ring=" + BENCH_RING + " LINES=" + to_string(LINES) + " PIDS_N=" + to_string(PIDS_N) + " K=" + to_string(K) + " AXES=" + to_string(AXES))
+    build_ring()
+    let cnt_str = exec("wc -l < '" + BENCH_RING + "'").trim()
+    println("  ring lines built: " + cnt_str)
+
+    let lines = prefetch_lines()
+    println("  prefetched lines: " + to_string(len(lines)))
+
+    let mm = diff_test(lines)
+    println("  diff_test mismatches: " + to_string(mm) + " / " + to_string(PIDS_N * AXES))
+    if mm != 0 { panic("BENCH FAIL [diff_test mismatches > 0]") }
+
+    let t0_old = now_ns()
+    let _o = run_old(lines)
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    let calls = K * PIDS_N * AXES
+    println("  OLD (jq)        total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / calls))
+
+    let t0_new = now_ns()
+    let _n = run_new(lines)
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (hexa-split) total_ns=" + to_string(ns_new) + "  per_call_ns=" + to_string(ns_new / calls))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
