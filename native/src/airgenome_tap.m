@@ -1024,6 +1024,66 @@ static void apply_dock_tilesize_reset_once(void) {
     fflush(stderr);
 }
 
+// raw 180 capture/restore: pin Dock + menu bar to main display in multi-
+// monitor setups. User mandate 2026-04-30 "멀티모니터에서 dock 위치가
+// 메인 모니터에서 안벗어나게". macOS exposes this as Mission Control's
+// "Displays have separate Spaces" checkbox — UNCHECKING it pins the Dock
+// to the main display (Dock no longer follows the cursor to other displays).
+//
+// Pref domain: com.apple.spaces, key spans-displays.
+//   spans-displays = true   ↔ "separate Spaces" UI off  ↔ Dock pinned
+//   spans-displays = false  ↔ "separate Spaces" UI on   ↔ Dock follows cursor
+// (Apple's naming is inverted — "spans-displays=true" means a single Space
+// SPANS all displays, which is the opposite of the UI's "separate Spaces".)
+//
+// Activation: this pref is read by WindowServer at login session creation;
+// killall Dock / SystemUIServer is INSUFFICIENT (verified macOS 14/15).
+// User must log out and back in once. Subsequent boots inherit the pinned
+// state automatically.
+//
+// Idempotent: re-running with already-true pref is a fast skip. Capture
+// preserves the user's original setting so a future restore can reverse.
+static void apply_dock_pin_main_display(void) {
+    NSString *statePath = [menubar_state_dir()
+        stringByAppendingPathComponent:@"system_state.plist"];
+    NSMutableDictionary *st = [NSMutableDictionary
+        dictionaryWithContentsOfFile:statePath];
+    if (!st) st = [NSMutableDictionary dictionary];
+    if (!st[@"dock_pin_main_display_original"]) {
+        CFPropertyListRef cur = CFPreferencesCopyAppValue(
+            CFSTR("spans-displays"), CFSTR("com.apple.spaces"));
+        if (cur && CFGetTypeID(cur) == CFBooleanGetTypeID()) {
+            st[@"dock_pin_main_display_original"] =
+                CFBooleanGetValue((CFBooleanRef)cur) ? @"true" : @"false";
+        } else {
+            st[@"dock_pin_main_display_original"] = @"absent";
+        }
+        if (cur) CFRelease(cur);
+        [[NSFileManager defaultManager] createDirectoryAtPath:menubar_state_dir()
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:NULL];
+        [st writeToFile:statePath atomically:YES];
+    }
+    CFPropertyListRef cur = CFPreferencesCopyAppValue(
+        CFSTR("spans-displays"), CFSTR("com.apple.spaces"));
+    BOOL already = (cur && CFGetTypeID(cur) == CFBooleanGetTypeID()
+                    && CFBooleanGetValue((CFBooleanRef)cur));
+    if (cur) CFRelease(cur);
+    if (already) {
+        fprintf(stderr, "dock-pin: spans-displays already true (skip)\n");
+        fflush(stderr);
+        return;
+    }
+    CFPreferencesSetAppValue(CFSTR("spans-displays"), kCFBooleanTrue,
+                             CFSTR("com.apple.spaces"));
+    CFPreferencesAppSynchronize(CFSTR("com.apple.spaces"));
+    fprintf(stderr,
+        "dock-pin: spans-displays=true (Dock pinned to main display — "
+        "log out/in once to take effect)\n");
+    fflush(stderr);
+}
+
 // Legacy LaunchAgent path — cleaned up at first launch of the new binary so
 // the legacy caffeinate process is not left running alongside the in-process
 // IOPMAssertion (raw 91 honest C3: avoid double-effect during migration).
@@ -1542,6 +1602,11 @@ int main(int argc, char **argv) {
         // gated by system_state.plist sentinel (won't override user
         // resizing on subsequent boots).
         apply_dock_tilesize_reset_once();
+        // raw 180 capture/restore: pin Dock to main display in multi-monitor
+        // setups (sets com.apple.spaces spans-displays=true). Idempotent;
+        // requires logout/login to activate (WindowServer reads at session
+        // start). Captures original pref value on first run.
+        apply_dock_pin_main_display();
         // raw 209 sister #3: load user-defined hotkey bindings from
         // ~/Library/Application Support/airgenome/hotkey_bindings.json.
         // No-op if config file is missing (raw 91 honest C3 — NSLog'd).
