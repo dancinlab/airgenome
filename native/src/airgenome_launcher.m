@@ -299,32 +299,32 @@ static TISInputSourceRef g_launcher_prev_input_source = NULL;
 // hide_overlay can restore. raw 65 idempotent: re-call OK; safe-noop if TIS
 // fails (rare — typically only first user with no English layouts installed).
 //
-// 2026-04-30 09:21 — async dispatch to next runloop tick. User report
-// 2026-04-30 09:20 "ctrl+s 창이 다시 안뜸" after first add. Suspect:
-// TISSelectInputSource synchronous on main thread blocks/races with
-// pending makeKeyAndOrderFront. Async dispatch lets panel finish showing
-// first, then input source switch fires immediately after.
+// History: an earlier iteration dispatched the TIS switch async on the main
+// queue to dodge a race with NSApp.activate / makeKeyAndOrderFront ("ctrl+s
+// 창이 다시 안뜸" 2026-04-30 09:20). With the canonical NonactivatingPanel
+// migration the activation race no longer exists — and async actually
+// reintroduced a different bug: if the user starts typing before the
+// async block fires, TISSelectInputSource lands mid-edit and disrupts the
+// field editor. Sync now, called BEFORE makeKeyAndOrderFront, finishes the
+// IME swap before any keyboard event can reach the panel.
 static void airgenome_launcher_force_english(void) {
     if (g_launcher_prev_input_source) {
         CFRelease(g_launcher_prev_input_source);
         g_launcher_prev_input_source = NULL;
     }
     g_launcher_prev_input_source = TISCopyCurrentKeyboardInputSource();
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSDictionary *filter = @{
-            (__bridge NSString *)kTISPropertyInputSourceID:
-                @"com.apple.keylayout.ABC"
-        };
-        CFArrayRef sources = TISCreateInputSourceList(
-            (__bridge CFDictionaryRef)filter, false);
-        if (sources && CFArrayGetCount(sources) > 0) {
-            TISInputSourceRef abc =
-                (TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0);
-            TISSelectInputSource(abc);
-        }
-        if (sources) CFRelease(sources);
-    });
+    NSDictionary *filter = @{
+        (__bridge NSString *)kTISPropertyInputSourceID:
+            @"com.apple.keylayout.ABC"
+    };
+    CFArrayRef sources = TISCreateInputSourceList(
+        (__bridge CFDictionaryRef)filter, false);
+    if (sources && CFArrayGetCount(sources) > 0) {
+        TISInputSourceRef abc =
+            (TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0);
+        TISSelectInputSource(abc);
+    }
+    if (sources) CFRelease(sources);
 }
 
 // Restore the input source captured by force_english. raw 65 idempotent.
@@ -380,6 +380,7 @@ static void airgenome_launcher_refresh_status(NSString *query) {
 - (void)controlTextDidChange:(NSNotification *)note {
     NSTextField *tf = (NSTextField *)note.object;
     NSString *q = [tf stringValue];
+    NSLog(@"[airgenome_launcher] DBG textDidChange q='%@'", q);
     g_launcher_current_results = airgenome_launcher_search_apps(q);
     g_launcher_selection_index = 0;  // reset on new query
     airgenome_launcher_refresh_status(q);
@@ -510,7 +511,16 @@ void airgenome_launcher_show_overlay(void) {
           | NSWindowCollectionBehaviorFullScreenAuxiliary
           | NSWindowCollectionBehaviorStationary];
         [g_launcher_panel setFloatingPanel:YES];
-        [g_launcher_panel setBecomesKeyOnlyIfNeeded:YES];
+        // becomesKeyOnlyIfNeeded MUST be NO for a search-overlay: typing is
+        // the primary interaction, so the panel needs to be unconditionally
+        // key the moment it's shown. The agent set this YES per generic
+        // "auxiliary panel" guidance, but YES blocked makeKeyAndOrderFront
+        // from actually making the panel key — keystrokes silently leaked
+        // into the prior app, and the user's eventual click there was
+        // caught by the global mouse monitor as an "outside click",
+        // dismissing the panel mid-typing. User report 2026-04-30
+        // "검색창에서 타이핑시 닫히는경우등 버그".
+        [g_launcher_panel setBecomesKeyOnlyIfNeeded:NO];
         [g_launcher_panel setHidesOnDeactivate:NO];
         [g_launcher_panel setReleasedWhenClosed:NO];
         [g_launcher_panel setOpaque:NO];
@@ -579,6 +589,13 @@ void airgenome_launcher_show_overlay(void) {
         [g_launcher_search_field setDelegate:g_launcher_delegate];
         [g_launcher_search_field setTarget:g_launcher_delegate];
         [g_launcher_search_field setAction:@selector(launcherEnterAction:)];
+        // NSTextFieldCell defaults sendsActionOnEndEditing=YES → action
+        // (launcherEnterAction:) fires whenever the field commits or loses
+        // first-responder, not just on Return. With launcherEnterAction
+        // calling hide_overlay when results.count==0, ANY momentary focus
+        // dip during typing dismissed the panel. Restrict to explicit
+        // Return-key sends only.
+        [[g_launcher_search_field cell] setSendsActionOnEndEditing:NO];
         [cv addSubview:g_launcher_search_field];
 
         // Status icon + label intentionally NOT created here. refresh_status
@@ -613,13 +630,30 @@ void airgenome_launcher_show_overlay(void) {
             addGlobalMonitorForEventsMatchingMask:
                 NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown
             handler:^(NSEvent * _Nonnull e) {
-                (void)e;
+                NSLog(@"[airgenome_launcher] DBG global mouse-down "
+                      @"type=%lu loc=(%.0f,%.0f) — dismiss",
+                      (unsigned long)e.type, e.locationInWindow.x,
+                      e.locationInWindow.y);
                 airgenome_launcher_hide_overlay();
             }];
     }
 }
 
 void airgenome_launcher_hide_overlay(void) {
+    NSArray<NSString *> *frames = [NSThread callStackSymbols];
+    NSLog(@"[airgenome_launcher] DBG hide_overlay caller=%@",
+          frames.count >= 2 ? frames[1] : @"<top>");
+    // Sentinel for mechanical symptom attribution (raw 91 honest C3 +
+    // emit-driven debug discipline). Future "panel closed for mystery
+    // reason" reports: grep airgenome.err for __AIRGENOME_LAUNCHER_DISMISS__
+    // — its presence proves a clean dismiss path (esc/enter/outside-click/
+    // toggle), its ABSENCE between a textDidChange and a launchd respawn
+    // proves a crash. Lets us separate "user dismissed" from "process died"
+    // without reading stack frames in DiagnosticReports/*.ips.
+    fprintf(stderr, "__AIRGENOME_LAUNCHER_DISMISS__ ts=%.3f caller=%s\n",
+            [[NSDate date] timeIntervalSince1970],
+            frames.count >= 2 ? [frames[1] UTF8String] : "<top>");
+    fflush(stderr);
     // Remove outside-click monitor BEFORE orderOut — symmetry with the
     // install in show_overlay. raw 65 idempotent: nil-guarded.
     if (g_launcher_click_monitor) {

@@ -26,7 +26,12 @@ PLIST_TPL     = launchd/com.airgenome.tap.plist
 INSTALL_PLIST = $(HOME)/Library/LaunchAgents/com.airgenome.tap.plist
 LOG_DIR       = $(HOME)/Library/Logs/$(APP_NAME).app
 
-CFLAGS        = -O2 -Wall -Wextra -ObjC
+# -fobjc-arc: ARC ON for all three .m files (audit 2026-04-30: launcher.m
+# crash root cause was static NSArray * fields written without retain; tap.m
+# + winctl.m only use CF retain/release on CF types and @autoreleasepool —
+# both ARC-clean). NEVER drop -fobjc-arc without re-auditing every static
+# strong-typed pointer in the .m sources for retain semantics.
+CFLAGS        = -O2 -Wall -Wextra -ObjC -fobjc-arc
 FRAMEWORKS    = -framework ApplicationServices -framework Carbon \
                 -framework Cocoa -framework AppKit -framework IOKit
 
