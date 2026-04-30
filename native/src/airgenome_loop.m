@@ -269,6 +269,8 @@ static dispatch_source_t g_datae_w5_music_src           = NULL;
 static dispatch_source_t g_datae_w5_books_src           = NULL;
 static dispatch_source_t g_datae_w5_shortcuts_src       = NULL;
 static dispatch_source_t g_datae_w5_cal_event_src       = NULL;  // FAIL fix 301.8× post BufferError patch
+static dispatch_source_t g_datae_w5_mail_envelope_src   = NULL;  // V10 schema fix 1161.7× post Mail set up
+static dispatch_source_t g_datae_w5_mail_sender_src     = NULL;  // OTHER bucket fix size 96% lossless
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -537,6 +539,24 @@ void airgenome_loop_init(void) {
         .interval_s  = 1800,           // 30min — calendar event 빈도 적당
         .timeout_s   = 60,
     };
+    // wave-5 SKIP→PASS post Google mail set up (V10 schema fix str() wrap):
+    // mail_envelope_shbf 1161.7× speedup on real V10 (14676 msgs / 1.83MB blob).
+    static const airgenome_loop_module_t datae_w5_mail_envelope = {
+        .module_name = "datae-w5-mail-envelope",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/mail_envelope_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — Mail.app 새 메시지 drift
+        .timeout_s   = 120,            // V10 14K msgs 풀 스캔 시 여유
+    };
+    // wave-5 SKIP→PASS post diff_test fold fix:
+    // mail_sender_dict size 96% (480KB→22KB, wall 0.8× 인정) lossless 0 mismatch.
+    static const airgenome_loop_module_t datae_w5_mail_sender = {
+        .module_name = "datae-w5-mail-sender",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/mail_sender_dict.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 7200,           // 2h — sender dict 변경 드뭄
+        .timeout_s   = 60,
+    };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -598,6 +618,8 @@ void airgenome_loop_init(void) {
         g_datae_w5_books_src         = loop_make_timer(&datae_w5_books,         g_loop_queue);
         g_datae_w5_shortcuts_src     = loop_make_timer(&datae_w5_shortcuts,     g_loop_queue);
         g_datae_w5_cal_event_src     = loop_make_timer(&datae_w5_cal_event,     g_loop_queue);
+        g_datae_w5_mail_envelope_src = loop_make_timer(&datae_w5_mail_envelope, g_loop_queue);
+        g_datae_w5_mail_sender_src   = loop_make_timer(&datae_w5_mail_sender,   g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -651,6 +673,9 @@ void airgenome_loop_init(void) {
               g_datae_w5_books_src         ? "ok" : "FAIL",
               g_datae_w5_shortcuts_src     ? "ok" : "FAIL",
               g_datae_w5_cal_event_src     ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae mail-fix: envelope=%s sender=%s",
+              g_datae_w5_mail_envelope_src ? "ok" : "FAIL",
+              g_datae_w5_mail_sender_src   ? "ok" : "FAIL");
     }
 }
 
@@ -715,6 +740,8 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_w5_books_src)         { dispatch_source_cancel(g_datae_w5_books_src);         g_datae_w5_books_src         = NULL; }
     if (g_datae_w5_shortcuts_src)     { dispatch_source_cancel(g_datae_w5_shortcuts_src);     g_datae_w5_shortcuts_src     = NULL; }
     if (g_datae_w5_cal_event_src)     { dispatch_source_cancel(g_datae_w5_cal_event_src);     g_datae_w5_cal_event_src     = NULL; }
+    if (g_datae_w5_mail_envelope_src) { dispatch_source_cancel(g_datae_w5_mail_envelope_src); g_datae_w5_mail_envelope_src = NULL; }
+    if (g_datae_w5_mail_sender_src)   { dispatch_source_cancel(g_datae_w5_mail_sender_src);   g_datae_w5_mail_sender_src   = NULL; }
 }
 
 // ----------------------------------------------------------------------

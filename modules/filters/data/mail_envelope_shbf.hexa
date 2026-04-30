@@ -99,7 +99,8 @@ let PAYLOAD = "import sys,os,sqlite3,struct,time,bisect,resource,mmap,array,glob
 "    cur=con.execute(q)\n" +
 "    out=[]\n" +
 "    for mid_v,subj,frm,t in cur.fetchall():\n" +
-"        out.append(((mid_v or '')[:512],(subj or '')[:512],(frm or '')[:256],int(t or 0)))\n" +
+"        # V10 schema: message_id/subject/sender 가 INTEGER ROWID 일 수 있음 → str() wrap\n" +
+"        out.append((str(mid_v or '')[:512],str(subj or '')[:512],str(frm or '')[:256],int(t or 0)))\n" +
 "    return out\n" +
 "\n" +
 "_RE_PREF=re.compile(r'^(?:re|fwd|fw|aw|sv)\\s*:\\s*',re.I)\n" +

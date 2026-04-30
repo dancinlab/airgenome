@@ -94,8 +94,10 @@ let PAYLOAD = "import sys,os,sqlite3,struct,time,array,mmap,resource\n" +
 "    cnt=Counter(senders)\n" +
 "    distinct=sorted(cnt)\n" +
 "    if len(distinct)>255:\n" +
-"        top=cnt.most_common(255)\n" +
-"        distinct=sorted([k for k,_ in top])\n" +
+"        # id=0 reserve as '(OTHER)' bucket — tail senders 가 id=0 로 명시 fallback.\n" +
+"        # 이전 버그: name_to_id.get(s,0) 가 alphabetic first sender 로 misattribute → 810 mismatch.\n" +
+"        top=cnt.most_common(254)\n" +
+"        distinct=['(OTHER)']+sorted([k for k,_ in top])\n" +
 "    name_to_id={n:i for i,n in enumerate(distinct)}\n" +
 "    n_send=len(distinct); n_msg=len(senders)\n" +
 "    pool=bytearray()\n" +
@@ -165,7 +167,15 @@ let PAYLOAD = "import sys,os,sqlite3,struct,time,array,mmap,resource\n" +
 "    print(f'  count by sender NEW (u8 enum column scan)  : {new_ns:10d} ns')\n" +
 "    if new_ns>0:\n" +
 "        print(f'  speedup={old_ns/new_ns:.1f}x  saved={((old_ns-new_ns)*100)//max(old_ns,1)}%')\n" +
-"    a=sorted(cb); b=sorted(cc.items())\n" +
+"    # blob 이 saturated (n_send=255, distinct[0]='(OTHER)') 면 raw Counter 의\n" +
+"    # tail (top 254 외) 를 OTHER 로 fold 후 비교 — fair diff_test.\n" +
+"    cc_folded=cc\n" +
+"    if info['n_send']>=255 and info['distinct'] and info['distinct'][0]=='(OTHER)':\n" +
+"        top_set=set(info['distinct'][1:])\n" +
+"        other_c=sum(c for s,c in cc.items() if s not in top_set)\n" +
+"        cc_folded=Counter({s:c for s,c in cc.items() if s in top_set})\n" +
+"        cc_folded['(OTHER)']=other_c\n" +
+"    a=sorted(cb); b=sorted(cc_folded.items())\n" +
 "    if len(a)==len(b):\n" +
 "        mm=sum(1 for x,y in zip(a,b) if x[0]!=y[0] or x[1]!=y[1])\n" +
 "    else:\n" +
