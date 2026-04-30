@@ -27,16 +27,22 @@
 //   }
 //
 // Action types (raw 168 minimum-viable):
-//   toggle-app:  3-state cycle on the target app (Dock-icon click semantics)
-//                  (a) not running       → launch via NSWorkspace
+//   activate-app: 2-state activate-only on the target app (user mandate
+//                  2026-04-30 "이미 실행되있으면 활성화" / hide-on-repeat
+//                  REJECTED):
+//                  (a) not running       → launch via NSWorkspace + activate
 //                  (b) running, inactive → activate (bring to front)
-//                  (c) running, active   → hide (send to Dock)
+//                  (c) running, active   → no-op (already focused)
+//                  Earlier `toggle-app` 3-state cycle was renamed and the
+//                  hide-when-active branch removed per direct user spec.
 //   show-desktop: post synthetic F11 keydown/up to delegate to macOS
-//                  Mission Control "Show Desktop" hotkey. Requires the user
-//                  to have F11 bound to Show Desktop (default on macOS).
-//                  raw 91 honest C3: if user unbound F11 in Desktop & Dock
-//                  settings, this action becomes a no-op silently — no
-//                  fallback in this raw 168 minimum-viable iteration.
+//                  Mission Control "Show Desktop" hotkey, which is itself
+//                  a toggle (press = hide windows, press again = restore).
+//                  Repeated ⌃D therefore toggles desktop visibility. Requires
+//                  user to have F11 bound to Show Desktop (default on
+//                  macOS). raw 91 honest C3: if user unbound F11 in Desktop
+//                  & Dock settings, this action becomes a no-op silently
+//                  — no fallback in this raw 168 minimum-viable iteration.
 //
 // Hotkey conflict policy: CGEventTap consumes matched events (return NULL
 // from tap callback), so user-bound combos OVERRIDE the focused app's
@@ -56,7 +62,7 @@ extern void airgenome_hotkey_load_bindings(void);
 //   keycode    NSNumber (int kVK_*)
 //   modifiers  NSNumber (CGEventFlags packed)
 //   target     NSString (bundle path; absent for non-app actions)
-//   action     NSString ("toggle-app" | "show-desktop")
+//   action     NSString ("activate-app" | "show-desktop")
 //   spec       NSString (original "ctrl+q" form, for diagnostic logs)
 static NSMutableArray<NSDictionary *> *g_hotkey_bindings = nil;
 
@@ -136,11 +142,14 @@ void airgenome_hotkey_load_bindings(void) {
         if (![b isKindOfClass:[NSDictionary class]]) continue;
         NSString *spec   = b[@"hotkey"];
         NSString *target = b[@"target"];
-        NSString *action = b[@"action"] ?: @"toggle-app";
+        NSString *action = b[@"action"] ?: @"activate-app";
+        // Backwards-compat alias: legacy "toggle-app" configs map to
+        // activate-app since that's the post-mandate semantics.
+        if ([action isEqualToString:@"toggle-app"]) action = @"activate-app";
         if (![spec isKindOfClass:[NSString class]]) continue;
-        if ([action isEqualToString:@"toggle-app"]
+        if ([action isEqualToString:@"activate-app"]
             && ![target isKindOfClass:[NSString class]]) {
-            NSLog(@"[airgenome_hotkey] toggle-app missing target: %@", spec);
+            NSLog(@"[airgenome_hotkey] activate-app missing target: %@", spec);
             continue;
         }
         int kc = 0;
@@ -181,9 +190,11 @@ static NSRunningApplication *hotkey_find_running(NSString *targetPath) {
     return nil;
 }
 
-// 3-state toggle: not-running → launch / inactive → activate / active → hide.
-// Mirrors macOS Dock-icon click. raw 91 honest C3: launch failure NSLog'd.
-static void hotkey_toggle_app(NSString *targetPath) {
+// activate-app: not-running → launch+activate / running → activate.
+// Already-active is a no-op (no hide). User mandate 2026-04-30 rejected
+// the earlier 3-state hide-on-repeat cycle. raw 91 honest C3: launch
+// failure NSLog'd.
+static void hotkey_activate_app(NSString *targetPath) {
     NSRunningApplication *app = hotkey_find_running(targetPath);
     if (!app) {
         NSURL *url = [NSURL fileURLWithPath:targetPath];
@@ -202,8 +213,7 @@ static void hotkey_toggle_app(NSString *targetPath) {
         return;
     }
     if (app.isActive) {
-        [app hide];
-        NSLog(@"[airgenome_hotkey] %@ → hide (was active)", targetPath);
+        NSLog(@"[airgenome_hotkey] %@ → already active (no-op)", targetPath);
         return;
     }
     if (app.isHidden) [app unhide];
@@ -252,8 +262,8 @@ BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
         int wantKc = [b[@"keycode"] intValue];
         if (relevant != want || kc != wantKc) continue;
         NSString *action = b[@"action"];
-        if ([action isEqualToString:@"toggle-app"]) {
-            hotkey_toggle_app(b[@"target"]);
+        if ([action isEqualToString:@"activate-app"]) {
+            hotkey_activate_app(b[@"target"]);
             return YES;  // CONSUME — global override per user mandate
         }
         if ([action isEqualToString:@"show-desktop"]) {
