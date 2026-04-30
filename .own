@@ -153,3 +153,63 @@ own 5 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M4 h
   follow-up forecast.hexa hot-path site-list own 6 등록 (forecast stage site-axis 확장)
   follow-up label.hexa hot-path site-list own 7 등록 (label stage site-axis 확장)
   follow-up tool/bench/ + state/bench_results.jsonl ledger 산출 (5 사이트 baseline 누적, hexa-native microbench)
+
+own 6 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M6 forecast hot-path 3개 + genome_merge upstream)"
+  slug airgenome-gate-filter-direct-site-application-forecast
+  base raw 91 honest-C3-measure-dont-guess + raw 95 triad-mandate + own 5 (인접 — own 5 = harvest stage, own 6 = forecast stage)
+  since 2026-04-30 (own 5 site-1~5 완료 + bench_lib + A 단계 ledger 직후, forecast.hexa hot-path 분석 완료)
+  scope modules/forecast.hexa M6 hot-path 3개 사이트 + modules/genome_merge.hexa (forecast upstream feeder)
+  rule 다음 3+1 사이트는 own 5 와 동일 5-tuple 측정 절차로 직접 적용 대상으로 명시한다:
+    site-6: modules/forecast.hexa#jq_field (L36-39) — 현 패턴: per-axis exec("echo LINE | jq -r '.expr'") 호출. 7 axis × top_N_PIDS × 8 samples = ~5,600 jq fork/cycle 추정. 직접 적용: own 5 site-2 vit_at 패턴 재사용 — anchor + split byte-offset 추출 (".vitals[i]" / ".pid" / ".host" prefix memcmp). ROI 매핑: #5 slice view + #1 string slice view + #64 memcmp.
+    site-7: modules/forecast.hexa#read_recent_genomes (L102-114) — 현 패턴: per-cycle exec("tail -SCAN_LINES 5000 RING") full reload. 직접 적용: tail-only read + madvise SEQUENTIAL 힌트. own 5 site-4 와 동일 패턴이지만 forecast stage. ROI 매핑: #45 page cache + #87 madvise SEQUENTIAL.
+    site-8: modules/forecast.hexa#append_out (L179-181) — 현 패턴: per-prediction exec("printf '%s\\n' line >> OUT") (~30 fork/cycle). 직접 적용: own 5 site-3 패턴 재사용 — TOP_N_PIDS buffer build 후 단일 append_file. ROI 매핑: #54 writev + #43 N→1 batch.
+    site-8b (genome_merge): modules/genome_merge.hexa#merge_host (L29-35) — 3 host ring 각 jq -c piped append + wc -l count. forecast upstream feeder 이므로 forecast 파이프라인 일부로 own 6 에 포함. 직접 적용: per-host jq 1회 → 통합 hexa scan; wc -l 은 site-7 patterns 와 통합. ROI 매핑: #1 + #43.
+  enforcement own 5 enforcement 와 동일 — site-N + ROI# + hexa baseline ns + post-change ns + lossless differential test 5-tuple 명시 mandatory. forecast self_test 또는 forecast.hexa 자체 differential check 로 충족.
+  exception modules/forecast.hexa + modules/genome_merge.hexa 외 사이트 변경 면제 (label 은 own 7).
+  bans modules/forecast.hexa 신규 코드에서 per-iteration exec("echo LINE | jq ...") 추가 — site-6 in-process slice view 강제
+  bans modules/forecast.hexa 신규 per-prediction exec(printf >>) 추가 — site-8 batch append_file mandate
+  bans modules/forecast.hexa read_recent_genomes 스타일 full-file read 에 madvise SEQUENTIAL 힌트 빠진 tail — site-7 mandate
+  bans modules/genome_merge.hexa per-host jq piped append 추가 — site-8b 통합 hexa scan mandate
+  bans docs/gate_filter_bench_results.md 의 Bun 측정값 직접 인용 — own 5 ban 동일 (own 5 site-4 6%, site-5 1.5-1.9× 사례 참고)
+  why bg analysis 결과 forecast 의 fork 의존도 ~5,600/cycle 로 harvest 보다 더 높음 — site-6 ROI 가 own 5 site-2 의 614× 와 동일 magnitude 기대. raw 91 honest C3 — 사이트 명시 후 측정. own 5 가 패턴 검증 완료 (site-2 99% / site-3 97%) → 동일 패턴 forecast stage 직접 이식. own 4 placement-axis (forecast-pre-vs-post) 와 동시 만족.
+  proof bg agent forecast/label hot-path analysis (2026-04-30, agent a950e0115b7eba7ab)
+  proof modules/forecast.hexa L36-181 hot-path mapping
+  proof own 5 site-2 (vit_at) / site-3 (append_ring) 의 검증된 패턴 재사용
+  severity warn
+  enforce-layer advisory
+  enforce-layer-rationale "advisory tier — own 5 패턴 재사용. raw 95 triad satisfied via {advisory + forecast self_test 확장 + future PR-template lint}"
+  note own 5 = harvest stage site-axis, own 6 = forecast stage site-axis. own 4 placement-axis (forecast-pre-vs-post) 와 직교.
+  note site-6 의 614× 잠재 ROI 가 own 5 site-2 (vit_at) 와 동일 패턴 — 검증된 win 의 forecast 이식.
+  follow-up modules/forecast.hexa#self_test 확장 (jq_field / read_recent_genomes / append_out 의 differential test)
+  follow-up tool/bench/bench_site6.hexa + bench_site7.hexa + bench_site8.hexa 산출 (own 5 bench_lib.hexa 활용)
+  follow-up genome_merge.hexa 측정 후 site-8b 단독 PR 또는 site-8 통합 결정
+
+own 7 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M5 label hot-path 4개)"
+  slug airgenome-gate-filter-direct-site-application-label
+  base raw 91 honest-C3-measure-dont-guess + raw 95 triad-mandate + own 5 + own 6 (인접 — own 7 = label stage)
+  since 2026-04-30 (own 5 site-1~5 완료 + own 6 forecast 등록 직후, label.hexa hot-path 분석 완료)
+  scope modules/label.hexa M5 hot-path 4개 사이트 — bg analysis: ~100K jq fork/cycle 추정 (가장 높은 fork 의존도)
+  rule 다음 4 사이트는 own 5 와 동일 5-tuple 측정 절차로 직접 적용 대상으로 명시한다:
+    site-9: modules/label.hexa#jq_field (L38-41) — 현 패턴: per-rule-per-genome exec("echo LINE | jq -r '.field'") (load_rules × genomes 이중루프 L159-182). 100 rules × 1000 genomes = ~100K jq fork 추정 (own 5/6 중 최고). 직접 적용: own 5 site-2 패턴 재사용 — in-process slice view + byte-offset 추출. parse_rule (L51-73) 의 8 jq_field 호출은 한 줄 통합 파싱으로 1회. ROI 매핑: #5 + #1 + #64.
+    site-10: modules/label.hexa#load_rules (L75-89) — 현 패턴: cat RULES + per-rule parse_rule (규칙당 8 jq 호출). RULES 파일 자체 read 1회지만 jq_field 반복 최악. 직접 적용: RULES 한 라인에서 6개 field 1회 jq -s 또는 site-9 패턴으로 0-fork 통합 파싱. ROI 매핑: #1 string slice view.
+    site-11: modules/label.hexa#read_recent_genomes (L145-157) — 현 패턴: own 6 site-7 과 동일 (per-cycle exec("tail -SCAN_LINES 1000 RING") full reload). 직접 적용: tail-only + madvise SEQUENTIAL. ROI 매핑: #45 + #87.
+    site-12: modules/label.hexa#append_out (L141-143) — 현 패턴: per-label exec("printf '%s\\n' line >> OUT"). 라벨 밀도 100-1000 fork. 직접 적용: own 5 site-3 패턴 — batch buffer + append_file. ROI 매핑: #54 + #43.
+  enforcement own 5 enforcement 동일 — site-N + ROI# + hexa baseline ns + post-change ns + lossless differential test 5-tuple mandatory. label self_test (또는 label.hexa#self_test 확장) 로 충족.
+  exception modules/label.hexa 외 사이트 변경 면제. label rules 정합성은 RULES 파일 단위로 보존.
+  bans modules/label.hexa 신규 코드에서 per-rule-per-genome exec("echo LINE | jq ...") 추가 — site-9 in-process slice view 강제
+  bans modules/label.hexa parse_rule 시 per-field jq_field 호출 — site-10 한 라인 통합 파싱 mandate
+  bans modules/label.hexa 신규 per-label append_out exec(printf >>) — site-12 batch mandate
+  bans modules/label.hexa read_recent_genomes 의 madvise 누락 tail — site-11 mandate
+  bans docs/gate_filter_bench_results.md 의 Bun 측정값 직접 인용 — own 5/6 동일
+  why bg analysis 결과 label.hexa 의 fork 의존도 ~100K/cycle 로 own 5/6 중 최고 — site-9 ROI 가 own 5 site-2 (614×) 와 동일 magnitude × 100K calls = 단일 사이트로 가장 큰 절대 win. raw 91 honest C3 — 측정 후 결정. own 5 가 검증된 패턴 (site-2 / site-3) 의 label stage 이식. own 4 placement-axis (label-pre-vs-post) 와 동시 만족. own 5 / own 6 / own 7 가 capture/forecast/label triad 의 site-axis 완성.
+  proof bg agent forecast/label hot-path analysis (2026-04-30, agent a950e0115b7eba7ab)
+  proof modules/label.hexa L38-182 hot-path mapping (load_rules 이중루프 + jq_field 반복)
+  proof own 5 site-2 (vit_at 614×) / site-3 (append_ring 44×) 의 검증된 패턴 재사용
+  severity warn
+  enforce-layer advisory
+  enforce-layer-rationale "advisory tier — own 5/6 패턴 재사용. raw 95 triad satisfied via {advisory + label self_test 확장 + future PR-template lint}"
+  note own 5 = harvest, own 6 = forecast, own 7 = label — capture/forecast/label triad 의 site-axis 3-stage 완성. own 4 placement-axis (capture-pre-vs-post / forecast-pre-vs-post / label-pre-vs-post) 와 직교 — gate-cycle dispatch dimension (role × placement × stage × site × runtime) 5축 분리 완성.
+  note site-9 의 100K calls × 614× magnitude = 단일 사이트로 가장 큰 절대 win 후보 — bench_site9.hexa 우선 산출 권장.
+  follow-up modules/label.hexa#self_test 확장 (jq_field / load_rules / read_recent_genomes / append_out differential test)
+  follow-up tool/bench/bench_site9.hexa (우선) + bench_site10.hexa + bench_site11.hexa + bench_site12.hexa 산출
+  follow-up predictive_throttle.hexa (M14, throttle_history.jsonl 별도 stream) 은 cross-stage 아님 — 독립 own 8 후보 (forecast 와 동시 실행되는 별도 모듈)
