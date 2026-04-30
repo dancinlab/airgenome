@@ -317,5 +317,3 @@ fn main() -> void {
     let out = build_dispatch(ts, u, u2, h, m, gate)
     write_atomic(DISPATCH_STATE, out)
 }
-
-main()

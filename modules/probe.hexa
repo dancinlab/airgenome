@@ -120,5 +120,3 @@ fn main() -> void {
     let infra = build_infra(ts, mac_j, ubu_j, ubu2_j, htz_j)
     write_atomic(INFRA_STATE, infra)
 }
-
-main()

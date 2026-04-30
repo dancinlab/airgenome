@@ -386,5 +386,3 @@ fn main() -> void {
     let n = run_harvest()
     println("harvest done — anomaly_total=" + to_string(n))
 }
-
-main()

@@ -237,5 +237,3 @@ fn main() -> void {
     }
     let _ = run_throttle()
 }
-
-main()
