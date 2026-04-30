@@ -323,6 +323,86 @@ static void hotkey_ax_hide(pid_t pid) {
     CFRelease(appEl);
 }
 
+// User report 2026-04-30 (round 2) "메뉴바엔 뜨는데 창은 안보여": SkyLight
+// activation succeeds (menu bar swaps to target app) but no window surfaces.
+// Two sub-cases conflated in the user-visible symptom:
+//   (i)  zero-window state — Notes was Cmd+W'd previously, or never opened
+//        a window in this session. SkyLight only changes the front PROCESS;
+//        it does NOT trigger window creation. The system's normal "Dock
+//        icon click" path sends an 'rapp' (kAEReopenApplication) AppleEvent
+//        which the app's delegate handles in applicationShouldHandleReopen:-
+//        hasVisibleWindows: by creating a default window. SkyLight skips
+//        that codepath entirely.
+//   (ii) all-minimized state — windows exist but every one is genie'd into
+//        the Dock. Activation brings the menu bar but the Dock-tile windows
+//        stay shrunk.
+//
+// Fix (post-SkyLight remediation, AX-only — no per-app TCC):
+//   (i)  Query AXWindows. If the count is 0, dispatch NSWorkspace.openAppli-
+//        cationAtURL:configuration: with activates=YES. For an already-
+//        running app this routes through launchservicesd, which sends the
+//        'rapp' on the workspace's behalf — the system-mediated path, NOT
+//        a direct AppleEvent from airgenome, so it does NOT prompt the
+//        per-target "would like to control X" TCC dialog (raw 178 single-
+//        grant invariant preserved). Notes' delegate then opens a window.
+//   (ii) For each minimized window, AXUIElementSetAttributeValue with
+//        kAXMinimizedAttribute=false. AX is bound to the existing
+//        kTCCServiceAccessibility grant (same as the CGEventTap), so this
+//        also stays inside the single-TCC envelope.
+static void hotkey_ensure_window_visible(NSRunningApplication *app) {
+    pid_t pid = app.processIdentifier;
+    AXUIElementRef appEl = AXUIElementCreateApplication(pid);
+    if (!appEl) return;
+
+    CFArrayRef windows = NULL;
+    AXError e = AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute,
+                                              (CFTypeRef *)&windows);
+    CFIndex count = (e == kAXErrorSuccess && windows)
+                    ? CFArrayGetCount(windows) : 0;
+
+    if (count == 0) {
+        if (windows) CFRelease(windows);
+        CFRelease(appEl);
+        NSURL *url = app.bundleURL;
+        if (!url) return;
+        NSWorkspaceOpenConfiguration *cfg =
+            [NSWorkspaceOpenConfiguration configuration];
+        cfg.activates = YES;
+        [[NSWorkspace sharedWorkspace]
+            openApplicationAtURL:url
+                   configuration:cfg
+               completionHandler:^(NSRunningApplication *r, NSError *err) {
+            if (err) NSLog(@"[airgenome_hotkey] reopen failed: %@ (%@)",
+                           url.path, err.localizedDescription);
+            (void)r;
+        }];
+        NSLog(@"[airgenome_hotkey] %@ → reopen (no windows, AX count=0)",
+              app.bundleIdentifier);
+        return;
+    }
+
+    NSInteger deminimized = 0;
+    for (CFIndex i = 0; i < count; i++) {
+        AXUIElementRef w = (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
+        CFTypeRef minimized = NULL;
+        if (AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute, &minimized)
+            != kAXErrorSuccess || !minimized) continue;
+        BOOL isMin = CFEqual(minimized, kCFBooleanTrue);
+        CFRelease(minimized);
+        if (isMin) {
+            AXUIElementSetAttributeValue(w, kAXMinimizedAttribute,
+                                         kCFBooleanFalse);
+            deminimized++;
+        }
+    }
+    CFRelease(windows);
+    CFRelease(appEl);
+    if (deminimized > 0) {
+        NSLog(@"[airgenome_hotkey] %@ → deminimized %ld/%ld windows",
+              app.bundleIdentifier, (long)deminimized, (long)count);
+    }
+}
+
 // User report 2026-04-30 "ctrl+r 메모 아예 안나오는 문제 였어": AppKit
 // activation (activateFromApplication: / NSWorkspace.openApplicationAtURL:)
 // silently drops on macOS 14+/Tahoe-26 when called from a background
@@ -363,6 +443,7 @@ static void hotkey_activate_running(NSRunningApplication *app) {
         if (e == kCGErrorSuccess) {
             NSLog(@"[airgenome_hotkey] %@ → activate via SkyLight (pid=%d)",
                   app.bundleIdentifier, app.processIdentifier);
+            hotkey_ensure_window_visible(app);
             return;
         }
         NSLog(@"[airgenome_hotkey] SkyLight activate err=%d, falling back",
@@ -373,7 +454,10 @@ static void hotkey_activate_running(NSRunningApplication *app) {
     }
     // Fallback: NSWorkspace.openApplicationAtURL: with cfg.activates=YES.
     // LaunchServices path — less reliable from background but better than
-    // nothing if SkyLight ever stops working on a future macOS.
+    // nothing if SkyLight ever stops working on a future macOS. This path
+    // ALSO triggers 'rapp' for already-running apps, so a successful
+    // fallback inherently handles the no-window case (no extra
+    // hotkey_ensure_window_visible call needed here).
     NSURL *url = app.bundleURL;
     if (!url) return;
     NSWorkspaceOpenConfiguration *cfg =
