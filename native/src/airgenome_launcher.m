@@ -208,6 +208,15 @@ static void airgenome_launcher_install_main_menu(void) {
     [NSApp setMainMenu:mainMenu];
 }
 
+// Saved frontmost app (captured on show, restored on hide unless launching).
+// User mandate 2026-04-30: "검색창 닫았을때 원래 창으로 다시 포커싱". When
+// the overlay closes via Esc / ctrl+s-toggle / Enter-with-no-results, the
+// app that was frontmost BEFORE we activated airgenome must regain focus.
+// On Enter-with-launch the new app should keep focus instead — the
+// g_launcher_launching flag suppresses restore for that path.
+static NSRunningApplication *g_launcher_prev_app = nil;
+static int g_launcher_launching = 0;
+
 // Saved input source for restore on hide. User report 2026-04-30 04:59:
 // "검색해도 안됨 / 초기 언어는 무조건 영어 고정 / 한영키 상태면 영어로".
 // All app names are ASCII so Hangul IME composing chars never match; we
@@ -360,6 +369,12 @@ void airgenome_launcher_show_overlay(void) {
         return;
     }
 
+    // Capture previously-frontmost app BEFORE we activate ourselves —
+    // hide_overlay restores this on dismiss so the user's prior context
+    // (terminal, editor, browser, etc.) regains focus. Skipped when the
+    // dismiss path is a successful launch (the new app keeps focus).
+    g_launcher_prev_app = [[NSWorkspace sharedWorkspace] frontmostApplication];
+
     // LSUIElement removed 2026-04-30 04:55 per raw 168 min-viable + raw 173
     // determinism. App is now a regular Dock-visible app. activateIgnoring
     // brings panel to foreground reliably; no policy switching needed.
@@ -378,8 +393,14 @@ void airgenome_launcher_show_overlay(void) {
     // with magnifyingglass SF symbol left-anchored, top-row search input,
     // bottom-row status icon+label. Drop-shadow handled by NSPanel itself.
     if (!g_launcher_panel) {
+        // Single-row stadium (user reference 2026-04-30 "이렇게 안정적이여
+        // 야함") — height collapsed from 90 → 56 so the capsule is one
+        // tight input row, no empty black space below. Status row REMOVED
+        // from view (data path still tracks selection for ↑↓ cycling); a
+        // future raw can re-introduce it as a separate floating panel
+        // below the capsule when results exist.
         const CGFloat W = 600.0;
-        const CGFloat H = 90.0;
+        const CGFloat H = 56.0;
         NSRect frame = NSMakeRect(0, 0, W, H);
         g_launcher_panel = [[AirgenomeLauncherPanel alloc]
             initWithContentRect:frame
@@ -394,26 +415,21 @@ void airgenome_launcher_show_overlay(void) {
 
         // Pure-black stadium contentView: cornerRadius = H/2 → left/right
         // edges become semicircles, top/bottom become flat (pill shape).
-        // masksToBounds clips subviews to the rounded path so any element
-        // straying near the corner is visually trimmed.
         NSView *cv = [g_launcher_panel contentView];
         [cv setWantsLayer:YES];
         cv.layer.backgroundColor = [[NSColor blackColor] CGColor];
         cv.layer.cornerRadius   = H / 2.0;
         cv.layer.masksToBounds  = YES;
 
-        // Wire delegate (lazy-init).
         if (!g_launcher_delegate) {
             g_launcher_delegate = [[AirgenomeLauncherDelegate alloc] init];
         }
         [g_launcher_panel setDelegate:g_launcher_delegate];
 
-        // Search icon (front-left). SF Symbol "magnifyingglass" tinted
-        // white. macOS 11+ — fall back to no-icon if older system.
-        const CGFloat iconSz   = 22.0;
-        const CGFloat iconPadX = 30.0;             // safe inside stadium curve
-        const CGFloat topMidY  = H * 0.75;          // center of top half (y up)
-        NSRect iconFrame = NSMakeRect(iconPadX, topMidY - iconSz / 2,
+        // Search icon (front-left), vertically centered.
+        const CGFloat iconSz   = 20.0;
+        const CGFloat iconPadX = 24.0;             // safe inside stadium curve
+        NSRect iconFrame = NSMakeRect(iconPadX, (H - iconSz) / 2,
                                       iconSz, iconSz);
         NSImageView *searchIcon = [[NSImageView alloc] initWithFrame:iconFrame];
         if (@available(macOS 11.0, *)) {
@@ -427,11 +443,10 @@ void airgenome_launcher_show_overlay(void) {
         [searchIcon setImageScaling:NSImageScaleProportionallyDown];
         [cv addSubview:searchIcon];
 
-        // Search input — borderless, transparent, white text, white-dim
-        // placeholder. Positioned in the top half, right of the icon.
+        // Search input — borderless, transparent, white text, dim placeholder.
         const CGFloat fieldX = iconPadX + iconSz + 10.0;
-        const CGFloat fieldH = 38.0;
-        NSRect fieldFrame = NSMakeRect(fieldX, topMidY - fieldH / 2,
+        const CGFloat fieldH = 30.0;
+        NSRect fieldFrame = NSMakeRect(fieldX, (H - fieldH) / 2,
                                        W - fieldX - iconPadX, fieldH);
         g_launcher_search_field = [[NSTextField alloc] initWithFrame:fieldFrame];
         [g_launcher_search_field setBezeled:NO];
@@ -454,32 +469,11 @@ void airgenome_launcher_show_overlay(void) {
         [g_launcher_search_field setAction:@selector(launcherEnterAction:)];
         [cv addSubview:g_launcher_search_field];
 
-        // Status row in the BOTTOM half — small icon + dim-white label.
-        // Same x-padding so it visually aligns with the search row above.
-        const CGFloat botMidY     = H * 0.25;
-        const CGFloat statusIconSz = 20.0;
-        NSRect statusIconFrame = NSMakeRect(iconPadX, botMidY - statusIconSz / 2,
-                                            statusIconSz, statusIconSz);
-        g_launcher_status_icon = [[NSImageView alloc] initWithFrame:statusIconFrame];
-        [g_launcher_status_icon setImageScaling:NSImageScaleProportionallyDown];
-        [cv addSubview:g_launcher_status_icon];
-
-        const CGFloat statusLabelX = iconPadX + statusIconSz + 8.0;
-        const CGFloat statusLabelH = 18.0;
-        NSRect statusLabelFrame = NSMakeRect(statusLabelX,
-                                             botMidY - statusLabelH / 2,
-                                             W - statusLabelX - iconPadX,
-                                             statusLabelH);
-        g_launcher_status_label = [[NSTextField alloc] initWithFrame:statusLabelFrame];
-        [g_launcher_status_label setBezeled:NO];
-        [g_launcher_status_label setDrawsBackground:NO];
-        [g_launcher_status_label setEditable:NO];
-        [g_launcher_status_label setSelectable:NO];
-        [g_launcher_status_label setFont:[NSFont systemFontOfSize:12]];
-        [g_launcher_status_label setTextColor:
-            [NSColor colorWithWhite:0.72 alpha:1.0]];
-        [g_launcher_status_label setStringValue:@""];
-        [cv addSubview:g_launcher_status_label];
+        // Status icon + label intentionally NOT created here. refresh_status
+        // is guarded by `if (!g_launcher_status_label) return` so the data
+        // path stays inert without UI. Selection cycling via ↑↓ still works
+        // (g_launcher_selection_index updates), and Enter launches whichever
+        // result is at index 0 / current selection.
     }
     [g_launcher_search_field setStringValue:@""];
     // Center on screen of currently-active mouse cursor.
@@ -509,6 +503,19 @@ void airgenome_launcher_hide_overlay(void) {
     g_launcher_app_cache = nil;
     g_launcher_current_results = nil;
     [g_launcher_icon_cache removeAllObjects];
+    // Restore focus to the previously-frontmost app. User report 2026-04-30
+    // "안돌아온다 포커싱" — explicit activateFromApplication:options:0 was
+    // not enough because NSApp itself remained active (orderOut just hides
+    // the panel, doesn't deactivate the app). The macOS-canonical fix:
+    // [NSApp hide:nil] marks airgenome as hidden, and the system naturally
+    // surfaces whichever app was frontmost before — no explicit prev-app
+    // tracking needed. Skipped when launch_app is the dismiss trigger
+    // (the just-opened app's NSWorkspace activate wins instead).
+    if (!g_launcher_launching) {
+        [NSApp hide:nil];
+    }
+    g_launcher_prev_app = nil;
+    g_launcher_launching = 0;
 }
 
 // Enumerate installed .app bundles from canonical macOS locations.
@@ -676,6 +683,10 @@ static void airgenome_launcher_append_history(NSURL *appURL, BOOL success) {
 
 BOOL airgenome_launcher_launch_app(NSURL *appBundleURL) {
     if (!appBundleURL) return NO;
+    // Suppress focus-restore in hide_overlay — the just-launched app
+    // (configured below with cfg.activates=YES) should keep focus, not
+    // the previously-frontmost app captured on show.
+    g_launcher_launching = 1;
     // Modern macOS 10.15+ API: openApplicationAtURL:configuration:completionHandler:
     // Returns immediately; activation happens async. We hide the launcher overlay
     // synchronously (UX: user sees overlay close + app launch in one motion).
