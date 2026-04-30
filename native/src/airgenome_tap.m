@@ -1790,11 +1790,45 @@ static BOOL g_intentional_quit = NO;
         return NO;
     }
 
-    // 4. posix_spawn — main thread 블록 안 함
+    // 4. posix_spawn — output capture + completion handler 으로 결과 dialog
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = hexa;
     task.arguments = @[ @"run", dispatchPath, filename ];
     task.currentDirectoryPath = [dispatchPath stringByDeletingLastPathComponent];
+    NSPipe *outPipe = [NSPipe pipe];
+    task.standardOutput = outPipe;
+    task.standardError = outPipe;
+
+    // start notification (osascript — no permission setup 필요)
+    NSString *startMsg = [NSString stringWithFormat:
+                          @"display notification \"%@ → gamebox dispatch 시작\" with title \"airgenome\"",
+                          [filename lastPathComponent]];
+    NSTask *notifyTask = [[NSTask alloc] init];
+    notifyTask.launchPath = @"/usr/bin/osascript";
+    notifyTask.arguments = @[ @"-e", startMsg ];
+    @try { [notifyTask launch]; } @catch (NSException *ex) {}
+
+    task.terminationHandler = ^(NSTask *t) {
+        NSData *data = [[outPipe fileHandleForReading] readDataToEndOfFile];
+        NSString *output = [[NSString alloc] initWithData:data
+                                                 encoding:NSUTF8StringEncoding];
+        if (!output) output = @"(no output)";
+        // 너무 길면 truncate (NSAlert 한계)
+        if (output.length > 2000) {
+            output = [[output substringFromIndex:output.length - 2000]
+                      stringByAppendingString:@"\n…(truncated, 전체는 log 참고)"];
+        }
+        int rc = t.terminationStatus;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *title = (rc == 0) ?
+                @"gamebox dispatch 완료" :
+                [NSString stringWithFormat:@"gamebox dispatch 종료 (exit=%d)", rc];
+            [self showAlertWithMessage:title
+                                  info:output
+                              firstBtn:@"OK" secondBtn:nil];
+        });
+    };
+
     @try {
         [task launch];
         fprintf(stderr, "airgenome_tap: dispatched %s (pid=%d)\n",
