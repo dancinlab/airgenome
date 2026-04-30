@@ -74,6 +74,20 @@ fn run_module(name: str) -> int {
     return 0
 }
 
+fn run_module_with_arg(name: str, arg: str) -> int {
+    let path = airgenome_root() + "/modules/" + name + ".hexa"
+    let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
+    if chk != "y" {
+        println("airgenome: module not found — " + path)
+        return 2
+    }
+    // PATH-resolved hexa (docker / host 동일하게 작동)
+    let cmd = "hexa run '" + path + "' '" + arg + "' 2>&1"
+    let out = exec(cmd)
+    println(out)
+    return 0
+}
+
 fn run_module_self_test(name: str) -> int {
     let path = airgenome_root() + "/modules/" + name + ".hexa"
     let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
@@ -546,6 +560,18 @@ fn main() -> void {
     if sub == "probe" { let _ = run_module("probe"); return }
     if sub == "merge" { let _ = run_module("genome_merge"); return }
     if sub == "throttle" { let _ = run_module("predictive_throttle"); return }
+    if sub == "exe" {
+        if len(a) < 4 {
+            println("usage: airgenome exe <path/to.exe>")
+            return
+        }
+        let _ = run_module_with_arg("exe_dispatch", a[3])
+        return
+    }
+    if sub == "plugins" {
+        let _ = run_module_with_arg("exe_dispatch", "list")
+        return
+    }
     println("airgenome: unknown subcommand '" + sub + "'. try 'airgenome help'.")
 }
 

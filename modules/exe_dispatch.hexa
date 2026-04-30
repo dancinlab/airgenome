@@ -1,0 +1,190 @@
+// modules/exe_dispatch.hexa — airgenome exe dispatcher (lightweight)
+//
+// .exe 받으면 plugin registry 보고 handler 로 forward.
+// airgenome 자체는 PE loader 코드 0 줄 — handler plugin (gamebox 등) 이 처리.
+//
+// 사용:
+//   airgenome exe <path/to.exe>
+//   → plugin registry 에서 ".exe" handler 찾기
+//   → 없으면: "gamebox plugin install?" 물어보기
+//   → 있으면: handler entry 실행
+//
+// plugin manifest 위치 (자동 검색 순서):
+//   1. ~/.airgenome/plugins/*/plugin.json  (user install)
+//   2. ../airgenome-*/plugin.json          (sibling repo, dev mode)
+//
+// plugin.json schema:
+//   {
+//     "name": "gamebox",
+//     "type": "exe-runner",
+//     "handles": [{"extension": ".exe", "platforms": [...], "priority": 100}],
+//     "entry": "entry"
+//   }
+
+let HOME = env("HOME")
+let PLUGINS_DIR = HOME + "/.airgenome/plugins"
+
+// ─── plugin manifest 검색 (dedup by realpath) ───
+fn discover_plugins() -> array {
+    let seen_str = ""
+    let result = []
+    // 1) ~/.airgenome/plugins/*/plugin.json
+    let exists = exec("test -d '" + PLUGINS_DIR + "' && echo ok").trim()
+    if exists == "ok" {
+        let names = exec("ls '" + PLUGINS_DIR + "' 2>/dev/null").trim()
+        if names != "" {
+            let lines = names.split("\n")
+            let i = 0
+            while i < len(lines) {
+                let p = PLUGINS_DIR + "/" + lines[i] + "/plugin.json"
+                let rp = exec("readlink -f '" + p + "' 2>/dev/null || echo '" + p + "'").trim()
+                if exec("test -f '" + p + "' && echo ok").trim() == "ok" {
+                    if !seen_str.contains("|" + rp + "|") {
+                        seen_str = seen_str + "|" + rp + "|"
+                        result = result + [p]
+                    }
+                }
+                i = i + 1
+            }
+        }
+    }
+    // 2) sibling dev repos
+    let here = exec("pwd").trim()
+    let parent = exec("cd '" + here + "/..' && pwd 2>/dev/null").trim()
+    if parent != "" {
+        let sibs = exec("ls '" + parent + "' 2>/dev/null | grep -E 'airgenome-'").trim()
+        if sibs != "" {
+            let slines = sibs.split("\n")
+            let j = 0
+            while j < len(slines) {
+                let pj = parent + "/" + slines[j] + "/plugin.json"
+                let rpj = exec("readlink -f '" + pj + "' 2>/dev/null || echo '" + pj + "'").trim()
+                if exec("test -f '" + pj + "' && echo ok").trim() == "ok" {
+                    if !seen_str.contains("|" + rpj + "|") {
+                        seen_str = seen_str + "|" + rpj + "|"
+                        result = result + [pj]
+                    }
+                }
+                j = j + 1
+            }
+        }
+    }
+    return result
+}
+
+// ─── manifest 안 .exe handler 인지 (단순 grep — JSON parser 없이) ───
+fn handles_exe(manifest_path: str) -> bool {
+    let r = exec("grep -F '\".exe\"' '" + manifest_path + "' 2>/dev/null | wc -l | tr -d ' '").trim()
+    if r == "" { return false }
+    return to_int(r) > 0
+}
+
+// ─── manifest 의 plugin name + entry ───
+fn plugin_name(manifest_path: str) -> str {
+    let r = exec("grep -E '\"name\"[[:space:]]*:' '" + manifest_path + "' | head -1 | sed 's/.*\"name\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/'").trim()
+    return r
+}
+
+fn plugin_entry(manifest_path: str) -> str {
+    let r = exec("grep -E '\"entry\"[[:space:]]*:' '" + manifest_path + "' | head -1 | sed 's/.*\"entry\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/'").trim()
+    if r == "" { return "entry" }
+    return r
+}
+
+// ─── manifest 의 plugin dir (manifest_path 의 dirname) ───
+fn plugin_dir(manifest_path: str) -> str {
+    return exec("dirname '" + manifest_path + "'").trim()
+}
+
+// ─── exe handler 찾기 ───
+//   return: manifest_path or ""
+fn find_exe_handler() -> str {
+    let plugins = discover_plugins()
+    let i = 0
+    while i < len(plugins) {
+        if handles_exe(plugins[i]) {
+            return plugins[i]
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// ─── dispatch ───
+//   bash entry 우회 — hexa run lib/dispatch.hexa <args> 직접 호출 (docker-safe).
+//   docker mount 제약 우회: 외부 path 라면 plugin dir 내 tool/bench/ 으로 pre-copy.
+fn dispatch_exe(path: str) -> int {
+    let handler = find_exe_handler()
+    if handler == "" {
+        println("airgenome: no .exe handler plugin installed.")
+        println("")
+        println("Install gamebox plugin (manual step):")
+        println("  git clone https://github.com/dancinlife/airgenome-gamebox ~/.airgenome/plugins/gamebox")
+        println("")
+        println("Or dev mode: place airgenome-gamebox/ next to airgenome/ (auto-discovered).")
+        return 1
+    }
+    let dir = plugin_dir(handler)
+    let name = plugin_name(handler)
+    let dispatch_path = dir + "/lib/dispatch.hexa"
+    let dispatch_exists = exec("test -f '" + dispatch_path + "' && echo ok").trim()
+    if dispatch_exists != "ok" {
+        println("airgenome: plugin " + name + " missing lib/dispatch.hexa at " + dispatch_path)
+        return 2
+    }
+    // pre-copy to plugin tool/bench/ so docker mount can access (host-side cp avoids docker isolation)
+    let basename = exec("basename '" + path + "'").trim()
+    let local_copy = dir + "/tool/bench/" + basename
+    let _mk = exec("mkdir -p '" + dir + "/tool/bench'")
+    let _cp = exec("cp '" + path + "' '" + local_copy + "'")
+    let rel_copy = "tool/bench/" + basename
+    println("airgenome: dispatching " + path + " → " + name + " (install)")
+    println("airgenome: pre-copied to " + local_copy)
+    let cmd = "cd '" + dir + "' && hexa run lib/dispatch.hexa install '" + rel_copy + "' 2>&1"
+    let out = exec(cmd)
+    println(out)
+    return 0
+}
+
+fn self_test() -> void {
+    // discover_plugins 기본 동작 (없어도 0)
+    let p = discover_plugins()
+    println("  discovered plugins: " + to_string(len(p)))
+    let i = 0
+    while i < len(p) {
+        let n = plugin_name(p[i])
+        let e = plugin_entry(p[i])
+        let h = "no"
+        if handles_exe(p[i]) { h = "yes" }
+        println("    " + n + " (entry=" + e + ", handles_exe=" + h + ")")
+        i = i + 1
+    }
+    let handler = find_exe_handler()
+    if handler == "" {
+        println("  exe handler: NONE — would prompt for install")
+    } else {
+        println("  exe handler: " + plugin_name(handler))
+    }
+    println("  ✅ exe_dispatch self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" { self_test(); return }
+        if sub == "list" {
+            let p = discover_plugins()
+            let i = 0
+            while i < len(p) {
+                println(plugin_name(p[i]) + "\t" + p[i])
+                i = i + 1
+            }
+            return
+        }
+        // direct path → dispatch
+        let _rc = dispatch_exe(sub)
+        return
+    }
+    println("usage: hexa run exe_dispatch.hexa { self-test | list | <path/to.exe> }")
+}
