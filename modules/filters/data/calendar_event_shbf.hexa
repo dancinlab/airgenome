@@ -136,7 +136,9 @@ let PAYLOAD = "import sys,os,sqlite3,tempfile,struct,time,bisect,resource,mmap,a
 "        self.toffs=array.array('I'); self.toffs.frombytes(bytes(mv[toffs_off:toffs_off+4*n]))\n" +
 "        self.tlens=array.array('I'); self.tlens.frombytes(bytes(mv[tlens_off:tlens_off+4*n]))\n" +
 "        self.pool=bytes(mv[pool_off:pool_off+pool_sz])\n" +
-"        self.mv=mv\n" +
+"        # NOTE: do NOT retain memoryview on instance (mm.close BufferError)\n" +
+"        mv.release()\n" +
+"        del mv\n" +
 "    def range_count(self,lo,hi):\n" +
 "        a=bisect.bisect_left(self.starts,lo)\n" +
 "        b=bisect.bisect_right(self.starts,hi)\n" +

@@ -344,4 +344,16 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
     wave-5 PASS 10 loop-integrate DONE — datae wave 17 timer 활성 (7 K-wave + 10 wave-5).
       runtime: HEXA_RESOLVER_NO_REROUTE=1 + HEXA_SHIM_NO_DARWIN_LANDING=1 (Docker landing 우회).
       log: "datae w5: memo_notes=ok memo_search=ok tel_chat=ok tel_media=ok fi_recent=ok tel_contact=ok cal_recur=ok music=ok books=ok shortcuts=ok"
-    proof commit 65e59eab + def7b1a4 + aafc957e + e3ca3fbd + cd595c94 + fc800207 + 본 commit + loop-selftest 13/13 PASS
+    wave-5 SKIP/FAIL re-validation 2026-04-30 (post Mail.app + Notes set up):
+      calendar_event_shbf — FAIL (BufferError) → PASS 301.8× post fix (memoryview release before mm.close)
+        bg agent aa0bcd5928fa6b84d PAYLOAD edit → auth fail → foreground re-bench PASS
+        datae w5 11번째 추가 (1800s)
+      mail_envelope_shbf — SKIP→FAIL TypeError V10 subject ROWID 처리 불일치 (별도 fix cycle)
+      mail_body_dedup — SKIP→FAIL 0.8× (V10 dup 2.6% — 본질적 ROI 한계, accept N/A)
+      mail_sender_dict — SKIP→FAIL diff_test=810 lossless 위반 + 0.8× wall (encoder bug, 별도 fix)
+      memo_attachment_dedup — SKIP→SKIP attachments=0 (사용자 첨부 추가 시 재측정)
+      proof docs/wave5_skip_revalidation_2026-04-30.md
+    wave-5 datae 18 timer (PASS 11 + cal_event fix):
+      log: "datae w5: ... cal_event=ok"
+      production active 검증 PID 77758
+    proof commit 65e59eab + def7b1a4 + aafc957e + e3ca3fbd + cd595c94 + fc800207 + 04e96b48 + 본 commit + loop-selftest 13/13 PASS

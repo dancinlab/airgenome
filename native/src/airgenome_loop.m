@@ -268,6 +268,7 @@ static dispatch_source_t g_datae_w5_cal_recurring_src   = NULL;
 static dispatch_source_t g_datae_w5_music_src           = NULL;
 static dispatch_source_t g_datae_w5_books_src           = NULL;
 static dispatch_source_t g_datae_w5_shortcuts_src       = NULL;
+static dispatch_source_t g_datae_w5_cal_event_src       = NULL;  // FAIL fix 301.8× post BufferError patch
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -527,6 +528,15 @@ void airgenome_loop_init(void) {
         .interval_s  = 7200,           // 2h — 2.9× (low scale n=300)
         .timeout_s   = 60,
     };
+    // wave-5 FAIL fix — calendar_event_shbf BufferError 해결 (memoryview release)
+    // 후 재측정 301.8× (5000 events / 208KB blob / lossless 14025=14025).
+    static const airgenome_loop_module_t datae_w5_cal_event = {
+        .module_name = "datae-w5-calendar-event",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/calendar_event_shbf.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 1800,           // 30min — calendar event 빈도 적당
+        .timeout_s   = 60,
+    };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -587,6 +597,7 @@ void airgenome_loop_init(void) {
         g_datae_w5_music_src         = loop_make_timer(&datae_w5_music,         g_loop_queue);
         g_datae_w5_books_src         = loop_make_timer(&datae_w5_books,         g_loop_queue);
         g_datae_w5_shortcuts_src     = loop_make_timer(&datae_w5_shortcuts,     g_loop_queue);
+        g_datae_w5_cal_event_src     = loop_make_timer(&datae_w5_cal_event,     g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -628,7 +639,7 @@ void airgenome_loop_init(void) {
               g_datae_k6_src   ? "ok" : "FAIL",
               g_datae_k4_src   ? "ok" : "FAIL",
               g_datae_dklc_src ? "ok" : "FAIL");
-        NSLog(@"[airgenome_loop] datae w5: memo_notes=%s memo_search=%s tel_chat=%s tel_media=%s fi_recent=%s tel_contact=%s cal_recur=%s music=%s books=%s shortcuts=%s",
+        NSLog(@"[airgenome_loop] datae w5: memo_notes=%s memo_search=%s tel_chat=%s tel_media=%s fi_recent=%s tel_contact=%s cal_recur=%s music=%s books=%s shortcuts=%s cal_event=%s",
               g_datae_w5_memo_notes_src    ? "ok" : "FAIL",
               g_datae_w5_memo_search_src   ? "ok" : "FAIL",
               g_datae_w5_tel_chat_src      ? "ok" : "FAIL",
@@ -638,7 +649,8 @@ void airgenome_loop_init(void) {
               g_datae_w5_cal_recurring_src ? "ok" : "FAIL",
               g_datae_w5_music_src         ? "ok" : "FAIL",
               g_datae_w5_books_src         ? "ok" : "FAIL",
-              g_datae_w5_shortcuts_src     ? "ok" : "FAIL");
+              g_datae_w5_shortcuts_src     ? "ok" : "FAIL",
+              g_datae_w5_cal_event_src     ? "ok" : "FAIL");
     }
 }
 
@@ -702,6 +714,7 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_w5_music_src)         { dispatch_source_cancel(g_datae_w5_music_src);         g_datae_w5_music_src         = NULL; }
     if (g_datae_w5_books_src)         { dispatch_source_cancel(g_datae_w5_books_src);         g_datae_w5_books_src         = NULL; }
     if (g_datae_w5_shortcuts_src)     { dispatch_source_cancel(g_datae_w5_shortcuts_src);     g_datae_w5_shortcuts_src     = NULL; }
+    if (g_datae_w5_cal_event_src)     { dispatch_source_cancel(g_datae_w5_cal_event_src);     g_datae_w5_cal_event_src     = NULL; }
 }
 
 // ----------------------------------------------------------------------

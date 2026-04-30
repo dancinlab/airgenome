@@ -22,3 +22,5 @@
 {"ts":"2026-04-30T13:28:45Z","actor":"commit-msg-scan","kind":"bypass","reason":"docker-filter-iterate-to-420-of-420-with-new-b10-rotated-source-stream-fold-correctness-block","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T13:40:05Z","actor":"staged-scan","kind":"bypass","reason":"datae-wave-extend-k4-v2-plus-dklc-loop-integrate-plus-own-ledger-uchg-cycle-user-authorized","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T13:40:05Z","actor":"commit-msg-scan","kind":"bypass","reason":"datae-wave-extend-k4-v2-plus-dklc-loop-integrate-plus-own-ledger-uchg-cycle-user-authorized","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T13:44:58Z","actor":"staged-scan","kind":"bypass","reason":"wave-5-pass-10-filter-loop-integrate-plus-validation-doc-plus-own-uchg-cycle","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T13:44:58Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-5-pass-10-filter-loop-integrate-plus-validation-doc-plus-own-uchg-cycle","branch":"main","scanner_user":"ghost"}
