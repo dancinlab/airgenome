@@ -1799,14 +1799,12 @@ static BOOL g_intentional_quit = NO;
     task.standardOutput = outPipe;
     task.standardError = outPipe;
 
-    // start notification (osascript — no permission setup 필요)
-    NSString *startMsg = [NSString stringWithFormat:
-                          @"display notification \"%@ → gamebox dispatch 시작\" with title \"airgenome\"",
-                          [filename lastPathComponent]];
-    NSTask *notifyTask = [[NSTask alloc] init];
-    notifyTask.launchPath = @"/usr/bin/osascript";
-    notifyTask.arguments = @[ @"-e", startMsg ];
-    @try { [notifyTask launch]; } @catch (NSException *ex) {}
+    // start notification 은 osascript 호출 시 Script Editor 가 같이 뜨는 문제 +
+    // AppleScript 의존 회피 위해 제거. dispatch 는 보통 1-2 초 내 완료되어
+    // 완료 NSAlert 만으로 충분한 feedback. 진행 상황 추적은 stderr log.
+    fprintf(stderr, "airgenome_tap: dispatch starting — %s\n",
+            [[filename lastPathComponent] UTF8String]);
+    fflush(stderr);
 
     task.terminationHandler = ^(NSTask *t) {
         NSData *data = [[outPipe fileHandleForReading] readDataToEndOfFile];
