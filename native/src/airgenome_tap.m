@@ -1618,11 +1618,102 @@ static BOOL g_intentional_quit = NO;
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     return NO;  // last window closing 으로 종료 X — 데몬 유지
 }
+// LSUIElement=true 인 daemon 에서 NSAlert 띄울 때 활성 창 안 보이는 문제 우회.
+// activation policy 일시 Regular 로 transition → modal alert focus → 다시 Accessory.
+- (NSModalResponse)showAlertWithMessage:(NSString *)msg
+                                   info:(NSString *)info
+                              firstBtn:(NSString *)b1
+                              secondBtn:(NSString *)b2 {
+    NSApplicationActivationPolicy prev = [NSApp activationPolicy];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp activateIgnoringOtherApps:YES];
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = msg;
+    if (info.length) alert.informativeText = info;
+    if (b1.length) [alert addButtonWithTitle:b1];
+    if (b2.length) [alert addButtonWithTitle:b2];
+    NSModalResponse resp = [alert runModal];
+
+    [NSApp setActivationPolicy:prev];
+    return resp;
+}
+
+// gamebox plugin 검색 (manifest 존재 여부) — sibling 또는 ~/.airgenome/plugins/
+- (NSString *)findGameboxPluginDir {
+    NSString *userPlugin = [NSString stringWithFormat:@"%@/.airgenome/plugins/gamebox",
+                            NSHomeDirectory()];
+    NSString *userPluginManifest = [userPlugin stringByAppendingPathComponent:@"plugin.json"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:userPluginManifest]) {
+        return userPlugin;
+    }
+    // sibling: airgenome root 의 부모 디렉토리에서 airgenome-gamebox 찾기
+    NSString *envRoot = [[[NSProcessInfo processInfo] environment]
+                         objectForKey:@"AIRGENOME_ROOT"];
+    NSMutableArray<NSString *> *parents = [NSMutableArray array];
+    if (envRoot.length) {
+        [parents addObject:[envRoot stringByDeletingLastPathComponent]];
+    }
+    [parents addObject:[NSString stringWithFormat:@"%@/Dev", NSHomeDirectory()]];
+    [parents addObject:[NSString stringWithFormat:@"%@/core", NSHomeDirectory()]];
+    [parents addObject:[NSString stringWithFormat:@"%@/.airgenome", NSHomeDirectory()]];
+    for (NSString *parent in parents) {
+        NSString *cand = [parent stringByAppendingPathComponent:@"airgenome-gamebox"];
+        NSString *manifest = [cand stringByAppendingPathComponent:@"plugin.json"];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:manifest]) {
+            return cand;
+        }
+    }
+    return nil;
+}
+
+// 백그라운드에서 git clone 실행 후 dialog 으로 결과 보고.
+- (BOOL)installGameboxPlugin {
+    NSString *target = [NSString stringWithFormat:@"%@/.airgenome/plugins/gamebox",
+                        NSHomeDirectory()];
+    NSString *parent = [target stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:parent
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/usr/bin/env";
+    task.arguments = @[
+        @"git", @"clone", @"--depth=1",
+        @"https://github.com/dancinlife/airgenome-gamebox", target
+    ];
+    NSPipe *out = [NSPipe pipe];
+    task.standardOutput = out;
+    task.standardError = out;
+    @try {
+        [task launch];
+        [task waitUntilExit];
+    }
+    @catch (NSException *ex) {
+        [self showAlertWithMessage:@"gamebox install failed"
+                              info:[NSString stringWithFormat:@"git clone exception: %@",
+                                    ex.description]
+                          firstBtn:@"OK" secondBtn:nil];
+        return NO;
+    }
+    if (task.terminationStatus != 0) {
+        NSData *errData = [[out fileHandleForReading] readDataToEndOfFile];
+        NSString *err = [[NSString alloc] initWithData:errData
+                                              encoding:NSUTF8StringEncoding];
+        [self showAlertWithMessage:@"gamebox install failed"
+                              info:err ?: @"git clone returned non-zero status."
+                          firstBtn:@"OK" secondBtn:nil];
+        return NO;
+    }
+    return YES;
+}
+
 - (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
     fprintf(stderr, "airgenome_tap: openFile event — %s\n", [filename UTF8String]);
     fflush(stderr);
 
-    // hexa 위치 (PATH-resolved)
+    // 1. hexa 위치 (PATH-resolved)
     NSString *hexa = nil;
     NSArray<NSString *> *cands = @[
         [NSString stringWithFormat:@"%@/Dev/hexa-lang/hexa", NSHomeDirectory()],
@@ -1636,15 +1727,48 @@ static BOOL g_intentional_quit = NO;
         }
     }
     if (!hexa) {
-        // dialog 안내 — hexa 미설치
-        NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"hexa-lang not installed";
-        alert.informativeText = @"airgenome requires hexa-lang to dispatch .exe.\n\nInstall hexa-lang first.";
-        [alert runModal];
+        [self showAlertWithMessage:@"hexa-lang 미설치"
+                              info:@"airgenome 가 .exe 를 dispatch 하려면 hexa-lang 필요.\n\nhexa-lang 먼저 install 하세요."
+                          firstBtn:@"OK" secondBtn:nil];
         return NO;
     }
 
-    // airgenome modules/exe_dispatch.hexa 경로 (env 우선, 다음 dev/install)
+    // 2. gamebox plugin check
+    NSString *pluginDir = [self findGameboxPluginDir];
+    if (!pluginDir) {
+        NSModalResponse resp = [self
+            showAlertWithMessage:@"gamebox 플러그인 미설치"
+                            info:[NSString stringWithFormat:
+                                  @"Windows .exe (%@) 를 실행하려면 gamebox 플러그인이 필요합니다.\n\n"
+                                  @"gamebox: Apple Silicon native PE loader + Win32 shim (Wine 0).\n"
+                                  @"위치: ~/.airgenome/plugins/gamebox\n"
+                                  @"소스: https://github.com/dancinlife/airgenome-gamebox\n\n"
+                                  @"지금 install 하시겠습니까?",
+                                  [filename lastPathComponent]]
+                        firstBtn:@"Install gamebox"
+                       secondBtn:@"Cancel"];
+        if (resp != NSAlertFirstButtonReturn) {
+            fprintf(stderr, "airgenome_tap: user canceled plugin install\n");
+            fflush(stderr);
+            return NO;
+        }
+        // git clone (sync — wait until done)
+        if (![self installGameboxPlugin]) return NO;
+        pluginDir = [self findGameboxPluginDir];
+        if (!pluginDir) {
+            [self showAlertWithMessage:@"install 후에도 plugin 발견 X"
+                                  info:@"~/.airgenome/plugins/gamebox 확인하세요."
+                              firstBtn:@"OK" secondBtn:nil];
+            return NO;
+        }
+        [self showAlertWithMessage:@"gamebox 설치 완료"
+                              info:[NSString stringWithFormat:
+                                    @"위치: %@\n\n이어서 %@ dispatch.",
+                                    pluginDir, [filename lastPathComponent]]
+                          firstBtn:@"OK" secondBtn:nil];
+    }
+
+    // 3. airgenome modules/exe_dispatch.hexa 경로 (env 우선, 다음 dev/install)
     NSString *dispatchPath = nil;
     NSString *envRoot = [[[NSProcessInfo processInfo] environment] objectForKey:@"AIRGENOME_ROOT"];
     NSMutableArray<NSString *> *roots = [NSMutableArray array];
@@ -1659,14 +1783,14 @@ static BOOL g_intentional_quit = NO;
         }
     }
     if (!dispatchPath) {
-        NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"airgenome exe_dispatch not found";
-        alert.informativeText = @"Could not find modules/exe_dispatch.hexa.\n\nClone airgenome to ~/.airgenome/airgenome";
-        [alert runModal];
+        [self showAlertWithMessage:@"airgenome exe_dispatch 안 보임"
+                              info:@"modules/exe_dispatch.hexa 미발견.\n\n"
+                                   @"clone: ~/.airgenome/airgenome"
+                          firstBtn:@"OK" secondBtn:nil];
         return NO;
     }
 
-    // posix_spawn — main thread 블록 안 함
+    // 4. posix_spawn — main thread 블록 안 함
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = hexa;
     task.arguments = @[ @"run", dispatchPath, filename ];
@@ -1681,10 +1805,9 @@ static BOOL g_intentional_quit = NO;
         fprintf(stderr, "airgenome_tap: dispatch FAIL — %s\n",
                 [ex.description UTF8String]);
         fflush(stderr);
-        NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"dispatch failed";
-        alert.informativeText = ex.description;
-        [alert runModal];
+        [self showAlertWithMessage:@"dispatch 실패"
+                              info:ex.description
+                          firstBtn:@"OK" secondBtn:nil];
         return NO;
     }
     return YES;
