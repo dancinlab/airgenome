@@ -33,9 +33,35 @@ let TOP_N_PIDS = 20
 let ALPHA_NUM = 50   // alpha = 50/100 — responsive to recent
 let BETA_NUM  = 50   // beta  = 50/100 — responsive trend (선형 시리즈에서 MAE<15% 만족)
 
+// own 6 site-6: per-genome per-key exec(echo|jq) → in-hexa anchor + slice (0 fork).
+// expr 형식: ".key" (top-level scalar). .vitals[i] 는 vit_at() 별도 사용.
+// 측정: tool/bench/bench_site6.hexa — 6.09ms→3.69μs/call (1649×, 99%↓), diff_test=0/800.
 fn jq_field(line: str, expr: str) -> str {
-    let cmd = "echo '" + line + "' | jq -r '" + expr + " // \"\"' 2>/dev/null"
-    return exec(cmd).trim()
+    if line == "" { return "" }
+    if len(expr) < 2 { return "" }
+    let key = expr.substring(1, len(expr))
+    let anchor = "\"" + key + "\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return "" }
+    let after = parts[1]
+    if len(after) == 0 { return "" }
+    let c0 = after.substring(0, 1)
+    if c0 == "\"" {
+        let body = after.substring(1, len(after))
+        let end_split = body.split("\"")
+        if len(end_split) < 1 { return "" }
+        return end_split[0]
+    }
+    let mut i = 0
+    let n = len(after)
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return after.substring(0, i).trim() }
+        if ch == "}" { return after.substring(0, i).trim() }
+        if ch == "]" { return after.substring(0, i).trim() }
+        i = i + 1
+    }
+    return after.trim()
 }
 
 fn to_int_safe(s: str) -> int {
@@ -46,9 +72,24 @@ fn to_int_safe(s: str) -> int {
     return to_int(parts[0])
 }
 
+// own 6 site-6 동반: vitals[idx] in-hexa 추출 — own 5 site-2 (harvest.hexa) 패턴 이식.
 fn vit_at(line: str, idx: int) -> int {
     if line == "" { return 0 }
-    return to_int_safe(jq_field(line, ".vitals[" + to_string(idx) + "]"))
+    let parts = line.split("\"vitals\":[")
+    if len(parts) < 2 { return 0 }
+    let after_open = parts[1]
+    let close_split = after_open.split("]")
+    if len(close_split) < 1 { return 0 }
+    let inner = close_split[0]
+    let nums = inner.split(",")
+    if idx < 0 { return 0 }
+    if idx >= len(nums) { return 0 }
+    let s = nums[idx].trim()
+    if s == "" { return 0 }
+    let dot_parts = s.split(".")
+    if len(dot_parts) == 0 { return 0 }
+    if dot_parts[0] == "" { return 0 }
+    return to_int(dot_parts[0])
 }
 
 // Holt 한 스텝 갱신
@@ -312,5 +353,3 @@ fn main() -> void {
     let n = run_forecast()
     println("forecast done — wrote " + to_string(n) + " predictions")
 }
-
-main()

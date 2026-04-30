@@ -181,7 +181,8 @@ own 6 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M6 f
   note own 5 = harvest stage site-axis, own 6 = forecast stage site-axis. own 4 placement-axis (forecast-pre-vs-post) 와 직교.
   note site-6 의 614× 잠재 ROI 가 own 5 site-2 (vit_at) 와 동일 패턴 — 검증된 win 의 forecast 이식.
   follow-up modules/forecast.hexa#self_test 확장 (jq_field / read_recent_genomes / append_out 의 differential test)
-  follow-up tool/bench/bench_site6.hexa + bench_site7.hexa + bench_site8.hexa 산출 (own 5 bench_lib.hexa 활용)
+  status site-6 DONE 2026-04-30 — modules/forecast.hexa#jq_field jq fork → in-hexa anchor + slice. tool/bench/bench_site6.hexa 측정: 6.09ms→3.69μs/call (1649×, 99%↓), diff_test=0/800. bench_all.sh 재측정 1739×. vit_at 도 own 5 site-2 패턴으로 동시 이식. forecast self_test PASS — linear MAE=0% (<15%). proof state/bench_results.jsonl own6-site-6 row.
+  follow-up tool/bench/bench_site7.hexa + bench_site8.hexa 산출 (site-6 완료 → 잔여 2 사이트 + site-8b genome_merge)
   follow-up genome_merge.hexa 측정 후 site-8b 단독 PR 또는 site-8 통합 결정
 
 own 7 new "airgenome-local: gate/filter ROI 직접 적용 사이트 명시 (M5 label hot-path 4개)"

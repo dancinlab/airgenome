@@ -1,0 +1,181 @@
+// tool/bench/bench_site6.hexa — own 6 site-6 baseline (forecast jq_field jq vs hexa-split)
+//
+// forecast.hexa hot path:
+//   - distinct_keys: per-genome jq_field(.pid)
+//   - series_for_key: per-genome jq_field(.pid) + vit_at (vitals[i])
+//   - host_for_key: per-genome jq_field(.pid) + jq_field(.host)
+// SCAN_LINES=5000 × TOP_N_PIDS=20 → bg agent 5,600 fork/cycle 추정 (보수적;
+// 실측 distinct_keys + series_for_key 가 dominant).
+//
+// Diff test: OLD jq output vs NEW hexa-split string equality. .label/.pid 등
+// top-level scalar 만 측정 — vit_at (vitals[i]) 는 own 5 site-2 형태와 동일.
+
+use "../../core/core"
+
+let BENCH_RING = "/tmp/airgenome_bench_site6.ring"
+let LINES = 200
+let PIDS_N = 20
+let K = 2
+
+fn rule_exprs() -> list {
+    return [".pid", ".host", ".comm", ".ts"]
+}
+
+fn build_ring() -> void {
+    let _rm = exec("rm -f '" + BENCH_RING + "'")
+    let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(LINES) + ";i++) { pid=1000+(i%" + to_string(PIDS_N) + "); cpu=i%100; ram=i%50; pw=i%30; printf \"{\\\"ts\\\":\\\"2026-04-30T00:00:00Z\\\",\\\"pid\\\":\\\"mac.%d\\\",\\\"comm\\\":\\\"proc%d\\\",\\\"rss_kb\\\":1024,\\\"vitals\\\":[%d,%d,0,0,%d,0],\\\"ema\\\":[%d,%d,0,0,%d,0],\\\"host\\\":\\\"mac\\\"}\\n\", pid, pid, cpu, ram, pw, cpu, ram, pw } }' > '" + BENCH_RING + "'"
+    let _ = exec(cmd)
+}
+
+fn read_lines() -> list {
+    let raw = exec("cat '" + BENCH_RING + "' 2>/dev/null")
+    let xs = raw.split("\n")
+    let mut out = []
+    let mut i = 0
+    while i < len(xs) {
+        if xs[i] != "" { out = out + [xs[i]] }
+        i = i + 1
+    }
+    return out
+}
+
+// OLD: forecast.hexa#jq_field L36-39 정확 복제
+fn old_jq_field(line: str, expr: str) -> str {
+    let cmd = "echo '" + line + "' | jq -r '" + expr + " // \"\"' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+// NEW: in-hexa anchor + slice (own 7 site-9 검증 패턴)
+fn new_jq_field(line: str, expr: str) -> str {
+    if line == "" { return "" }
+    if len(expr) < 2 { return "" }
+    let key = expr.substring(1, len(expr))
+    let anchor = "\"" + key + "\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return "" }
+    let after = parts[1]
+    if len(after) == 0 { return "" }
+    let c0 = after.substring(0, 1)
+    if c0 == "\"" {
+        let body = after.substring(1, len(after))
+        let end_split = body.split("\"")
+        if len(end_split) < 1 { return "" }
+        return end_split[0]
+    }
+    let mut i = 0
+    let n = len(after)
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return after.substring(0, i).trim() }
+        if ch == "}" { return after.substring(0, i).trim() }
+        if ch == "]" { return after.substring(0, i).trim() }
+        i = i + 1
+    }
+    return after.trim()
+}
+
+fn run_old(lines: list, exprs: list) -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let mut p = 0
+        while p < len(lines) {
+            let mut e = 0
+            while e < len(exprs) {
+                let s = old_jq_field(lines[p], exprs[e])
+                total = total + len(s)
+                e = e + 1
+            }
+            p = p + 1
+        }
+        k = k + 1
+    }
+    return total
+}
+
+fn run_new(lines: list, exprs: list) -> int {
+    let mut total = 0
+    let mut k = 0
+    while k < K {
+        let mut p = 0
+        while p < len(lines) {
+            let mut e = 0
+            while e < len(exprs) {
+                let s = new_jq_field(lines[p], exprs[e])
+                total = total + len(s)
+                e = e + 1
+            }
+            p = p + 1
+        }
+        k = k + 1
+    }
+    return total
+}
+
+fn diff_test(lines: list, exprs: list) -> int {
+    let mut mismatches = 0
+    let mut p = 0
+    while p < len(lines) {
+        let mut e = 0
+        while e < len(exprs) {
+            let vo = old_jq_field(lines[p], exprs[e])
+            let vn = new_jq_field(lines[p], exprs[e])
+            if vo != vn {
+                mismatches = mismatches + 1
+                if mismatches <= 3 {
+                    println("    DIFF expr=" + exprs[e] + " old=[" + vo + "] new=[" + vn + "]")
+                }
+            }
+            e = e + 1
+        }
+        p = p + 1
+    }
+    return mismatches
+}
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn main() -> void {
+    println("airgenome bench/site-6 — forecast jq_field (jq vs hexa-split)")
+    println("  ring=" + BENCH_RING + " LINES=" + to_string(LINES) + " K=" + to_string(K))
+    build_ring()
+    let cnt_str = exec("wc -l < '" + BENCH_RING + "'").trim()
+    println("  ring lines built: " + cnt_str)
+
+    let lines = read_lines()
+    let exprs = rule_exprs()
+    println("  prefetched lines: " + to_string(len(lines)) + "  exprs: " + to_string(len(exprs)))
+
+    let mm = diff_test(lines, exprs)
+    let total_pairs = len(lines) * len(exprs)
+    println("  diff_test mismatches: " + to_string(mm) + " / " + to_string(total_pairs))
+    if mm != 0 {
+        println("BENCH FAIL [diff_test mismatches > 0]")
+        return
+    }
+
+    let t0_old = now_ns()
+    let _o = run_old(lines, exprs)
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    let calls = K * len(lines) * len(exprs)
+    println("  OLD (jq)         total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / calls))
+
+    let t0_new = now_ns()
+    let _n = run_new(lines, exprs)
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (hexa-split) total_ns=" + to_string(ns_new) + "  per_call_ns=" + to_string(ns_new / calls))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}
