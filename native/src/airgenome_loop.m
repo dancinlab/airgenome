@@ -311,6 +311,15 @@ static dispatch_source_t g_datae_w7_tcp_conn_src        = NULL;  // NW-C1 tcp_co
 static dispatch_source_t g_datae_w7_wifi_dedup_src      = NULL;  // NW-W2 wifi_scan_dedup
 static dispatch_source_t g_datae_w7_bonjour_src         = NULL;  // NW-D3 bonjour 46.2% packet reduction
 static dispatch_source_t g_datae_w7_keepalive_src       = NULL;  // NW-C2 keepalive_state_optimizer
+// wave-7 잔여 4 + Tailscale 3 + Void 1 (foreground bench-verified)
+static dispatch_source_t g_datae_w7_wifi_roam_src       = NULL;  // NW-W3 wifi_roaming_predictor
+static dispatch_source_t g_datae_w7_bw_genome_src       = NULL;  // NW-B1 bandwidth_genome_throttle
+static dispatch_source_t g_datae_w7_nq_history_src      = NULL;  // NW-B2 network_quality_history (~15s avoid)
+static dispatch_source_t g_datae_w7_vpn_state_src       = NULL;  // NW-C3 vpn_state_filter
+static dispatch_source_t g_datae_w7_ts_peers_src        = NULL;  // NW-T1 tailscale_peers_shbf 7 peers real
+static dispatch_source_t g_datae_w7_ts_traffic_src      = NULL;  // NW-T2 tailscale_traffic_genome 2.7GB tx real
+static dispatch_source_t g_datae_w7_ts_netcheck_src     = NULL;  // NW-T3 tailscale_netcheck_history (~7s avoid)
+static dispatch_source_t g_datae_w7_void_state_src      = NULL;  // VD1 void_session_state real cache 1.07MB
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -715,6 +724,31 @@ void airgenome_loop_init(void) {
     static const airgenome_loop_module_t datae_w7_keepalive = {
         .module_name="datae-w7-keepalive", .module_path="/Users/ghost/core/airgenome/modules/filters/data/keepalive_state_optimizer.hexa",
         .extra_arg="encode", .interval_s=600, .timeout_s=60 };
+    // wave-7 잔여 4 + Tailscale 3 + Void 1 = 8 추가 (foreground bench-verified)
+    static const airgenome_loop_module_t datae_w7_wifi_roam = {
+        .module_name="datae-w7-wifi-roaming", .module_path="/Users/ghost/core/airgenome/modules/filters/data/wifi_roaming_predictor.hexa",
+        .extra_arg="encode", .interval_s=300, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w7_bw_genome = {
+        .module_name="datae-w7-bandwidth-genome", .module_path="/Users/ghost/core/airgenome/modules/filters/data/network_bandwidth_genome.hexa",
+        .extra_arg="encode", .interval_s=120, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w7_nq_history = {
+        .module_name="datae-w7-network-quality", .module_path="/Users/ghost/core/airgenome/modules/filters/data/network_quality_history.hexa",
+        .extra_arg="encode", .interval_s=14400, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w7_vpn_state = {
+        .module_name="datae-w7-vpn-state", .module_path="/Users/ghost/core/airgenome/modules/filters/data/vpn_state_filter.hexa",
+        .extra_arg="encode", .interval_s=600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w7_ts_peers = {
+        .module_name="datae-w7-tailscale-peers", .module_path="/Users/ghost/core/airgenome/modules/filters/data/tailscale_peers_shbf.hexa",
+        .extra_arg="encode", .interval_s=600, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w7_ts_traffic = {
+        .module_name="datae-w7-tailscale-traffic", .module_path="/Users/ghost/core/airgenome/modules/filters/data/tailscale_traffic_genome.hexa",
+        .extra_arg="encode", .interval_s=300, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w7_ts_netcheck = {
+        .module_name="datae-w7-tailscale-netcheck", .module_path="/Users/ghost/core/airgenome/modules/filters/data/tailscale_netcheck_history.hexa",
+        .extra_arg="encode", .interval_s=14400, .timeout_s=60 };
+    static const airgenome_loop_module_t datae_w7_void_state = {
+        .module_name="datae-w7-void-state", .module_path="/Users/ghost/core/airgenome/modules/filters/data/void_session_state.hexa",
+        .extra_arg="encode", .interval_s=1800, .timeout_s=60 };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -816,6 +850,15 @@ void airgenome_loop_init(void) {
         g_datae_w7_wifi_dedup_src  = loop_make_timer(&datae_w7_wifi_dedup,  g_loop_queue);
         g_datae_w7_bonjour_src     = loop_make_timer(&datae_w7_bonjour,     g_loop_queue);
         g_datae_w7_keepalive_src   = loop_make_timer(&datae_w7_keepalive,   g_loop_queue);
+        // wave-7 잔여 + Tailscale + Void
+        g_datae_w7_wifi_roam_src   = loop_make_timer(&datae_w7_wifi_roam,   g_loop_queue);
+        g_datae_w7_bw_genome_src   = loop_make_timer(&datae_w7_bw_genome,   g_loop_queue);
+        g_datae_w7_nq_history_src  = loop_make_timer(&datae_w7_nq_history,  g_loop_queue);
+        g_datae_w7_vpn_state_src   = loop_make_timer(&datae_w7_vpn_state,   g_loop_queue);
+        g_datae_w7_ts_peers_src    = loop_make_timer(&datae_w7_ts_peers,    g_loop_queue);
+        g_datae_w7_ts_traffic_src  = loop_make_timer(&datae_w7_ts_traffic,  g_loop_queue);
+        g_datae_w7_ts_netcheck_src = loop_make_timer(&datae_w7_ts_netcheck, g_loop_queue);
+        g_datae_w7_void_state_src  = loop_make_timer(&datae_w7_void_state,  g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -913,6 +956,16 @@ void airgenome_loop_init(void) {
               g_datae_w7_wifi_dedup_src ? "ok" : "FAIL",
               g_datae_w7_bonjour_src    ? "ok" : "FAIL",
               g_datae_w7_keepalive_src  ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae w7-net2: wifi_roam=%s bw_genome=%s nq_hist=%s vpn=%s",
+              g_datae_w7_wifi_roam_src  ? "ok" : "FAIL",
+              g_datae_w7_bw_genome_src  ? "ok" : "FAIL",
+              g_datae_w7_nq_history_src ? "ok" : "FAIL",
+              g_datae_w7_vpn_state_src  ? "ok" : "FAIL");
+        NSLog(@"[airgenome_loop] datae w7-ts/void: ts_peers=%s ts_traffic=%s ts_netcheck=%s void=%s",
+              g_datae_w7_ts_peers_src    ? "ok" : "FAIL",
+              g_datae_w7_ts_traffic_src  ? "ok" : "FAIL",
+              g_datae_w7_ts_netcheck_src ? "ok" : "FAIL",
+              g_datae_w7_void_state_src  ? "ok" : "FAIL");
     }
 }
 
@@ -1015,6 +1068,14 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_w7_wifi_dedup_src)  { dispatch_source_cancel(g_datae_w7_wifi_dedup_src);  g_datae_w7_wifi_dedup_src  = NULL; }
     if (g_datae_w7_bonjour_src)     { dispatch_source_cancel(g_datae_w7_bonjour_src);     g_datae_w7_bonjour_src     = NULL; }
     if (g_datae_w7_keepalive_src)   { dispatch_source_cancel(g_datae_w7_keepalive_src);   g_datae_w7_keepalive_src   = NULL; }
+    if (g_datae_w7_wifi_roam_src)   { dispatch_source_cancel(g_datae_w7_wifi_roam_src);   g_datae_w7_wifi_roam_src   = NULL; }
+    if (g_datae_w7_bw_genome_src)   { dispatch_source_cancel(g_datae_w7_bw_genome_src);   g_datae_w7_bw_genome_src   = NULL; }
+    if (g_datae_w7_nq_history_src)  { dispatch_source_cancel(g_datae_w7_nq_history_src);  g_datae_w7_nq_history_src  = NULL; }
+    if (g_datae_w7_vpn_state_src)   { dispatch_source_cancel(g_datae_w7_vpn_state_src);   g_datae_w7_vpn_state_src   = NULL; }
+    if (g_datae_w7_ts_peers_src)    { dispatch_source_cancel(g_datae_w7_ts_peers_src);    g_datae_w7_ts_peers_src    = NULL; }
+    if (g_datae_w7_ts_traffic_src)  { dispatch_source_cancel(g_datae_w7_ts_traffic_src);  g_datae_w7_ts_traffic_src  = NULL; }
+    if (g_datae_w7_ts_netcheck_src) { dispatch_source_cancel(g_datae_w7_ts_netcheck_src); g_datae_w7_ts_netcheck_src = NULL; }
+    if (g_datae_w7_void_state_src)  { dispatch_source_cancel(g_datae_w7_void_state_src);  g_datae_w7_void_state_src  = NULL; }
 }
 
 // ----------------------------------------------------------------------

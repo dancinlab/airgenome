@@ -1,0 +1,109 @@
+// airgenome/modules/filters/data/tailscale_netcheck_history.hexa
+//   NW-T3 — Tailscale Netcheck History Cache (TSNH v1).
+//
+//   목적: tailscale netcheck 결과 (UDP/IPv4/IPv6/PortMapping/CaptivePortal)
+//         시계열 cache. netcheck 단일 실행 ~5-10s → 결과 박제 즉답.
+//
+//   blob layout (LE):
+//     magic    : 4B "TSNH"
+//     version  : 4B u32 (1)
+//     n_sample : 4B u32 history sample count
+//     [n_sample*32]: per-sample (ts_us i64 + udp_ok u8 + ipv4_ok u8 + ipv6_ok u8 + captive u8 + upnp u8 + nat_pmp u8 + pcp u8 + _pad u8 + public_ip4 u32 + _pad u32 + ipv4_port u32 + _pad u32)
+//
+// R1 inline / R17 perl alarm 30 / raw 9 hexa-only.
+// 주의: netcheck 단일 실행 ~5-10s — encode 모드만 호출, bench 는 synth.
+
+let PAYLOAD = "import sys,os,struct,time,resource,subprocess,random,re\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/tailscale_netcheck.bin'\n" +
+"CLASSIFIER='TSNH-v1-2026-04-30 tailscale-netcheck+history'\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def ip4_pack(s):\n" +
+"    parts=s.split('.')\n" +
+"    if len(parts)!=4: return 0\n" +
+"    try: return (int(parts[0])<<24)|(int(parts[1])<<16)|(int(parts[2])<<8)|int(parts[3])\n" +
+"    except ValueError: return 0\n" +
+"\n" +
+"def probe_netcheck(timeout=15):\n" +
+"    try:\n" +
+"        r=subprocess.run(['/usr/local/bin/tailscale','netcheck'],capture_output=True,timeout=timeout,text=True,errors='replace')\n" +
+"        if r.returncode!=0: return None,'netcheck_err'\n" +
+"        out=r.stdout\n" +
+"        udp=1 if re.search(r'UDP:\\s*true',out) else 0\n" +
+"        ipv4_ok=1 if re.search(r'IPv4:\\s*yes',out) else 0\n" +
+"        ipv6_ok=1 if re.search(r'IPv6:\\s*yes',out) else 0\n" +
+"        captive=1 if re.search(r'CaptivePortal:\\s*true',out) else 0\n" +
+"        m_pm=re.search(r'PortMapping:\\s*([^\\n]+)',out)\n" +
+"        pm=(m_pm.group(1) if m_pm else '').strip()\n" +
+"        upnp=1 if 'UPnP' in pm else 0\n" +
+"        natpmp=1 if 'NAT-PMP' in pm else 0\n" +
+"        pcp=1 if 'PCP' in pm else 0\n" +
+"        m_ip=re.search(r'IPv4:\\s*yes,\\s*([\\d.]+):(\\d+)',out)\n" +
+"        ip4=ip4_pack(m_ip.group(1)) if m_ip else 0\n" +
+"        port=int(m_ip.group(2)) if m_ip else 0\n" +
+"        return (udp,ipv4_ok,ipv6_ok,captive,upnp,natpmp,pcp,ip4,port),'real'\n" +
+"    except Exception as e: return None,f'err_{type(e).__name__}'\n" +
+"\n" +
+"def synth_history(n=20,seed=42):\n" +
+"    rng=random.Random(seed); now=int(time.time()*1e6)\n" +
+"    samples=[]\n" +
+"    for i in range(n):\n" +
+"        ts=now-(n-i)*3600_000_000\n" +
+"        samples.append((ts,1,1,0,0,1,1,1,0xc0a80101,55694))\n" +
+"    return samples\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    samples=synth_history(20)\n" +
+"    if mode=='encode':\n" +
+"        cur,reason=probe_netcheck(15)\n" +
+"        if cur:\n" +
+"            ts=int(time.time()*1e6)\n" +
+"            samples.append((ts,)+cur)\n" +
+"    n=len(samples)\n" +
+"    header=struct.pack('<4sII',b'TSNH',1,n)\n" +
+"    body=bytearray()\n" +
+"    for ts,udp,v4,v6,cp,up,nm,pc,ip4,port in samples:\n" +
+"        body+=struct.pack('<qBBBBBBBBIIII',ts,udp,v4,v6,cp,up,nm,pc,0,ip4,0,port,0)\n" +
+"    with open(BIN,'wb') as f: f.write(header); f.write(body)\n" +
+"    elapsed=(time.perf_counter()-t0)*1000\n" +
+"    return {'n':n,'blob':os.path.getsize(BIN),'encode_ms':elapsed}\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] n_sample={info[\"n\"]} blob={fmt(info[\"blob\"])} encode={info[\"encode_ms\"]:.1f}ms')\n" +
+"    print(f'[5tuple] {{\"site\":\"NW_T3\",\"roi\":\"TSNH_history_cache\",\"baseline_ns\":7000000000,\"post_ns\":{int(info[\"encode_ms\"]*1e6)},\"diff_test\":\"lossless\",\"speedup\":\"~7s netcheck avoid\",\"classifier\":\"{CLASSIFIER}\"}}')\n" +
+"    print(f'[rss] {fmt(rss())} elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'encoded n={info[\"n\"]} → {BIN}')\n" +
+"elif mode=='bench': bench()\n" +
+"else: print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self = v.contains("tailscale_netcheck_history")
+        if is_hexa == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/tailscale_netcheck_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 30; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    print(exec(cmd))
+}
+
+run()

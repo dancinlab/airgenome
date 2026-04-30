@@ -1,0 +1,125 @@
+// airgenome/modules/filters/data/vpn_state_filter.hexa
+//   NW-C3 — VPN State Filter (VPSF v1).
+//
+//   목적: scutil --nc list + ifconfig utun*/ipsec* → VPN active 상태 + interface
+//         dedup. 특정 connection이 VPN routing 통과 vs 직접 routing 식별.
+//
+//   blob layout (LE):
+//     magic    : 4B "VPSF"
+//     version  : 4B u32 (1)
+//     n_vpn    : 4B u32  configured VPN count
+//     n_active : 4B u32  active VPN count (Connected)
+//     n_iface  : 4B u32  utun*/ipsec* interface count
+//     [n_vpn*32]: per-vpn (name 16B, state u32, type u32, _pad u64)
+//     [n_iface*16]: per-iface (name 8B, mtu u32, status u32)
+//
+// R1 inline / R17 perl alarm 120 / raw 9 hexa-only.
+
+let PAYLOAD = "import sys,os,struct,time,resource,array,subprocess,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/vpn_state.bin'\n" +
+"CLASSIFIER='VPSF-v1-2026-04-30 scutil-nc-list+ifconfig'\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def probe_scutil():\n" +
+"    try:\n" +
+"        r=subprocess.run(['/usr/sbin/scutil','--nc','list'],capture_output=True,timeout=5,text=True)\n" +
+"        if r.returncode!=0: return [],'scutil_err'\n" +
+"        vpns=[]\n" +
+"        for ln in r.stdout.split('\\n'):\n" +
+"            ls=ln.strip()\n" +
+"            if not ls or ls.startswith('Available'): continue\n" +
+"            # 예: '* (Disconnected) <UUID> --> <UUID> \"Name\" [VPN.Type]'\n" +
+"            connected=1 if 'Connected' in ls and 'Disconnected' not in ls else 0\n" +
+"            name=ls.split('\"')[1] if '\"' in ls else 'unknown'\n" +
+"            vtype=0\n" +
+"            if 'IKEv2' in ls: vtype=1\n" +
+"            elif 'L2TP' in ls: vtype=2\n" +
+"            elif 'OpenVPN' in ls: vtype=3\n" +
+"            elif 'WireGuard' in ls: vtype=4\n" +
+"            vpns.append((name,connected,vtype))\n" +
+"        return vpns,'real' if vpns else 'no_vpn_configured'\n" +
+"    except Exception as e: return [],f'err_{type(e).__name__}'\n" +
+"\n" +
+"def probe_ifconfig():\n" +
+"    try:\n" +
+"        r=subprocess.run(['/sbin/ifconfig','-a'],capture_output=True,timeout=5,text=True)\n" +
+"        if r.returncode!=0: return []\n" +
+"        ifaces=[]\n" +
+"        cur=None; mtu=0; status='unknown'\n" +
+"        for ln in r.stdout.split('\\n'):\n" +
+"            if ln and not ln.startswith('\\t'):\n" +
+"                if cur and (cur.startswith('utun') or cur.startswith('ipsec') or cur.startswith('ppp')):\n" +
+"                    ifaces.append((cur,mtu,1 if status=='active' else 0))\n" +
+"                cur=ln.split(':')[0]; mtu=0; status='unknown'\n" +
+"                if 'mtu' in ln:\n" +
+"                    parts=ln.split('mtu')\n" +
+"                    if len(parts)>1:\n" +
+"                        try: mtu=int(parts[1].strip().split()[0])\n" +
+"                        except (ValueError,IndexError): pass\n" +
+"            elif ln.strip().startswith('status:'):\n" +
+"                status=ln.split(':',1)[1].strip()\n" +
+"        if cur and (cur.startswith('utun') or cur.startswith('ipsec') or cur.startswith('ppp')):\n" +
+"            ifaces.append((cur,mtu,1 if status=='active' else 0))\n" +
+"        return ifaces\n" +
+"    except Exception: return []\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    vpns,reason=probe_scutil()\n" +
+"    ifaces=probe_ifconfig()\n" +
+"    n_vpn=len(vpns); n_active=sum(1 for v in vpns if v[1])\n" +
+"    n_iface=len(ifaces)\n" +
+"    header=struct.pack('<4sIIII',b'VPSF',1,n_vpn,n_active,n_iface)\n" +
+"    body=bytearray()\n" +
+"    for name,connected,vtype in vpns:\n" +
+"        nb=name.encode('utf-8','replace')[:16].ljust(16,b'\\x00')\n" +
+"        body+=nb+struct.pack('<IIQ',connected,vtype,0)\n" +
+"    for name,mtu,status in ifaces:\n" +
+"        nb=name.encode('utf-8','replace')[:8].ljust(8,b'\\x00')\n" +
+"        body+=nb+struct.pack('<II',mtu,status)\n" +
+"    with open(BIN,'wb') as f: f.write(header); f.write(body)\n" +
+"    elapsed=(time.perf_counter()-t0)*1000\n" +
+"    return {'n_vpn':n_vpn,'n_active':n_active,'n_iface':n_iface,'reason':reason,'vpns':vpns,'ifaces':ifaces,'blob':os.path.getsize(BIN),'encode_ms':elapsed}\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] n_vpn={info[\"n_vpn\"]} n_active={info[\"n_active\"]} n_iface={info[\"n_iface\"]} reason={info[\"reason\"]} blob={fmt(info[\"blob\"])} encode={info[\"encode_ms\"]:.1f}ms')\n" +
+"    for name,connected,vtype in info['vpns'][:3]:\n" +
+"        print(f'  vpn  {name:20s} connected={connected} type={vtype}')\n" +
+"    for name,mtu,status in info['ifaces'][:5]:\n" +
+"        print(f'  iface {name:8s} mtu={mtu} status={status}')\n" +
+"    print(f'[5tuple] {{\"site\":\"NW_C3\",\"roi\":\"VPSF_state\",\"baseline_ns\":0,\"post_ns\":{int(info[\"encode_ms\"]*1e6)},\"diff_test\":\"lossless\",\"n_vpn\":{info[\"n_vpn\"]},\"n_active\":{info[\"n_active\"]},\"n_iface\":{info[\"n_iface\"]},\"reason\":\"{info[\"reason\"]}\",\"classifier\":\"{CLASSIFIER}\"}}')\n" +
+"    print(f'[rss] {fmt(rss())} elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'encoded vpns={info[\"n_vpn\"]} ifaces={info[\"n_iface\"]} → {BIN}')\n" +
+"elif mode=='bench': bench()\n" +
+"else: print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self = v.contains("vpn_state_filter")
+        if is_hexa == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/vpn_state_filter_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 30; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    print(exec(cmd))
+}
+
+run()

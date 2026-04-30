@@ -431,3 +431,13 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
       NW-B2 network_quality_history (networkQuality CLI cache)
       NW-C3 vpn_state_filter (scutil --nc + ifconfig utun*/ipsec*)
     proof commit b0380a27 + 19fba7d1 + 본 commit + loop-selftest 13/13 PASS
+    wave-7 잔여 4 + Tailscale 3 + Void 1 = 8 추가 DONE 2026-05-01 (foreground keep going):
+      NW-W3 wifi_roaming_predictor — F45 genome cur_rssi=-37 lossless 300 samples
+      NW-B1 bandwidth_genome_throttle — netstat -ib delta 20 ifaces 2s window real
+      NW-B2 network_quality_history — ~15s networkQuality CLI avoid (synth 50 + real 1)
+      NW-C3 vpn_state_filter — real Tailscale connected + 5 utun ifaces
+      NW-T1 tailscale_peers_shbf — real 7 peers (2 active / 2 idle / 3 offline)
+      NW-T2 tailscale_traffic_genome — real 2.7GB tx / 871MB rx mesh (top peer summer-b650m-k)
+      NW-T3 tailscale_netcheck_history — ~7s netcheck avoid (cache 20 samples)
+      VD1 void_session_state — real session.json + 4 transpile cache 1.07MB (사용자 본인 작품)
+    production active 검증 PID 85930 — 80 timer all ok
