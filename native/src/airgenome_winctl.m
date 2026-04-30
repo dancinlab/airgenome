@@ -17,7 +17,9 @@
 //
 // Mapping (alt+N on focused window):
 //   alt+1  Maximize       — frame = visibleFrame
-//   alt+2  80% + Center   — size = visibleFrame * 0.8, centered
+//   alt+2  100/120 Center — size = visibleFrame * (100/120), centered
+//                           (≈83.33% — matches "120% 디스플레이에서 100%만
+//                            보이는 영역" semantics; user mandate 2026-04-30)
 //   alt+3  Left Half      — left half of visibleFrame
 //   alt+4  Right Half     — right half of visibleFrame
 //   alt+5  Center Only    — preserve size, center origin
@@ -95,9 +97,10 @@ static CGRect winctl_target_rect(int action, CGRect vf, CGRect curWin) {
     switch (action) {
         case 1: // Maximize
             return vf;
-        case 2: { // 80% center
-            CGFloat w = vf.size.width  * 0.8;
-            CGFloat h = vf.size.height * 0.8;
+        case 2: { // 100/120 center (≈83.33%) — user mandate 2026-04-30
+            const CGFloat scale = 100.0 / 120.0;
+            CGFloat w = vf.size.width  * scale;
+            CGFloat h = vf.size.height * scale;
             return CGRectMake(vf.origin.x + (vf.size.width  - w) / 2,
                               vf.origin.y + (vf.size.height - h) / 2,
                               w, h);
