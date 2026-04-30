@@ -31,7 +31,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -105,8 +107,19 @@ static void loop_arm_watchdog(pid_t pid, const char *module_name, int timeout_s)
 // posix_spawn child — `hexa run modules/<x>.hexa` (raw 240 R3 child 격리)
 // ----------------------------------------------------------------------
 
-// Returns child exit code on success, negative on spawn / lockfile failure.
-static int loop_spawn_with_watchdog(const char *module_path,
+// ~/.airgenome/ 자동 생성 (idempotent — mkdir EEXIST 무시).
+static void loop_ensure_log_dir(void) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/.airgenome",
+             getenv("HOME") ?: "/tmp");
+    mkdir(path, 0755);
+}
+
+// Generic spawn — bin_path + args[] 받아 자식 fork + watchdog 적용.
+// Returns child exit code on success, -1 on signal kill, -2 on lockfile
+// system error, -3 on posix_spawn fail. lockfile overlap = -1.
+static int loop_spawn_with_watchdog(const char *bin_path,
+                                     char *const args[],
                                      const char *module_name,
                                      int timeout_s) {
     int lock_fd = loop_acquire_lockfile(module_name);
@@ -118,6 +131,7 @@ static int loop_spawn_with_watchdog(const char *module_path,
         return lock_fd;
     }
 
+    loop_ensure_log_dir();
     char log_path[256];
     snprintf(log_path, sizeof(log_path),
              "%s/.airgenome/loop-%s.log",
@@ -131,15 +145,8 @@ static int loop_spawn_with_watchdog(const char *module_path,
     posix_spawn_file_actions_addopen(&actions, 2, log_path,
                                       O_WRONLY | O_CREAT | O_APPEND, 0644);
 
-    char *args[] = {
-        (char *)HEXA_BIN,
-        "run",
-        (char *)module_path,
-        NULL
-    };
-
     pid_t pid = -1;
-    int rc = posix_spawn(&pid, HEXA_BIN, &actions, NULL, args, environ);
+    int rc = posix_spawn(&pid, bin_path, &actions, NULL, args, environ);
     posix_spawn_file_actions_destroy(&actions);
 
     if (rc != 0) {
@@ -194,7 +201,13 @@ static dispatch_source_t loop_make_timer(const airgenome_loop_module_t *m,
     const char *mod_name = m->module_name;
     int timeout_s = m->timeout_s;
     dispatch_source_set_event_handler(src, ^{
-        loop_spawn_with_watchdog(mod_path, mod_name, timeout_s);
+        char *args[] = {
+            (char *)HEXA_BIN,
+            "run",
+            (char *)mod_path,
+            NULL
+        };
+        loop_spawn_with_watchdog(HEXA_BIN, args, mod_name, timeout_s);
     });
     dispatch_resume(src);
     return src;
@@ -327,12 +340,73 @@ int airgenome_loop_selftest(void) {
         if (s) dispatch_source_cancel(s);
     }
 
+    // Test 6: spawn /bin/true — 빠른 정상 exit (R3 child 격리, R26 fd redirect)
+    {
+        char *args[] = { (char *)"/usr/bin/true", NULL };
+        int rc = loop_spawn_with_watchdog("/usr/bin/true", args, "st_true", 5);
+        ST_ASSERT(rc == 0, "spawn_fast_exit_0");
+    }
+
+    // Test 7: spawn /bin/sleep 10 with timeout 2 — watchdog SIGTERM kill (R2 #3)
+    {
+        time_t t0 = time(NULL);
+        char *args[] = { (char *)"/bin/sleep", (char *)"10", NULL };
+        int rc = loop_spawn_with_watchdog("/bin/sleep", args, "st_sleep", 2);
+        time_t elapsed = time(NULL) - t0;
+        // signaled child → exit_code = -1 (WIFEXITED false). watchdog 이
+        // 2s 에 SIGTERM 전송 → /bin/sleep 즉시 종료 → elapsed ≈ 2s.
+        // 만약 SIGTERM 무시되어도 5s 후 SIGKILL → elapsed ≤ 5s 안전 상한.
+        ST_ASSERT(rc == -1 && elapsed <= 6, "spawn_watchdog_sigterm_kill");
+        fprintf(stderr, "  (sleep killed in %lds, expected 2-5s)\n", (long)elapsed);
+    }
+
+    // Test 8: lockfile overlap during spawn — 동일 module 두번째 spawn = -1
+    {
+        int held = loop_acquire_lockfile("st_overlap");
+        ST_ASSERT(held >= 0, "spawn_overlap_setup");
+        char *args[] = { (char *)"/usr/bin/true", NULL };
+        int rc = loop_spawn_with_watchdog("/usr/bin/true", args, "st_overlap", 5);
+        ST_ASSERT(rc == -1, "spawn_overlap_skipped");
+        loop_release_lockfile(held);
+    }
+
+    // Test 9: stderr redirect — child >&2 → log file 에 캡처 (R26)
+    {
+        char log_path[256];
+        snprintf(log_path, sizeof(log_path), "%s/.airgenome/loop-st_log.log",
+                 getenv("HOME") ?: "/tmp");
+        unlink(log_path);
+        char *args[] = {
+            (char *)"/bin/sh",
+            (char *)"-c",
+            (char *)"echo HELLO_FROM_CHILD >&2",
+            NULL
+        };
+        int rc = loop_spawn_with_watchdog("/bin/sh", args, "st_log", 5);
+        ST_ASSERT(rc == 0, "spawn_stderr_redirect_exit_0");
+        FILE *f = fopen(log_path, "r");
+        ST_ASSERT(f != NULL, "spawn_stderr_redirect_log_exists");
+        if (f) {
+            char buf[256] = {0};
+            size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+            buf[n] = '\0';
+            ST_ASSERT(strstr(buf, "HELLO_FROM_CHILD") != NULL,
+                      "spawn_stderr_redirect_content");
+            fclose(f);
+        }
+        unlink(log_path);
+    }
+
     // Cleanup leftover lockfiles
     unlink("/tmp/airgenome-loop-st1.lock");
     unlink("/tmp/airgenome-loop-st2.lock");
     unlink("/tmp/airgenome-loop-st3.lock");
     unlink("/tmp/airgenome-loop-st_bad.lock");
     unlink("/tmp/airgenome-loop-st_ok.lock");
+    unlink("/tmp/airgenome-loop-st_true.lock");
+    unlink("/tmp/airgenome-loop-st_sleep.lock");
+    unlink("/tmp/airgenome-loop-st_overlap.lock");
+    unlink("/tmp/airgenome-loop-st_log.lock");
 
     fprintf(stderr, "airgenome_loop selftest: %d pass / %d fail\n",
             g_st_pass, g_st_fail);
