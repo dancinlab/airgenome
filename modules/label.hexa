@@ -228,9 +228,10 @@ fn make_labeled_line(genome_line: str, label: str) -> str {
     return "{" + meta + ",\"label\":\"" + safe_label + "\"}"
 }
 
-fn append_out(line: str) -> void {
-    let _ = exec("printf '%s\\n' '" + line + "' >> '" + OUT + "'")
-}
+// own 7 site-12: per-label exec(printf >>) → buffer + 단일 append_file batch.
+// 측정 (bench_site12.hexa): 2.60ms→18μs/line (141×, 99%↓), diff_byte_identical=true.
+// own 5 site-3 / own 6 site-8 패턴 직접 이식. run_label 의 (genomes × rules) 이중 루프
+// 안에서 buf 누적, 루프 종료 후 1회 append_file 호출 (run_label 내부에서 처리).
 
 fn read_recent_genomes() -> list {
     let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
@@ -254,6 +255,7 @@ fn run_label() -> int {
     if len(rules) == 0 { return 0 }
 
     let genomes = read_recent_genomes()
+    let mut buf = ""
     let mut labeled = 0
     let mut i = 0
     while i < len(genomes) {
@@ -263,12 +265,15 @@ fn run_label() -> int {
             let r = rules[j]
             if rule_match(g, r) {
                 let out_line = make_labeled_line(g, r.label)
-                append_out(out_line)
+                buf = buf + out_line + "\n"
                 labeled = labeled + 1
             }
             j = j + 1
         }
         i = i + 1
+    }
+    if buf != "" {
+        append_file(OUT, buf)
     }
     return labeled
 }
