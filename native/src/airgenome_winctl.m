@@ -23,6 +23,14 @@
 //   alt+3  Left Half      — left half of visibleFrame
 //   alt+4  Right Half     — right half of visibleFrame
 //   alt+5  Center Only    — preserve size, center origin
+//   alt+6  Dock Reset     — NOT a window action. Resets macOS Dock's
+//                           tilesize to a fixed value (recovery from
+//                           accidental drag-resize). Default 48px; override
+//                           via AIRG_TAP_WINCTL_DOCK_TILE env (clamped 16..128).
+//                           Writes com.apple.dock tilesize via CFPreferences,
+//                           then SIGHUP-equivalent restart via killall Dock
+//                           (Dock auto-respawns; no admin auth needed since
+//                           com.apple.dock prefs live in user domain).
 //
 // Coordinate system note: AX uses GLOBAL screen coords with origin at the
 // TOP-LEFT of the PRIMARY screen, while NSScreen.visibleFrame is bottom-left
@@ -43,8 +51,8 @@
 
 extern BOOL airgenome_winctl_handle_keydown(CGEventRef event);
 
-// Hotkey table: keycode → action id 1..5.
-// kVK_ANSI_1..5 = 0x12, 0x13, 0x14, 0x15, 0x17 (note: 5 is 0x17 not 0x16).
+// Hotkey table: keycode → action id 1..6.
+// kVK_ANSI_1..5 = 0x12,0x13,0x14,0x15,0x17 (5 is 0x17 not 0x16); 6 = 0x16.
 static int winctl_keycode_to_action(int64_t kc) {
     switch (kc) {
         case kVK_ANSI_1: return 1;
@@ -52,8 +60,45 @@ static int winctl_keycode_to_action(int64_t kc) {
         case kVK_ANSI_3: return 3;
         case kVK_ANSI_4: return 4;
         case kVK_ANSI_5: return 5;
+        case kVK_ANSI_6: return 6;
         default:         return 0;
     }
+}
+
+// Reset macOS Dock tilesize to a fixed value, then restart Dock to apply.
+// Recovers from accidental drag-resize that left the Dock comically large.
+// Env override: AIRG_TAP_WINCTL_DOCK_TILE (int, clamped 16..128). Default 48
+// (matches macOS "Medium" preset midpoint — common reset target).
+//
+// Mechanism: CFPreferencesSetAppValue writes ~/Library/Preferences/
+// com.apple.dock.plist; CFPreferencesAppSynchronize flushes; killall Dock
+// causes launchd to immediately respawn it with new prefs. raw 91 honest
+// C3: every step NSLog'd; failures non-fatal (next reset retry will work).
+static void winctl_reset_dock_tilesize(void) {
+    int tile = 48;
+    const char *env = getenv("AIRG_TAP_WINCTL_DOCK_TILE");
+    if (env && *env) {
+        int v = atoi(env);
+        if (v >= 16 && v <= 128) tile = v;
+        else NSLog(@"[airgenome_winctl] AIRG_TAP_WINCTL_DOCK_TILE=%s out of "
+                   @"range [16..128], using default 48", env);
+    }
+    CFNumberRef num = CFNumberCreate(kCFAllocatorDefault,
+                                     kCFNumberIntType, &tile);
+    CFPreferencesSetAppValue(CFSTR("tilesize"), num, CFSTR("com.apple.dock"));
+    CFPreferencesAppSynchronize(CFSTR("com.apple.dock"));
+    if (num) CFRelease(num);
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/usr/bin/killall";
+    task.arguments = @[@"Dock"];
+    @try {
+        [task launch];
+    } @catch (NSException *e) {
+        NSLog(@"[airgenome_winctl] killall Dock launch failed: %@", e.reason);
+        return;
+    }
+    NSLog(@"[airgenome_winctl] dock tilesize reset → %d (Dock respawning)",
+          tile);
 }
 
 // Pick the NSScreen that the AX window rect (top-left global coords) overlaps
@@ -121,6 +166,8 @@ static CGRect winctl_target_rect(int action, CGRect vf, CGRect curWin) {
                               vf.origin.y + (vf.size.height - h) / 2,
                               w, h);
         }
+        // case 6 handled in handle_keydown directly (system action, not
+        // a window-rect transform — never reaches winctl_target_rect).
         default:
             return curWin;
     }
@@ -213,6 +260,14 @@ BOOL airgenome_winctl_handle_keydown(CGEventRef event) {
     int64_t kc = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
     int action = winctl_keycode_to_action(kc);
     if (action == 0) return NO;
+
+    // alt+6: system-level Dock tilesize reset, NOT a window manipulation.
+    // Bypass the focused-window pipeline entirely (works even with no
+    // focused app, e.g. on Desktop / Mission Control).
+    if (action == 6) {
+        winctl_reset_dock_tilesize();
+        return YES;
+    }
 
     AXUIElementRef win = winctl_copy_focused_window();
     if (!win) return NO;  // no focused window — fall through (don't consume)
