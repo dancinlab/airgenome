@@ -271,6 +271,7 @@ static dispatch_source_t g_datae_w5_shortcuts_src       = NULL;
 static dispatch_source_t g_datae_w5_cal_event_src       = NULL;  // FAIL fix 301.8× post BufferError patch
 static dispatch_source_t g_datae_w5_mail_envelope_src   = NULL;  // V10 schema fix 1161.7× post Mail set up
 static dispatch_source_t g_datae_w5_mail_sender_src     = NULL;  // OTHER bucket fix size 96% lossless
+static dispatch_source_t g_datae_w5_memo_attach_src     = NULL;  // auto-discover regular + shared Media+Previews
 static dispatch_queue_t  g_loop_queue   = NULL;
 
 void airgenome_loop_init(void) {
@@ -557,6 +558,16 @@ void airgenome_loop_init(void) {
         .interval_s  = 7200,           // 2h — sender dict 변경 드뭄
         .timeout_s   = 60,
     };
+    // wave-5 SKIP→PASS post auto-discover (regular + shared Media+Previews):
+    // memo_attachment_dedup attachments=22 / dup clusters=3 / disk 14.7% recoverable.
+    // 양쪽 모두 (Accounts/*/Media + Accounts/*/Previews) 자동 glob.
+    static const airgenome_loop_module_t datae_w5_memo_attach = {
+        .module_name = "datae-w5-memo-attach",
+        .module_path = "/Users/ghost/core/airgenome/modules/filters/data/memo_attachment_dedup.hexa",
+        .extra_arg   = "encode",
+        .interval_s  = 3600,           // 1h — 첨부 파일 walk 비용 medium
+        .timeout_s   = 120,
+    };
 
     g_loop_queue   = dispatch_queue_create("com.airgenome.loop",
                                             DISPATCH_QUEUE_SERIAL);
@@ -620,6 +631,7 @@ void airgenome_loop_init(void) {
         g_datae_w5_cal_event_src     = loop_make_timer(&datae_w5_cal_event,     g_loop_queue);
         g_datae_w5_mail_envelope_src = loop_make_timer(&datae_w5_mail_envelope, g_loop_queue);
         g_datae_w5_mail_sender_src   = loop_make_timer(&datae_w5_mail_sender,   g_loop_queue);
+        g_datae_w5_memo_attach_src   = loop_make_timer(&datae_w5_memo_attach,   g_loop_queue);
     }
 
     NSLog(@"[airgenome_loop] init: harvest=%s label=%s forecast=%s safari=%s blobs=%s procs=%s datae=%s",
@@ -673,9 +685,10 @@ void airgenome_loop_init(void) {
               g_datae_w5_books_src         ? "ok" : "FAIL",
               g_datae_w5_shortcuts_src     ? "ok" : "FAIL",
               g_datae_w5_cal_event_src     ? "ok" : "FAIL");
-        NSLog(@"[airgenome_loop] datae mail-fix: envelope=%s sender=%s",
+        NSLog(@"[airgenome_loop] datae mail-fix: envelope=%s sender=%s memo_attach=%s",
               g_datae_w5_mail_envelope_src ? "ok" : "FAIL",
-              g_datae_w5_mail_sender_src   ? "ok" : "FAIL");
+              g_datae_w5_mail_sender_src   ? "ok" : "FAIL",
+              g_datae_w5_memo_attach_src   ? "ok" : "FAIL");
     }
 }
 
@@ -742,6 +755,7 @@ void airgenome_loop_shutdown(void) {
     if (g_datae_w5_cal_event_src)     { dispatch_source_cancel(g_datae_w5_cal_event_src);     g_datae_w5_cal_event_src     = NULL; }
     if (g_datae_w5_mail_envelope_src) { dispatch_source_cancel(g_datae_w5_mail_envelope_src); g_datae_w5_mail_envelope_src = NULL; }
     if (g_datae_w5_mail_sender_src)   { dispatch_source_cancel(g_datae_w5_mail_sender_src);   g_datae_w5_mail_sender_src   = NULL; }
+    if (g_datae_w5_memo_attach_src)   { dispatch_source_cancel(g_datae_w5_memo_attach_src);   g_datae_w5_memo_attach_src   = NULL; }
 }
 
 // ----------------------------------------------------------------------

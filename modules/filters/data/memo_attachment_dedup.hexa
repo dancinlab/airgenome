@@ -76,8 +76,26 @@ let PAYLOAD = "import sys,os,sqlite3,tempfile,struct,time,bisect,hashlib,resourc
 "    f.close()\n" +
 "    return int.from_bytes(h.digest(),'little')\n" +
 "\n" +
-"def discover_paths(conn,media_root):\n" +
+"def discover_media_roots(src):\n" +
+"    # auto-discover: Accounts/*/Media + Accounts/*/Previews (양쪽 모두 = regular + shared)\n" +
+"    # NoteStore.sqlite parent → Accounts/<UUID>/Media + Previews\n" +
+"    # Containers fallback (older macOS).\n" +
+"    roots=[]\n" +
+"    parent=os.path.dirname(src) if src else ''\n" +
+"    cands=[]\n" +
+"    if parent:\n" +
+"        cands+=glob.glob(os.path.join(parent,'Accounts','*','Media'))\n" +
+"        cands+=glob.glob(os.path.join(parent,'Accounts','*','Previews'))\n" +
+"    home=os.path.expanduser('~')\n" +
+"    cands+=glob.glob(os.path.join(home,'Library','Containers','com.apple.Notes','Data','Library','Notes','Accounts','*','Media'))\n" +
+"    cands+=glob.glob(os.path.join(home,'Library','Containers','com.apple.Notes','Data','Library','Notes','Accounts','*','Previews'))\n" +
+"    for c in cands:\n" +
+"        if os.path.isdir(c) and c not in roots: roots.append(c)\n" +
+"    return roots\n" +
+"\n" +
+"def discover_paths(conn,media_root,src=''):\n" +
 "    # ZATTACHMENT (varies by macOS) — fallback: glob media_root.\n" +
+"    # 양쪽 모두 (regular + shared) 커버: auto-discover Accounts/*/Media + Previews.\n" +
 "    paths=[]\n" +
 "    cur=conn.cursor()\n" +
 "    queries=[\n" +
@@ -90,23 +108,30 @@ let PAYLOAD = "import sys,os,sqlite3,tempfile,struct,time,bisect,hashlib,resourc
 "        try:\n" +
 "            cur.execute(q); rows_sql.extend(cur.fetchall()); break\n" +
 "        except Exception: pass\n" +
-"    # build paths from sql + glob fallback\n" +
+"    # auto-discover media roots if argv 미전달 (양쪽 모두)\n" +
+"    roots=[]\n" +
 "    if media_root and os.path.isdir(media_root):\n" +
+"        roots=[media_root]\n" +
+"    else:\n" +
+"        roots=discover_media_roots(src)\n" +
+"    seen=set()\n" +
+"    for root in roots:\n" +
 "        for ident,fname in rows_sql:\n" +
 "            if not fname: continue\n" +
-"            cand=os.path.join(media_root,str(ident or ''),str(fname))\n" +
-"            if os.path.isfile(cand): paths.append(cand)\n" +
-"        # glob 모든 file (매칭 못 한 경우 포함)\n" +
-"        for p in glob.glob(os.path.join(media_root,'**','*'),recursive=True):\n" +
-"            if os.path.isfile(p) and p not in paths:\n" +
-"                paths.append(p)\n" +
+"            cand=os.path.join(root,str(ident or ''),str(fname))\n" +
+"            if os.path.isfile(cand) and cand not in seen:\n" +
+"                seen.add(cand); paths.append(cand)\n" +
+"        # glob 모든 file (매칭 못 한 경우 포함 — Previews/Media 모두)\n" +
+"        for p in glob.glob(os.path.join(root,'**','*'),recursive=True):\n" +
+"            if os.path.isfile(p) and p not in seen:\n" +
+"                seen.add(p); paths.append(p)\n" +
 "    return paths\n" +
 "\n" +
 "def encode(src,media_root):\n" +
 "    t0=time.perf_counter()\n" +
 "    copy=safe_copy(src)\n" +
 "    conn=sqlite3.connect(copy)\n" +
-"    paths=discover_paths(conn,media_root)\n" +
+"    paths=discover_paths(conn,media_root,src)\n" +
 "    conn.close(); os.unlink(copy)\n" +
 "    # hash + size 로 entry 생성. (hash, path) 튜플 정렬.\n" +
 "    entries=[]\n" +

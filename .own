@@ -369,4 +369,13 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
     wave-5 datae 20 timer 활성 (PASS 11 + cal_event + mail_envelope + mail_sender):
       log: "datae mail-fix: envelope=ok sender=ok"
       production active 검증 PID 16649
-    proof commit 65e59eab + def7b1a4 + aafc957e + e3ca3fbd + cd595c94 + fc800207 + 04e96b48 + 5f32a030 + 본 commit + loop-selftest 13/13 PASS
+    wave-5 memo_attachment SKIP→PASS DONE 2026-04-30 (사용자 일반 메모 + 공유 폴더 첨부 추가):
+      auto-discover fix: Accounts/*/Media + Accounts/*/Previews glob (양쪽 모두 = regular + shared)
+      attachments=22 / 3 dup clusters / 6 dup files / unique=19 / 14.7% disk recoverable (386KB)
+      speedup 1.4× (n=22 small scale, lossless 0 mismatch)
+      datae 추가 3600s (1h, 첨부 파일 walk medium cost)
+      proof state/bench_results.jsonl own9-wave5-fix-memo_attachment row
+    wave-5 datae 21 timer 활성 (PASS 11 + cal_event + mail_envelope + mail_sender + memo_attach):
+      log: "datae mail-fix: envelope=ok sender=ok memo_attach=ok"
+      production active 검증 PID 48936
+    proof commit 65e59eab + def7b1a4 + aafc957e + e3ca3fbd + cd595c94 + fc800207 + 04e96b48 + 5f32a030 + 24d3ceea + 본 commit + loop-selftest 13/13 PASS
