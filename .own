@@ -483,3 +483,14 @@ own 9 new "airgenome-local: 데이터 재해석 게이트/필터 개발물의 ai
       4 NEW docs: raw_240_v3_blocks_b11_to_b30_full_expansion (md + jsonl) + cc_bg6_*_rubric (md + jsonl)
       Migration: Phase A airgenome local DONE → Phase B anima first (cycle +1-2) → Phase C hive PR (cycle +3-5)
       raw 91 honest C3: rubric inflation pattern (V1 300 → V2.5 720 monotone) — V4 cycle sub-block consolidation 검토 필요
+    raw 240 V2.6 inflation EXHAUSTION DONE 2026-05-01 (사용자 "고갈시까지 강화" mandate):
+      termination ceiling: **800/800** (V2.6 final mandate)
+      termination block: B33 replication-consistency (B31→B32→B33 sustained 3-FAIL)
+      last passing: B30 telemetry-opt-out-respect
+      Gate-PASS 4 (B27/B28/B29/B30 advisory → mandate 승격)
+      Gate-FAIL 14 (B31-B44, cross-repo evidence 부족 + sub-axis redundancy)
+      CC-BG6 cache_layer V2.6 800/800 implicit (4 pattern 자연 구현)
+      V4 sub-block consolidation: post-V4 ceiling 835 (920 inflation 차단)
+      6 honest-C3 gap (G18-G23), load-bearing: single-user-machine cluster
+      V4 invocation target: 2026-08-01 OR first cluster-scale change
+      docs/raw_240_v3_inflation_exhaustion_2026-05-01.md + .rubric.jsonl 산출

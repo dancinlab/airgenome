@@ -48,3 +48,5 @@
 {"ts":"2026-04-30T15:38:08Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-8-deep-claude-cli-bash-exit-read-dedup-token-genome-real-3118-billion-tokens-100-cache-hit","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T16:10:35Z","actor":"staged-scan","kind":"bypass","reason":"cc-bg6-cache-layer-v25-720-of-720-plus-raw-240-v3-expansion-b11-to-b30-with-v26-over-engineering-threshold","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T16:10:35Z","actor":"commit-msg-scan","kind":"bypass","reason":"cc-bg6-cache-layer-v25-720-of-720-plus-raw-240-v3-expansion-b11-to-b30-with-v26-over-engineering-threshold","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T16:14:04Z","actor":"staged-scan","kind":"bypass","reason":"audit-jsonl-auto-append-after-9db6bc22-cc-bg6-cache-layer-v25","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T16:14:04Z","actor":"commit-msg-scan","kind":"bypass","reason":"audit-jsonl-auto-append-after-9db6bc22-cc-bg6-cache-layer-v25","branch":"main","scanner_user":"ghost"}
