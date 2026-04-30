@@ -464,3 +464,167 @@ after (권장):
 
 raw 231 준수: 위 모든 콜체인은 indented arrow chart + before/after 블록으로 표기.
 raw 91 준수: 측정 가능한 항목만 P0/P1 에 배정. 미측정 추정은 "측정 권장" 으로 명시.
+
+---
+
+## B. 최종 결정 — boot-once + crash-then-stop hardened spec (2026-04-30 갱신)
+
+§A 의 Option A 위에 사용자 후속 제약 (hive-hexa-bin 폭주 사후 + 18 서비스 bootout + "한 번 죽으면 끝나야 한다") 반영한 hardened spec. **본 섹션이 최종 권장. §A 와 §1–§7 은 분석 기록으로 보존, 실행 결정은 이 섹션이 우선.**
+
+### B.0 핵심 제약 5개
+
+1. **단일 plist · 단일 binary** — 기존 com.airgenome.tap 의 TCC grant 공유. 신규 plist 1개 (`com.airgenome.app.loop`) 또는 tap plist 통합 (선택은 §B.4).
+2. **boot-once · crash-stop** — RunAtLoad=true, **KeepAlive 절대 false**, StartInterval 절대 미설정. 프로세스 죽으면 다음 reboot 또는 사용자 수동 재실행까지 dead.
+3. **bounded sub-spawn** — harvest/forecast/label 자식 프로세스 각각 시간/메모리 watchdog. 초과 시 SIGTERM → 3s → SIGKILL. **무한 재시도 금지.**
+4. **lockfile 기반 overlap 차단** — 동일 모듈 cycle 이 이전 cycle 끝나기 전 다시 fire 안 됨. 중첩 = 폭주의 모태.
+5. **자기복제 / supervisor / watcher-of-watchers 패턴 금지** — 본 binary 외 새 프로세스 spawn 책임자 없음. 자식이 부모 재기동 절대 안 함.
+
+### B.1 in-process timer 설계 (raw 231 flow)
+
+flow:
+  /Applications/airgenome.app/Contents/MacOS/airgenome --mode=loop (boot-once)
+    → main_loop_dispatch (single dispatch_queue serial)
+      ├─ dispatch_source_t harvest_timer (interval 60s)
+      │   → spawn_with_watchdog "hexa run modules/harvest.hexa"
+      │     ├─ lockfile /tmp/airgenome-loop-harvest.lock (exclusive flock)
+      │     ├─ timeout 30s → SIGTERM → 3s → SIGKILL
+      │     └─ exit code log → ~/.airgenome/loop-harvest.exit.log
+      │
+      ├─ dispatch_source_t label_timer (interval 300s, leeway 30s)
+      │   → spawn_with_watchdog "hexa run modules/label.hexa"
+      │     ├─ lockfile /tmp/airgenome-loop-label.lock
+      │     ├─ timeout 60s
+      │     └─ exit code log
+      │
+      └─ dispatch_source_t forecast_timer (interval 3600s, leeway 300s)
+          → spawn_with_watchdog "hexa run modules/forecast.hexa"
+            ├─ lockfile /tmp/airgenome-loop-forecast.lock
+            ├─ timeout 120s
+            └─ exit code log
+
+**timer interval 하한 = 60s** — 코드 상수. 변경 불가 (안티 runaway).
+**dispatch_source_t leeway** = interval 의 10% — battery 친화 + jitter.
+**spawn_with_watchdog** = posix_spawn + waitpid + dispatch_after kill.
+
+### B.2 watchdog 의사코드
+
+```objc
+// native/src/airgenome_tap.m 신규 함수 — --mode=loop 전용
+static int spawn_with_watchdog(const char *module, int timeout_s) {
+    // 1. lockfile flock(LOCK_EX | LOCK_NB) — overlap 차단 (이전 cycle 진행중이면 즉시 return)
+    int lock_fd = open(lock_path(module), O_RDWR|O_CREAT, 0644);
+    if (flock(lock_fd, LOCK_EX|LOCK_NB) != 0) {
+        log_warn("%s: previous cycle still running (overlap skip)", module);
+        close(lock_fd);
+        return -1;  // SKIP, NOT retry
+    }
+
+    // 2. posix_spawn hexa run modules/<module>.hexa
+    pid_t pid;
+    posix_spawn(&pid, HEXA_BIN, NULL, NULL,
+                (char *[]){"hexa", "run", module_path(module), NULL}, environ);
+
+    // 3. dispatch_after timeout_s → SIGTERM, 3s 더 → SIGKILL
+    dispatch_source_t kill_src = make_kill_timer(pid, timeout_s);
+
+    // 4. waitpid blocking + log exit code
+    int status; waitpid(pid, &status, 0);
+    log_exit(module, WEXITSTATUS(status), WIFSIGNALED(status));
+    dispatch_source_cancel(kill_src);
+
+    // 5. flock release (close fd)
+    close(lock_fd);
+    return WEXITSTATUS(status);
+}
+```
+
+### B.3 단일 plist 본문 (B 안 — boot-once)
+
+```
+launchd/com.airgenome.app.loop.plist
+  Label                  com.airgenome.app.loop
+  ProgramArguments       [/Applications/airgenome.app/Contents/MacOS/airgenome,
+                           --mode=loop]
+  RunAtLoad              true
+  KeepAlive              false                     ← 명시적 false (boot-once)
+  ProcessType            Background
+  StandardOutPath        ~/.airgenome/loop.stdout.log
+  StandardErrorPath      ~/.airgenome/loop.stderr.log
+  WorkingDirectory       /Users/ghost/core/airgenome
+  EnvironmentVariables   { PATH, HOME, LANG,
+                           AIRGENOME_ROOT=/Users/ghost/core/airgenome }
+  ThrottleInterval       (미설정 — KeepAlive=false 라 무의미)
+  StartInterval          (미설정 — 절대 추가 금지)
+```
+
+§A.3 의 `KeepAlive={SuccessfulExit:false}` 보다 더 보수적. crash 도 자동 respawn 안 함. 사용자 수동 재기동 또는 reboot 만이 살리는 길.
+
+### B.4 기존 com.airgenome.tap 와의 통합 vs 분리
+
+| 옵션 | 설명 | 장점 | 단점 |
+|---|---|---|---|
+| **B-i (분리, 권장)** | 새 plist `com.airgenome.app.loop` 추가, tap 그대로 | tap 안정성 보존 (이미 PID 16674 active, 입력 dispatch 핵심), loop 버그가 tap 안 죽임 | TCC grant 동일 bundle 이므로 추가 prompt 0, 단 plist 2개 관리 |
+| B-ii (통합) | tap binary 가 시작 시 self-fork loop branch | plist 1개 | tap crash 시 loop 도 죽음, loop 버그가 tap 잡아먹기 |
+
+**권장 = B-i**. 두 plist 가 동일 bundle (com.airgenome.tap bundle id) 을 가리키므로 TCC 비용 0. fault isolation 만 추가 확보.
+
+### B.5 anti-runaway 7개 안전망 (raw 211 falsifier 가능)
+
+각 falsifier 는 "이 안전망이 무효화됐을 때 폭주 발생" 의 negative 형식.
+
+1. **timer interval ≥ 60s 하드 가드** (코드 상수). falsifier: interval=10s 로 빌드 → 1분 안에 60+ spawn = 폭주 surface.
+2. **lockfile flock(LOCK_NB)** — 중첩 cycle skip. falsifier: lockfile 미사용 + module 무한 hang → spawn 누적 = 폭주.
+3. **timeout SIGTERM → SIGKILL** — 자식 무한 hang 차단. falsifier: timeout=∞ + module 무한 loop → 자식 누적 = 폭주.
+4. **KeepAlive=false** — crash respawn 차단. falsifier: KeepAlive=true + 자식 segfault → respawn storm.
+5. **StartInterval 미설정** — launchd interval-based wake 차단. falsifier: StartInterval=10 + module hang → 중첩 cycle 누적.
+6. **PATH/HOME 명시 EnvironmentVariables** — `~/.airgenome/loop.lock` 등 잘못된 경로로 lockfile 생성 안 됨. falsifier: HOME 미주입 → root home 에 lockfile → race.
+7. **ProcessType=Background** — launchd 가 우선순위 낮춤. falsifier: ProcessType=Interactive → 시스템 경합 시 우선순위 폭주.
+
+### B.6 manual install / uninstall (NEVER auto-bootstrap)
+
+본 round 와 그 이후 모든 round 에서 **자동 등록 함수 / 자동 bootstrap 스크립트 작성 금지**. 사용자가 수동 명령으로만 등록:
+
+```
+# install (사용자 1회 수동)
+cp launchd/com.airgenome.app.loop.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.airgenome.app.loop.plist
+
+# uninstall (사용자 1회 수동)
+launchctl bootout gui/$UID/com.airgenome.app.loop
+rm ~/Library/LaunchAgents/com.airgenome.app.loop.plist
+```
+
+`tool/airgenome_init.hexa` 는 본 plist 등록 함수 추가하지 않음 — 이는 hive-hexa-bin 폭주의 재발 방지 패턴 (자동 부트스트랩 = 단일 버그가 18 서비스 동시 발사 가능).
+
+### B.7 구현 순서 (사용자 승인시)
+
+각 단계는 독립 commit · 사용자 review · hexa run 검증 후 다음 진행. self-replicating 패턴 절대 안 만들기.
+
+1. **(P0)** native/src/airgenome_tap.m 의 main() 진입부에 argv parse 추가. `--mode=loop` 가 아니면 기존 tap path (변경 없음).
+2. **(P0)** spawn_with_watchdog + lockfile + dispatch_source_t 3개 helper 작성. 각 단위 함수에 self-test (주입 가능한 mock module path 로 timeout 동작 검증).
+3. **(P0)** `--mode=loop` branch 가 위 helper 호출. timer interval 상수 검증 (≥60s).
+4. **(P1)** launchd/com.airgenome.app.loop.plist 작성 (등록은 안 함 — 파일만).
+5. **(P1)** docs/launchd_install_guide.md 작성 — manual install 명령 + uninstall + troubleshooting (lockfile 위치, 로그 위치, KeepAlive=false 의 의미).
+6. **(P2)** tool/airgenome_init.hexa 변경 없음 — 본 round scope 외, 절대 자동 등록 추가 금지.
+
+### B.8 본 결정으로 §1–§7 어떻게 변경되나
+
+§A.6 마이그레이션 절차 → §B.6 으로 대체 (자동화 0, manual only).
+§3 ordering → §B.1 in-process serial dispatch_queue 가 보장 (race 자체 없음).
+§4 KeepAlive 정책 → §B.0(2) 명시적 false (이전 안 {SuccessfulExit:false} 보다 더 엄격).
+§5 등록 자동화 → 폐기. tool/airgenome_init.hexa ensure_hexa_modules() 추가 안 함.
+§6 TCC → §B.4 의 B-i 통합 (com.airgenome.tap bundle id 공유, 추가 prompt 0).
+§7 보안 → §B.5 의 7개 안전망이 추가 layer.
+
+### B.9 falsifier (본 설계가 틀렸다는 evidence)
+
+- F-B-1: 본 설계 구현 후 30일 내 hexa subprocess CPU >100% × 5분 사례 1회 이상 → watchdog 안전망 무효 → spec 수정.
+- F-B-2: lockfile race (동시 cycle 2개 동시 실행) 사례 → flock 사용 오류 → 수정.
+- F-B-3: KeepAlive=false 인데 launchd 가 reload → spec 의 KeepAlive 해석 잘못 → 측정 후 수정.
+- F-B-4: 사용자가 manual launchctl bootout 했는데도 reboot 후 자동 등록 → tool/airgenome_init.hexa 가 자동 등록 추가했음 → §B.6 위반 → 즉시 revert.
+
+### B.10 반대 의견 / 대안 (논쟁 가능)
+
+- "boot-once 는 너무 보수적, 24h 가동 후 process leak 시 dead 상태로 누적" → 답: 사용자 수동 재기동이 정상 사이클. 자동 respawn 도입 시 폭주 모태 다시 생김.
+- "in-process dispatch 보다 cron 이 더 단순" → 답: cron = launchd interval = 안티 runaway 5번 제약 위반.
+- "Option B-ii (tap 통합) 가 plist 1개라 더 깔끔" → 답: fault isolation 손실 + tap 의 입력 dispatch 신뢰성 침식 risk.
