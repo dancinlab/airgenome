@@ -1813,18 +1813,87 @@ static BOOL g_intentional_quit = NO;
         NSString *output = [[NSString alloc] initWithData:data
                                                  encoding:NSUTF8StringEncoding];
         if (!output) output = @"(no output)";
-        // 너무 길면 truncate (NSAlert 한계)
-        if (output.length > 2000) {
-            output = [[output substringFromIndex:output.length - 2000]
-                      stringByAppendingString:@"\n…(truncated, 전체는 log 참고)"];
+
+        // (step 2) noise filter — cosmetic shell warnings 제거
+        NSArray<NSString *> *lines = [output componentsSeparatedByString:@"\n"];
+        NSMutableArray<NSString *> *kept = [NSMutableArray array];
+        // (step 3) summary key=value 파싱 — gamebox install --summary
+        NSMutableDictionary<NSString *, NSString *> *kv = [NSMutableDictionary dictionary];
+        BOOL prevBlank = NO;
+        for (NSString *raw in lines) {
+            NSString *line = raw;
+            if ([line containsString:@"sh: syntax error"]) continue;
+            if ([line containsString:@"unterminated quoted string"]) continue;
+            if ([line containsString:@"hexa-resolver:"]) continue;
+            if ([line containsString:@"are the same file"]) continue;
+            if ([line hasPrefix:@"cp: "] && [line containsString:@"same file"]) continue;
+            if ([line containsString:@"Shell cwd was reset"]) continue;
+            // 연속 빈 줄 줄이기
+            BOOL blank = ([[line stringByTrimmingCharactersInSet:
+                            [NSCharacterSet whitespaceCharacterSet]] length] == 0);
+            if (blank && prevBlank) continue;
+            prevBlank = blank;
+            [kept addObject:line];
+            // key=value 추출 (단순 split, '=' 한 번만)
+            NSRange eq = [line rangeOfString:@"="];
+            if (eq.location != NSNotFound && eq.location < line.length - 1
+                && [line rangeOfString:@" "].location > eq.location) {
+                NSString *k = [line substringToIndex:eq.location];
+                NSString *v = [line substringFromIndex:eq.location + 1];
+                kv[k] = v;
+            } else if (eq.location != NSNotFound && eq.location < line.length - 1) {
+                NSString *k = [line substringToIndex:eq.location];
+                NSString *v = [line substringFromIndex:eq.location + 1];
+                if ([k length] > 0 && [k length] < 32) kv[k] = v;
+            }
         }
+        output = [kept componentsJoinedByString:@"\n"];
+
+        // (step 1) KPI 추출 → 친화적 dialog 포맷
+        NSString *kpiBlock = nil;
+        if (kv[@"status"] && [kv[@"status"] isEqualToString:@"ok"]) {
+            kpiBlock = [NSString stringWithFormat:
+                @"파일:    %@\n"
+                @"아키텍쳐: %@\n"
+                @"DLLs:    %@\n"
+                @"함수:    %@ (covered %@ / missing %@)\n"
+                @"호환률:  %@\n"
+                @"\n"
+                @"phase: %@\n"
+                @"next:  %@\n"
+                @"ETA:   %@ (closure path %@)",
+                kv[@"pe"] ?: @"-",
+                kv[@"arch"] ?: @"unknown",
+                kv[@"dlls"] ?: @"-",
+                kv[@"functions"] ?: @"-",
+                kv[@"covered"] ?: @"-",
+                kv[@"missing"] ?: @"-",
+                kv[@"coverage"] ?: @"-",
+                kv[@"phase"] ?: @"-",
+                kv[@"next"] ?: @"-",
+                kv[@"eta"] ?: @"-",
+                kv[@"path"] ?: @"-"];
+        }
+        // KPI 추출 실패 시 raw output (truncated)
+        NSString *finalInfo = kpiBlock ?: output;
+        if (finalInfo.length > 2000) {
+            finalInfo = [[finalInfo substringFromIndex:finalInfo.length - 2000]
+                         stringByAppendingString:@"\n…(truncated)"];
+        }
+
         int rc = t.terminationStatus;
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSString *title = (rc == 0) ?
-                @"gamebox dispatch 완료" :
-                [NSString stringWithFormat:@"gamebox dispatch 종료 (exit=%d)", rc];
+            NSString *title;
+            if (rc == 0 && kpiBlock) {
+                title = [NSString stringWithFormat:@"gamebox 분석 완료 (호환률 %@)",
+                         kv[@"coverage"] ?: @"?"];
+            } else if (rc == 0) {
+                title = @"gamebox dispatch 완료";
+            } else {
+                title = [NSString stringWithFormat:@"gamebox 종료 (exit=%d)", rc];
+            }
             [self showAlertWithMessage:title
-                                  info:output
+                                  info:finalInfo
                               firstBtn:@"OK" secondBtn:nil];
         });
     };

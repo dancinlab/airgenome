@@ -140,7 +140,8 @@ fn dispatch_exe(path: str) -> int {
     let rel_copy = "tool/bench/" + basename
     println("airgenome: dispatching " + path + " → " + name + " (install)")
     println("airgenome: pre-copied to " + local_copy)
-    let cmd = "cd '" + dir + "' && hexa run lib/dispatch.hexa install '" + rel_copy + "' 2>&1"
+    // --summary mode 으로 호출 — native dialog 가 key=value 파싱
+    let cmd = "cd '" + dir + "' && hexa run lib/dispatch.hexa install '" + rel_copy + "' --summary 2>&1"
     let out = exec(cmd)
     println(out)
     return 0
