@@ -1,0 +1,203 @@
+// tool/bench/bench_c15_read_content_cache.hexa — C15 Read content cache bench
+//   E4/F18/F58 패턴 재작성. Claude Read tool_use 반복 시뮬레이션 →
+//   CRCC encode → cold sqlite/jsonl-scan vs blob hit + LRU bench.
+//
+// 모드:
+//   bench (default) — N_FILES=1000 합성 파일 + N_READS=4000 reads (재read 다수)
+//                     → CRCC encode → cold linear scan vs blob+LRU.
+//
+// 5-tuple: site=C15 ROI#=C15 baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,hashlib,random,sqlite3,tempfile\n" +
+"from collections import OrderedDict\n" +
+"N_FILES=1000\n" +
+"N_READS=4000\n" +
+"QUERIES=500\n" +
+"LRU_CAP=128\n" +
+"BIN='/tmp/bench_c15_crcc.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def xxh64_fallback(b):\n" +
+"    if isinstance(b,str): b=b.encode('utf-8','replace')\n" +
+"    h=hashlib.blake2b(b,digest_size=8).digest()\n" +
+"    return struct.unpack('<Q',h)[0]\n" +
+"\n" +
+"def build_dataset(n_files=N_FILES,n_reads=N_READS,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    files=[]\n" +
+"    for i in range(n_files):\n" +
+"        path=f'/Users/ghost/core/synth/dir{i%47}/file{i}.hexa'\n" +
+"        # 합성 파일 content — 크기 다양\n" +
+"        sz=200+(i%9)*200\n" +
+"        content=(f'// {path}\\n'+f'line{i}\\n'*(sz//8)).encode('utf-8','replace')\n" +
+"        files.append((path,content))\n" +
+"    reads=[]\n" +
+"    for _ in range(n_reads):\n" +
+"        # zipf-ish: 80% reads hit top 20% files (hot file pattern)\n" +
+"        if rng.random()<0.8:\n" +
+"            i=rng.randrange(max(1,n_files//5))\n" +
+"        else:\n" +
+"            i=rng.randrange(n_files)\n" +
+"        reads.append(files[i])\n" +
+"    return files,reads\n" +
+"\n" +
+"def build_old_sqlite(reads):\n" +
+"    # OLD: cold sqlite scan — Claude jsonl 내 Read tool_use+result 를 sqlite 화한\n" +
+"    # 가상의 baseline. 매 lookup 마다 SELECT path → content. (per-query open/close.)\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); tmp.close()\n" +
+"    conn=sqlite3.connect(tmp.name)\n" +
+"    conn.execute('CREATE TABLE reads (path TEXT, content BLOB)')\n" +
+"    conn.executemany('INSERT INTO reads VALUES (?,?)',[(p,c) for p,c in reads])\n" +
+"    conn.commit(); conn.close()\n" +
+"    return tmp.name\n" +
+"\n" +
+"def encode(files):\n" +
+"    # files → CRCC blob: hash by path, latest content\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    items=sorted(files,key=lambda kv:xxh64_fallback(kv[0]))\n" +
+"    n=len(items)\n" +
+"    pool=bytearray()\n" +
+"    hashes=array.array('Q',[0]*n)\n" +
+"    p_off=array.array('I',[0]*n); p_len=array.array('I',[0]*n)\n" +
+"    c_off=array.array('I',[0]*n); c_len=array.array('I',[0]*n)\n" +
+"    lru =array.array('Q',[0]*n)\n" +
+"    for i,(p,c) in enumerate(items):\n" +
+"        pb=p.encode('utf-8','replace')\n" +
+"        hashes[i]=xxh64_fallback(pb)\n" +
+"        p_off[i]=len(pool); p_len[i]=len(pb); pool.extend(pb)\n" +
+"        c_off[i]=len(pool); c_len[i]=len(c); pool.extend(c)\n" +
+"        lru[i]=0\n" +
+"    header=struct.pack('<4sIII',b'CRCC',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(hashes.tobytes())\n" +
+"        f.write(p_off.tobytes()); f.write(p_len.tobytes())\n" +
+"        f.write(c_off.tobytes()); f.write(c_len.tobytes())\n" +
+"        f.write(lru.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    bsz=os.path.getsize(BIN)\n" +
+"    return {'encode_ns':t1-t0,'n':n,'blob_size':bsz,'hashes':hashes,'contents':[c for _,c in items],'paths':[p for p,_ in items]}\n" +
+"\n" +
+"def old_lookup_sqlite(db,target_path):\n" +
+"    # OLD: per-query open + SELECT (cold-ish path)\n" +
+"    conn=sqlite3.connect(db)\n" +
+"    cur=conn.execute('SELECT content FROM reads WHERE path=? LIMIT 1',(target_path,))\n" +
+"    row=cur.fetchone()\n" +
+"    conn.close()\n" +
+"    return row[0] if row else None\n" +
+"\n" +
+"def new_lookup_blob(hashes,contents,target_hash):\n" +
+"    i=bisect.bisect_left(hashes,target_hash)\n" +
+"    if i<len(hashes) and hashes[i]==target_hash: return contents[i]\n" +
+"    return None\n" +
+"\n" +
+"class LRU:\n" +
+"    def __init__(self,cap=LRU_CAP):\n" +
+"        self.cap=cap; self.d=OrderedDict()\n" +
+"    def get(self,k):\n" +
+"        if k in self.d:\n" +
+"            self.d.move_to_end(k); return self.d[k]\n" +
+"        return None\n" +
+"    def put(self,k,v):\n" +
+"        if k in self.d: self.d.move_to_end(k)\n" +
+"        else:\n" +
+"            if len(self.d)>=self.cap: self.d.popitem(last=False)\n" +
+"        self.d[k]=v\n" +
+"\n" +
+"def diff_test(db,hashes,contents,sample_paths):\n" +
+"    mm=0\n" +
+"    for sp in sample_paths[:10]:\n" +
+"        a=old_lookup_sqlite(db,sp)\n" +
+"        b=new_lookup_blob(hashes,contents,xxh64_fallback(sp))\n" +
+"        ao=a is not None; bo=b is not None\n" +
+"        if ao!=bo:\n" +
+"            mm+=1\n" +
+"            print(f'    DIFF path={sp} old_present={ao} new_present={bo}')\n" +
+"        elif a and b and a!=b:\n" +
+"            mm+=1\n" +
+"            print(f'    DIFF path={sp} content mismatch a_len={len(a)} b_len={len(b)}')\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/C15 — Read content cache (cold sqlite vs blob+LRU)')\n" +
+"    print(f'  N_FILES={N_FILES} N_READS={N_READS} QUERIES={QUERIES} LRU_CAP={LRU_CAP}')\n" +
+"    files,reads=build_dataset()\n" +
+"    print(f'  built: {len(files)} unique files, {len(reads)} reads (zipf hot)')\n" +
+"    info=encode(files)\n" +
+"    hashes=info['hashes']\n" +
+"    contents=info['contents']\n" +
+"    paths=info['paths']\n" +
+"    print(f'  encode (xxh64+sort+CRCC): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    db=build_old_sqlite(reads)\n" +
+"    sample_paths=[paths[i] for i in range(0,len(paths),max(1,len(paths)//50))][:50]\n" +
+"    mm=diff_test(db,hashes,contents,sample_paths)\n" +
+"    print(f'  diff_test (subset 10) mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]')\n" +
+"        os.unlink(db); return\n" +
+"    rng=random.Random(11)\n" +
+"    queries=[paths[rng.randrange(len(paths))] for _ in range(QUERIES)]\n" +
+"    query_hashes=[xxh64_fallback(p) for p in queries]\n" +
+"    # OLD: cold sqlite per-query open. SAMPLE_N 으로 cap (open/close 비싸).\n" +
+"    SAMPLE_N=30\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(SAMPLE_N):\n" +
+"        old_lookup_sqlite(db,queries[k%len(queries)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old_sample=t1-t0\n" +
+"    per_old=ns_old_sample//SAMPLE_N\n" +
+"    extrap=per_old*QUERIES\n" +
+"    print(f'  OLD (cold sqlite open+SELECT) sample={SAMPLE_N}  per_query_ns={per_old}  extrap_total_ns={extrap}')\n" +
+"    # NEW (1) blob hit\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES):\n" +
+"        new_lookup_blob(hashes,contents,query_hashes[k])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0\n" +
+"    per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (CRCC mmap+xxh64+bisect) total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    # NEW (2) LRU warm — top 20% file 만 LRU 에 채우고 hit ratio 측정\n" +
+"    lru=LRU(LRU_CAP)\n" +
+"    for i in range(min(LRU_CAP,len(paths))):\n" +
+"        lru.put(paths[i],contents[i])\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    lhit=0\n" +
+"    for k in range(QUERIES):\n" +
+"        v=lru.get(queries[k])\n" +
+"        if v is not None: lhit+=1\n" +
+"        else: lru.put(queries[k],new_lookup_blob(hashes,contents,query_hashes[k]))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_lru=t1-t0\n" +
+"    per_lru=ns_lru//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (LRU warm + blob fallback) total_ns={ns_lru} per_query_ns={per_lru} lru_hits={lhit}/{QUERIES}')\n" +
+"    if per_new>0:\n" +
+"        ratio=per_old/per_new\n" +
+"        saved_pct=((per_old-per_new)*100)//per_old if per_old>0 else 0\n" +
+"        print(f'  per-query speedup blob vs cold: {ratio:.1f}x  saved={saved_pct}%')\n" +
+"    if per_lru>0:\n" +
+"        print(f'  per-query speedup LRU  vs cold: {per_old/per_lru:.1f}x')\n" +
+"        amort_per=info['encode_ns']//QUERIES\n" +
+"        amort_eff=per_lru+amort_per\n" +
+"        print(f'  + encode amortized: {amort_per}ns/query → effective {amort_eff}ns/query')\n" +
+"    print(f'  5-tuple: site=C15 ROI#=C15 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"    os.unlink(db)\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_c15_read_content_cache_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

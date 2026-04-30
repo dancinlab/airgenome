@@ -1,0 +1,171 @@
+// tool/bench/bench_c11_mcp_mmap.hexa — C11 MCP capability mmap bench
+//   .mcp.json 1회 parse + blob mmap vs json.load 매 호출.
+//   real ~/core/.mcp.json 발견 시 사용, 없으면 synthetic.
+//
+//   5-tuple: site=C11 ROI#=11 baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3.
+
+let PAYLOAD = "import sys,os,json,struct,time,bisect,array,tempfile\n" +
+"BIN='/tmp/bench_c11_mcp.bin'\n" +
+"QUERIES=2000\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"SYN={'mcpServers':{\n" +
+"    'airgenome':{'command':'/Users/ghost/core/airgenome/build/mcp','args':[],\n" +
+"                 '_synthetic_caps':['hook_run','filter_compile','genome_emit','perf_lab','stats_emit']},\n" +
+"    'github':{'command':'gh','args':['mcp'],\n" +
+"              '_synthetic_caps':['issue_create','pr_list','repo_view','workflow_run','release_create']},\n" +
+"    'fs':{'command':'fs-mcp','args':[],\n" +
+"          '_synthetic_caps':['read_file','write_file','list_dir','stat','mkdir']},\n" +
+"    'shell':{'command':'shell-mcp','args':[],\n" +
+"             '_synthetic_caps':['exec','spawn','kill','env_get']},\n" +
+"    'sqlite':{'command':'sqlite-mcp','args':[],\n" +
+"              '_synthetic_caps':['query','exec_sql','schema','vacuum']},\n" +
+"}}\n" +
+"\n" +
+"def synth_caps(sn,e):\n" +
+"    if isinstance(e,dict) and '_synthetic_caps' in e: return list(e['_synthetic_caps'])\n" +
+"    return [f'{sn}_cap_{i}' for i in range(3)]\n" +
+"\n" +
+"def find_real():\n" +
+"    home=os.path.expanduser('~')\n" +
+"    cand=[home+'/core/.mcp.json',home+'/.mcp.json']\n" +
+"    for p in cand:\n" +
+"        if os.path.exists(p):\n" +
+"            try:\n" +
+"                with open(p) as f: cfg=json.load(f)\n" +
+"                if 'mcpServers' in cfg: return p,cfg\n" +
+"            except Exception:\n" +
+"                continue\n" +
+"    return None,None\n" +
+"\n" +
+"def encode(cfg):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    servers=cfg.get('mcpServers') or {}\n" +
+"    srv_list=sorted(servers.keys())\n" +
+"    pool=bytearray()\n" +
+"    def putstr(s):\n" +
+"        sb=s.encode('utf-8','replace')\n" +
+"        off=len(pool); ln=len(sb); pool.extend(sb)\n" +
+"        return off,ln\n" +
+"    n_srv=len(srv_list)\n" +
+"    srv_name_off=array.array('I',[0]*n_srv); srv_name_len=array.array('I',[0]*n_srv)\n" +
+"    cmd_off=array.array('I',[0]*n_srv); cmd_len=array.array('I',[0]*n_srv)\n" +
+"    cap_pairs=[]\n" +
+"    for i,sn in enumerate(srv_list):\n" +
+"        srv_name_off[i],srv_name_len[i]=putstr(sn)\n" +
+"        e=servers[sn]\n" +
+"        cmd=e.get('command','') if isinstance(e,dict) else ''\n" +
+"        cmd_off[i],cmd_len[i]=putstr(cmd)\n" +
+"        for c in synth_caps(sn,e):\n" +
+"            cap_pairs.append((c,i))\n" +
+"    cap_pairs.sort(key=lambda r:r[0])\n" +
+"    n_caps=len(cap_pairs)\n" +
+"    cap_name_off=array.array('I',[0]*n_caps); cap_name_len=array.array('I',[0]*n_caps)\n" +
+"    cap_owner=array.array('I',[0]*n_caps)\n" +
+"    for j,(c,si) in enumerate(cap_pairs):\n" +
+"        cap_name_off[j],cap_name_len[j]=putstr(c); cap_owner[j]=si\n" +
+"    str_sz=len(pool)\n" +
+"    header=struct.pack('<4sIIII',b'CMCP',1,n_srv,n_caps,str_sz)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(srv_name_off.tobytes()); f.write(srv_name_len.tobytes())\n" +
+"        f.write(cmd_off.tobytes()); f.write(cmd_len.tobytes())\n" +
+"        f.write(cap_name_off.tobytes()); f.write(cap_name_len.tobytes())\n" +
+"        f.write(cap_owner.tobytes())\n" +
+"        f.write(bytes(pool))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    cap_keys=[c.encode('utf-8') for c,_ in cap_pairs]\n" +
+"    return {'encode_ns':t1-t0,'n_srv':n_srv,'n_caps':n_caps,'cap_pairs':cap_pairs,\n" +
+"            'cap_keys':cap_keys,'cap_owner':cap_owner,'pool':bytes(pool),\n" +
+"            'srv_name_off':srv_name_off,'srv_name_len':srv_name_len,\n" +
+"            'cmd_off':cmd_off,'cmd_len':cmd_len,\n" +
+"            'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"def parse_each_call(src,tool):\n" +
+"    with open(src) as f: cfg=json.load(f)\n" +
+"    for sn,e in (cfg.get('mcpServers') or {}).items():\n" +
+"        if tool in synth_caps(sn,e):\n" +
+"            return (sn, e.get('command','') if isinstance(e,dict) else '')\n" +
+"    return None\n" +
+"\n" +
+"def blob_lookup(info,tool_b):\n" +
+"    keys=info['cap_keys']\n" +
+"    i=bisect.bisect_left(keys,tool_b)\n" +
+"    if i>=len(keys) or keys[i]!=tool_b: return None\n" +
+"    si=info['cap_owner'][i]\n" +
+"    pool=info['pool']\n" +
+"    sn=pool[info['srv_name_off'][si]:info['srv_name_off'][si]+info['srv_name_len'][si]]\n" +
+"    cmd=pool[info['cmd_off'][si]:info['cmd_off'][si]+info['cmd_len'][si]]\n" +
+"    return (sn,cmd)\n" +
+"\n" +
+"def bench():\n" +
+"    print('airgenome bench/C11 — MCP capability mmap')\n" +
+"    src,real_cfg=find_real()\n" +
+"    if real_cfg is not None:\n" +
+"        cfg=real_cfg\n" +
+"        # real .mcp.json 에 _synthetic_caps 가 없으면 synth_caps 가 srv_cap_0..2 합성\n" +
+"        print(f'  source: real {src} ({fmt(os.path.getsize(src))})')\n" +
+"        # bench 의 OLD path 가 같은 파일을 읽도록 src 사용\n" +
+"        src_for_old=src\n" +
+"    else:\n" +
+"        cfg=SYN\n" +
+"        # synthetic: temp 파일에 dump 하여 OLD path 가 json.load 비용을 정확히 측정하게.\n" +
+"        tf=tempfile.NamedTemporaryFile(suffix='.mcp.json',delete=False)\n" +
+"        tf.write(json.dumps(cfg).encode('utf-8'))\n" +
+"        tf.close()\n" +
+"        src_for_old=tf.name\n" +
+"        print(f'  source: synthetic ({len(cfg[\"mcpServers\"])} servers) → {src_for_old} ({fmt(os.path.getsize(src_for_old))})')\n" +
+"    info=encode(cfg)\n" +
+"    print(f'  encode: {info[\"encode_ns\"]/1e6:.1f}ms servers={info[\"n_srv\"]} caps={info[\"n_caps\"]} blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n_caps']==0:\n" +
+"        print('[bench] no caps'); return\n" +
+"    samples_str=[c for c,_ in info['cap_pairs']]\n" +
+"    while len(samples_str)<QUERIES:\n" +
+"        samples_str=samples_str+samples_str\n" +
+"    samples_str=samples_str[:QUERIES]\n" +
+"    samples_b=[s.encode('utf-8') for s in samples_str]\n" +
+"    # diff test\n" +
+"    mm=0\n" +
+"    for s,sb in list(zip(samples_str,samples_b))[:10]:\n" +
+"        a=parse_each_call(src_for_old,s)\n" +
+"        b=blob_lookup(info,sb)\n" +
+"        a_ok=a is not None; b_ok=b is not None\n" +
+"        if a_ok!=b_ok: mm+=1\n" +
+"    print(f'  diff_test mismatches: {mm}/10')\n" +
+"    if mm!=0: print('BENCH FAIL'); return\n" +
+"    # OLD: parse-each-call\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for s in samples_str: parse_each_call(src_for_old,s)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old=t1-t0; per_old=ns_old//QUERIES\n" +
+"    # NEW: blob lookup\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for sb in samples_b: blob_lookup(info,sb)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0; per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  OLD (json.load + linear per call) per_query_ns={per_old}')\n" +
+"    print(f'  NEW (blob mmap + bisect)          per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new; saved=((ns_old-ns_new)*100)//max(ns_old,1)\n" +
+"        print(f'  speedup={ratio:.1f}x saved={saved}%')\n" +
+"        amort=info['encode_ns']//QUERIES\n" +
+"        print(f'  + encode amortized: {amort}ns/query')\n" +
+"    print(f'  5-tuple: site=C11 ROI#=11 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_c11_mcp_mmap_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

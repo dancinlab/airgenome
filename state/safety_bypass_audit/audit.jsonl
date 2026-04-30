@@ -4,3 +4,5 @@
 {"ts":"2026-04-30T11:50:16Z","actor":"commit-msg-scan","kind":"bypass","reason":"airgenome-loop-module-paths-canonical-deployment-target","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T11:52:02Z","actor":"staged-scan","kind":"bypass","reason":"bg-agent-output-airgenome-canonical-paths-bench-evidence","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T11:52:02Z","actor":"commit-msg-scan","kind":"bypass","reason":"bg-agent-output-airgenome-canonical-paths-bench-evidence","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T11:55:47Z","actor":"staged-scan","kind":"bypass","reason":"bg-agent-a10-fix-client-nc-darwin","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T11:55:47Z","actor":"commit-msg-scan","kind":"bypass","reason":"bg-agent-a10-fix-client-nc-darwin","branch":"main","scanner_user":"ghost"}

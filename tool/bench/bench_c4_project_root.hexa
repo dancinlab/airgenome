@@ -1,0 +1,184 @@
+// tool/bench/bench_c4_project_root.hexa — C4 5-tuple bench
+//
+// Target: modules/filters/data/claude_project_root_mmap.hexa
+// Pattern: per-call git fork → in-hexa prefix-trie / dict lookup
+//
+// OLD (per-cycle, statusline 1Hz):
+//   1) /usr/bin/git -C <cwd> rev-parse --show-toplevel → 1 fork (~3-8ms cold)
+//   합계: ~3-8ms per status refresh × 1Hz = 3-8ms/s 지속 부하.
+//
+// NEW:
+//   1) cwd → root dict (in-hexa) lookup → 0 fork, < 1us
+//   2) cache miss 시 1회 git fork 후 dict 등록 — amortized 0 fork.
+//
+// 측정 환경: HEXA_RESOLVER_NO_REROUTE=1 HEXA_SHIM_NO_DARWIN_LANDING=1, gdate.
+
+use "../../core/core"
+
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
+
+let CYCLES_OLD = 30      // git fork 너무 비싸 적은 횟수
+let CYCLES_NEW = 30      // 동일 cycle 수로 같은 비교
+
+fn now_ns() -> str { return exec("gdate +%s%N").trim() }
+fn ns_diff(t0: str, t1: str) -> int { return to_int_safe(t1) - to_int_safe(t0) }
+
+// ── 합성 cwd / root 시드 ──────────────────────────────────────────────
+fn seed_cwds() -> list {
+    return [
+        "/Users/ghost/core/airgenome",
+        "/Users/ghost/core/airgenome/modules/filters/data",
+        "/Users/ghost/core/airgenome/tool/bench",
+        "/Users/ghost/core/hexa-lang",
+        "/Users/ghost/core/hive",
+        "/private/tmp",
+        "/Users/ghost"
+    ]
+}
+
+// OLD: per-call git fork
+fn old_lookup(cwd: str) -> str {
+    let cmd = "git -C '" + cwd + "' rev-parse --show-toplevel 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+// NEW: dict lookup (longest-prefix match in pre-built table).
+// 표 사전 빌드 = 시드 cwd 별 git fork 1회 → dict 보관. amortized = 0 fork/lookup.
+struct Pair { cwd: str, root: str }
+
+fn build_table(seeds: list) -> list {
+    let mut out = []
+    let mut i = 0
+    while i < len(seeds) {
+        let c = seeds[i]
+        let r = old_lookup(c)
+        if r != "" {
+            out = out + [Pair { cwd: c, root: r }]
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn longest_prefix_lookup(table: list, cwd: str) -> str {
+    let mut best = ""
+    let mut best_len = -1
+    let mut i = 0
+    while i < len(table) {
+        let p = table[i]
+        let cl = len(p.cwd)
+        if cl > best_len {
+            // strict prefix or equal, with boundary at '/'
+            let mut ok = false
+            if cwd == p.cwd { ok = true }
+            else if len(cwd) > cl {
+                if cwd.substring(0, cl) == p.cwd && cwd.substring(cl, cl + 1) == "/" { ok = true }
+            }
+            if ok { best = p.root; best_len = cl }
+        }
+        i = i + 1
+    }
+    return best
+}
+
+fn diff_test(table: list, cwds: list) -> int {
+    let mut mismatches = 0
+    let mut i = 0
+    while i < len(cwds) {
+        let c = cwds[i]
+        let vo = old_lookup(c)
+        let vn = longest_prefix_lookup(table, c)
+        if vo != "" && vn != "" && vo != vn {
+            mismatches = mismatches + 1
+            if mismatches <= 3 {
+                println("    DIFF cwd=" + c + " old=[" + vo + "] new=[" + vn + "]")
+            }
+        }
+        i = i + 1
+    }
+    return mismatches
+}
+
+pub fn run_bench() -> int {
+    println("airgenome bench/C4 — claude_project_root (per-call git fork → in-hexa dict)")
+    let seeds = seed_cwds()
+    println("  seeds=" + to_string(len(seeds)) + " CYCLES_OLD=" + to_string(CYCLES_OLD) + " CYCLES_NEW=" + to_string(CYCLES_NEW))
+
+    // Build table once — amortized 비용은 별도 보고.
+    let t_b0 = now_ns()
+    let table = build_table(seeds)
+    let t_b1 = now_ns()
+    let build_ns = ns_diff(t_b0, t_b1)
+    println("  table_build_ns=" + to_string(build_ns) + "  table_size=" + to_string(len(table)))
+
+    let mm = diff_test(table, seeds)
+    println("  diff_test result: " + to_string(mm) + " (0 = lossless)")
+    if mm != 0 { println("BENCH FAIL [diff_test]"); return 1 }
+
+    // OLD bench — every call is a fork
+    let t0 = now_ns()
+    let mut k = 0
+    while k < CYCLES_OLD {
+        let mut i = 0
+        while i < len(seeds) {
+            let _ = old_lookup(seeds[i])
+            i = i + 1
+        }
+        k = k + 1
+    }
+    let t1 = now_ns()
+    let ns_old = ns_diff(t0, t1)
+    let calls_old = CYCLES_OLD * len(seeds)
+    println("  OLD (per-call git fork) total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / calls_old))
+
+    // NEW bench — pure in-hexa dict lookup
+    let t0n = now_ns()
+    let mut k2 = 0
+    while k2 < CYCLES_NEW {
+        let mut i = 0
+        while i < len(seeds) {
+            let _ = longest_prefix_lookup(table, seeds[i])
+            i = i + 1
+        }
+        k2 = k2 + 1
+    }
+    let t1n = now_ns()
+    let ns_new = ns_diff(t0n, t1n)
+    let calls_new = CYCLES_NEW * len(seeds)
+    println("  NEW (in-hexa prefix dict) total_ns=" + to_string(ns_new) + "  per_call_ns=" + to_string(ns_new / calls_new))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved) + "%")
+    }
+    return 0
+}
+
+// auto-invoke entry — raw 245 호환.
+fn main() -> void {
+    let _ = run_bench()
+}

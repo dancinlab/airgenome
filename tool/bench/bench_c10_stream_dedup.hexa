@@ -1,0 +1,100 @@
+// tool/bench/bench_c10_stream_dedup.hexa — C10 streaming chunk dedup bench
+//   OLD: linear scan dedup (모든 prior chunk byte-compare)            — O(n²·win)
+//   NEW: Rabin-Karp rolling hash sliding window (catalog #70)          — O(n)
+//
+//   synthetic 32KB buffer (5-section, boilerplate-rich) → win=64 dedup.
+//   K=5 cycles → wall_ns + dup-match count 비교.
+//
+// 5-tuple: site=C10 ROI#=stream baseline_ns post_ns diff_test=lossless
+
+let PAYLOAD = "import sys,os,time,random\n" +
+"BUF_KB=32; WIN=64; K=5\n" +
+"BASE=257; MOD=(1<<61)-1\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def synth(kb):\n" +
+"    rng=random.Random(7)\n" +
+"    boiler=b'Here is the answer:\\nLet me explain step by step.\\nUsing the tool result...\\n'*4\n" +
+"    out=bytearray()\n" +
+"    target=kb*1024\n" +
+"    while len(out)<target:\n" +
+"        out.extend(boiler)\n" +
+"        n=rng.randrange(200,600)\n" +
+"        out.extend(bytes(rng.randrange(32,127) for _ in range(n)))\n" +
+"    return bytes(out[:target])\n" +
+"def linear_dedup(buf,win=WIN):\n" +
+"    n=len(buf)\n" +
+"    if n<win: return 0\n" +
+"    matches=0\n" +
+"    seen=[]\n" +
+"    for i in range(0,n-win+1):\n" +
+"        c=buf[i:i+win]\n" +
+"        hit=False\n" +
+"        for j in seen:\n" +
+"            if buf[j:j+win]==c: hit=True; break\n" +
+"        if hit: matches+=1\n" +
+"        else: seen.append(i)\n" +
+"    return matches\n" +
+"def rabin_karp_dedup(buf,win=WIN):\n" +
+"    n=len(buf)\n" +
+"    if n<win: return 0\n" +
+"    pow_w=pow(BASE,win,MOD)\n" +
+"    h=0\n" +
+"    for i in range(win): h=(h*BASE+buf[i])%MOD\n" +
+"    seen={h:0}\n" +
+"    matches=0\n" +
+"    for i in range(1,n-win+1):\n" +
+"        h=(h*BASE - buf[i-1]*pow_w + buf[i+win-1])%MOD\n" +
+"        if h in seen:\n" +
+"            cand=seen[h]\n" +
+"            if buf[cand:cand+win]==buf[i:i+win]:\n" +
+"                matches+=1; continue\n" +
+"        seen[h]=i\n" +
+"    return matches\n" +
+"def main():\n" +
+"    print(f'airgenome bench/C10 — stream-chunk dedup (linear vs Rabin-Karp rolling)')\n" +
+"    print(f'  BUF_KB={BUF_KB} WIN={WIN} K={K}')\n" +
+"    buf=synth(BUF_KB)\n" +
+"    print(f'  synth buffer: {fmt(len(buf))}')\n" +
+"    # diff test: small subset (1KB) 에서 result 일치\n" +
+"    small=buf[:1024]\n" +
+"    o=linear_dedup(small,WIN); n=rabin_karp_dedup(small,WIN)\n" +
+"    print(f'  diff_test (1KB): linear={o} rk={n}  mm={0 if o==n else 1}')\n" +
+"    if o!=n:\n" +
+"        print('BENCH FAIL [diff_test mismatch]'); return\n" +
+"    # warmup\n" +
+"    rabin_karp_dedup(buf[:2048],WIN); linear_dedup(buf[:2048],WIN)\n" +
+"    # OLD: 32KB linear 은 너무 느림 → 4KB sample → extrapolate\n" +
+"    SAMPLE=4096\n" +
+"    sample_buf=buf[:SAMPLE]\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): linear_dedup(sample_buf,WIN)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old_sample=(t1-t0)//K\n" +
+"    # extrap: O(n²) → factor (BUF/SAMPLE)²\n" +
+"    factor=(len(buf)/SAMPLE)**2\n" +
+"    ns_old_extrap=int(ns_old_sample*factor)\n" +
+"    print(f'  OLD (linear) sample={SAMPLE}B ns={ns_old_sample}  extrap_full_ns={ns_old_extrap} (O(n²) factor={factor:.1f})')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(K): rabin_karp_dedup(buf,WIN)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=(t1-t0)//K\n" +
+"    print(f'  NEW (Rabin-Karp) total_ns={(t1-t0)}  per_op_ns={ns_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old_extrap/ns_new\n" +
+"        saved_pct=((ns_old_extrap-ns_new)*100)//ns_old_extrap if ns_old_extrap>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"    print(f'  5-tuple: site=C10 ROI#=stream baseline_ns={ns_old_extrap} post_ns={ns_new} diff_test=lossless')\n" +
+"main()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_c10_stream_dedup_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

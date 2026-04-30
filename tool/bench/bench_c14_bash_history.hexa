@@ -1,0 +1,135 @@
+// tool/bench/bench_c14_bash_history.hexa — C14 bash history APBF bench
+//   OLD: linear scan all-jsonl → grep '"name":"Bash"' + json.loads + 매 query 마다
+//        전체 file set 재스캔
+//   NEW: pre-encoded mmap blob (CBHF) + bisect prefix lookup (one-shot mmap)
+//
+//   synthetic: 5K Bash command (15 prefix bucket) → blob encode → 200 prefix query.
+//   K=3 cycles. OLD 은 sample 50 + extrapolate (전체 스캔 비용 너무 큼).
+//
+// 5-tuple: site=C14 ROI#=bashhist baseline_ns post_ns diff_test=lossless
+
+let PAYLOAD = "import sys,os,time,struct,bisect,array,mmap,random\n" +
+"BLOB='/tmp/bench_c14_cbhf.bin'\n" +
+"N_CMDS=5000; QUERIES=200; K=3; SAMPLE=50\n" +
+"BASES=['git status','git diff','git log','ls -la','cd ','rg ','find . ','python3 ','npm ','cargo ','curl -s ','grep -r ','make ','docker ps','kubectl get']\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def synth(n=N_CMDS,seed=7):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        b=BASES[i%len(BASES)]\n" +
+"        suf=' '+''.join(chr(97+rng.randrange(26)) for _ in range(8))\n" +
+"        out.append((b+suf,f'/tmp/proj{i%5}',1700000000+i))\n" +
+"    return out\n" +
+"def encode(rows,out_path):\n" +
+"    rows=sorted(rows,key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    cmd_off=array.array('I',[0]*n); cmd_len=array.array('I',[0]*n)\n" +
+"    cwd_off=array.array('I',[0]*n); cwd_len=array.array('I',[0]*n)\n" +
+"    ts=array.array('I',[0]*n)\n" +
+"    for i,(c,w,t) in enumerate(rows):\n" +
+"        cb=c.encode('utf-8','replace'); wb=w.encode('utf-8','replace')\n" +
+"        cmd_off[i]=len(pool); cmd_len[i]=len(cb); pool.extend(cb)\n" +
+"        cwd_off[i]=len(pool); cwd_len[i]=len(wb); pool.extend(wb)\n" +
+"        ts[i]=t&0xffffffff\n" +
+"    header=struct.pack('<4sIII',b'CBHF',1,n,len(pool))\n" +
+"    with open(out_path,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(cmd_off.tobytes()); f.write(cmd_len.tobytes())\n" +
+"        f.write(cwd_off.tobytes()); f.write(cwd_len.tobytes())\n" +
+"        f.write(ts.tobytes()); f.write(pool)\n" +
+"    return os.path.getsize(out_path)\n" +
+"def load_blob(path):\n" +
+"    f=open(path,'rb'); mm=mmap.mmap(f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"    magic,ver,n,pool_sz=struct.unpack_from('<4sIII',mm,0)\n" +
+"    base=16\n" +
+"    def rd(off,cnt):\n" +
+"        a=array.array('I'); a.frombytes(bytes(memoryview(mm)[off:off+4*cnt])); return a\n" +
+"    cmd_off=rd(base+0*4*n,n); cmd_len=rd(base+1*4*n,n)\n" +
+"    pool_off=base+5*4*n\n" +
+"    cmds=[bytes(memoryview(mm)[pool_off+cmd_off[i]:pool_off+cmd_off[i]+cmd_len[i]]) for i in range(n)]\n" +
+"    return cmds,mm,f\n" +
+"def old_query(rows,prefix):\n" +
+"    pb=prefix\n" +
+"    hits=0\n" +
+"    for c,_,_ in rows:\n" +
+"        if len(c)>=len(pb) and c[:len(pb)]==pb: hits+=1\n" +
+"    return hits\n" +
+"def new_query(cmds,prefix):\n" +
+"    pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"    lo=bisect.bisect_left(cmds,pb)\n" +
+"    hi=bisect.bisect_left(cmds,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"    return hi-lo\n" +
+"def make_prefixes(n=QUERIES,seed=11):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        b=BASES[i%len(BASES)]\n" +
+"        l=rng.choice([3,4,5,6,8,10])\n" +
+"        out.append(b[:l] if len(b)>=l else b)\n" +
+"    return out\n" +
+"def main():\n" +
+"    print(f'airgenome bench/C14 — bash history (linear-scan vs CBHF mmap bisect)')\n" +
+"    print(f'  N_CMDS={N_CMDS} QUERIES={QUERIES} K={K} SAMPLE={SAMPLE}')\n" +
+"    rows=synth(N_CMDS)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    sz=encode(rows,BLOB)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    enc_ns=t1-t0\n" +
+"    print(f'  encode: {enc_ns/1e6:.1f}ms  blob={fmt(sz)}  n={len(rows)}')\n" +
+"    cmds,mm,f=load_blob(BLOB)\n" +
+"    prefixes=make_prefixes(QUERIES)\n" +
+"    # diff test (sample 20)\n" +
+"    mm_count=0\n" +
+"    for i in range(0,QUERIES,QUERIES//20):\n" +
+"        p=prefixes[i]\n" +
+"        o=old_query(rows,p); n=new_query(cmds,p)\n" +
+"        if o!=n:\n" +
+"            mm_count+=1\n" +
+"            print(f'    DIFF prefix=[{p}] old={o} new={n}')\n" +
+"    print(f'  diff_test: {mm_count} mismatch')\n" +
+"    if mm_count!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    # warmup\n" +
+"    new_query(cmds,prefixes[0]); old_query(rows,prefixes[0])\n" +
+"    # OLD: linear scan SAMPLE → extrap\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(K):\n" +
+"        for i in range(SAMPLE):\n" +
+"            old_query(rows,prefixes[i%QUERIES])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old_sample=(t1-t0)//(K*SAMPLE)\n" +
+"    ns_old_extrap=ns_old_sample*QUERIES\n" +
+"    print(f'  OLD (linear) per_q_ns={ns_old_sample}  extrap_total_ns={ns_old_extrap}')\n" +
+"    # NEW: bisect QUERIES 전체\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(K):\n" +
+"        for i in range(QUERIES):\n" +
+"            new_query(cmds,prefixes[i])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new_total=(t1-t0)//K\n" +
+"    ns_new_per=ns_new_total//QUERIES\n" +
+"    print(f'  NEW (bisect) per_q_ns={ns_new_per}  total_ns={ns_new_total}')\n" +
+"    if ns_new_per>0:\n" +
+"        ratio=ns_old_sample/ns_new_per\n" +
+"        saved=((ns_old_sample-ns_new_per)*100)//ns_old_sample if ns_old_sample>0 else 0\n" +
+"        print(f'  per-query speedup={ratio:.1f}x  saved={saved}%')\n" +
+"        amort=enc_ns//QUERIES\n" +
+"        print(f'  + encode amortized: {amort}ns/query  effective={ns_new_per+amort}ns/query')\n" +
+"    print(f'  5-tuple: site=C14 ROI#=bashhist baseline_ns={ns_old_sample} post_ns={ns_new_per} diff_test=lossless')\n" +
+"    mm.close(); f.close()\n" +
+"main()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_c14_bash_history_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

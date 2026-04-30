@@ -1,0 +1,115 @@
+// airgenome/modules/filters/data/claude_stream_chunk_rabin_karp.hexa
+//   C10 — Claude Code streaming chunk Rabin-Karp rolling-hash dedup (Type C/E).
+//
+//   배경:
+//     Claude Code assistant message text 는 streaming chunk (~50–200B) 로 도착.
+//     동일 boilerplate (prompt template, tool-use header, code-fence preamble) 가
+//     세션마다 반복 → in-session sliding-window dedup 으로 잘라낼 수 있다.
+//
+//   기법: Rabin-Karp rolling hash (catalog #70).
+//     window=64B sliding hash → 동일 hash 등장 시 source/seen offset+len 만 보관,
+//     payload 미게재. linear scan dedup 은 O(n²); rolling hash 는 O(n).
+//
+//   blob layout (in-memory dict — emit chunk-id + match-table 만 stdout):
+//     - rolling hash modulus = (1<<61) - 1, base = 257
+//     - duplicate emit: f'DUP @{off} <-{prev_off} len={64}'
+//     - unique emit:    chunk byte stream 그대로
+//
+//   모드:
+//     dedup <input>  : 텍스트 파일을 stream-chunk 시뮬레이션 → dup ratio 출력
+//     report         : synthetic 5-section 본문 (각 섹션 동일 prefix 반복) dedup ratio
+//
+// R1 HEXA-FIRST: 인라인 python3 payload. R17: /usr/bin/perl alarm 120s. try/catch 0.
+
+let PAYLOAD = "import sys,os,time,hashlib,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'report'\n" +
+"src =sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"WIN=int(sys.argv[3]) if len(sys.argv)>3 else 64\n" +
+"BASE=257\n" +
+"MOD=(1<<61)-1\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def synthetic():\n" +
+"    rng=random.Random(7)\n" +
+"    boiler=b'Here is the answer:\\nLet me explain step by step.\\n'*8\n" +
+"    sections=[]\n" +
+"    for i in range(5):\n" +
+"        body=bytes(rng.randrange(32,127) for _ in range(800))\n" +
+"        sections.append(boiler+body)\n" +
+"    return b'\\n'.join(sections)\n" +
+"def load(path):\n" +
+"    if not path or path=='-' or path=='synthetic':\n" +
+"        return synthetic()\n" +
+"    if not os.path.exists(path):\n" +
+"        print(f'ERROR: not found: {path}'); sys.exit(1)\n" +
+"    with open(path,'rb') as f: return f.read()\n" +
+"def rabin_karp_dedup(buf,win=WIN):\n" +
+"    n=len(buf)\n" +
+"    if n<win: return {'dup':0,'unique':n,'matches':0,'win':win,'n':n}\n" +
+"    pow_w=pow(BASE,win,MOD)\n" +
+"    h=0\n" +
+"    for i in range(win):\n" +
+"        h=(h*BASE+buf[i])%MOD\n" +
+"    seen={}\n" +
+"    matches=0\n" +
+"    if h not in seen: seen[h]=0\n" +
+"    for i in range(1,n-win+1):\n" +
+"        h=(h*BASE - buf[i-1]*pow_w + buf[i+win-1])%MOD\n" +
+"        if h in seen:\n" +
+"            cand=seen[h]\n" +
+"            if buf[cand:cand+win]==buf[i:i+win]:\n" +
+"                matches+=1; continue\n" +
+"        seen[h]=i\n" +
+"    dup=matches*win\n" +
+"    unique=n-dup\n" +
+"    return {'dup':dup,'unique':unique,'matches':matches,'win':win,'n':n,'tbl':len(seen)}\n" +
+"def linear_dedup(buf,win=WIN):\n" +
+"    # OLD baseline: 매 i 마다 buf[0..i] 안에서 byte-wise 일치 검사 — O(n*i*win).\n" +
+"    n=len(buf)\n" +
+"    if n<win: return {'matches':0,'n':n}\n" +
+"    matches=0\n" +
+"    seen=[]\n" +
+"    for i in range(0,n-win+1):\n" +
+"        c=buf[i:i+win]\n" +
+"        if any(c==buf[j:j+win] for j in seen): matches+=1\n" +
+"        else: seen.append(i)\n" +
+"    return {'matches':matches,'n':n}\n" +
+"def report():\n" +
+"    buf=load(src)\n" +
+"    print(f'C10 stream-chunk Rabin-Karp dedup — win={WIN}  buf={fmt(len(buf))}')\n" +
+"    r=rabin_karp_dedup(buf,WIN)\n" +
+"    print(f'  matches={r[\"matches\"]}  dup_bytes={fmt(r[\"dup\"])}  unique_bytes={fmt(r[\"unique\"])}  hash_tbl_entries={r[\"tbl\"]}')\n" +
+"    if r['n']>0:\n" +
+"        ratio=100*r['dup']/r['n']\n" +
+"        print(f'  dup ratio: {ratio:.1f}%  ({fmt(r[\"unique\"])} of {fmt(r[\"n\"])} unique)')\n" +
+"if mode=='dedup' or mode=='report': report()\n" +
+"else: print('usage: dedup|report <input|synthetic|-> [win]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "report"
+    let mut target = "synthetic"
+    let mut winstr = "64"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("claude_stream_chunk_rabin_karp")
+        if is_hexa_bin == false && is_self == false {
+            if v == "dedup" || v == "report" { mode = v }
+            else if v == "-" || v == "synthetic" { target = v }
+            else if v.contains("/") || v.contains(".txt") || v.contains(".jsonl") { target = v }
+            else if to_int(v) > 0 { winstr = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/claude_stream_chunk_rabin_karp_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' '" + winstr + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

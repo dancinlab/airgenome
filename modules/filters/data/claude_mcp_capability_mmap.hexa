@@ -1,0 +1,222 @@
+// modules/filters/data/claude_mcp_capability_mmap.hexa
+//   C11 — MCP server config + capability list → mmap blob (#41).
+//
+//   목적: ~/core/.mcp.json (또는 <repo>/.mcp.json) 을 매 호출마다 json.load
+//         하던 cold path 를 1회 parse + blob mmap 으로 치환. tool name →
+//         server entry 즉시 lookup.
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "CMCP"
+//     version : 4B  u32 (1)
+//     n_srv   : 4B  u32 server count
+//     n_caps  : 4B  u32 capability(tool) total
+//     str_sz  : 4B  u32 string pool size
+//     [n_srv*4] : u32 srv_name_off
+//     [n_srv*4] : u32 srv_name_len
+//     [n_srv*4] : u32 cmd_off
+//     [n_srv*4] : u32 cmd_len
+//     [n_srv*4] : u32 cap_off  (in cap index table)
+//     [n_srv*4] : u32 cap_len
+//     [n_caps*4]: u32 cap_name_off (정렬된 tool name)
+//     [n_caps*4]: u32 cap_name_len
+//     [n_caps*4]: u32 cap_owner_srv (srv index)
+//     [str_sz]  : utf-8 pool
+//
+//   query: tool_name → bisect cap names → owner srv → cmd. instant.
+//
+// 모드:
+//   encode : .mcp.json → /tmp/claude_mcp.bin
+//   bench  : 1000 lookup — parse-each-call vs blob lookup
+//
+// R1 HEXA-FIRST: 인라인 python3.
+
+let PAYLOAD = "import sys,os,json,struct,time,bisect,array,mmap,resource\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"src=sys.argv[2] if len(sys.argv)>2 else os.path.expanduser('~/core/.mcp.json')\n" +
+"BIN='/tmp/claude_mcp.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"\n" +
+"def load_mcp(path):\n" +
+"    if not os.path.exists(path):\n" +
+"        # synthetic fallback (.mcp.json 없으면 representative 합성)\n" +
+"        return {'mcpServers': {\n" +
+"            'airgenome':{'command':'/Users/ghost/core/airgenome/build/mcp','args':[],\n" +
+"                         '_synthetic_caps':['hook_run','filter_compile','genome_emit']},\n" +
+"            'github':{'command':'gh','args':['mcp'],\n" +
+"                      '_synthetic_caps':['issue_create','pr_list','repo_view']},\n" +
+"            'fs':{'command':'fs-mcp','args':[],\n" +
+"                  '_synthetic_caps':['read_file','write_file','list_dir','stat']},\n" +
+"        }}\n" +
+"    with open(path) as f: return json.load(f)\n" +
+"\n" +
+"def synth_caps(srv_name,entry):\n" +
+"    # .mcp.json 에 capability 명세는 standard 가 아님. 주어진 _synthetic_caps\n" +
+"    # 또는 server name 기반 prefix 합성.\n" +
+"    if isinstance(entry,dict) and '_synthetic_caps' in entry:\n" +
+"        return list(entry['_synthetic_caps'])\n" +
+"    return [f'{srv_name}_cap_{i}' for i in range(3)]\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    cfg=load_mcp(src)\n" +
+"    servers=cfg.get('mcpServers') or {}\n" +
+"    srv_list=sorted(servers.keys())\n" +
+"    pool=bytearray()\n" +
+"    def putstr(s):\n" +
+"        sb=s.encode('utf-8','replace')\n" +
+"        off=len(pool); ln=len(sb); pool.extend(sb)\n" +
+"        return off,ln\n" +
+"    n_srv=len(srv_list)\n" +
+"    srv_name_off=array.array('I',[0]*n_srv); srv_name_len=array.array('I',[0]*n_srv)\n" +
+"    cmd_off     =array.array('I',[0]*n_srv); cmd_len     =array.array('I',[0]*n_srv)\n" +
+"    cap_off     =array.array('I',[0]*n_srv); cap_len     =array.array('I',[0]*n_srv)\n" +
+"    cap_pairs=[]  # (cap_name, srv_idx)\n" +
+"    for i,sn in enumerate(srv_list):\n" +
+"        srv_name_off[i],srv_name_len[i]=putstr(sn)\n" +
+"        e=servers[sn]\n" +
+"        cmd=e.get('command','') if isinstance(e,dict) else ''\n" +
+"        cmd_off[i],cmd_len[i]=putstr(cmd)\n" +
+"        caps=synth_caps(sn,e)\n" +
+"        for c in caps: cap_pairs.append((c,i))\n" +
+"    cap_pairs.sort(key=lambda r:r[0])\n" +
+"    n_caps=len(cap_pairs)\n" +
+"    cap_name_off=array.array('I',[0]*n_caps); cap_name_len=array.array('I',[0]*n_caps)\n" +
+"    cap_owner   =array.array('I',[0]*n_caps)\n" +
+"    # cap range per server\n" +
+"    starts=[None]*n_srv\n" +
+"    for j,(c,si) in enumerate(cap_pairs):\n" +
+"        cap_name_off[j],cap_name_len[j]=putstr(c)\n" +
+"        cap_owner[j]=si\n" +
+"    # cap_off / cap_len 은 server 별 cap 개수만큼 contiguous 가 아니라 sorted-by-name.\n" +
+"    # query 용도라 server→cap range 는 별도 보조; 여기선 0,n_caps_for_srv 만 표기.\n" +
+"    counts=[0]*n_srv\n" +
+"    for _,si in cap_pairs: counts[si]+=1\n" +
+"    cur=0\n" +
+"    for i in range(n_srv):\n" +
+"        cap_off[i]=cur; cap_len[i]=counts[i]; cur+=counts[i]\n" +
+"    str_sz=len(pool)\n" +
+"    header=struct.pack('<4sIIII',b'CMCP',1,n_srv,n_caps,str_sz)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(srv_name_off.tobytes()); f.write(srv_name_len.tobytes())\n" +
+"        f.write(cmd_off.tobytes()); f.write(cmd_len.tobytes())\n" +
+"        f.write(cap_off.tobytes()); f.write(cap_len.tobytes())\n" +
+"        f.write(cap_name_off.tobytes()); f.write(cap_name_len.tobytes())\n" +
+"        f.write(cap_owner.tobytes())\n" +
+"        f.write(bytes(pool))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    raw_size=os.path.getsize(src) if os.path.exists(src) else 0\n" +
+"    return {'encode_ns':t1-t0,'n_srv':n_srv,'n_caps':n_caps,'cap_pairs':cap_pairs,\n" +
+"            'raw_size':raw_size,'blob_size':os.path.getsize(BIN),'src':src}\n" +
+"\n" +
+"class McpBlob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n_srv,n_caps,str_sz=struct.unpack_from('<4sIIII',self.mm,0)\n" +
+"        assert magic==b'CMCP' and ver==1\n" +
+"        self.n_srv=n_srv; self.n_caps=n_caps\n" +
+"        b=20\n" +
+"        def take(n):\n" +
+"            nonlocal b\n" +
+"            a=array.array('I'); a.frombytes(self.mm[b:b+4*n]); b+=4*n; return a\n" +
+"        self.srv_name_off=take(n_srv); self.srv_name_len=take(n_srv)\n" +
+"        self.cmd_off     =take(n_srv); self.cmd_len     =take(n_srv)\n" +
+"        self.cap_off     =take(n_srv); self.cap_len     =take(n_srv)\n" +
+"        self.cap_name_off=take(n_caps); self.cap_name_len=take(n_caps)\n" +
+"        self.cap_owner   =take(n_caps)\n" +
+"        self.pool=bytes(self.mm[b:b+str_sz])\n" +
+"        self.cap_names=[self.pool[self.cap_name_off[i]:self.cap_name_off[i]+self.cap_name_len[i]] for i in range(n_caps)]\n" +
+"    def lookup_srv(self,tool_name):\n" +
+"        tb=tool_name.encode('utf-8') if isinstance(tool_name,str) else tool_name\n" +
+"        i=bisect.bisect_left(self.cap_names,tb)\n" +
+"        if i>=self.n_caps or self.cap_names[i]!=tb: return None\n" +
+"        si=self.cap_owner[i]\n" +
+"        sn=self.pool[self.srv_name_off[si]:self.srv_name_off[si]+self.srv_name_len[si]].decode('utf-8','replace')\n" +
+"        cmd=self.pool[self.cmd_off[si]:self.cmd_off[si]+self.cmd_len[si]].decode('utf-8','replace')\n" +
+"        return (sn,cmd)\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def parse_each_call_lookup(src,tool_name):\n" +
+"    cfg=load_mcp(src)\n" +
+"    for sn,e in (cfg.get('mcpServers') or {}).items():\n" +
+"        caps=synth_caps(sn,e)\n" +
+"        if tool_name in caps: return (sn,e.get('command','') if isinstance(e,dict) else '')\n" +
+"    return None\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] {info[\"encode_ns\"]/1e6:.1f}ms src={info[\"src\"]} servers={info[\"n_srv\"]} caps={info[\"n_caps\"]}')\n" +
+"    print(f'  raw={fmt(info[\"raw_size\"])} blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n_caps']==0:\n" +
+"        print('[bench] no caps — skip'); return\n" +
+"    mb=McpBlob(BIN)\n" +
+"    samples=[c for c,_ in info['cap_pairs']]*10  # ≈30~?\n" +
+"    samples=samples[:1000] if len(samples)>=1000 else samples*((1000//max(len(samples),1))+1)\n" +
+"    samples=samples[:1000]\n" +
+"    # warmup\n" +
+"    for s in samples[:5]: mb.lookup_srv(s)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    nh=0\n" +
+"    for s in samples:\n" +
+"        if mb.lookup_srv(s) is not None: nh+=1\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    blob_ns=(t1-t0)//len(samples)\n" +
+"    # OLD: per-call json.load + linear\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    nh2=0\n" +
+"    for s in samples:\n" +
+"        if parse_each_call_lookup(src,s) is not None: nh2+=1\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    old_ns=(t1-t0)//len(samples)\n" +
+"    mb.close()\n" +
+"    print(f'[query 1000] hits blob={nh} parse-each={nh2}')\n" +
+"    print(f'  parse-each-call (json.load + linear) : {old_ns:10d} ns/lookup')\n" +
+"    print(f'  blob mmap + bisect                   : {blob_ns:10d} ns/lookup')\n" +
+"    if blob_ns>0:\n" +
+"        ratio=old_ns/max(blob_ns,1)\n" +
+"        saved=((old_ns-blob_ns)*100)//max(old_ns,1)\n" +
+"        print(f'  speedup={ratio:.1f}x saved={saved}%')\n" +
+"    print(f'[rss] {fmt(rss())}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n_srv\"]} servers / {info[\"n_caps\"]} caps in {info[\"encode_ns\"]/1e6:.1f}ms → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench [<.mcp.json>]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("claude_mcp_capability_mmap")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".mcp.json") || v.ends_with(".json") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/core/.mcp.json"
+    }
+    let tmp_py = "/tmp/claude_mcp_mmap_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

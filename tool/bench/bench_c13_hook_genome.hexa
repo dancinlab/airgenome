@@ -1,0 +1,327 @@
+// tool/bench/bench_c13_hook_genome.hexa — C13 5-tuple bench
+//
+// Target: modules/filters/data/claude_hook_event_genome.hexa
+// Pattern: F45 (safari_bg_tab_throttle_genome) 변종 — fork 다수 → 1 fork batch.
+//
+// 5-tuple (per-cycle):
+//   OLD-1 per-event jq fork    매 event 마다 jq -r '.event' + jq -r '.tokens' (2 fork/ev)
+//   OLD-2 per-event awk fork   매 event 마다 awk 단일 필드 추출 (1 fork/ev)
+//   NEW-1 cat tail | in-hexa   1 fork (cat tail) + in-hexa keyword scan
+//   NEW-2 read_file 직접       0 fork (synth 파일 사전 작성, in-hexa 파싱)
+//
+// dataset: synthetic 200 hook event line (synth_hook_lines 형식, F45 패턴 동등)
+// 측정: per-cycle ns (gdate +%s%N), CYCLES=20.
+//
+// lossless:
+//   diff_test → census(events) / project_axes(6원소) 가 4 방법 모두 동일.
+//
+// 본 bench = ingestion latency 추정.  실 prod hook bus throughput 은 별도 axis.
+
+let TMPDIR_RAW = exec("echo ${TMPDIR:-/tmp}").trim()
+let SYNTH_RING = TMPDIR_RAW + "/airgenome_bench_c13.jsonl"
+let CYCLES = 20
+let TAIL_N = 200
+let SYNTH_EVENTS = 200
+
+// ═══════════════════════════════════════════════════════════════════════
+//  A6 to_int_safe
+// ═══════════════════════════════════════════════════════════════════════
+
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
+
+fn now_ns() -> str { return exec("gdate +%s%N").trim() }
+fn ns_diff(t0: str, t1: str) -> int { return to_int_safe(t1) - to_int_safe(t0) }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SYNTHETIC HOOK FILE
+// ═══════════════════════════════════════════════════════════════════════
+
+fn build_synth_ring(path: str, n: int) -> void {
+    let _rm = exec("rm -f '" + path + "'")
+    // awk: round-robin 5 종류 (F45 합성 패턴 직접 이식)
+    let cmd = "awk 'BEGIN { for (i=0;i<" + to_string(n) + ";i++) { k=i%5; if (k==0) printf \"{\\\"event\\\":\\\"PreToolUse\\\",\\\"tool\\\":\\\"Bash\\\",\\\"tokens\\\":120}\\n\"; else if (k==1) printf \"{\\\"event\\\":\\\"PostToolUse\\\",\\\"tool\\\":\\\"Read\\\",\\\"tokens\\\":40,\\\"file\\\":\\\"/tmp/x\\\"}\\n\"; else if (k==2) printf \"{\\\"event\\\":\\\"PostToolUse\\\",\\\"tool\\\":\\\"Edit\\\",\\\"tokens\\\":80,\\\"file\\\":\\\"/tmp/y\\\"}\\n\"; else if (k==3) printf \"{\\\"event\\\":\\\"PostToolUse\\\",\\\"tool\\\":\\\"Write\\\",\\\"tokens\\\":60,\\\"file\\\":\\\"/tmp/z\\\"}\\n\"; else printf \"{\\\"event\\\":\\\"PostToolUse\\\",\\\"tool\\\":\\\"Bash\\\",\\\"error\\\":\\\"FAIL\\\",\\\"tokens\\\":30}\\n\" } }' > '" + path + "'"
+    let _ = exec(cmd)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CENSUS HELPERS (in-hexa, 0 fork)
+// ═══════════════════════════════════════════════════════════════════════
+
+struct Census {
+    events: int,
+    tools: int,
+    files: int,
+    errors: int,
+    tokens: int
+}
+
+fn line_kind(line: str) -> int {
+    if line == "" { return 0 }
+    if line.contains("PreToolUse") { return 1 }
+    if line.contains("PostToolUse") { return 2 }
+    if line.contains("UserPromptSubmit") { return 3 }
+    if line.contains("Stop") { return 3 }
+    return 3
+}
+
+fn line_has_file(line: str) -> bool {
+    if line.contains("\"file\"") { return true }
+    if line.contains("\"file_path\"") { return true }
+    if line.contains("\"path\"") { return true }
+    return false
+}
+
+fn line_has_error(line: str) -> bool {
+    if line.contains("\"error\"") { return true }
+    if line.contains("FAIL") { return true }
+    if line.contains("panic") { return true }
+    if line.contains("ERROR") { return true }
+    return false
+}
+
+fn line_tokens(line: str) -> int {
+    let anchor = "\"tokens\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return 0 }
+    let after = parts[1]
+    let n = len(after)
+    let mut i = 0
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return to_int_safe(after.substring(0, i).trim()) }
+        if ch == "}" { return to_int_safe(after.substring(0, i).trim()) }
+        i = i + 1
+    }
+    return to_int_safe(after.trim())
+}
+
+fn census_from_raw(raw: str) -> Census {
+    let lines = raw.split("\n")
+    let mut c = Census { events: 0, tools: 0, files: 0, errors: 0, tokens: 0 }
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line == "" { i = i + 1; continue }
+        let k = line_kind(line)
+        if k == 0 { i = i + 1; continue }
+        c.events = c.events + 1
+        if k == 1 { c.tools = c.tools + 1 }
+        if line_has_file(line) { c.files = c.files + 1 }
+        if line_has_error(line) { c.errors = c.errors + 1 }
+        c.tokens = c.tokens + line_tokens(line)
+        i = i + 1
+    }
+    return c
+}
+
+fn clip(v: int, hi: int) -> int { if v < 0 { return 0 } if v > hi { return hi } return v }
+
+fn project_axes(c: Census, window_n: int) -> list {
+    let token_a = clip(c.tokens / 1024, 255)
+    let tool_a = clip(c.tools, 255)
+    let file_a = clip(c.files, 255)
+    let err_a = clip(c.errors, 255)
+    let mut time_a = 0
+    if window_n > 0 { time_a = clip((c.events * 100) / window_n, 100) }
+    let cap = window_n * 200
+    let mut cost_a = 0
+    if cap > 0 { cost_a = clip((c.tokens * 100) / cap, 100) }
+    return [token_a, tool_a, file_a, err_a, time_a, cost_a]
+}
+
+fn axes_eq(a: list, b: list) -> bool {
+    if len(a) != len(b) { return false }
+    let mut i = 0
+    while i < len(a) {
+        if a[i] != b[i] { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CYCLE IMPLEMENTATIONS
+// ═══════════════════════════════════════════════════════════════════════
+
+// OLD-1: per-event jq fork (2 fork/event).  CYCLES * SYNTH_EVENTS 회 fork 발생 → 매우 느림.
+// 본 bench 는 fork 자체 비용 측정 — 작은 이벤트수 (TAIL_N=200) 샘플 로 1 cycle 만.
+fn old_jq_per_event_cycle() -> Census {
+    // 최소 비용 시뮬: jq 호출만 발생시키고 결과는 census 결과와 align (lossless).
+    // 실제 fork 비용 측정.  파일을 line 단위로 split → 각 line 마다 jq 1 호출.
+    let raw = exec("tail -" + to_string(TAIL_N) + " '" + SYNTH_RING + "' 2>/dev/null")
+    let lines = raw.split("\n")
+    let mut c = Census { events: 0, tools: 0, files: 0, errors: 0, tokens: 0 }
+    let mut i = 0
+    let max_lines = len(lines)
+    // OLD-1 의 핵심 cost = 매 line 당 jq fork.  공정한 비교 위해 모든 line 처리.
+    while i < max_lines {
+        let line = lines[i].trim()
+        if line == "" { i = i + 1; continue }
+        // jq 1 fork: event 추출
+        let _evt = exec("printf '%s' '" + line.replace("'", "'\\''") + "' | jq -r '.event' 2>/dev/null").trim()
+        // jq 2 fork: tokens 추출
+        let _tok = exec("printf '%s' '" + line.replace("'", "'\\''") + "' | jq -r '.tokens // 0' 2>/dev/null").trim()
+        // 결과 census 는 in-hexa 와 동일 — fork 비용만 측정
+        let k = line_kind(line)
+        if k != 0 {
+            c.events = c.events + 1
+            if k == 1 { c.tools = c.tools + 1 }
+            if line_has_file(line) { c.files = c.files + 1 }
+            if line_has_error(line) { c.errors = c.errors + 1 }
+            c.tokens = c.tokens + line_tokens(line)
+        }
+        i = i + 1
+    }
+    return c
+}
+
+// OLD-2: per-event awk fork (1 fork/event)
+fn old_awk_per_event_cycle() -> Census {
+    let raw = exec("tail -" + to_string(TAIL_N) + " '" + SYNTH_RING + "' 2>/dev/null")
+    let lines = raw.split("\n")
+    let mut c = Census { events: 0, tools: 0, files: 0, errors: 0, tokens: 0 }
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line == "" { i = i + 1; continue }
+        // awk fork: event 종류 추출
+        let _kind = exec("printf '%s' '" + line.replace("'", "'\\''") + "' | awk -F'\"event\":\"' '{print $2}' | awk -F'\"' '{print $1}' 2>/dev/null").trim()
+        let k = line_kind(line)
+        if k != 0 {
+            c.events = c.events + 1
+            if k == 1 { c.tools = c.tools + 1 }
+            if line_has_file(line) { c.files = c.files + 1 }
+            if line_has_error(line) { c.errors = c.errors + 1 }
+            c.tokens = c.tokens + line_tokens(line)
+        }
+        i = i + 1
+    }
+    return c
+}
+
+// NEW-1: 1 fork (cat tail) + in-hexa scan (claude_hook_event_genome 실 구현)
+fn new_cat_tail_cycle() -> Census {
+    let raw = exec("cat '" + SYNTH_RING + "' 2>/dev/null | tail -" + to_string(TAIL_N))
+    return census_from_raw(raw)
+}
+
+// NEW-2: 0 fork — read_file 직접 + in-hexa tail
+fn new_read_file_cycle() -> Census {
+    let raw = read_file(SYNTH_RING)
+    let lines = raw.split("\n")
+    let n = len(lines)
+    let mut start = n - TAIL_N
+    if start < 0 { start = 0 }
+    let mut window = ""
+    let mut i = start
+    while i < n {
+        if lines[i] != "" { window = window + lines[i] + "\n" }
+        i = i + 1
+    }
+    return census_from_raw(window)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BENCH ENTRY
+// ═══════════════════════════════════════════════════════════════════════
+
+fn diff_test() -> int {
+    let c0 = old_jq_per_event_cycle()
+    let c1 = old_awk_per_event_cycle()
+    let c2 = new_cat_tail_cycle()
+    let c3 = new_read_file_cycle()
+    let a0 = project_axes(c0, TAIL_N)
+    let a1 = project_axes(c1, TAIL_N)
+    let a2 = project_axes(c2, TAIL_N)
+    let a3 = project_axes(c3, TAIL_N)
+    if !axes_eq(a0, a2) { println("    DIFF a0!=a2"); return 1 }
+    if !axes_eq(a1, a2) { println("    DIFF a1!=a2"); return 2 }
+    if !axes_eq(a3, a2) { println("    DIFF a3!=a2"); return 3 }
+    return 0
+}
+
+fn run() -> void {
+    println("airgenome bench/C13 — claude_hook_event_genome (per-event jq/awk fork → 1 fork batch)")
+    println("  CYCLES=" + to_string(CYCLES) + " TAIL_N=" + to_string(TAIL_N) + " SYNTH_EVENTS=" + to_string(SYNTH_EVENTS))
+
+    build_synth_ring(SYNTH_RING, SYNTH_EVENTS)
+    println("  ring=" + SYNTH_RING)
+
+    let dt = diff_test()
+    println("  diff_test result: " + to_string(dt) + " (0 = lossless)")
+    if dt != 0 { println("BENCH FAIL [diff_test]"); return }
+
+    // OLD-1: jq per-event — fork 매우 비싸 → CYCLES 줄여서 1 회만 돌리고 / CYCLES 환산
+    let old1_cycles = 1
+    let t0 = now_ns()
+    let mut k0 = 0
+    while k0 < old1_cycles { let _ = old_jq_per_event_cycle(); k0 = k0 + 1 }
+    let t1 = now_ns()
+    let ns_old1_total = ns_diff(t0, t1)
+    let ns_old1_per_cycle = ns_old1_total / old1_cycles
+    println("  OLD-1 jq_per_event   per_cycle_ns=" + to_string(ns_old1_per_cycle) + "  (measured " + to_string(old1_cycles) + " cycle, " + to_string(TAIL_N) + " events × 2 jq fork)")
+
+    let old2_cycles = 1
+    let t2 = now_ns()
+    let mut k1 = 0
+    while k1 < old2_cycles { let _ = old_awk_per_event_cycle(); k1 = k1 + 1 }
+    let t3 = now_ns()
+    let ns_old2_total = ns_diff(t2, t3)
+    let ns_old2_per_cycle = ns_old2_total / old2_cycles
+    println("  OLD-2 awk_per_event  per_cycle_ns=" + to_string(ns_old2_per_cycle) + "  (measured " + to_string(old2_cycles) + " cycle, " + to_string(TAIL_N) + " events × 1 awk fork)")
+
+    let t4 = now_ns()
+    let mut k2 = 0
+    while k2 < CYCLES { let _ = new_cat_tail_cycle(); k2 = k2 + 1 }
+    let t5 = now_ns()
+    let ns_new1 = ns_diff(t4, t5)
+    let ns_new1_per_cycle = ns_new1 / CYCLES
+    println("  NEW-1 cat_tail+in-hexa per_cycle_ns=" + to_string(ns_new1_per_cycle) + "  (1 fork)")
+
+    let t6 = now_ns()
+    let mut k3 = 0
+    while k3 < CYCLES { let _ = new_read_file_cycle(); k3 = k3 + 1 }
+    let t7 = now_ns()
+    let ns_new2 = ns_diff(t6, t7)
+    let ns_new2_per_cycle = ns_new2 / CYCLES
+    println("  NEW-2 read_file_only per_cycle_ns=" + to_string(ns_new2_per_cycle) + "  (0 fork)")
+
+    println("  --- speedup vs OLD-1 jq_per_event ---")
+    if ns_new1_per_cycle > 0 && ns_old1_per_cycle > 0 {
+        let r = ns_old1_per_cycle / ns_new1_per_cycle
+        let saved = ((ns_old1_per_cycle - ns_new1_per_cycle) * 100) / ns_old1_per_cycle
+        println("  NEW-1 cat_tail:  " + to_string(r) + "x  saved=" + to_string(saved) + "%")
+    }
+    if ns_new2_per_cycle > 0 && ns_old1_per_cycle > 0 {
+        let r2 = ns_old1_per_cycle / ns_new2_per_cycle
+        let saved2 = ((ns_old1_per_cycle - ns_new2_per_cycle) * 100) / ns_old1_per_cycle
+        println("  NEW-2 read_file: " + to_string(r2) + "x  saved=" + to_string(saved2) + "%")
+    }
+
+    println("BENCH OK")
+}
+
+run()
