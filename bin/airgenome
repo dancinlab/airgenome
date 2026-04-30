@@ -34,6 +34,7 @@ ARMED_FLAG="$LOG_DIR/guard_armed"
 OFF_FLAG="$LOG_DIR/guard_off"
 CLAUDE_SNAPSHOT_DIR="$LOG_DIR/claude-sessions"
 CLAUDE_LATEST_PTR="$CLAUDE_SNAPSHOT_DIR/latest.txt"
+PLUGINS_DIR="$LOG_DIR/plugins"
 
 # airgenome_tap (CGEventTap + AX shim — unified mouse buttons + scroll inversion +
 # 8-zone window magnet + native tiling lockout). Single binary, single Accessibility
@@ -920,6 +921,152 @@ EOF
 }
 
 # ============================================================
+# plugin — user-data plugin manager (~/.airgenome/plugins/)
+# ============================================================
+# 가벼운 facade: airgenome 본체는 plugin 코드 import 하지 않음 — exec 만.
+# plugin layout: ~/.airgenome/plugins/<name>/{plugin.json, entry, ...}
+# manifest:      {name, version, entry, description, requires:{os,arch}}
+
+cmd_plugin() {
+    local sub="${1:-list}"
+    shift || true
+    mkdir -p "$PLUGINS_DIR"
+    case "$sub" in
+        list|ls)
+            if [ -z "$(ls -A "$PLUGINS_DIR" 2>/dev/null)" ]; then
+                echo "(no plugins in $PLUGINS_DIR)"
+                return 0
+            fi
+            local p name ver desc kind
+            for p in "$PLUGINS_DIR"/*; do
+                [ -e "$p" ] || continue
+                name="$(basename "$p")"
+                kind="dir"; [ -L "$p" ] && kind="link"
+                if [ -f "$p/plugin.json" ]; then
+                    ver="$(jq -r '.version // "?"' "$p/plugin.json" 2>/dev/null || echo '?')"
+                    desc="$(jq -r '.description // ""' "$p/plugin.json" 2>/dev/null || echo '')"
+                else
+                    ver="(no manifest)"; desc=""
+                fi
+                printf '%-24s %-10s %-5s %s\n' "$name" "$ver" "$kind" "$desc"
+            done
+            ;;
+        info)
+            local name="${1:-}"
+            [ -z "$name" ] && { echo "usage: airgenome plugin info <name>" >&2; return 2; }
+            local f="$PLUGINS_DIR/$name/plugin.json"
+            [ ! -f "$f" ] && { echo "no manifest: $f" >&2; return 1; }
+            cat "$f"
+            ;;
+        install)
+            local src="${1:-}" name="${2:-}"
+            [ -z "$src" ] && { echo "usage: airgenome plugin install <git-url|local-path> [<name>]" >&2; return 2; }
+            local dst tmp
+            if [ -d "$src" ]; then
+                src="$(cd "$src" && pwd)"
+                # prefer plugin.json's .name over directory basename
+                if [ -z "$name" ] && [ -f "$src/plugin.json" ]; then
+                    name="$(jq -r '.name // empty' "$src/plugin.json" 2>/dev/null)"
+                fi
+                [ -z "$name" ] && name="$(basename "$src")"
+                dst="$PLUGINS_DIR/$name"
+                [ -e "$dst" ] && { echo "already installed: $dst (uninstall first)" >&2; return 1; }
+                cp -R "$src" "$dst"
+                echo "installed: $dst (copy from $src)"
+            else
+                # git URL: clone to temp first, then rename based on plugin.json
+                tmp="$(mktemp -d "${TMPDIR:-/tmp}/airgenome-plugin.XXXXXX")"
+                git clone --depth=1 "$src" "$tmp/p" || { rm -rf "$tmp"; echo "git clone failed" >&2; return 1; }
+                if [ -z "$name" ] && [ -f "$tmp/p/plugin.json" ]; then
+                    name="$(jq -r '.name // empty' "$tmp/p/plugin.json" 2>/dev/null)"
+                fi
+                [ -z "$name" ] && name="$(basename "$src" .git)"
+                dst="$PLUGINS_DIR/$name"
+                if [ -e "$dst" ]; then rm -rf "$tmp"; echo "already installed: $dst (uninstall first)" >&2; return 1; fi
+                mv "$tmp/p" "$dst"
+                rm -rf "$tmp"
+                echo "installed: $dst (clone from $src)"
+            fi
+            if [ -f "$dst/plugin.json" ]; then
+                local entry
+                entry="$(jq -r '.entry // "entry"' "$dst/plugin.json" 2>/dev/null || echo entry)"
+                [ -f "$dst/$entry" ] && chmod +x "$dst/$entry"
+            fi
+            ;;
+        link)
+            local src="${1:-}" name="${2:-}"
+            [ -z "$src" ] && { echo "usage: airgenome plugin link <local-path> [<name>]" >&2; return 2; }
+            [ ! -d "$src" ] && { echo "not a directory: $src" >&2; return 1; }
+            src="$(cd "$src" && pwd)"
+            # prefer plugin.json's .name over directory basename
+            if [ -z "$name" ] && [ -f "$src/plugin.json" ]; then
+                name="$(jq -r '.name // empty' "$src/plugin.json" 2>/dev/null)"
+            fi
+            [ -z "$name" ] && name="$(basename "$src")"
+            local dst="$PLUGINS_DIR/$name"
+            [ -e "$dst" ] && { echo "already exists: $dst (uninstall first)" >&2; return 1; }
+            ln -s "$src" "$dst"
+            echo "linked: $dst -> $src (name=$name)"
+            ;;
+        uninstall|remove|rm)
+            local name="${1:-}"
+            [ -z "$name" ] && { echo "usage: airgenome plugin uninstall <name>" >&2; return 2; }
+            local dst="$PLUGINS_DIR/$name"
+            [ ! -e "$dst" ] && [ ! -L "$dst" ] && { echo "not installed: $dst" >&2; return 1; }
+            if [ -L "$dst" ]; then
+                rm "$dst"; echo "unlinked: $dst"
+            else
+                rm -rf "$dst"; echo "removed: $dst"
+            fi
+            ;;
+        run|exec)
+            local name="${1:-}"
+            [ -z "$name" ] && { echo "usage: airgenome plugin run <name> [args...]" >&2; return 2; }
+            shift
+            local dir="$PLUGINS_DIR/$name"
+            [ ! -e "$dir" ] && [ ! -L "$dir" ] && { echo "not installed: $dir" >&2; return 1; }
+            local entry="entry"
+            [ -f "$dir/plugin.json" ] && entry="$(jq -r '.entry // "entry"' "$dir/plugin.json" 2>/dev/null || echo entry)"
+            local entry_path="$dir/$entry"
+            [ ! -e "$entry_path" ] && { echo "entry not found: $entry_path" >&2; return 1; }
+            [ ! -x "$entry_path" ] && chmod +x "$entry_path" 2>/dev/null
+            ( cd "$dir" && exec "./$entry" "$@" )
+            ;;
+        path)
+            echo "$PLUGINS_DIR"
+            ;;
+        help|-h|--help|"")
+            cat <<EOF
+airgenome plugin — user-data plugin manager
+
+usage:
+  airgenome plugin list                            list installed plugins
+  airgenome plugin info <name>                     show manifest (plugin.json)
+  airgenome plugin install <git-url|path> [<name>] install from git or local dir
+  airgenome plugin link <path> [<name>]            symlink for dev (live edit)
+  airgenome plugin uninstall <name>                remove plugin
+  airgenome plugin run <name> [args...]            exec plugin entry
+  airgenome plugin path                            print PLUGINS_DIR
+
+dir: $PLUGINS_DIR
+
+plugin layout (<name>/):
+  plugin.json    {name, version, entry, description, requires:{os,arch}}
+  entry          executable (shell, hexa, binary — anything)
+  ...            free internal layout
+
+airgenome 본체는 plugin 코드 import 안 함 — exec 만. invariant 1-4 무관.
+EOF
+            ;;
+        *)
+            echo "unknown plugin subcommand: $sub" >&2
+            echo "try: airgenome plugin help" >&2
+            return 2
+            ;;
+    esac
+}
+
+# ============================================================
 # entry
 # ============================================================
 
@@ -941,11 +1088,13 @@ main() {
         list|ls)       cmd_list "$@" ;;
         offload|off)   cmd_offload "$@" ;;
         tap|input)     cmd_tap "$@" ;;
+        plugin|plugins) cmd_plugin "$@" ;;
         # `wake` retired 2026-04-30 per raw 213 — use airgenome.app menubar.
         governance|gov) cmd_governance "$@" ;;
         mouse|mouse-remap)    cmd_mouse "$@" ;;    # legacy alias → cmd_tap
         magnet|window-magnet) cmd_magnet "$@" ;;   # legacy alias → cmd_tap
         launcher)      cmd_launcher "$@" ;;   # hive raw 209 reference impl scaffold
+        # plugin/plugins handled above (case ordering preserved)
         guard-loop)    guard_loop ;;   # 독립 디버그용
         help|-h|--help)
             cat <<'EOF'
@@ -965,6 +1114,9 @@ usage: airgenome <command>
   last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
   list [kind]    자원 목록 — hosts (live infra_state) | workspace | projects
   offload <t> <cmd...>  원격 실행 — t: ubu1|ubu2|htz (ssh alias 경유)
+  plugin <sub>   user-data plugin manager (~/.airgenome/plugins/) —
+                   list | info | install | link | uninstall | run | path | help
+                   airgenome 본체는 facade 만 (exec 위임). 플러그인 코드 import 안 함.
   governance <sub>  raw 91 cross-repo cli-coverage parity:
                    raw triad / hexa-only / english-only / ai-config-ban /
                    deprecated-ban (sibling backends ../hexa-lang or ../hive)

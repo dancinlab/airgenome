@@ -2,7 +2,7 @@
 
 OS 게놈 스캐너 — Mac/원격 vitals 를 6축 hexagon (60바이트) 게놈으로 투사, 패턴 누적, anomaly 검출.
 
-**Status**: rebuild v2 — M0~M6 6개 마일스톤 완료 (2026-04-14). SSOT: [`config/roadmap/airgenome.json`](config/roadmap/airgenome.json).
+**Status**: rebuild v2 — M0~M6 6개 마일스톤 완료 (2026-04-14). SSOT: [`.roadmap`](.roadmap).
 
 ## Layout
 
@@ -73,13 +73,14 @@ v1 의 모든 코드는 [`archive/v1/`](archive/v1/) 에 동결. 부활 절차�
 | M5  | label — anomaly → behavior 라벨 (T15)        | P2       | ✅ done | M4     | airgenome#42 · 5 rules SSOT · synthetic 3-label 검증     |
 | M6  | predict — 7d 추세 → 1h 예측                  | P3       | ✅ done | M4     | airgenome#43 · Holt's 이중 지수평활 · MAE=0% (held-out) |
 
-- Live 상태: `jq '.milestones | map({id, title, status})' config/roadmap/airgenome.json`
-- 다음 unblocked 작업: `jq '.milestones | map(select(.status == "todo" and ((.deps | length) == 0)))' config/roadmap/airgenome.json`
+- Live 상태: `grep -E '^roadmap [0-9]+ (planned|active|done|blocked|deferred)' .roadmap`
+- 트랙별 필터: `awk '/^roadmap /{r=$0} /^  track/{print r" ["$2"]"}' .roadmap`
 
-### Invariants (config/roadmap/airgenome.json#invariants)
+### Invariants
 
 1. `core/core.hexa` 는 외부 hexa 파일 import 안 한다 (self-contained)
 2. 신규 module 은 `use "../core/core"` 만 허용 — module 끼리 직접 import 금지
 3. L0 자격 = 파일 존재 + hexa parse 통과 + self-test 통과 (3중)
 4. `archive/v1/` 는 read-only — 부활은 PR + roadmap 등록 + L0 갱신
-5. `milestones` 에 없는 코드는 작성 금지
+
+> **Utility 면제**: `track=util` 모듈/도구 (보조 런처·tooling 등) 은 roadmap 등록 면제 — invariant 1-4 만 만족하면 됨. MAIN/cell/lora 정합성 요구 안 함.

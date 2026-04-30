@@ -45,10 +45,11 @@
 #     - cell 99%+ / lora <1% (hybrid phase 전환)
 #
 # ─── discipline ──────────────────────────────────
-# 1. "does this advance MAIN?" 우선
-# 2. sub-only commit 금지
-# 3. MAIN phase 달성 증거 = cell + lora feeds 명시
-# 4. invariants: raw#29 UNIVERSAL_4 / raw#30 IRREVERSIBILITY / raw#24 foundation-lock
+# 1. MAIN/cell/lora/ops/probe/dispatch/harvest/label/forecast/hybrid/ssot/governance 트랙은
+#    "does this advance MAIN?" 우선 — sub-only commit 금지 — feeds-main 명시 의무
+# 2. util 트랙 (보조 도구·런처·tooling) 은 MAIN 정합성 면제 —
+#    roadmap 등록 자유 (등록 안 해도 됨), feeds-main 불필요, invariants 1-4 (README) 만 만족
+# 3. invariants: raw#29 UNIVERSAL_4 / raw#30 IRREVERSIBILITY / raw#24 foundation-lock
 #
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -72,7 +73,7 @@
 
 # Format:
 #   roadmap <id> <status> "<name>"
-#     track         <ops|probe|dispatch|harvest|label|forecast|hybrid|cell|lora|ssot>
+#     track         <ops|probe|dispatch|harvest|label|forecast|hybrid|cell|lora|ssot|governance|util>
 #     phase         <P0|P1|P2|P3|...>
 #     eta           <YYYY-MM-DD | YYYY-Qn | TBD>
 #     why           <prose>
