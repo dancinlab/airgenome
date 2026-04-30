@@ -254,6 +254,31 @@ void airgenome_loop_init(void) {
           g_forecast_src ? "ok" : "FAIL");
 }
 
+// 단일 hexa 모듈 1회 실행 — bench / filter / one-shot dispatch.
+// airgenome.app TCC (FDA, Accessibility, Input Monitoring, etc.) 가 자식
+// hexa 프로세스에 상속됨 → modules/filters/data/safari_*.hexa 등 권한
+// 필요 모듈 측정 / 실행 가능. 단일 binary 단일 TCC entry 정신 (raw 241).
+//
+// 호출: airgenome --mode=run-once=<absolute_module_path>
+// timeout: 60s (대형 bench 는 인자로 override 검토)
+int airgenome_loop_run_once(const char *module_path, int timeout_s) {
+    if (!module_path || module_path[0] == '\0') {
+        fprintf(stderr, "[airgenome_loop] run-once: empty module path\n");
+        return 64;
+    }
+    fprintf(stderr, "[airgenome_loop] run-once: %s (timeout=%ds)\n",
+            module_path, timeout_s);
+    char *args[] = {
+        (char *)HEXA_BIN,
+        "run",
+        (char *)module_path,
+        NULL
+    };
+    int rc = loop_spawn_with_watchdog(HEXA_BIN, args, "run-once", timeout_s);
+    fprintf(stderr, "[airgenome_loop] run-once exit=%d\n", rc);
+    return rc;
+}
+
 // 종료 시 source cancel (R24 dispatch_source 종료 cleanup)
 void airgenome_loop_shutdown(void) {
     if (g_harvest_src)  { dispatch_source_cancel(g_harvest_src);  g_harvest_src = NULL;  }

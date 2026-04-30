@@ -112,6 +112,10 @@ extern void airgenome_hotkey_load_bindings(void);
 // 호출은 g_loop_on=1 일 때만, default OFF.
 extern void airgenome_loop_init(void);
 extern void airgenome_loop_shutdown(void);
+// raw 241 단일 binary 단일 TCC entry — bench / filter one-shot dispatch.
+// `airgenome --mode=run-once=<path>` 가 진입. tap 데몬 루프 미진입,
+// singleton lock 미적용. airgenome.app TCC (FDA 등) 자식 상속.
+extern int airgenome_loop_run_once(const char *module_path, int timeout_s);
 
 // Magnet thresholds (pixels). Generous defaults for multi-monitor and
 // 4K/5K layouts -- a 20px reach feels invisible at high pixel densities.
@@ -1569,8 +1573,27 @@ static void install_status_item(void) {
 }
 
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
     @autoreleasepool {
+        // raw 241 단일 binary 단일 TCC entry — `--mode=run-once=<path>` 진입점.
+        // tap 데몬 루프 / NSApp / singleton lock 모두 우회 — 자식 hexa 1회
+        // 실행 후 즉시 종료. airgenome.app TCC 권한 (FDA 등) 자식 상속 →
+        // modules/filters/data/safari_*.hexa 같은 권한 의존 모듈도 측정 가능.
+        // timeout default 60s — 큰 bench 는 --timeout=<sec> 플래그로 override.
+        for (int i = 1; i < argc; i++) {
+            if (strncmp(argv[i], "--mode=run-once=", 16) == 0) {
+                const char *path = argv[i] + 16;
+                int timeout_s = 60;
+                for (int j = 1; j < argc; j++) {
+                    if (strncmp(argv[j], "--timeout=", 10) == 0) {
+                        timeout_s = atoi(argv[j] + 10);
+                        if (timeout_s < 1)   timeout_s = 1;
+                        if (timeout_s > 600) timeout_s = 600;
+                    }
+                }
+                return airgenome_loop_run_once(path, timeout_s);
+            }
+        }
+
         // Refuse to start if another airgenome.tap process is already alive.
         // flock() ensures the menu-bar status item is never duplicated, even
         // when launchd's KeepAlive tries to respawn during a slow shutdown.
