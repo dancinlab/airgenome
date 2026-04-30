@@ -212,11 +212,12 @@ fn run() {
         println("ERROR: not found: " + target)
         return
     }
-    let tmp_py = "/tmp/safari_runtime_filter_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    let tmp_py = "/tmp/safari_runtime_filter_" + exec("date +%s%N").trim() + ".py"
     write_file(tmp_py, PAYLOAD)
-    let cmd = "GATE_LOCAL=1 /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
-    // R17: timeout 120s — prevent hang on large Safari filter
-    let result = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
+    // /usr/bin/python3 + perl alarm wrapper — R17 timeout 120s. /usr/bin/perl
+    // 절대경로 (자식 PATH 무관). 인자 순서: mode + target.
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
     print(result)
 }
 
