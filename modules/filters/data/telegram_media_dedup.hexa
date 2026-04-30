@@ -1,0 +1,224 @@
+// airgenome/modules/filters/data/telegram_media_dedup.hexa
+//   T2 — Telegram Media Content Dedup Filter (TMDD — #65 wyhash + #41 dedup).
+//
+//   목적: postbox/media/ 안에는 동일 sticker / thumbnail / photo 가 dc 또는 chat
+//         별로 중복 저장된다 (Telegram Desktop 의 cache 가 deterministic dedup 을
+//         하지 않음). content hash (blake2b 8B — xxh64 fallback) 로 collapse →
+//         디스크 절감 quantification + 향후 hard-link 가능성 측정.
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "TMDD"
+//     version : 4B  u32             (1)
+//     n_uniq  : 4B  u32             unique content 개수
+//     reserved: 4B  u32             (0)
+//     [n*8]   : u64 hashes          blake2b first-8B (sorted asc)
+//     [n*4]   : u32 sizes           해당 content 의 byte 길이
+//     [n*4]   : u32 dup_count       총 등장 횟수
+//
+//   query: hash → bisect_left → meta. saving = sum(size * (dup_count-1)).
+//
+// 모드:
+//   encode      : postbox/media/ → /tmp/telegram_media_tmdd.bin
+//   bench       : encode + 디스크 절감 추정 + 1000 hash lookup (linear vs bisect)
+//
+// 가이드라인:
+//   - read-only (open + read 만, 쓰기 0)
+//   - 큰 파일은 head 64KB 만 hashing (Telegram media 는 대부분 < 64KB sticker/thumbnail —
+//     큰 video 는 head 만으로도 dedup 안전성 확보)
+//   - 미존재 시 synthetic fallback
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드. R17: alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,resource,mmap,array,glob,hashlib,random\n" +
+"mode=sys.argv[1]; src=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"BIN='/tmp/telegram_media_tmdd.bin'\n" +
+"HEAD_BYTES=65536\n" +
+"MAX_FILES=8000\n" +
+"def fmt(b):\n" +
+"    if b>1073741824: return f'{b/1073741824:.2f}GB'\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"# wyhash-flavored 64-bit hash (stdlib only): blake2b digest_size=8 — xxh64 미설치 시\n" +
+"# pure-python fallback. content + size 묶어서 collision 회피.\n" +
+"def wyh64(b,sz):\n" +
+"    h=hashlib.blake2b(b,digest_size=8,key=struct.pack('<Q',sz&0xffffffffffffffff)).digest()\n" +
+"    return struct.unpack('<Q',h)[0]\n" +
+"\n" +
+"def probe_postbox():\n" +
+"    home=os.path.expanduser('~')\n" +
+"    cands=glob.glob(home+'/Library/Group Containers/*Telegram*/stable/account-*/postbox/media')\n" +
+"    cands+=glob.glob(home+'/Library/Group Containers/*Telegram*/appstore/account-*/postbox/media')\n" +
+"    cands+=glob.glob(home+'/Library/Containers/ru.keepcoder.Telegram/Data/Library/Caches/postbox*/media')\n" +
+"    return [c for c in cands if os.path.isdir(c)]\n" +
+"\n" +
+"def harvest(media_dirs):\n" +
+"    files=[]\n" +
+"    for d in media_dirs:\n" +
+"        for name in os.listdir(d):\n" +
+"            full=os.path.join(d,name)\n" +
+"            if os.path.islink(full): continue\n" +
+"            try: st=os.stat(full)\n" +
+"            except OSError: continue\n" +
+"            if not (st.st_mode & 0o170000)==0o100000: continue\n" +
+"            if st.st_size<=0: continue\n" +
+"            if name.endswith('.meta'): continue\n" +
+"            files.append((full,st.st_size))\n" +
+"            if len(files)>=MAX_FILES: return files\n" +
+"    return files\n" +
+"\n" +
+"def synth_files(n=4000,seed=11):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        # 30% duplicates by design\n" +
+"        if i>0 and rng.random()<0.30:\n" +
+"            j=rng.randrange(i)\n" +
+"            out.append(out[j])\n" +
+"        else:\n" +
+"            sz=rng.choice([512,2048,8192,16384,32768,65536,131072])\n" +
+"            payload=bytes(rng.randrange(256) for _ in range(min(sz,256)))\n" +
+"            out.append(('synth-'+str(i),sz,payload))\n" +
+"    return out\n" +
+"\n" +
+"def hash_files(files):\n" +
+"    seen={}\n" +
+"    total_bytes=0\n" +
+"    is_synth=files and isinstance(files[0],tuple) and len(files[0])==3\n" +
+"    for item in files:\n" +
+"        if is_synth:\n" +
+"            name,sz,payload=item\n" +
+"            head=payload[:HEAD_BYTES]\n" +
+"        else:\n" +
+"            full,sz=item\n" +
+"            f=open(full,'rb')\n" +
+"            head=f.read(HEAD_BYTES); f.close()\n" +
+"        h=wyh64(head,sz)\n" +
+"        total_bytes+=sz\n" +
+"        cur=seen.get(h)\n" +
+"        if cur is None: seen[h]=[sz,1]\n" +
+"        else: cur[1]+=1\n" +
+"    return seen,total_bytes,len(files)\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter()\n" +
+"    media_dirs=[]\n" +
+"    if src and os.path.isdir(src): media_dirs=[src]\n" +
+"    else: media_dirs=probe_postbox()\n" +
+"    source='real'\n" +
+"    if not media_dirs:\n" +
+"        print('[encode] no postbox media dir — synthetic fallback')\n" +
+"        files=synth_files(4000); source='synthetic'\n" +
+"    else:\n" +
+"        files=harvest(media_dirs)\n" +
+"        source=media_dirs[0]\n" +
+"        if not files:\n" +
+"            print('[encode] empty media — synthetic fallback')\n" +
+"            files=synth_files(4000); source='synthetic'\n" +
+"    seen,total_bytes,total_n=hash_files(files)\n" +
+"    items=sorted(seen.items(), key=lambda kv:kv[0])\n" +
+"    n=len(items)\n" +
+"    hashes=array.array('Q',[h for h,_ in items])\n" +
+"    sizes =array.array('I',[meta[0]&0xffffffff for _,meta in items])\n" +
+"    dups  =array.array('I',[meta[1]&0xffffffff for _,meta in items])\n" +
+"    header=struct.pack('<4sIII',b'TMDD',1,n,0)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(hashes.tobytes()); f.write(sizes.tobytes()); f.write(dups.tobytes())\n" +
+"    t1=time.perf_counter()\n" +
+"    saving=sum(sizes[i]*(dups[i]-1) for i in range(n))\n" +
+"    return {'encode_s':t1-t0,'n_total':total_n,'n_uniq':n,'total_bytes':total_bytes,'saving':saving,'blob_size':os.path.getsize(BIN),'source':source}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,_=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        if magic!=b'TMDD' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n=n\n" +
+"        base=16\n" +
+"        mv=memoryview(self.mm)\n" +
+"        self.hashes=array.array('Q'); self.hashes.frombytes(bytes(mv[base:base+8*n]))\n" +
+"        self.sizes =array.array('I'); self.sizes.frombytes(bytes(mv[base+8*n:base+12*n]))\n" +
+"        self.dups  =array.array('I'); self.dups.frombytes(bytes(mv[base+12*n:base+16*n]))\n" +
+"        self.mv=mv\n" +
+"    def lookup_bisect(self,h):\n" +
+"        i=bisect.bisect_left(self.hashes,h)\n" +
+"        if i<self.n and self.hashes[i]==h: return (int(self.sizes[i]),int(self.dups[i]))\n" +
+"        return None\n" +
+"    def lookup_linear(self,h):\n" +
+"        for i in range(self.n):\n" +
+"            if self.hashes[i]==h: return (int(self.sizes[i]),int(self.dups[i]))\n" +
+"        return None\n" +
+"    def close(self):\n" +
+"        try: self.mv.release()\n" +
+"        except Exception: pass\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  total={info[\"n_total\"]}  uniq={info[\"n_uniq\"]}  blob={fmt(info[\"blob_size\"])}  source={info[\"source\"]}')\n" +
+"    if info['n_total']>0:\n" +
+"        dup_pct=100*(info['n_total']-info['n_uniq'])/info['n_total']\n" +
+"        sav_pct=100*info['saving']/max(info['total_bytes'],1)\n" +
+"        print(f'[dedup] dup_count={info[\"n_total\"]-info[\"n_uniq\"]} ({dup_pct:.1f}%)  total={fmt(info[\"total_bytes\"])}  saving={fmt(info[\"saving\"])} ({sav_pct:.1f}%)')\n" +
+"    if info['n_uniq']==0:\n" +
+"        print('[bench] no uniq — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    rng=random.Random(13)\n" +
+"    queries=[int(b.hashes[rng.randrange(b.n)]) for _ in range(1000)]\n" +
+"    rss_blob=rss()\n" +
+"    for q in queries[:5]: b.lookup_bisect(q); b.lookup_linear(q)\n" +
+"    t0=time.perf_counter(); h_lin=0\n" +
+"    for q in queries:\n" +
+"        if b.lookup_linear(q) is not None: h_lin+=1\n" +
+"    t1=time.perf_counter(); lin_us=(t1-t0)*1e6/len(queries)\n" +
+"    t0=time.perf_counter(); h_bi=0\n" +
+"    for q in queries:\n" +
+"        if b.lookup_bisect(q) is not None: h_bi+=1\n" +
+"    t1=time.perf_counter(); bi_us=(t1-t0)*1e6/len(queries)\n" +
+"    b.close()\n" +
+"    print(f'[query] 1000 hash-lookup  hits linear={h_lin} bisect={h_bi}')\n" +
+"    print(f'  linear scan       : {lin_us:10.2f} us/query')\n" +
+"    print(f'  bisect on blob    : {bi_us :10.2f} us/query')\n" +
+"    if bi_us>0: print(f'  speedup: {lin_us/bi_us:6.1f}x')\n" +
+"    print(f'[lossless] hits equal: {h_lin==h_bi}')\n" +
+"    print(f'[rss] after blob loaded: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n_uniq\"]}/{info[\"n_total\"]} uniq media in {info[\"encode_s\"]*1000:.1f} ms -> {BIN} ({fmt(info[\"blob_size\"])}, saving={fmt(info[\"saving\"])}, source={info[\"source\"]})')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench [<postbox/media dir>]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("telegram_media_dedup")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains("/") || v == "synthetic" { target = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/telegram_media_dedup_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

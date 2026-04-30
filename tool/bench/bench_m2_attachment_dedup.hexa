@@ -1,0 +1,142 @@
+// tool/bench/bench_m2_attachment_dedup.hexa — M2 첨부 dedup hash bench
+//   E4 패턴 재작성. 실 첨부 파일 hash 없이 5K synthetic (hash, path, size) 합성
+//   → MADC encode → linear scan vs bisect cluster lookup.
+//
+//   설계: dup ratio 30% 인 분포 — 5000 entry 중 1500 이 dup. 절감 size 추정 +
+//         per-query lookup speedup 측정.
+//
+// 모드:
+//   bench (default) — 5000 synthetic attachments → MADC encode → 100 hash query.
+//
+// 5-tuple: site=M2 ROI#=memo-attachment-dedup baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,hashlib,array,random\n" +
+"ATT_N=5000\n" +
+"DUP_RATIO=0.3\n" +
+"QUERIES=100\n" +
+"BIN='/tmp/bench_m2_madc.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1073741824: return f'{b/1073741824:.2f}GB'\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def synth_hash(seed):\n" +
+"    h=hashlib.blake2b(str(seed).encode(),digest_size=8)\n" +
+"    return int.from_bytes(h.digest(),'little')\n" +
+"\n" +
+"def build_dataset(n=ATT_N,dup_ratio=DUP_RATIO):\n" +
+"    rng=random.Random(42)\n" +
+"    n_unique=int(n*(1-dup_ratio))\n" +
+"    n_dup=n-n_unique\n" +
+"    base_hashes=[synth_hash(i) for i in range(n_unique)]\n" +
+"    base_sizes =[rng.randrange(1024,5*1024*1024) for _ in range(n_unique)]\n" +
+"    entries=[]\n" +
+"    for i in range(n_unique):\n" +
+"        path=f'/tmp/synth/Media/{i:08x}/photo_{i}.jpg'\n" +
+"        entries.append((base_hashes[i],path,base_sizes[i]))\n" +
+"    for i in range(n_dup):\n" +
+"        j=rng.randrange(n_unique)\n" +
+"        path=f'/tmp/synth/Media/{n_unique+i:08x}/photo_{j}.jpg'\n" +
+"        entries.append((base_hashes[j],path,base_sizes[j]))\n" +
+"    return entries\n" +
+"\n" +
+"def encode(entries):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    entries=sorted(entries,key=lambda e:e[0])\n" +
+"    n=len(entries)\n" +
+"    pool=bytearray()\n" +
+"    hashes=array.array('Q',[0]*n)\n" +
+"    poffs=array.array('I',[0]*n)\n" +
+"    plens=array.array('I',[0]*n)\n" +
+"    sizes=array.array('I',[0]*n)\n" +
+"    for i,(h,p,sz) in enumerate(entries):\n" +
+"        pb=p.encode('utf-8','replace')\n" +
+"        hashes[i]=h&0xffffffffffffffff\n" +
+"        poffs[i]=len(pool); plens[i]=len(pb); sizes[i]=int(sz)&0xffffffff\n" +
+"        pool.extend(pb)\n" +
+"    header=struct.pack('<4sIII',b'MADC',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(hashes.tobytes())\n" +
+"        f.write(poffs.tobytes()); f.write(plens.tobytes()); f.write(sizes.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'entries':entries,'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"def old_lookup(entries,h):\n" +
+"    # OLD: 매 query 마다 hash → path list linear scan.\n" +
+"    out=[]\n" +
+"    for ee in entries:\n" +
+"        if ee[0]==h: out.append(ee)\n" +
+"    return len(out)\n" +
+"\n" +
+"def new_lookup(sorted_hashes,h):\n" +
+"    lo=bisect.bisect_left(sorted_hashes,h)\n" +
+"    hi=bisect.bisect_right(sorted_hashes,h)\n" +
+"    return hi-lo\n" +
+"\n" +
+"def diff_test(entries,sorted_hashes,sample):\n" +
+"    mm=0\n" +
+"    for h in sample:\n" +
+"        o=old_lookup(entries,h)\n" +
+"        n=new_lookup(sorted_hashes,h)\n" +
+"        if o!=n:\n" +
+"            mm+=1\n" +
+"            print(f'    DIFF h={h:016x} old={o} new={n}')\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/M2 — Notes attachment dedup (linear vs hash bisect)')\n" +
+"    print(f'  ATT_N={ATT_N} DUP_RATIO={DUP_RATIO} QUERIES={QUERIES}')\n" +
+"    print(f'  source: synthetic (Media/ TCC fallback)')\n" +
+"    entries=build_dataset(ATT_N,DUP_RATIO)\n" +
+"    print(f'  built: {len(entries)} entries')\n" +
+"    info=encode(entries)\n" +
+"    sorted_hashes=[h for h,_,_ in info['entries']]\n" +
+"    print(f'  encode (sort + MADC): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    # cluster stat\n" +
+"    clusters={}\n" +
+"    for h,p,sz in info['entries']: clusters.setdefault(h,[]).append((p,sz))\n" +
+"    dup_clusters=[(h,ix) for h,ix in clusters.items() if len(ix)>=2]\n" +
+"    dup_files=sum(len(ix) for _,ix in dup_clusters)\n" +
+"    saved=sum(ix[0][1]*(len(ix)-1) for _,ix in dup_clusters)\n" +
+"    total=sum(sz for _,_,sz in info['entries'])\n" +
+"    print(f'  dedup: dup_clusters={len(dup_clusters)}  dup_files={dup_files}  unique_clusters={len(clusters)}')\n" +
+"    print(f'  disk:  total={fmt(total)}  recoverable={fmt(saved)} ({100*saved/max(total,1):.1f}%)')\n" +
+"    rng=random.Random(7)\n" +
+"    sample=[sorted_hashes[rng.randrange(len(sorted_hashes))] for _ in range(QUERIES)]\n" +
+"    mm=diff_test(info['entries'],sorted_hashes,sample[:20])\n" +
+"    print(f'  diff_test (subset 20) mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for h in sample: old_lookup(info['entries'],h)\n" +
+"    t1=time.perf_counter_ns(); ns_old=t1-t0; per_old=ns_old//QUERIES\n" +
+"    print(f'  OLD (linear scan)       total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for h in sample: new_lookup(sorted_hashes,h)\n" +
+"    t1=time.perf_counter_ns(); ns_new=t1-t0; per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (hash blob bisect)  total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved_pct=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"        amort_per=info['encode_ns']//QUERIES\n" +
+"        print(f'  + encode cost amortized: {amort_per}ns/query (1 sort+encode / {QUERIES} queries)')\n" +
+"    print(f'  5-tuple: site=M2 ROI#=memo-attachment-dedup baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_m2_attachment_dedup_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

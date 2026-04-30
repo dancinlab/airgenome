@@ -1,0 +1,124 @@
+// tool/bench/bench_sy4_reminders.hexa — SY4 Reminders RMBF bench
+//   E4/F18 패턴 재작성 — synthetic 1.2K reminder dataset 합성 → RMBF encode →
+//   linear scan vs blob bisect 100 query wall-clock 비교.
+//
+// 모드: bench (default) — 1200 synthetic reminders → RMBF encode → 100 prefix query.
+//
+// 5-tuple: site=SY4 ROI#=SY4 baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,array,random\n" +
+"N=1200\n" +
+"QUERIES=100\n" +
+"TOP_K=5\n" +
+"BIN='/tmp/bench_sy4_rmbf.bin'\n" +
+"VERBS=['Buy','Call','Email','Read','Write','Review','Submit','Schedule','Pick up','Renew']\n" +
+"NOUNS=['groceries','dentist','manager','book','draft','PR','expense','flight','laundry','license']\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def to_int_safe(v):\n" +
+"    if v is None: return 0\n" +
+"    if isinstance(v,int): return v\n" +
+"    if isinstance(v,float): return int(v)\n" +
+"    if isinstance(v,str) and v.isdigit(): return int(v)\n" +
+"    return 0\n" +
+"\n" +
+"def build_dataset(n=N):\n" +
+"    rows=[]\n" +
+"    now=int(time.time()*1e6)\n" +
+"    for i in range(n):\n" +
+"        v=VERBS[i%len(VERBS)]\n" +
+"        nn=NOUNS[(i//7)%len(NOUNS)]\n" +
+"        t=f'{v} {nn} #{i:04d}'\n" +
+"        due=now+(i-300)*3600_000_000\n" +
+"        rows.append((t,due))\n" +
+"    return rows\n" +
+"\n" +
+"def encode(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    rows=sorted(rows,key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    t_off=array.array('I',[0]*n); t_len=array.array('I',[0]*n)\n" +
+"    due=array.array('Q',[0]*n)\n" +
+"    for i,(t,d) in enumerate(rows):\n" +
+"        tb=t.encode('utf-8','replace')\n" +
+"        t_off[i]=len(pool); t_len[i]=len(tb); pool.extend(tb)\n" +
+"        due[i]=int(d)&0xffffffffffffffff\n" +
+"    header=struct.pack('<4sIII',b'RMBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(t_off.tobytes()); f.write(t_len.tobytes())\n" +
+"        f.write(due.tobytes()); f.write(pool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'blob_size':os.path.getsize(BIN),'rows':rows}\n" +
+"\n" +
+"def old_query(rows,prefix):\n" +
+"    hits=0; plen=len(prefix)\n" +
+"    for (t,d) in rows:\n" +
+"        if len(t)>=plen and t[:plen]==prefix: hits+=1\n" +
+"    return hits\n" +
+"\n" +
+"def new_query(sorted_titles,prefix):\n" +
+"    s=bisect.bisect_left(sorted_titles,prefix)\n" +
+"    e=bisect.bisect_left(sorted_titles,prefix+'\\uffff')\n" +
+"    return e-s\n" +
+"\n" +
+"def build_prefixes():\n" +
+"    return ['Buy ','Call','Email','Read ','Pick','Sched','Subm','Revie']\n" +
+"\n" +
+"def diff_test(rows,sorted_titles,prefixes):\n" +
+"    mm=0\n" +
+"    for p in prefixes:\n" +
+"        o=old_query(rows,p); n=new_query(sorted_titles,p)\n" +
+"        if o!=n: mm+=1; print(f'    DIFF prefix={p} old={o} new={n}')\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/SY4 — Reminders RMBF (linear vs blob bisect)')\n" +
+"    print(f'  N={N} QUERIES={QUERIES} TOP_K={TOP_K}')\n" +
+"    print(f'  source: synthetic (Group Container TCC fallback)')\n" +
+"    rows=build_dataset(N)\n" +
+"    print(f'  built: {len(rows)} reminders')\n" +
+"    info=encode(rows)\n" +
+"    sorted_titles=[t for (t,_) in info['rows']]\n" +
+"    print(f'  encode: {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    prefixes=build_prefixes()\n" +
+"    mm=diff_test(rows,sorted_titles,prefixes)\n" +
+"    print(f'  diff_test mismatches: {mm} / {len(prefixes)}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES): old_query(rows,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old=t1-t0; per_old=ns_old//QUERIES\n" +
+"    print(f'  OLD (CoreData query + linear emul) total_ns={ns_old} per_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES): new_query(sorted_titles,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0; per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (blob mmap+bisect)  total_ns={ns_new} per_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x saved={saved}%')\n" +
+"        amort=info['encode_ns']//QUERIES\n" +
+"        print(f'  + encode amortized: {amort}ns/query')\n" +
+"    print(f'  5-tuple: site=SY4 ROI#=SY4 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_sy4_reminders_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

@@ -1,0 +1,169 @@
+// tool/bench/bench_ma2_body_dedup.hexa — MA2 Mail body dedup bench
+//   thread reply chain 합성 → quote block 중복 비율 측정 + dedup
+//   speedup (linear bytes-eq vs hash bisect).
+//
+// 5-tuple: site=MA2 ROI#=11 baseline_ns post_ns diff_test=lossless
+//
+// dataset:
+//   THREADS=200 thread, 평균 6 reply → 1200 메시지.
+//   각 reply 는 직전 메시지의 body 를 ">"-quote 로 인용 → quote block 중복
+//   비율 자연스럽게 (depth-1)/depth 수렴.
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: perl alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,hashlib,re\n" +
+"THREADS=200\n" +
+"REPLIES=6\n" +
+"QUERIES=500\n" +
+"BIN='/tmp/bench_ma2_mbdd.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def wyhash_fb(b):\n" +
+"    h=hashlib.blake2b(b,digest_size=8).digest()\n" +
+"    return struct.unpack('<Q',h)[0]\n" +
+"\n" +
+"def build_threads(n_threads=THREADS,n_replies=REPLIES):\n" +
+"    # 실제 thread 패턴: 각 reply 는 root 메시지의 동일 quote block 을 반복.\n" +
+"    # (Mail.app 클라가 보통 inline reply 후 root 만 quote — 또는 trim quote.)\n" +
+"    # 따라서 root quoted block 은 reply 마다 동일 → dedup 율이 (n-1)/n 수렴.\n" +
+"    msgs=[]\n" +
+"    for t in range(n_threads):\n" +
+"        body0=f'Thread {t} initial: discussion of topic-{t} with details A B C and rationale.\\nMore lines about plan-{t}, items: {t*3}, {t*5}, {t*7}.'\n" +
+"        msgs.append((t,0,body0))\n" +
+"        root_quote='\\n'.join('> '+ln for ln in body0.splitlines())\n" +
+"        for r in range(1,n_replies):\n" +
+"            header=f'On day-{r}, sender-{r%5}@x.test wrote:'\n" +
+"            new_text=f'Reply {r} on thread {t}: ack and forward delta-{r}.'\n" +
+"            body=f'{new_text}\\n\\n{header}\\n{root_quote}'\n" +
+"            msgs.append((t,r,body))\n" +
+"    return msgs\n" +
+"\n" +
+"_RE_ON_WROTE=re.compile(r'^On\\s.{1,200}\\s+wrote:\\s*$',re.M)\n" +
+"def split_quote_blocks(text):\n" +
+"    # MA2 와 동일 정의: '>'-prefix 묶음 별도 block, header 는 single-line.\n" +
+"    blocks=[]\n" +
+"    lines=text.splitlines()\n" +
+"    i=0; n=len(lines)\n" +
+"    while i<n:\n" +
+"        ln=lines[i]\n" +
+"        if ln.startswith('>'):\n" +
+"            j=i\n" +
+"            while j<n and lines[j].startswith('>'):\n" +
+"                j+=1\n" +
+"            blk='\\n'.join(lines[i:j]).strip()\n" +
+"            if blk: blocks.append(blk)\n" +
+"            i=j; continue\n" +
+"        if _RE_ON_WROTE.match(ln):\n" +
+"            blocks.append(ln.strip())\n" +
+"            i+=1; continue\n" +
+"        i+=1\n" +
+"    return blocks\n" +
+"\n" +
+"def encode(msgs):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    seen={}; refs={}; total=0; total_bytes=0\n" +
+"    all_blocks=[]\n" +
+"    for (_,_,body) in msgs:\n" +
+"        for blk in split_quote_blocks(body):\n" +
+"            bb=blk.encode('utf-8','replace')\n" +
+"            total+=1; total_bytes+=len(bb)\n" +
+"            h=wyhash_fb(bb)\n" +
+"            all_blocks.append((h,bb))\n" +
+"            if h in seen: refs[h]=refs.get(h,1)+1\n" +
+"            else: seen[h]=bb; refs[h]=1\n" +
+"    items=sorted(seen.items(),key=lambda kv:kv[0])\n" +
+"    n=len(items)\n" +
+"    pool=bytearray()\n" +
+"    hashes=array.array('Q',[0]*n)\n" +
+"    offs=array.array('I',[0]*n); lens=array.array('I',[0]*n)\n" +
+"    for i,(h,b) in enumerate(items):\n" +
+"        hashes[i]=h\n" +
+"        offs[i]=len(pool); lens[i]=len(b); pool.extend(b)\n" +
+"    header=struct.pack('<4sIII',b'MBDD',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(hashes.tobytes())\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    dup_bytes=sum(len(seen[h])*(refs[h]-1) for h in seen)\n" +
+"    return {'encode_ns':t1-t0,'n_total':total,'n_uniq':n,\n" +
+"            'total_bytes':total_bytes,'dup_bytes':dup_bytes,\n" +
+"            'blob_size':os.path.getsize(BIN),'hashes':hashes,'pool':bytes(pool),\n" +
+"            'offs':offs,'lens':lens,'all_blocks':all_blocks}\n" +
+"\n" +
+"def linear_bytes_eq(query,contents):\n" +
+"    for c in contents:\n" +
+"        if c==query: return 1\n" +
+"    return 0\n" +
+"\n" +
+"def hash_bisect(h,hashes):\n" +
+"    i=bisect.bisect_left(hashes,h)\n" +
+"    if i<len(hashes) and hashes[i]==h: return 1\n" +
+"    return 0\n" +
+"\n" +
+"def diff_test(all_blocks,hashes,contents,sample_n=20):\n" +
+"    mm=0\n" +
+"    step=max(1,len(all_blocks)//sample_n)\n" +
+"    i=0; cnt=0\n" +
+"    while cnt<sample_n and i<len(all_blocks):\n" +
+"        h,bb=all_blocks[i]\n" +
+"        o=linear_bytes_eq(bb,contents)\n" +
+"        n=hash_bisect(h,hashes)\n" +
+"        if o!=n: mm+=1\n" +
+"        i+=step; cnt+=1\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/MA2 — Mail body dedup (linear bytes-eq vs hash bisect)')\n" +
+"    print(f'  THREADS={THREADS} REPLIES={REPLIES} QUERIES={QUERIES}  source: synthetic')\n" +
+"    msgs=build_threads()\n" +
+"    print(f'  built: {len(msgs)} messages')\n" +
+"    info=encode(msgs)\n" +
+"    print(f'  encode (split+hash+sort): {info[\"encode_ns\"]/1e6:.1f}ms  blocks={info[\"n_total\"]}  unique={info[\"n_uniq\"]}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n_total']==0:\n" +
+"        print('BENCH FAIL [no quote blocks extracted]'); return\n" +
+"    dr=(info['n_total']-info['n_uniq'])/info['n_total']\n" +
+"    sp=100*info['dup_bytes']/info['total_bytes'] if info['total_bytes'] else 0\n" +
+"    print(f'  dedup ratio: {100*dr:.1f}%  dup_bytes={fmt(info[\"dup_bytes\"])} ({sp:.1f}% of block bytes)  est_tokens_saved≈{info[\"dup_bytes\"]//4}')\n" +
+"    contents=[info['pool'][info['offs'][i]:info['offs'][i]+info['lens'][i]] for i in range(info['n_uniq'])]\n" +
+"    hashes=info['hashes']\n" +
+"    mm=diff_test(info['all_blocks'],hashes,contents,20)\n" +
+"    print(f'  diff_test (subset 20) mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    sample_blocks=[bb for _,bb in info['all_blocks'][:QUERIES]]\n" +
+"    sample_hashes=[h for h,_ in info['all_blocks'][:QUERIES]]\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for bb in sample_blocks: linear_bytes_eq(bb,contents)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old=t1-t0; per_old=ns_old//max(1,len(sample_blocks))\n" +
+"    print(f'  OLD-1 linear bytes-eq   total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for h in sample_hashes: hash_bisect(h,hashes)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0; per_new=ns_new//max(1,len(sample_hashes))\n" +
+"    print(f'  NEW   hash bisect       total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved_pct=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"        amort_per=info['encode_ns']//max(1,len(sample_hashes))\n" +
+"        print(f'  + encode cost amortized: {amort_per}ns/query (1회 hash+sort / {len(sample_hashes)} queries)')\n" +
+"    print(f'  5-tuple: site=MA2 ROI#=11 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_ma2_body_dedup_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

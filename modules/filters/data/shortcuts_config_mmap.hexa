@@ -1,0 +1,228 @@
+// airgenome/modules/filters/data/shortcuts_config_mmap.hexa
+//   SY6 — Shortcuts.app config mmap (SCBF — Shortcuts Config Blob Filter).
+//
+//   목적: ~/Library/Shortcuts/Shortcuts.sqlite 의 (shortcut_name, last_run_ts) 를
+//         단일 mmap blob 으로. shortcut name prefix bisect O(log n) — Spotlight
+//         autocomplete-like hot path.
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "SCBF"          (Shortcuts Config Blob Filter)
+//     version : 4B  u32             (1)
+//     n       : 4B  u32             shortcut 개수
+//     str_sz  : 4B  u32             string pool 바이트 길이
+//     [n*4]   : u32 nm_off          name pool 시작 (정렬된 name 순)
+//     [n*4]   : u32 nm_len          name 길이
+//     [n*8]   : u64 last_run_us     unix epoch us (Cocoa→unix 변환)
+//     [str_sz]: utf-8 string pool   raw bytes (NUL 없음)
+//
+//   query: name prefix bisect_left → range → last_run_ts 내림차순 top-K.
+//
+// 모드:
+//   encode <Shortcuts.sqlite | __SYNTH__> : → /tmp/shortcuts_config_scbf.bin
+//   bench  <...> : encode + sqlite open vs SCBF mmap+bisect
+//
+// E4/F18 와 다른 점:
+//   - source = Shortcuts.sqlite (Tahoe-26 path: ~/Library/Shortcuts/Shortcuts.sqlite).
+//   - schema: ZSHORTCUT.ZNAME / ZLASTRUNDATE (best-effort probe).
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음). raw 9 hexa-only.
+// R17: /usr/bin/perl alarm 120s wrapper. try/catch 0.
+
+let PAYLOAD = "import sys,os,sqlite3,struct,time,bisect,heapq,resource,mmap,array,random,tempfile\n" +
+"mode=sys.argv[1]; src=sys.argv[2]\n" +
+"BIN='/tmp/shortcuts_config_scbf.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"def to_int_safe(v):\n" +
+"    if v is None: return 0\n" +
+"    if isinstance(v,int): return v\n" +
+"    if isinstance(v,float): return int(v)\n" +
+"    if isinstance(v,str) and v.isdigit(): return int(v)\n" +
+"    return 0\n" +
+"\n" +
+"SYNTH_MARK='__SYNTH__'\n" +
+"NAMES=['Convert HEIC to JPG','Resize Image','Send to Slack','Open Notion','Toggle Wifi','Daily Brief','Weekly Review','Backup Photos','Sync Notes','Lock Screen','Battery Report','Capture Screenshot','Clean Downloads','Wake Coffee','Set Focus']\n" +
+"def synth_rows(n=300):\n" +
+"    rng=random.Random(42)\n" +
+"    now=int(time.time()*1e6)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        nm=NAMES[i%len(NAMES)]+f' v{i:03d}'\n" +
+"        ts=now-i*1800_000_000\n" +
+"        out.append((nm,ts))\n" +
+"    return out\n" +
+"\n" +
+"def safe_copy_sqlite(src):\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); tmp.close()\n" +
+"    sc=sqlite3.connect(f'file:{src}?mode=ro',uri=True)\n" +
+"    dc=sqlite3.connect(tmp.name)\n" +
+"    sc.backup(dc); dc.close(); sc.close()\n" +
+"    return tmp.name\n" +
+"\n" +
+"def load_real(src):\n" +
+"    copy=safe_copy_sqlite(src)\n" +
+"    conn=sqlite3.connect(copy)\n" +
+"    rows=[]\n" +
+"    tables=[r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")]\n" +
+"    for t in tables:\n" +
+"        if 'SHORTCUT' not in t.upper() and 'WORKFLOW' not in t.upper(): continue\n" +
+"        cols=[r[1] for r in conn.execute(f'PRAGMA table_info(\"{t}\")')]\n" +
+"        nm_col=None; rd_col=None\n" +
+"        for c in cols:\n" +
+"            cu=c.upper()\n" +
+"            if nm_col is None and ('NAME' in cu or 'TITLE' in cu): nm_col=c\n" +
+"            if rd_col is None and ('LASTRUN' in cu or 'RUNDATE' in cu or 'MODIFIED' in cu or 'DATE' in cu): rd_col=c\n" +
+"        if nm_col is None: continue\n" +
+"        sel=f'SELECT \"{nm_col}\"' + (f',\"{rd_col}\"' if rd_col else ',NULL') + f' FROM \"{t}\"'\n" +
+"        for r in conn.execute(sel):\n" +
+"            nv=r[0]; rv=r[1]\n" +
+"            if not isinstance(nv,str) or not nv.strip(): continue\n" +
+"            ts=int((float(rv)+978307200)*1e6) if isinstance(rv,(int,float)) else 0\n" +
+"            rows.append((nv.strip(),ts))\n" +
+"        if rows: break\n" +
+"    conn.close(); os.unlink(copy)\n" +
+"    if not rows: return synth_rows(300),True\n" +
+"    return rows,False\n" +
+"\n" +
+"def encode_rows(rows):\n" +
+"    rows=sorted(rows,key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    nm_off=array.array('I',[0]*n); nm_len=array.array('I',[0]*n)\n" +
+"    ts=array.array('Q',[0]*n)\n" +
+"    for i,(nm,t) in enumerate(rows):\n" +
+"        nb=nm.encode('utf-8','replace')\n" +
+"        nm_off[i]=len(pool); nm_len[i]=len(nb); pool.extend(nb)\n" +
+"        ts[i]=int(t)&0xffffffffffffffff\n" +
+"    header=struct.pack('<4sIII',b'SCBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(nm_off.tobytes()); f.write(nm_len.tobytes())\n" +
+"        f.write(ts.tobytes()); f.write(pool)\n" +
+"    return n,os.path.getsize(BIN)\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter()\n" +
+"    if src==SYNTH_MARK or not os.path.exists(src):\n" +
+"        rows=synth_rows(300); synth=True\n" +
+"    else:\n" +
+"        rows,synth=load_real(src)\n" +
+"    n,bsz=encode_rows(rows)\n" +
+"    t1=time.perf_counter()\n" +
+"    return {'encode_s':t1-t0,'n':n,'blob_size':bsz,'synth':synth,'rows':rows}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        assert magic==b'SCBF' and ver==1\n" +
+"        self.n=n; self.pool_sz=pool_sz\n" +
+"        base=16\n" +
+"        nm_off_off=base\n" +
+"        nm_len_off=base+4*n\n" +
+"        ts_off    =base+8*n\n" +
+"        self.pool_off=base+8*n+8*n\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        nm_off=array.array('I'); nm_off.frombytes(bytes(self.mv[nm_off_off:nm_off_off+4*n]))\n" +
+"        nm_len=array.array('I'); nm_len.frombytes(bytes(self.mv[nm_len_off:nm_len_off+4*n]))\n" +
+"        ts=array.array('Q'); ts.frombytes(bytes(self.mv[ts_off:ts_off+8*n]))\n" +
+"        pool=bytes(self.mv[self.pool_off:self.pool_off+pool_sz])\n" +
+"        self.names=[pool[nm_off[i]:nm_off[i]+nm_len[i]] for i in range(n)]\n" +
+"        self.ts=ts\n" +
+"    def prefix_topk(self,prefix,k=10):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        s=bisect.bisect_left(self.names,pb)\n" +
+"        e=bisect.bisect_left(self.names,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        if e==s: return []\n" +
+"        if e-s<=k: idxs=list(range(s,e))\n" +
+"        else: idxs=heapq.nlargest(k,range(s,e),key=lambda i:self.ts[i])\n" +
+"        idxs.sort(key=lambda i:-self.ts[i])\n" +
+"        return [(self.names[i].decode('utf-8','replace'),int(self.ts[i])) for i in idxs]\n" +
+"    def close(self):\n" +
+"        self.mv.release(); self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    tag=' (synth fallback)' if info['synth'] else ''\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  shortcuts={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}{tag}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] empty — skip'); return\n" +
+"    rows=info['rows']\n" +
+"    b=Blob(BIN)\n" +
+"    rng=random.Random(42)\n" +
+"    samples=[]\n" +
+"    for _ in range(100):\n" +
+"        i=rng.randrange(b.n)\n" +
+"        u=b.names[i].decode('utf-8','replace')\n" +
+"        plen=rng.choice([2,3,4,5])\n" +
+"        samples.append(u[:plen] if len(u)>=plen else u)\n" +
+"    for p in samples[:5]: b.prefix_topk(p,10)\n" +
+"    t0=time.perf_counter()\n" +
+"    blob_hits=0\n" +
+"    for p in samples:\n" +
+"        blob_hits+=len(b.prefix_topk(p,10))\n" +
+"    t1=time.perf_counter()\n" +
+"    blob_us=(t1-t0)*1e6/len(samples)\n" +
+"    rss_blob=rss()\n" +
+"    b.close()\n" +
+"    rows_sorted=sorted(rows,key=lambda r:r[0])\n" +
+"    t0=time.perf_counter()\n" +
+"    lin_hits=0\n" +
+"    for p in samples:\n" +
+"        for (nm,t) in rows_sorted:\n" +
+"            if nm.startswith(p): lin_hits+=1\n" +
+"    t1=time.perf_counter()\n" +
+"    lin_us=(t1-t0)*1e6/len(samples)\n" +
+"    print(f'[query] 100 prefix-topK-10 (blob={blob_hits} linear={lin_hits})')\n" +
+"    print(f'  linear scan          : {lin_us:10.1f} us')\n" +
+"    print(f'  blob mmap + bisect   : {blob_us:10.1f} us')\n" +
+"    if blob_us>0: print(f'  speedup: {lin_us/blob_us:6.1f}x')\n" +
+"    print(f'[rss] blob loaded: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} shortcuts in {info[\"encode_s\"]*1000:.1f} ms → {BIN} ({fmt(info[\"blob_size\"])})' + (' synth' if info['synth'] else ''))\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench <Shortcuts.sqlite|__SYNTH__>'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("shortcuts_config_mmap")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".sqlite") || v.contains(".db") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/Library/Shortcuts/Shortcuts.sqlite"
+        println("(default target: " + target + ")")
+    }
+    if file_exists(target) == false {
+        println("(target not found / TCC denied — using synthetic fallback)")
+        target = "__SYNTH__"
+    }
+    let tmp_py = "/tmp/shortcuts_config_mmap_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

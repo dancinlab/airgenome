@@ -1,0 +1,161 @@
+// tool/bench/bench_m3_notes_search.hexa — M3 Apple Notes 본문 검색 APBF bench
+//   F58 패턴 재작성. NoteStore.sqlite ZNOTEDATA 풀이 없이 50K synthetic
+//   (token, score) 합성 → MAPB encode → linear vs bisect prefix-topK.
+//
+//   설계: Notes 본문 어휘 분포 모사 — 한/영 혼합 stem 20개 + suffix random.
+//         dataset 50K (Notes 본문 단어 unique 추정 상한). diff_test 로 lossless 검증.
+//
+// 모드:
+//   bench (default) — 50K synthetic tokens → MAPB encode → 1000 prefix query.
+//
+// 5-tuple: site=M3 ROI#=memo-notes-search baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,array,random\n" +
+"TOK_N=50000\n" +
+"QUERIES=1000\n" +
+"TOP_K=10\n" +
+"SAMPLE_N=50  # OLD linear extrapolation 표본\n" +
+"BIN='/tmp/bench_m3_mapb.bin'\n" +
+"STEMS_KO=['회의','일기','참고','메모','코드','휴가','쇼핑','독서','계약','학습','음식','여행','음악','영화','운동','건강','금융','일정','연락','계획']\n" +
+"STEMS_EN=['meeting','journal','ref','memo','code','holiday','shop','book','contract','study','food','travel','music','movie','exercise','health','finance','schedule','contact','plan']\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def build_dataset(n=TOK_N):\n" +
+"    rng=random.Random(42)\n" +
+"    seen=set()\n" +
+"    pairs=[]\n" +
+"    i=0\n" +
+"    while len(pairs)<n:\n" +
+"        kind=i%3\n" +
+"        if kind==0:\n" +
+"            tok=f'{STEMS_KO[i%len(STEMS_KO)]}{i:05d}'\n" +
+"        elif kind==1:\n" +
+"            tok=f'{STEMS_EN[i%len(STEMS_EN)]}_{i:05d}'\n" +
+"        else:\n" +
+"            tok=f'{STEMS_EN[i%len(STEMS_EN)]}{STEMS_KO[(i*3)%len(STEMS_KO)]}{i:04d}'\n" +
+"        if tok in seen: i+=1; continue\n" +
+"        seen.add(tok)\n" +
+"        freq=rng.randrange(1,50)\n" +
+"        rec_w=rng.randrange(0,200)\n" +
+"        score=freq*100+rec_w\n" +
+"        pairs.append((tok,score))\n" +
+"        i+=1\n" +
+"    return pairs\n" +
+"\n" +
+"def encode(pairs):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    pairs=sorted(pairs,key=lambda r:r[0])\n" +
+"    n=len(pairs)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    scs =array.array('I',[0]*n)\n" +
+"    for i,(t,sc) in enumerate(pairs):\n" +
+"        tb=t.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(tb); scs[i]=int(sc)&0xffffffff\n" +
+"        pool.extend(tb)\n" +
+"    header=struct.pack('<4sIII',b'MAPB',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(scs.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'pairs':pairs,'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"def old_prefix_query(pairs,prefix):\n" +
+"    hits=0\n" +
+"    plen=len(prefix)\n" +
+"    for t,_ in pairs:\n" +
+"        if len(t)>=plen and t[:plen]==prefix:\n" +
+"            hits+=1\n" +
+"    return hits\n" +
+"\n" +
+"def new_prefix_query(sorted_tokens,prefix):\n" +
+"    pb=prefix\n" +
+"    start=bisect.bisect_left(sorted_tokens,pb)\n" +
+"    end=bisect.bisect_left(sorted_tokens,pb+'\\uffff')\n" +
+"    return end-start\n" +
+"\n" +
+"def build_prefixes():\n" +
+"    out=[]\n" +
+"    for i in range(QUERIES):\n" +
+"        kind=i%4\n" +
+"        if kind==0: out.append(STEMS_KO[i%len(STEMS_KO)][:1])\n" +
+"        elif kind==1: out.append(STEMS_EN[i%len(STEMS_EN)][:3])\n" +
+"        elif kind==2: out.append(STEMS_KO[i%len(STEMS_KO)])\n" +
+"        else: out.append(STEMS_EN[i%len(STEMS_EN)])\n" +
+"    return out\n" +
+"\n" +
+"def diff_test(pairs,sorted_tokens,prefixes,sample_n=20):\n" +
+"    mm=0\n" +
+"    step=max(1,len(prefixes)//sample_n)\n" +
+"    i=0; cnt=0\n" +
+"    while cnt<sample_n and i<len(prefixes):\n" +
+"        p=prefixes[i]\n" +
+"        o=old_prefix_query(pairs,p)\n" +
+"        n=new_prefix_query(sorted_tokens,p)\n" +
+"        if o!=n:\n" +
+"            mm+=1\n" +
+"            print(f'    DIFF prefix={p} old={o} new={n}')\n" +
+"        i+=step; cnt+=1\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/M3 — Apple Notes search APBF (linear vs bisect)')\n" +
+"    print(f'  TOK_N={TOK_N} QUERIES={QUERIES} TOP_K={TOP_K}')\n" +
+"    print(f'  source: synthetic (ZNOTEDATA TCC fallback)')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    pairs=build_dataset(TOK_N)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    print(f'  built: {len(pairs)} tokens in {(t1-t0)//1_000_000}ms')\n" +
+"    info=encode(pairs)\n" +
+"    sorted_tokens=[t for t,_ in info['pairs']]\n" +
+"    print(f'  encode (sort + MAPB): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    prefixes=build_prefixes()\n" +
+"    print(f'  prefixes: {len(prefixes)}')\n" +
+"    mm=diff_test(pairs,sorted_tokens,prefixes,20)\n" +
+"    print(f'  diff_test (subset 20) mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    # OLD: SAMPLE_N → extrapolate (50K * 1000 = 5천만 ops 회피).\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(SAMPLE_N):\n" +
+"        old_prefix_query(pairs,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old_sample=t1-t0; per_old=ns_old_sample//SAMPLE_N\n" +
+"    extrap=per_old*QUERIES\n" +
+"    print(f'  OLD (linear scan) sample={SAMPLE_N}  per_query_ns={per_old}  extrap_total_ns={extrap}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES):\n" +
+"        new_prefix_query(sorted_tokens,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0; per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (bisect)      total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if per_new>0:\n" +
+"        ratio=per_old/per_new\n" +
+"        saved_pct=((per_old-per_new)*100)//per_old if per_old>0 else 0\n" +
+"        print(f'  per-query speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"        amort_per=info['encode_ns']//QUERIES\n" +
+"        amort_eff=per_new+amort_per\n" +
+"        print(f'  + sort+encode amortized: {amort_per}ns/query → effective {amort_eff}ns/query')\n" +
+"        if amort_eff>0:\n" +
+"            print(f'  effective speedup (with encode cost)={per_old/amort_eff:.1f}x')\n" +
+"    print(f'  5-tuple: site=M3 ROI#=memo-notes-search baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_m3_notes_search_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

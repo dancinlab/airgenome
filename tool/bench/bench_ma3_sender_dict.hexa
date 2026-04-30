@@ -1,0 +1,144 @@
+// tool/bench/bench_ma3_sender_dict.hexa — MA3 Mail sender dict bench
+//   sender enum 컬럼 (#99) bench. 50K msgs / 80 distinct senders 합성 →
+//   GROUP BY count: OLD (Counter on str list) vs NEW (u8 enum scan).
+//
+// 5-tuple: site=MA3 ROI#=12 baseline_ns post_ns diff_test=lossless
+//
+// dataset: zipfian sender 분포 (top 5 senders 가 ~70% 메일 점유) —
+//          실제 inbox 패턴 모사. distinct ≤ 255 보장.
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: perl alarm 120s.
+
+let PAYLOAD = "import sys,os,struct,time,array,random\n" +
+"from collections import Counter\n" +
+"N_MSGS=50000\n" +
+"N_SENDERS=80\n" +
+"BIN='/tmp/bench_ma3_msdc.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def build_dataset(n_msgs=N_MSGS,n_send=N_SENDERS):\n" +
+"    random.seed(7)\n" +
+"    senders=[f'sender{i:03d}@example.test' for i in range(n_send)]\n" +
+"    # zipf-ish weight: top 5 dominate.\n" +
+"    weights=[]\n" +
+"    for i in range(n_send):\n" +
+"        if i<5: w=200-i*30\n" +
+"        elif i<20: w=20\n" +
+"        else: w=2\n" +
+"        weights.append(w)\n" +
+"    msgs=random.choices(senders,weights=weights,k=n_msgs)\n" +
+"    return senders,msgs\n" +
+"\n" +
+"def encode(distinct_senders,msgs):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    distinct=sorted(set(msgs))\n" +
+"    if len(distinct)>255:\n" +
+"        cc=Counter(msgs).most_common(255)\n" +
+"        distinct=sorted([k for k,_ in cc])\n" +
+"    name_to_id={n:i for i,n in enumerate(distinct)}\n" +
+"    n_send=len(distinct); n_msg=len(msgs)\n" +
+"    pool=bytearray()\n" +
+"    name_offs=array.array('I',[0]*n_send)\n" +
+"    name_lens=array.array('I',[0]*n_send)\n" +
+"    for i,n in enumerate(distinct):\n" +
+"        nb=n.encode('utf-8','replace')\n" +
+"        name_offs[i]=len(pool); name_lens[i]=len(nb); pool.extend(nb)\n" +
+"    enum_col=bytearray(n_msg)\n" +
+"    for i,s in enumerate(msgs):\n" +
+"        enum_col[i]=name_to_id.get(s,0)\n" +
+"    header=struct.pack('<4sIIII',b'MSDC',1,n_send,n_msg,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(name_offs.tobytes()); f.write(name_lens.tobytes())\n" +
+"        f.write(bytes(pool)); f.write(bytes(enum_col))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    raw_name_bytes=sum(len(s)+10 for s in msgs)\n" +
+"    return {'encode_ns':t1-t0,'n_send':n_send,'n_msg':n_msg,'distinct':distinct,\n" +
+"            'enum_col':bytes(enum_col),'raw_name_bytes':raw_name_bytes,\n" +
+"            'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"def old_count(msgs):\n" +
+"    return Counter(msgs)\n" +
+"def new_count(distinct,enum_col):\n" +
+"    n=len(distinct)\n" +
+"    c=[0]*n\n" +
+"    for b in enum_col: c[b]+=1\n" +
+"    return list(zip(distinct,c))\n" +
+"\n" +
+"# 실 hot path: per-message 'is sender in alert_set' 평가. Mail.app rules /\n" +
+"# Smart Mailbox / VIP 평가가 매 새 메시지마다 N개 sender pattern 과 string\n" +
+"# 비교한다 — 본 hot path 는 OLD 와 NEW 의 차이가 가장 크게 나는 axis.\n" +
+"def old_alert_match(msgs,alert_set):\n" +
+"    hits=0\n" +
+"    for s in msgs:\n" +
+"        if s in alert_set: hits+=1\n" +
+"    return hits\n" +
+"def new_alert_match(enum_col,alert_ids):\n" +
+"    hits=0\n" +
+"    aset=set(alert_ids)\n" +
+"    for b in enum_col:\n" +
+"        if b in aset: hits+=1\n" +
+"    return hits\n" +
+"\n" +
+"def diff_test(msgs,distinct,enum_col):\n" +
+"    a=sorted(new_count(distinct,enum_col))\n" +
+"    b=sorted(old_count(msgs).items())\n" +
+"    if len(a)!=len(b): return abs(len(a)-len(b))\n" +
+"    return sum(1 for x,y in zip(a,b) if x[0]!=y[0] or x[1]!=y[1])\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/MA3 — Mail sender dict (Counter on str vs u8 enum scan)')\n" +
+"    print(f'  N_MSGS={N_MSGS} N_SENDERS={N_SENDERS}  source: synthetic zipfian')\n" +
+"    senders,msgs=build_dataset()\n" +
+"    print(f'  built: {len(msgs)} msgs / {len(set(msgs))} distinct senders')\n" +
+"    info=encode(senders,msgs)\n" +
+"    print(f'  encode (sort+enum+blob): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    saved_pct=((info['raw_name_bytes']-info['n_msg'])*100)//max(info['raw_name_bytes'],1)\n" +
+"    print(f'  sender col bytes raw≈{fmt(info[\"raw_name_bytes\"])} → enum={fmt(info[\"n_msg\"])}  saved={saved_pct}%')\n" +
+"    mm=diff_test(msgs,info['distinct'],info['enum_col'])\n" +
+"    print(f'  diff_test mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    # axis-A: GROUP BY count\n" +
+"    t0=time.perf_counter_ns(); cc=old_count(msgs); t1=time.perf_counter_ns(); ns_old_a=t1-t0\n" +
+"    t0=time.perf_counter_ns(); cb=new_count(info['distinct'],info['enum_col']); t1=time.perf_counter_ns(); ns_new_a=t1-t0\n" +
+"    print(f'  axis-A GROUP BY count:')\n" +
+"    print(f'    OLD Counter(str)  total_ns={ns_old_a}  per_msg_ns={ns_old_a//max(1,len(msgs))}')\n" +
+"    print(f'    NEW u8 enum scan  total_ns={ns_new_a}  per_msg_ns={ns_new_a//max(1,len(msgs))}')\n" +
+"    if ns_new_a>0: print(f'    speedup={ns_old_a/ns_new_a:.2f}x  (Counter 는 C-impl — single-pass 에선 NEW 동등 또는 약세)')\n" +
+"    # axis-B: per-message alert match (Mail.app rules / VIP / Smart Mailbox 평가 hot path)\n" +
+"    alert=set(info['distinct'][:5])\n" +
+"    name_to_id={n:i for i,n in enumerate(info['distinct'])}\n" +
+"    alert_ids={name_to_id[n] for n in alert}\n" +
+"    t0=time.perf_counter_ns(); h_old=old_alert_match(msgs,alert); t1=time.perf_counter_ns(); ns_old_b=t1-t0\n" +
+"    t0=time.perf_counter_ns(); h_new=new_alert_match(info['enum_col'],alert_ids); t1=time.perf_counter_ns(); ns_new_b=t1-t0\n" +
+"    print(f'  axis-B alert match (top-5 alert):')\n" +
+"    print(f'    OLD str-in-set    total_ns={ns_old_b}  per_msg_ns={ns_old_b//max(1,len(msgs))}  hits={h_old}')\n" +
+"    print(f'    NEW u8-in-set     total_ns={ns_new_b}  per_msg_ns={ns_new_b//max(1,len(msgs))}  hits={h_new}')\n" +
+"    if ns_new_b>0:\n" +
+"        ratio=ns_old_b/ns_new_b\n" +
+"        saved_pct=((ns_old_b-ns_new_b)*100)//ns_old_b if ns_old_b>0 else 0\n" +
+"        print(f'    speedup={ratio:.2f}x  saved={saved_pct}%')\n" +
+"    if h_old!=h_new:\n" +
+"        print('BENCH FAIL [alert-match diverged]'); return\n" +
+"    amort_per=info['encode_ns']//max(1,len(msgs))\n" +
+"    print(f'  + encode cost amortized: {amort_per}ns/msg (1회 sort+enum / {len(msgs)} msgs)')\n" +
+"    per_old=ns_old_b//max(1,len(msgs))\n" +
+"    per_new=ns_new_b//max(1,len(msgs))\n" +
+"    print(f'  5-tuple: site=MA3 ROI#=12 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_ma3_sender_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

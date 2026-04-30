@@ -1,0 +1,140 @@
+// tool/bench/bench_ca2_recurring_pack.hexa — CA2 RRule bit-pack bench
+//   2K synthetic RRule strings → CRPF u64 record pack →
+//   raw text parse+match vs packed mask & match (50 sweep × full-scan) 측정.
+//
+// 5-tuple: site=CA2 ROI#=rrule-bitpack baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,array,random\n" +
+"RRULE_N=2000\n" +
+"SWEEPS=50\n" +
+"BIN='/tmp/bench_ca2_crpf.bin'\n" +
+"\n" +
+"FREQS={'NONE':0,'DAILY':1,'WEEKLY':2,'MONTHLY':3,'YEARLY':4,'HOURLY':5,'MINUTELY':6,'SECONDLY':7}\n" +
+"BYDAY={'MO':0,'TU':1,'WE':2,'TH':3,'FR':4,'SA':5,'SU':6}\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def synth(n=RRULE_N,seed=42):\n" +
+"    rng=random.Random(seed); rows=[]\n" +
+"    freqs=['DAILY','WEEKLY','MONTHLY','YEARLY']\n" +
+"    days=['MO','TU','WE','TH','FR','SA','SU']\n" +
+"    for i in range(n):\n" +
+"        f=rng.choice(freqs); iv=rng.randrange(1,5)\n" +
+"        rr=f'FREQ={f};INTERVAL={iv}'\n" +
+"        if f=='WEEKLY':\n" +
+"            k=rng.randrange(1,4)\n" +
+"            sel=','.join(rng.sample(days,k)); rr+=f';BYDAY={sel}'\n" +
+"        elif f=='MONTHLY':\n" +
+"            rr+=f';BYMONTHDAY={rng.randrange(1,29)}'\n" +
+"        if rng.random()<0.4: rr+=f';COUNT={rng.randrange(2,50)}'\n" +
+"        rows.append((i+1,rr))\n" +
+"    return rows\n" +
+"\n" +
+"def parse_rrule(s):\n" +
+"    fq=0; iv=1; bd=0; bm=0; bmd=0; cnt=0; ud=0\n" +
+"    if not s: return (fq,iv,bd,bm,bmd,cnt,ud)\n" +
+"    for p in s.split(';'):\n" +
+"        if '=' not in p: continue\n" +
+"        k,v=p.split('=',1); k=k.upper().strip(); v=v.strip()\n" +
+"        if k=='FREQ': fq=FREQS.get(v.upper(),0)\n" +
+"        elif k=='INTERVAL':\n" +
+"            iv=int(v) if v.isdigit() else 1\n" +
+"            if iv<0: iv=0\n" +
+"            if iv>4095: iv=4095\n" +
+"        elif k=='BYDAY':\n" +
+"            for d in v.split(','):\n" +
+"                d=d.strip().upper()[-2:]\n" +
+"                if d in BYDAY: bd|=(1<<BYDAY[d])\n" +
+"        elif k=='BYMONTHDAY':\n" +
+"            v0=v.split(',')[0].lstrip('-+')\n" +
+"            if v0.isdigit():\n" +
+"                d=int(v0)\n" +
+"                if 1<=d<=31: bmd=d\n" +
+"        elif k=='COUNT':\n" +
+"            if v.isdigit():\n" +
+"                c=int(v)\n" +
+"                if c>2047: c=2047\n" +
+"                cnt=c\n" +
+"    return (fq,iv,bd,bm,bmd,cnt,ud)\n" +
+"\n" +
+"def pack(fq,iv,bd,bm,bmd,cnt,ud):\n" +
+"    p=(fq&0xF) | ((iv&0xFFF)<<4) | ((bd&0x7F)<<16) | ((bm&0x1F)<<23) | ((bmd&0x1F)<<28) | ((cnt&0x7FF)<<33) | ((ud&0xFFFFF)<<44)\n" +
+"    return p&0xFFFFFFFFFFFFFFFF\n" +
+"\n" +
+"def encode(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    n=len(rows)\n" +
+"    rids=array.array('I',[0]*n)\n" +
+"    packs=array.array('Q',[0]*n)\n" +
+"    raw=0\n" +
+"    for i,(rid,rr) in enumerate(rows):\n" +
+"        raw+=len(rr); f=parse_rrule(rr)\n" +
+"        rids[i]=int(rid)&0xffffffff; packs[i]=pack(*f)\n" +
+"    header=struct.pack('<4sIII',b'CRPF',1,n,0)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(rids.tobytes()); f.write(packs.tobytes())\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'blob_size':os.path.getsize(BIN),'raw_bytes':raw,'packs':packs}\n" +
+"\n" +
+"def text_match(rows):\n" +
+"    c=0\n" +
+"    for _,rr in rows:\n" +
+"        f=parse_rrule(rr)\n" +
+"        if f[0]==FREQS['WEEKLY']:\n" +
+"            mask=(1<<BYDAY['MO'])|(1<<BYDAY['WE'])\n" +
+"            if (f[2]&mask)==mask: c+=1\n" +
+"    return c\n" +
+"\n" +
+"def packed_match(packs):\n" +
+"    fqm=0xF; fw=FREQS['WEEKLY']\n" +
+"    mwmask=((1<<BYDAY['MO'])|(1<<BYDAY['WE']))<<16\n" +
+"    c=0\n" +
+"    for p in packs:\n" +
+"        if (p&fqm)==fw and (p&mwmask)==mwmask: c+=1\n" +
+"    return c\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/CA2 — RRule bit-pack (raw text vs u64 mask)')\n" +
+"    print(f'  RRULE_N={RRULE_N} SWEEPS={SWEEPS}')\n" +
+"    rows=synth()\n" +
+"    info=encode(rows)\n" +
+"    packs=info['packs']\n" +
+"    print(f'  encode (parse + pack): {info[\"encode_ns\"]/1e6:.1f}ms  raw={fmt(info[\"raw_bytes\"])} blob={fmt(info[\"blob_size\"])} ratio={100*info[\"blob_size\"]/max(info[\"raw_bytes\"],1):.1f}%')\n" +
+"    h_old=text_match(rows); h_new=packed_match(packs)\n" +
+"    print(f'  diff_test old={h_old} new={h_new}  match={h_old==h_new}')\n" +
+"    if h_old!=h_new: print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(SWEEPS): text_match(rows)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old=t1-t0\n" +
+"    per_old=ns_old//SWEEPS\n" +
+"    print(f'  OLD (raw text parse+match) total_ns={ns_old}  per_sweep_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(SWEEPS): packed_match(packs)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0\n" +
+"    per_new=ns_new//SWEEPS if SWEEPS>0 else 0\n" +
+"    print(f'  NEW (packed mask & match)  total_ns={ns_new}  per_sweep_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved_pct=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"    print(f'  5-tuple: site=CA2 ROI#=rrule-bitpack baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_ca2_recurring_pack_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

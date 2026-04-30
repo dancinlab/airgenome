@@ -1,0 +1,125 @@
+// tool/bench/bench_sy5_books.hexa — SY5 Books annotation BKBF bench
+//   E4/F18 패턴 재작성 — synthetic 1.5K annotation dataset 합성 → BKBF encode →
+//   linear scan vs blob bisect 100 query wall-clock 비교.
+//
+// 모드: bench (default) — 1500 synthetic notes → BKBF encode → 100 prefix query.
+//
+// 5-tuple: site=SY5 ROI#=SY5 baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,array,random\n" +
+"N=1500\n" +
+"QUERIES=100\n" +
+"TOP_K=5\n" +
+"BIN='/tmp/bench_sy5_bkbf.bin'\n" +
+"BOOKS=['cover-art','design-of-everyday','clean-code','sicp','tcp-illustrated','crafting-interpreters','programming-pearls','algorithms-4ed','effective-python','fluent-python']\n" +
+"PHRASES=['the only constant is change','small steps compound','readers are leaders','code is read more than written','simple is robust','clarity beats cleverness','measure twice cut once','one truth at a time','optimize after correct','feedback loops shape habits']\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def to_int_safe(v):\n" +
+"    if v is None: return 0\n" +
+"    if isinstance(v,int): return v\n" +
+"    if isinstance(v,float): return int(v)\n" +
+"    if isinstance(v,str) and v.isdigit(): return int(v)\n" +
+"    return 0\n" +
+"\n" +
+"def build_dataset(n=N):\n" +
+"    rows=[]\n" +
+"    for i in range(n):\n" +
+"        b=BOOKS[i%len(BOOKS)]\n" +
+"        t=PHRASES[(i*3)%len(PHRASES)]+f' [{i:04d}]'\n" +
+"        loc=(i*113)%5000\n" +
+"        rows.append((b,t,loc))\n" +
+"    return rows\n" +
+"\n" +
+"def encode(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    rows=sorted(rows,key=lambda r:r[1])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    b_off=array.array('I',[0]*n); b_len=array.array('I',[0]*n)\n" +
+"    t_off=array.array('I',[0]*n); t_len=array.array('I',[0]*n)\n" +
+"    loc=array.array('Q',[0]*n)\n" +
+"    for i,(b,t,l) in enumerate(rows):\n" +
+"        bb=b.encode('utf-8','replace'); tb=t.encode('utf-8','replace')\n" +
+"        b_off[i]=len(pool); b_len[i]=len(bb); pool.extend(bb)\n" +
+"        t_off[i]=len(pool); t_len[i]=len(tb); pool.extend(tb)\n" +
+"        loc[i]=int(l)&0xffffffffffffffff\n" +
+"    header=struct.pack('<4sIII',b'BKBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(b_off.tobytes()); f.write(b_len.tobytes())\n" +
+"        f.write(t_off.tobytes()); f.write(t_len.tobytes())\n" +
+"        f.write(loc.tobytes()); f.write(pool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'blob_size':os.path.getsize(BIN),'rows':rows}\n" +
+"\n" +
+"def old_query(rows,prefix):\n" +
+"    hits=0; plen=len(prefix)\n" +
+"    for (b,t,l) in rows:\n" +
+"        if len(t)>=plen and t[:plen]==prefix: hits+=1\n" +
+"    return hits\n" +
+"\n" +
+"def new_query(sorted_texts,prefix):\n" +
+"    s=bisect.bisect_left(sorted_texts,prefix)\n" +
+"    e=bisect.bisect_left(sorted_texts,prefix+'\\uffff')\n" +
+"    return e-s\n" +
+"\n" +
+"def build_prefixes():\n" +
+"    return ['the ','smal','read','code','simp','clar','meas','one ','opti','feed']\n" +
+"\n" +
+"def diff_test(rows,sorted_texts,prefixes):\n" +
+"    mm=0\n" +
+"    for p in prefixes:\n" +
+"        o=old_query(rows,p); n=new_query(sorted_texts,p)\n" +
+"        if o!=n: mm+=1; print(f'    DIFF prefix={p} old={o} new={n}')\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/SY5 — Books BKBF (linear vs blob bisect)')\n" +
+"    print(f'  N={N} QUERIES={QUERIES} TOP_K={TOP_K}')\n" +
+"    print(f'  source: synthetic (AEAnnotation FDA fallback)')\n" +
+"    rows=build_dataset(N)\n" +
+"    print(f'  built: {len(rows)} notes')\n" +
+"    info=encode(rows)\n" +
+"    sorted_texts=[t for (_,t,_) in info['rows']]\n" +
+"    print(f'  encode: {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    prefixes=build_prefixes()\n" +
+"    mm=diff_test(rows,sorted_texts,prefixes)\n" +
+"    print(f'  diff_test mismatches: {mm} / {len(prefixes)}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES): old_query(rows,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old=t1-t0; per_old=ns_old//QUERIES\n" +
+"    print(f'  OLD (sqlite + linear emul) total_ns={ns_old} per_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES): new_query(sorted_texts,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0; per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (blob mmap+bisect)  total_ns={ns_new} per_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x saved={saved}%')\n" +
+"        amort=info['encode_ns']//QUERIES\n" +
+"        print(f'  + encode amortized: {amort}ns/query')\n" +
+"    print(f'  5-tuple: site=SY5 ROI#=SY5 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_sy5_books_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

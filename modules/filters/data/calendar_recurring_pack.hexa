@@ -1,0 +1,237 @@
+// airgenome/modules/filters/data/calendar_recurring_pack.hexa
+//   CA2 — Calendar RRule bit-pack filter (CRPF).
+//
+//   목적: Calendar.sqlitedb 의 RRule 텍스트 (RFC 5545: FREQ=WEEKLY;INTERVAL=1;
+//         BYDAY=MO,WE,FR;COUNT=12;...) 를 매번 string parse + match 하던 hot path 를,
+//         8B fixed bit-pack record 로 치환. matching = u64 mask & 비교.
+//
+//   axis: bit-pack (#74) — RRule 의 enum + small int 필드를 단일 u64 record 로 압축.
+//
+//   record layout (u64 little-endian):
+//     bits  0..3  (4): FREQ enum (0=NONE,1=DAILY,2=WEEKLY,3=MONTHLY,4=YEARLY,5=HOURLY,6=MINUTELY,7=SECONDLY)
+//     bits  4..15 (12): INTERVAL (0..4095)
+//     bits 16..22 (7) : BYDAY bitset MO..SU (1<<0=MO, 1<<6=SU)
+//     bits 23..27 (5) : BYMONTH (1..12, 0=unset)
+//     bits 28..32 (5) : BYMONTHDAY abs (1..31, 0=unset)
+//     bits 33..43 (11): COUNT (0..2047, 0=unset)
+//     bits 44..63 (20): UNTIL_DAYS (UNTIL date 의 days-since-2000-01-01, 0=unset)
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "CRPF"
+//     version : 4B  u32  (1)
+//     n       : 4B  u32  RRule 개수
+//     pad     : 4B
+//     [n*4]   : u32 ROWID
+//     [n*8]   : u64 packed
+//
+// 모드:
+//   encode : Calendar.sqlitedb → /tmp/calendar_rrule.bin
+//   bench  : raw RRule text linear regex-style match vs packed mask & 비교 (1000 query)
+//
+// R1 HEXA-FIRST: 신규 .py/.sh 금지. 인라인 python3 페이로드.
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,sqlite3,tempfile,struct,time,resource,mmap,array,random,datetime\n" +
+"mode=sys.argv[1]; src=sys.argv[2]\n" +
+"BIN='/tmp/calendar_rrule.bin'\n" +
+"\n" +
+"FREQS={'NONE':0,'DAILY':1,'WEEKLY':2,'MONTHLY':3,'YEARLY':4,'HOURLY':5,'MINUTELY':6,'SECONDLY':7}\n" +
+"BYDAY={'MO':0,'TU':1,'WE':2,'TH':3,'FR':4,'SA':5,'SU':6}\n" +
+"EPOCH2000=datetime.date(2000,1,1)\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def safe_copy(src):\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); tmp.close()\n" +
+"    with open(src,'rb') as fr, open(tmp.name,'wb') as fw:\n" +
+"        fw.write(fr.read())\n" +
+"    return tmp.name\n" +
+"\n" +
+"def parse_rrule(s):\n" +
+"    # RFC 5545 RRULE: 'FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,WE;COUNT=10;...' \n" +
+"    fq=0; iv=1; bd=0; bm=0; bmd=0; cnt=0; ud=0\n" +
+"    if not s: return (fq,iv,bd,bm,bmd,cnt,ud)\n" +
+"    parts=s.split(';')\n" +
+"    for p in parts:\n" +
+"        if '=' not in p: continue\n" +
+"        k,v=p.split('=',1); k=k.strip().upper(); v=v.strip()\n" +
+"        if k=='FREQ': fq=FREQS.get(v.upper(),0)\n" +
+"        elif k=='INTERVAL':\n" +
+"            iv=int(v) if v.isdigit() else 1\n" +
+"            if iv<0: iv=0\n" +
+"            if iv>4095: iv=4095\n" +
+"        elif k=='BYDAY':\n" +
+"            for d in v.split(','):\n" +
+"                d=d.strip().upper()[-2:]\n" +
+"                if d in BYDAY: bd|=(1<<BYDAY[d])\n" +
+"        elif k=='BYMONTH':\n" +
+"            v0=v.split(',')[0]\n" +
+"            if v0.isdigit():\n" +
+"                m=int(v0)\n" +
+"                if 1<=m<=12: bm=m\n" +
+"        elif k=='BYMONTHDAY':\n" +
+"            v0=v.split(',')[0].lstrip('-+')\n" +
+"            if v0.isdigit():\n" +
+"                d=int(v0)\n" +
+"                if 1<=d<=31: bmd=d\n" +
+"        elif k=='COUNT':\n" +
+"            if v.isdigit():\n" +
+"                c=int(v)\n" +
+"                if c>2047: c=2047\n" +
+"                cnt=c\n" +
+"        elif k=='UNTIL':\n" +
+"            vv=v[:8]\n" +
+"            if len(vv)==8 and vv.isdigit():\n" +
+"                y=int(vv[0:4]); mo=int(vv[4:6]); da=int(vv[6:8])\n" +
+"                if 1<=mo<=12 and 1<=da<=31 and y>=2000:\n" +
+"                    delta=(datetime.date(y,mo,da)-EPOCH2000).days\n" +
+"                    if 0<=delta<(1<<20): ud=delta\n" +
+"    return (fq,iv,bd,bm,bmd,cnt,ud)\n" +
+"\n" +
+"def pack(fq,iv,bd,bm,bmd,cnt,ud):\n" +
+"    p =(fq&0xF)\n" +
+"    p|=(iv&0xFFF)<<4\n" +
+"    p|=(bd&0x7F)<<16\n" +
+"    p|=(bm&0x1F)<<23\n" +
+"    p|=(bmd&0x1F)<<28\n" +
+"    p|=(cnt&0x7FF)<<33\n" +
+"    p|=(ud&0xFFFFF)<<44\n" +
+"    return p&0xFFFFFFFFFFFFFFFF\n" +
+"\n" +
+"def synth(n=2000,seed=42):\n" +
+"    rng=random.Random(seed); rows=[]\n" +
+"    freqs=['DAILY','WEEKLY','MONTHLY','YEARLY']\n" +
+"    days=['MO','TU','WE','TH','FR','SA','SU']\n" +
+"    for i in range(n):\n" +
+"        f=rng.choice(freqs); iv=rng.randrange(1,5)\n" +
+"        rr=f'FREQ={f};INTERVAL={iv}'\n" +
+"        if f=='WEEKLY':\n" +
+"            k=rng.randrange(1,4)\n" +
+"            sel=','.join(rng.sample(days,k)); rr+=f';BYDAY={sel}'\n" +
+"        elif f=='MONTHLY':\n" +
+"            rr+=f';BYMONTHDAY={rng.randrange(1,29)}'\n" +
+"        if rng.random()<0.4: rr+=f';COUNT={rng.randrange(2,50)}'\n" +
+"        rows.append((i+1,rr))\n" +
+"    return rows\n" +
+"\n" +
+"def load_rrules(src):\n" +
+"    if not os.path.exists(src) or os.path.isdir(src): return synth()\n" +
+"    copy=safe_copy(src)\n" +
+"    rows=[]\n" +
+"    con=sqlite3.connect(copy); cur=con.cursor()\n" +
+"    cur.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")\n" +
+"    tables=set(r[0] for r in cur.fetchall())\n" +
+"    if 'Recurrence' in tables:\n" +
+"        cur.execute('PRAGMA table_info(Recurrence)')\n" +
+"        cols=set(c[1] for c in cur.fetchall())\n" +
+"        rc='rrule_text' if 'rrule_text' in cols else 'rule' if 'rule' in cols else None\n" +
+"        if rc:\n" +
+"            cur.execute(f'SELECT ROWID,{rc} FROM Recurrence WHERE {rc} IS NOT NULL')\n" +
+"            for rid,r in cur.fetchall():\n" +
+"                if r: rows.append((int(rid),str(r)))\n" +
+"    con.close(); os.unlink(copy)\n" +
+"    if not rows: return synth()\n" +
+"    return rows\n" +
+"\n" +
+"def encode(rows):\n" +
+"    n=len(rows)\n" +
+"    rids=array.array('I',[0]*n)\n" +
+"    packs=array.array('Q',[0]*n)\n" +
+"    raw_bytes=0\n" +
+"    for i,(rid,rr) in enumerate(rows):\n" +
+"        raw_bytes+=len(rr)\n" +
+"        f=parse_rrule(rr)\n" +
+"        rids[i]=int(rid)&0xffffffff\n" +
+"        packs[i]=pack(*f)\n" +
+"    header=struct.pack('<4sIII',b'CRPF',1,n,0)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(rids.tobytes())\n" +
+"        f.write(packs.tobytes())\n" +
+"    return {'n':n,'blob_size':os.path.getsize(BIN),'raw_bytes':raw_bytes,'packs':packs}\n" +
+"\n" +
+"def text_match_weekly_monwed(rows):\n" +
+"    # OLD: substring + split parse per record\n" +
+"    c=0\n" +
+"    for _,rr in rows:\n" +
+"        f=parse_rrule(rr)\n" +
+"        if f[0]==FREQS['WEEKLY']:\n" +
+"            mask=(1<<BYDAY['MO'])|(1<<BYDAY['WE'])\n" +
+"            if (f[2]&mask)==mask: c+=1\n" +
+"    return c\n" +
+"\n" +
+"def packed_match_weekly_monwed(packs):\n" +
+"    # NEW: u64 mask & 비교만\n" +
+"    fq_mask=0xF; freq_w=FREQS['WEEKLY']\n" +
+"    bday_shift=16; mwmask=((1<<BYDAY['MO'])|(1<<BYDAY['WE']))<<bday_shift\n" +
+"    c=0\n" +
+"    for p in packs:\n" +
+"        if (p & fq_mask)==freq_w and (p & mwmask)==mwmask:\n" +
+"            c+=1\n" +
+"    return c\n" +
+"\n" +
+"def bench(src):\n" +
+"    rows=load_rrules(src)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    info=encode(rows)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    print(f'[encode] {(t1-t0)/1e6:.1f} ms  rrules={info[\"n\"]}  blob={fmt(info[\"blob_size\"])} (raw text={fmt(info[\"raw_bytes\"])} → packed={fmt(info[\"blob_size\"])}, ratio={100*info[\"blob_size\"]/max(info[\"raw_bytes\"],1):.1f}%)')\n" +
+"    if info['n']==0: print('[bench] no rrules — skip'); return\n" +
+"    packs=info['packs']\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(50): old_hits=text_match_weekly_monwed(rows)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    old_us=(t1-t0)/1000/50\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(50): new_hits=packed_match_weekly_monwed(packs)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    new_us=(t1-t0)/1000/50\n" +
+"    print(f'[query] WEEKLY+BYDAY=MO,WE  (hits old={old_hits} new={new_hits})')\n" +
+"    print(f'  raw text parse+match : {old_us:10.1f} us')\n" +
+"    print(f'  packed mask & 비교    : {new_us:10.1f} us')\n" +
+"    if new_us>0:\n" +
+"        print(f'  speedup              : {old_us/new_us:6.1f}x')\n" +
+"    print(f'[rss] {fmt(rss())}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    rows=load_rrules(src); info=encode(rows)\n" +
+"    print(f'encoded {info[\"n\"]} rrules → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench <Calendar.sqlitedb>'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("calendar_recurring_pack")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".sqlitedb") || v.contains("Calendar") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/Library/Calendars/Calendar.sqlitedb"
+        println("(default target: " + target + ")")
+    }
+    let tmp_py = "/tmp/calendar_recurring_pack_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

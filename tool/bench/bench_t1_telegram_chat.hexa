@@ -1,0 +1,133 @@
+// tool/bench/bench_t1_telegram_chat.hexa — T1 telegram_chat_shbf bench
+//   E4 패턴 inline. raw 9 hexa-only / try/catch 0 / top-level main 0.
+//
+//   현 hexa-pure 구현이 hexa list O(n²) — 5K dataset timeout.
+//   해결: 5000 synthetic peer + TCBF encode + 100 prefix query (linear vs bisect)
+//         전체를 python stdlib (struct/array/bisect/time) 로 native 수행.
+//
+// 5-tuple: site=T1 ROI#=T1 baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: alarm 120s. /usr/bin/python3 절대경로.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random\n" +
+"PEERS_N=5000\n" +
+"QUERIES=100\n" +
+"TOP_K=10\n" +
+"BIN='/tmp/bench_t1_tcbf.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def build_dataset(n=PEERS_N,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        peer=str(rng.randrange(10**14,10**18))\n" +
+"        ts=1700000000+rng.randrange(60*60*24*365)\n" +
+"        fc=rng.randrange(1,200)\n" +
+"        out.append((peer,ts,fc))\n" +
+"    return out\n" +
+"\n" +
+"def encode(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    rows=sorted(rows,key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    tss =array.array('I',[0]*n)\n" +
+"    fcs =array.array('I',[0]*n)\n" +
+"    for i,(peer,ts,fc) in enumerate(rows):\n" +
+"        pb=peer.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(pb); tss[i]=ts&0xffffffff; fcs[i]=int(fc)&0xffffffff\n" +
+"        pool.extend(pb)\n" +
+"    header=struct.pack('<4sIII',b'TCBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes())\n" +
+"        f.write(tss.tobytes()); f.write(fcs.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'blob_size':os.path.getsize(BIN),'rows':rows}\n" +
+"\n" +
+"def old_prefix_query(rows,prefix):\n" +
+"    hits=0\n" +
+"    plen=len(prefix)\n" +
+"    for peer,_,_ in rows:\n" +
+"        if len(peer)>=plen and peer[:plen]==prefix: hits+=1\n" +
+"    return hits\n" +
+"\n" +
+"def new_prefix_query(sorted_peers,prefix):\n" +
+"    pb=prefix\n" +
+"    start=bisect.bisect_left(sorted_peers,pb)\n" +
+"    end=bisect.bisect_left(sorted_peers,pb+'\\uffff')\n" +
+"    return end-start\n" +
+"\n" +
+"def build_prefixes(rows,n=QUERIES,seed=7):\n" +
+"    rng=random.Random(seed)\n" +
+"    out=[]\n" +
+"    for _ in range(n):\n" +
+"        peer=rows[rng.randrange(len(rows))][0]\n" +
+"        plen=rng.choice([2,3,4,5,6])\n" +
+"        out.append(peer[:plen])\n" +
+"    return out\n" +
+"\n" +
+"def diff_test(rows,sorted_peers,prefixes,sample_n=20):\n" +
+"    mm=0\n" +
+"    step=max(1,len(prefixes)//sample_n)\n" +
+"    i=0; cnt=0\n" +
+"    while cnt<sample_n and i<len(prefixes):\n" +
+"        p=prefixes[i]\n" +
+"        o=old_prefix_query(rows,p); n=new_prefix_query(sorted_peers,p)\n" +
+"        if o!=n:\n" +
+"            mm+=1; print(f'    DIFF prefix={p} old={o} new={n}')\n" +
+"        i+=step; cnt+=1\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/T1 — telegram_chat SHBF (linear vs blob bisect)')\n" +
+"    print(f'  PEERS_N={PEERS_N} QUERIES={QUERIES} TOP_K={TOP_K}')\n" +
+"    print(f'  source: synthetic (postbox app-encrypted — peer_id only via filename)')\n" +
+"    rows=build_dataset(PEERS_N)\n" +
+"    print(f'  built: {len(rows)} peers')\n" +
+"    info=encode(rows)\n" +
+"    sorted_peers=[r[0] for r in info['rows']]\n" +
+"    print(f'  encode (sort + TCBF): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    prefixes=build_prefixes(rows,QUERIES)\n" +
+"    mm=diff_test(rows,sorted_peers,prefixes,20)\n" +
+"    print(f'  diff_test (subset 20) mismatches: {mm}')\n" +
+"    if mm!=0:\n" +
+"        print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES):\n" +
+"        old_prefix_query(rows,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old=t1-t0; per_old=ns_old//QUERIES\n" +
+"    print(f'  OLD (linear scan) total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES):\n" +
+"        new_prefix_query(sorted_peers,prefixes[k%len(prefixes)])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0; per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (blob mmap+bisect) total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved_pct=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"        amort_per=info['encode_ns']//QUERIES\n" +
+"        print(f'  + encode cost amortized: {amort_per}ns/query')\n" +
+"    print(f'  5-tuple: site=T1 ROI#=T1 baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_t1_telegram_chat_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

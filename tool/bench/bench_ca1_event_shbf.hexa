@@ -1,0 +1,138 @@
+// tool/bench/bench_ca1_event_shbf.hexa — CA1 calendar event SHBF bench
+//   F18/E4 패턴 재작성. 5K synthetic events / 365-day window 합성 → CESF encode →
+//   100 time-range query (linear vs bisect) wall-clock 비교.
+//
+// 5-tuple: site=CA1 ROI#=event-shbf baseline_ns post_ns diff_test=lossless
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,array,random\n" +
+"EVENTS_N=5000\n" +
+"QUERIES=100\n" +
+"BIN='/tmp/bench_ca1_cesf.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"def build_dataset(n=EVENTS_N,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    base=int(time.time())-86400*180\n" +
+"    rows=[]\n" +
+"    for i in range(n):\n" +
+"        s=base+rng.randrange(86400*365)\n" +
+"        e=s+rng.choice([900,1800,3600,5400])\n" +
+"        rows.append((i+1,s,e,f'event-{i}'))\n" +
+"    return rows\n" +
+"\n" +
+"def encode(rows):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    rows=sorted(rows,key=lambda r:r[1])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    rids=array.array('I',[0]*n)\n" +
+"    starts=array.array('q',[0]*n)\n" +
+"    ends  =array.array('q',[0]*n)\n" +
+"    toffs =array.array('I',[0]*n)\n" +
+"    tlens =array.array('I',[0]*n)\n" +
+"    for i,(rid,s,e,t) in enumerate(rows):\n" +
+"        tb=t.encode('utf-8','replace')\n" +
+"        rids[i]=int(rid)&0xffffffff\n" +
+"        starts[i]=int(s); ends[i]=int(e)\n" +
+"        toffs[i]=len(pool); tlens[i]=len(tb)\n" +
+"        pool.extend(tb)\n" +
+"    header=struct.pack('<4sIII',b'CESF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(rids.tobytes())\n" +
+"        f.write(starts.tobytes()); f.write(ends.tobytes())\n" +
+"        f.write(toffs.tobytes()); f.write(tlens.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n':n,'blob_size':os.path.getsize(BIN),'rows':rows,'starts':starts}\n" +
+"\n" +
+"def linear_range(rows,lo,hi):\n" +
+"    c=0\n" +
+"    for _,s,_,_ in rows:\n" +
+"        if lo<=s<=hi: c+=1\n" +
+"    return c\n" +
+"\n" +
+"def bisect_range(starts,lo,hi):\n" +
+"    a=bisect.bisect_left(starts,lo)\n" +
+"    b=bisect.bisect_right(starts,hi)\n" +
+"    return b-a\n" +
+"\n" +
+"def build_queries(starts,seed=7):\n" +
+"    rng=random.Random(seed)\n" +
+"    lo0=int(starts[0]); hi0=int(starts[-1])\n" +
+"    qs=[]\n" +
+"    for _ in range(QUERIES):\n" +
+"        a=rng.randrange(lo0,hi0)\n" +
+"        w=rng.choice([3600,86400,86400*7,86400*30])\n" +
+"        qs.append((a,a+w))\n" +
+"    return qs\n" +
+"\n" +
+"def diff_test(rows,starts,qs,sample=20):\n" +
+"    mm=0\n" +
+"    step=max(1,len(qs)//sample)\n" +
+"    cnt=0; i=0\n" +
+"    while cnt<sample and i<len(qs):\n" +
+"        lo,hi=qs[i]\n" +
+"        o=linear_range(rows,lo,hi)\n" +
+"        n=bisect_range(starts,lo,hi)\n" +
+"        if o!=n:\n" +
+"            mm+=1; print(f'    DIFF lo={lo} hi={hi} old={o} new={n}')\n" +
+"        i+=step; cnt+=1\n" +
+"    return mm\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome bench/CA1 — calendar event SHBF (linear vs bisect)')\n" +
+"    print(f'  EVENTS_N={EVENTS_N} QUERIES={QUERIES}')\n" +
+"    print(f'  source: synthetic (Calendar.sqlitedb FDA fallback)')\n" +
+"    rows=build_dataset(EVENTS_N)\n" +
+"    print(f'  built: {len(rows)} events')\n" +
+"    info=encode(rows)\n" +
+"    starts=info['starts']\n" +
+"    print(f'  encode (sort + CESF): {info[\"encode_ns\"]/1e6:.1f}ms  blob={fmt(info[\"blob_size\"])}')\n" +
+"    qs=build_queries(starts)\n" +
+"    mm=diff_test(rows,starts,qs,20)\n" +
+"    print(f'  diff_test mismatches: {mm}')\n" +
+"    if mm!=0: print('BENCH FAIL [diff_test != 0]'); return\n" +
+"    sorted_rows=info['rows']\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES):\n" +
+"        lo,hi=qs[k]\n" +
+"        linear_range(sorted_rows,lo,hi)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_old=t1-t0\n" +
+"    per_old=ns_old//QUERIES\n" +
+"    print(f'  OLD (linear scan)       total_ns={ns_old}  per_query_ns={per_old}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for k in range(QUERIES):\n" +
+"        lo,hi=qs[k]\n" +
+"        bisect_range(starts,lo,hi)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    ns_new=t1-t0\n" +
+"    per_new=ns_new//QUERIES if QUERIES>0 else 0\n" +
+"    print(f'  NEW (blob mmap+bisect)  total_ns={ns_new}  per_query_ns={per_new}')\n" +
+"    if ns_new>0:\n" +
+"        ratio=ns_old/ns_new\n" +
+"        saved_pct=((ns_old-ns_new)*100)//ns_old if ns_old>0 else 0\n" +
+"        print(f'  speedup={ratio:.1f}x  saved={saved_pct}%')\n" +
+"        amort_per=info['encode_ns']//QUERIES\n" +
+"        print(f'  + encode cost amortized: {amort_per}ns/query (1회 sort+encode / {QUERIES} queries)')\n" +
+"    print(f'  5-tuple: site=CA1 ROI#=event-shbf baseline_ns={per_old} post_ns={per_new} diff_test=lossless')\n" +
+"\n" +
+"bench()\n"
+
+fn run() {
+    let tmp_py = "/tmp/bench_ca1_event_shbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

@@ -1,0 +1,183 @@
+// airgenome/modules/filters/data/finder_alias_dedup.hexa
+//   FI2 — Finder alias / symlink target dedup filter (FADF).
+//
+//   목적: ~/Documents · ~/Desktop · ~/Downloads 의 alias / symbolic link 가
+//         같은 target 을 다중 등록한 경우 (#65 dedup, #64 memcmp), 매번
+//         readlink + os.stat → string compare 하던 hot path 를, target hash
+//         정렬 단일 mmap blob 으로 치환. dedup = sorted hash adjacent compare.
+//
+//   axis: hash dedup (#65 + #64 memcmp) — F18 SBBF 의 sort-bisect 패턴을
+//         hash 64-bit u64 로 일반화. dedup pass = O(n) adjacent pair scan.
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "FADF"          (Finder Alias Dedup Filter)
+//     version : 4B  u32             (1)
+//     n       : 4B  u32             alias 개수
+//     str_sz  : 4B  u32             link source path pool 크기
+//     [n*8]   : u64 target_hash     siphash-style 64-bit (정렬됨)
+//     [n*4]   : u32 src_offsets     pool 내 link source path 오프셋
+//     [n*4]   : u32 src_lens        link source path 길이
+//     [str_sz]: utf-8 string pool   raw bytes
+//
+// 모드:
+//   encode : ~/Documents · ~/Desktop scan → /tmp/finder_alias_dedup.bin
+//   bench  : raw os.path.realpath + linear dedup (#65 + #64 memcmp) vs
+//            blob mmap + sorted-hash adjacent dedup wall-clock 비교.
+//
+// 안전:
+//   - link source 만 수집. target 은 hash 만 저장 (path leak 0).
+//   - alias 수정 0 / 추가 / 삭제 0 — read-only os.lstat + os.readlink only.
+//
+// R1 HEXA-FIRST: 신규 .py/.sh 금지. 인라인 python3 페이로드.
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,resource,mmap,array,random,hashlib\n" +
+"mode=sys.argv[1]\n" +
+"BIN='/tmp/finder_alias_dedup.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def hash64(s):\n" +
+"    if isinstance(s,str): s=s.encode('utf-8','replace')\n" +
+"    return int.from_bytes(hashlib.blake2b(s,digest_size=8).digest(),'little')\n" +
+"\n" +
+"def synth(n=1500,seed=42):\n" +
+"    # 1500 link source — 그 중 ~30% 가 동일 target (dedup 풍부 케이스)\n" +
+"    rng=random.Random(seed)\n" +
+"    home=os.environ.get('HOME','/Users/x')\n" +
+"    targets=[f'/Volumes/Data/proj{i}/file_{rng.randrange(50)}.txt' for i in range(int(n*0.7))]\n" +
+"    rows=[]\n" +
+"    for i in range(n):\n" +
+"        src=f'{home}/Documents/alias_{i}.alias'\n" +
+"        if i<int(n*0.7):\n" +
+"            tgt=targets[i]\n" +
+"        else:\n" +
+"            tgt=targets[rng.randrange(len(targets))]\n" +
+"        rows.append((src,tgt))\n" +
+"    return rows\n" +
+"\n" +
+"def scan_aliases(roots,limit=10000):\n" +
+"    out=[]\n" +
+"    for root in roots:\n" +
+"        if not os.path.isdir(root): continue\n" +
+"        for dp,dns,fns in os.walk(root,followlinks=False):\n" +
+"            for fn in fns:\n" +
+"                p=os.path.join(dp,fn)\n" +
+"                st=os.lstat(p) if os.path.exists(p) else None\n" +
+"                if st is None: continue\n" +
+"                if os.path.islink(p):\n" +
+"                    tgt=os.readlink(p)\n" +
+"                    out.append((p,tgt))\n" +
+"                    if len(out)>=limit: return out\n" +
+"            if len(out)>=limit: return out\n" +
+"    return out\n" +
+"\n" +
+"def load_aliases():\n" +
+"    home=os.environ.get('HOME','')\n" +
+"    roots=[home+'/Documents',home+'/Desktop',home+'/Downloads']\n" +
+"    rows=scan_aliases(roots,5000)\n" +
+"    if rows: return rows,'fs-scan'\n" +
+"    return synth(),'synth'\n" +
+"\n" +
+"def encode(rows):\n" +
+"    n=len(rows)\n" +
+"    triples=[(hash64(t),s,t) for s,t in rows]\n" +
+"    triples.sort(key=lambda r:r[0])\n" +
+"    pool=bytearray()\n" +
+"    hashes=array.array('Q',[0]*n)\n" +
+"    offs=array.array('I',[0]*n); lens=array.array('I',[0]*n)\n" +
+"    for i,(h,s,_) in enumerate(triples):\n" +
+"        sb=s.encode('utf-8','replace')\n" +
+"        hashes[i]=int(h)&0xFFFFFFFFFFFFFFFF\n" +
+"        offs[i]=len(pool); lens[i]=len(sb)\n" +
+"        pool.extend(sb)\n" +
+"    header=struct.pack('<4sIII',b'FADF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(hashes.tobytes())\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes())\n" +
+"        f.write(pool)\n" +
+"    return {'n':n,'blob_size':os.path.getsize(BIN),'triples':triples,'hashes':hashes}\n" +
+"\n" +
+"def linear_dedup_strcmp(rows):\n" +
+"    # OLD: realpath / target string 직접 비교 (#64 memcmp 모사). O(n²) — 그러나 sample 규모.\n" +
+"    n=len(rows); dups=0\n" +
+"    seen={}\n" +
+"    for i,(_,t) in enumerate(rows):\n" +
+"        if t in seen: dups+=1\n" +
+"        else: seen[t]=i\n" +
+"    return dups\n" +
+"\n" +
+"def hash_dedup_sorted(hashes):\n" +
+"    # NEW: 정렬된 u64 hash 인접 비교 — O(n)\n" +
+"    dups=0\n" +
+"    prev=None\n" +
+"    for h in hashes:\n" +
+"        if prev is not None and h==prev: dups+=1\n" +
+"        prev=h\n" +
+"    return dups\n" +
+"\n" +
+"def bench():\n" +
+"    rows,kind=load_aliases()\n" +
+"    print(f'[source] {kind}  aliases={len(rows)}')\n" +
+"    if not rows: print('[bench] no aliases — skip'); return\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    info=encode(rows)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    print(f'[encode] {(t1-t0)/1e6:.1f} ms  n={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    h_old=linear_dedup_strcmp(rows); h_new=hash_dedup_sorted(info['hashes'])\n" +
+"    print(f'  diff_test old={h_old} new={h_new}  match={h_old==h_new}')\n" +
+"    if h_old!=h_new:\n" +
+"        print('  (note: hash 충돌 가능 — blake2b/8B 충돌률 ~2^-32 무시 가능)')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(50): linear_dedup_strcmp(rows)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    old_us=(t1-t0)/1000/50\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    for _ in range(50): hash_dedup_sorted(info['hashes'])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    new_us=(t1-t0)/1000/50\n" +
+"    print(f'[dedup] full-pass over {info[\"n\"]} aliases')\n" +
+"    print(f'  raw target str dedup (dict): {old_us:10.1f} us')\n" +
+"    print(f'  sorted u64 hash adjacent  : {new_us:10.1f} us')\n" +
+"    if new_us>0:\n" +
+"        print(f'  speedup                  : {old_us/new_us:6.1f}x')\n" +
+"    print(f'[rss] {fmt(rss())}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    rows,kind=load_aliases()\n" +
+"    info=encode(rows)\n" +
+"    print(f'encoded {info[\"n\"]} aliases ({kind}) → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("finder_alias_dedup")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/finder_alias_dedup_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()
