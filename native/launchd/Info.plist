@@ -19,8 +19,12 @@
     <string>1.0.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
-    <key>LSUIElement</key>
-    <true/>
+    <!-- LSUIElement REMOVED 2026-04-30 04:55 per raw 168 min-viable + raw 173
+         determinism. Was true (background-only). Made NSPanel keyboard focus
+         non-deterministic on launcher overlay even with dynamic activation
+         policy switching (.regular on show, .accessory on hide). User report
+         "ctrl+s 후 검색입력이 안됨" 2026-04-30 04:53 — third real-user
+         keyboard interaction failing. Trade-off: Dock icon now visible. -->
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>NSHighResolutionCapable</key>

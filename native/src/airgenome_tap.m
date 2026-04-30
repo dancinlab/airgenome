@@ -86,7 +86,9 @@ static int g_buttons_on  = 1;
 static int g_scroll_on   = 1;
 static int g_magnet_on   = 1;
 static int g_disable_native = 1;
-static int g_launcher_on = 0;   // set via AIRG_TAP_LAUNCHER=1; hive raw 209
+static int g_launcher_on = 1;   // ctrl+s app launcher overlay; hive raw 209
+                                 // (default ON 2026-04-30 — user expectation
+                                 // is "installed = working"; menubar can OFF)
 static int g_winctl_on   = 1;   // alt+1..5 window arrange; raw 209 sister axis
 static int g_debug       = 0;   // set via AIRG_TAP_DEBUG=1, logs every event
 
@@ -170,6 +172,7 @@ static NSMenuItem         *g_item_magnet = nil;
 static NSMenuItem         *g_item_wake   = nil;
 static NSMenuItem         *g_item_lid    = nil;
 static NSMenuItem         *g_item_winctl = nil;
+static NSMenuItem         *g_item_launcher = nil;
 static AirgenomeMenuTarget *g_menu_target = nil;
 
 // Snap-preview overlay -- a borderless transparent window with a white
@@ -1033,6 +1036,8 @@ static void load_menubar_state(void) {
             g_lid_closed_on = on;
         } else if ([k isEqualToString:@"winctl"]) {
             g_winctl_on = on;
+        } else if ([k isEqualToString:@"launcher"]) {
+            g_launcher_on = on;
         }
     }
 }
@@ -1045,12 +1050,13 @@ static void save_menubar_state(void) {
                                                     error:NULL];
     int mouse_on = (g_buttons_on || g_scroll_on) ? 1 : 0;
     NSString *content = [NSString stringWithFormat:
-        @"mouse=%s\nmagnet=%s\nwake=%s\nlid_closed=%s\nwinctl=%s\n",
+        @"mouse=%s\nmagnet=%s\nwake=%s\nlid_closed=%s\nwinctl=%s\nlauncher=%s\n",
         mouse_on        ? "on" : "off",
         g_magnet_on     ? "on" : "off",
         g_wake_on       ? "on" : "off",
         g_lid_closed_on ? "on" : "off",
-        g_winctl_on     ? "on" : "off"];
+        g_winctl_on     ? "on" : "off",
+        g_launcher_on   ? "on" : "off"];
     [content writeToFile:menubar_state_path()
               atomically:YES
                 encoding:NSUTF8StringEncoding
@@ -1216,6 +1222,19 @@ static void update_menu_states(void);
     fflush(stderr);
 }
 
+// raw 209: launcher overlay (ctrl+s) — pure key-event consumption + AppKit
+// NSPanel; needs Accessibility for CGEventTap (already gated upstream by
+// the tap activation itself). No additional permission required at toggle
+// time. Default ON; toggle persists via menubar.state.
+- (void)toggleLauncher:(id)sender {
+    (void)sender;
+    g_launcher_on = !g_launcher_on;
+    save_menubar_state();
+    update_menu_states();
+    fprintf(stderr, "menubar: launcher -> %s\n", g_launcher_on ? "ON" : "off");
+    fflush(stderr);
+}
+
 // raw 209 sister axis: alt+1..5 focused-window arrangement. Same AX
 // permission gate as magnet (kAXPositionAttribute / kAXSizeAttribute writes
 // require the same Accessibility grant). raw 91 honest C3: refuse with a
@@ -1344,7 +1363,8 @@ static void update_menu_states(void) {
     if (g_item_magnet) g_item_magnet.state = g_magnet_on ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_wake)   g_item_wake.state   = query_wake_state()             ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_lid)    g_item_lid.state    = query_lid_closed_awake_state() ? NSControlStateValueOn : NSControlStateValueOff;
-    if (g_item_winctl) g_item_winctl.state = g_winctl_on ? NSControlStateValueOn : NSControlStateValueOff;
+    if (g_item_winctl)   g_item_winctl.state   = g_winctl_on   ? NSControlStateValueOn : NSControlStateValueOff;
+    if (g_item_launcher) g_item_launcher.state = g_launcher_on ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 // ---------------------------------------------------------------------------
@@ -1419,6 +1439,13 @@ static void install_status_item(void) {
         keyEquivalent:@""];
     g_item_winctl.target = g_menu_target;
     [menu addItem:g_item_winctl];
+
+    g_item_launcher = [[NSMenuItem alloc]
+        initWithTitle:@"App launcher (⌃S)"
+               action:@selector(toggleLauncher:)
+        keyEquivalent:@""];
+    g_item_launcher.target = g_menu_target;
+    [menu addItem:g_item_launcher];
 
     g_item_mouse = [[NSMenuItem alloc]
         initWithTitle:@"Mouse (buttons + scroll)"

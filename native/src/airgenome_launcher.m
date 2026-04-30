@@ -137,6 +137,17 @@ static void airgenome_launcher_parse_hotkey_env(void) {
           spec, (unsigned long long)flags, kc);
 }
 
+// Borderless NSPanel returns NO from canBecomeKeyWindow by default in some
+// configurations — overriding here is the deterministic guarantee per
+// Apple's own borderless-window sample code. raw 168 min-viable subclass:
+// 4 lines, single override responsibility. 2026-04-30 04:55.
+@interface AirgenomeLauncherPanel : NSPanel
+@end
+@implementation AirgenomeLauncherPanel
+- (BOOL)canBecomeKeyWindow  { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+@end
+
 BOOL airgenome_launcher_handle_keydown(CGEventRef event) {
     if (!event) return NO;
     if (CGEventGetType(event) != kCGEventKeyDown) return NO;
@@ -164,6 +175,85 @@ static NSTextField *g_launcher_status_label = nil;
 static NSImageView *g_launcher_status_icon = nil;
 static NSArray<NSURL *> *g_launcher_current_results = nil;
 static NSUInteger g_launcher_selection_index = 0;
+
+// Lazy-install minimal main menu so Cmd+A/C/V/X/Z dispatch via the standard
+// responder chain to NSTextField's field editor. Without a main menu, macOS
+// eats Cmd shortcuts before they reach the panel. User report 2026-04-30:
+// "복사,전체선택등등 단축키 전혀안됨". raw 168 min-viable: only Edit menu
+// + 5 standard items. raw 65 idempotent: noop after first install.
+static void airgenome_launcher_install_main_menu(void) {
+    if ([NSApp mainMenu] != nil) return;
+
+    NSMenu *mainMenu = [[NSMenu alloc] init];
+
+    NSMenuItem *editItem = [[NSMenuItem alloc] init];
+    [mainMenu addItem:editItem];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    [editItem setSubmenu:editMenu];
+    [editMenu addItemWithTitle:@"Cut"
+                        action:@selector(cut:)        keyEquivalent:@"x"];
+    [editMenu addItemWithTitle:@"Copy"
+                        action:@selector(copy:)       keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"Paste"
+                        action:@selector(paste:)      keyEquivalent:@"v"];
+    [editMenu addItemWithTitle:@"Select All"
+                        action:@selector(selectAll:)  keyEquivalent:@"a"];
+    [editMenu addItemWithTitle:@"Undo"
+                        action:@selector(undo:)       keyEquivalent:@"z"];
+    NSMenuItem *redo = [editMenu addItemWithTitle:@"Redo"
+                        action:@selector(redo:)       keyEquivalent:@"Z"];
+    [redo setKeyEquivalentModifierMask:
+        NSEventModifierFlagCommand | NSEventModifierFlagShift];
+
+    [NSApp setMainMenu:mainMenu];
+}
+
+// Saved input source for restore on hide. User report 2026-04-30 04:59:
+// "검색해도 안됨 / 초기 언어는 무조건 영어 고정 / 한영키 상태면 영어로".
+// All app names are ASCII so Hangul IME composing chars never match; we
+// force ABC layout on show, restore previous source on hide so the user's
+// app context (Hangul IME for chat etc.) stays untouched.
+static TISInputSourceRef g_launcher_prev_input_source = NULL;
+
+// Switch keyboard layout to ABC (US English). Saves current source so
+// hide_overlay can restore. raw 65 idempotent: re-call OK; safe-noop if TIS
+// fails (rare — typically only first user with no English layouts installed).
+//
+// 2026-04-30 09:21 — async dispatch to next runloop tick. User report
+// 2026-04-30 09:20 "ctrl+s 창이 다시 안뜸" after first add. Suspect:
+// TISSelectInputSource synchronous on main thread blocks/races with
+// pending makeKeyAndOrderFront. Async dispatch lets panel finish showing
+// first, then input source switch fires immediately after.
+static void airgenome_launcher_force_english(void) {
+    if (g_launcher_prev_input_source) {
+        CFRelease(g_launcher_prev_input_source);
+        g_launcher_prev_input_source = NULL;
+    }
+    g_launcher_prev_input_source = TISCopyCurrentKeyboardInputSource();
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSDictionary *filter = @{
+            (__bridge NSString *)kTISPropertyInputSourceID:
+                @"com.apple.keylayout.ABC"
+        };
+        CFArrayRef sources = TISCreateInputSourceList(
+            (__bridge CFDictionaryRef)filter, false);
+        if (sources && CFArrayGetCount(sources) > 0) {
+            TISInputSourceRef abc =
+                (TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0);
+            TISSelectInputSource(abc);
+        }
+        if (sources) CFRelease(sources);
+    });
+}
+
+// Restore the input source captured by force_english. raw 65 idempotent.
+static void airgenome_launcher_restore_input(void) {
+    if (!g_launcher_prev_input_source) return;
+    TISSelectInputSource(g_launcher_prev_input_source);
+    CFRelease(g_launcher_prev_input_source);
+    g_launcher_prev_input_source = NULL;
+}
 // App enumeration cache - populated on each show_overlay, invalidated on hide.
 // Avoids filesystem traversal on every keystroke (raw 168 minimum-viable
 // performance optimization). Typical /Applications enumeration is fast (~ms),
@@ -251,85 +341,145 @@ static void airgenome_launcher_refresh_status(NSString *query) {
     }
     return NO;
 }
-// NSWindowDelegate: auto-dismiss when user clicks outside (loses key window).
-// Standard launcher UX: panel disappears on focus loss.
-- (void)windowDidResignKey:(NSNotification *)note {
-    (void)note;
-    airgenome_launcher_hide_overlay();
-}
+// NSWindowDelegate: REMOVED windowDidResignKey auto-hide 2026-04-30 04:58.
+// Was firing during the activation race (panel gains key briefly, then a
+// system-internal focus event resigns it before the user can interact).
+// User report "아예 안뜸" — panel created and immediately hidden via this
+// handler. Dismiss surfaces remaining: Esc / Enter (post-launch) / ctrl+s
+// toggle (in show_overlay) / outside click (handled by panel itself when
+// it loses focus on user click in another app — this is OS-level, not us).
 @end
 
 static AirgenomeLauncherDelegate *g_launcher_delegate = nil;
 
 void airgenome_launcher_show_overlay(void) {
-    // LSUIElement=true (Info.plist) sets activation policy to .accessory at
-    // launch — accessory apps cannot receive keyboard focus reliably even on
-    // their own panels. Solution per Apple HIG: dynamically promote to
-    // .regular while overlay is visible, demote back to .accessory on hide.
-    // Found 2026-04-30 04:43 — user report still couldn't type after
-    // removing NSWindowStyleMaskNonactivatingPanel + adding activateIgnoring.
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    [NSApp activateIgnoringOtherApps:YES];
-
-    // Idempotent: if already shown, just bring to front + clear search.
+    // Toggle behavior: ctrl+s while visible → hide (Spotlight pattern).
+    // User request 2026-04-30 04:57 "다시 ctrl+s 눌렀을때 닫아져야되".
     if (g_launcher_panel && [g_launcher_panel isVisible]) {
-        [g_launcher_search_field setStringValue:@""];
-        [g_launcher_panel makeKeyAndOrderFront:nil];
-        [g_launcher_panel makeFirstResponder:g_launcher_search_field];
+        airgenome_launcher_hide_overlay();
         return;
     }
+
+    // LSUIElement removed 2026-04-30 04:55 per raw 168 min-viable + raw 173
+    // determinism. App is now a regular Dock-visible app. activateIgnoring
+    // brings panel to foreground reliably; no policy switching needed.
+    [NSApp activateIgnoringOtherApps:YES];
+
+    // Lazy main menu install — required for Cmd+A/C/V/X/Z dispatch.
+    airgenome_launcher_install_main_menu();
+
+    // Force ABC keyboard layout — app names are ASCII; Hangul IME would
+    // compose unmatchable chars. Saves prev source for restore on hide.
+    airgenome_launcher_force_english();
     // Lazy-create on first show; reused thereafter.
+    //
+    // Visual redesign 2026-04-30 (user mandate "완전 블랙에 좌우 둥글게
+    // 앞쪽에 검색 아이콘"): pure-black stadium (cornerRadius = height/2)
+    // with magnifyingglass SF symbol left-anchored, top-row search input,
+    // bottom-row status icon+label. Drop-shadow handled by NSPanel itself.
     if (!g_launcher_panel) {
-        NSRect frame = NSMakeRect(0, 0, 600, 90);
-        // styleMask: borderless only. Removed NSWindowStyleMaskNonactivatingPanel
-        // 2026-04-30 04:43 — that mask blocks app activation, which prevents
-        // the panel from receiving keyboard input on LSUIElement apps even
-        // after [NSApp activateIgnoringOtherApps:YES]. User report 2026-04-30
-        // confirmed panel visible but keyboard/mouse non-responsive.
-        g_launcher_panel = [[NSPanel alloc]
+        const CGFloat W = 600.0;
+        const CGFloat H = 90.0;
+        NSRect frame = NSMakeRect(0, 0, W, H);
+        g_launcher_panel = [[AirgenomeLauncherPanel alloc]
             initWithContentRect:frame
                       styleMask:NSWindowStyleMaskBorderless
                         backing:NSBackingStoreBuffered
                           defer:NO];
-        // Borderless windows don't accept key window status by default; NSPanel
-        // overrides canBecomeKeyWindow to return YES even when borderless, but
-        // we set it explicitly via becomesKeyOnlyIfNeeded for clarity.
-        [g_launcher_panel setBecomesKeyOnlyIfNeeded:NO];
         [g_launcher_panel setLevel:NSFloatingWindowLevel];
         [g_launcher_panel setOpaque:NO];
-        [g_launcher_panel setBackgroundColor:[[NSColor windowBackgroundColor] colorWithAlphaComponent:0.95]];
+        [g_launcher_panel setBackgroundColor:[NSColor clearColor]];
         [g_launcher_panel setHasShadow:YES];
         [g_launcher_panel setMovableByWindowBackground:YES];
-        // Search input field at center of panel.
-        NSRect fieldFrame = NSMakeRect(20, 45, 560, 30);
-        g_launcher_search_field = [[NSTextField alloc] initWithFrame:fieldFrame];
-        [g_launcher_search_field setBezelStyle:NSTextFieldRoundedBezel];
-        [g_launcher_search_field setFont:[NSFont systemFontOfSize:18]];
-        [g_launcher_search_field setPlaceholderString:@"Type app name..."];
-        // Wire delegate for text-change + Enter-key handling.
+
+        // Pure-black stadium contentView: cornerRadius = H/2 → left/right
+        // edges become semicircles, top/bottom become flat (pill shape).
+        // masksToBounds clips subviews to the rounded path so any element
+        // straying near the corner is visually trimmed.
+        NSView *cv = [g_launcher_panel contentView];
+        [cv setWantsLayer:YES];
+        cv.layer.backgroundColor = [[NSColor blackColor] CGColor];
+        cv.layer.cornerRadius   = H / 2.0;
+        cv.layer.masksToBounds  = YES;
+
+        // Wire delegate (lazy-init).
         if (!g_launcher_delegate) {
             g_launcher_delegate = [[AirgenomeLauncherDelegate alloc] init];
         }
+        [g_launcher_panel setDelegate:g_launcher_delegate];
+
+        // Search icon (front-left). SF Symbol "magnifyingglass" tinted
+        // white. macOS 11+ — fall back to no-icon if older system.
+        const CGFloat iconSz   = 22.0;
+        const CGFloat iconPadX = 30.0;             // safe inside stadium curve
+        const CGFloat topMidY  = H * 0.75;          // center of top half (y up)
+        NSRect iconFrame = NSMakeRect(iconPadX, topMidY - iconSz / 2,
+                                      iconSz, iconSz);
+        NSImageView *searchIcon = [[NSImageView alloc] initWithFrame:iconFrame];
+        if (@available(macOS 11.0, *)) {
+            NSImage *mg = [NSImage imageWithSystemSymbolName:@"magnifyingglass"
+                                    accessibilityDescription:@"search"];
+            if (mg) {
+                searchIcon.image = mg;
+                searchIcon.contentTintColor = [NSColor whiteColor];
+            }
+        }
+        [searchIcon setImageScaling:NSImageScaleProportionallyDown];
+        [cv addSubview:searchIcon];
+
+        // Search input — borderless, transparent, white text, white-dim
+        // placeholder. Positioned in the top half, right of the icon.
+        const CGFloat fieldX = iconPadX + iconSz + 10.0;
+        const CGFloat fieldH = 38.0;
+        NSRect fieldFrame = NSMakeRect(fieldX, topMidY - fieldH / 2,
+                                       W - fieldX - iconPadX, fieldH);
+        g_launcher_search_field = [[NSTextField alloc] initWithFrame:fieldFrame];
+        [g_launcher_search_field setBezeled:NO];
+        [g_launcher_search_field setBordered:NO];
+        [g_launcher_search_field setDrawsBackground:NO];
+        [g_launcher_search_field setFocusRingType:NSFocusRingTypeNone];
+        [g_launcher_search_field setFont:[NSFont systemFontOfSize:20
+                                               weight:NSFontWeightRegular]];
+        [g_launcher_search_field setTextColor:[NSColor whiteColor]];
+        g_launcher_search_field.placeholderAttributedString =
+            [[NSAttributedString alloc] initWithString:@"Type app name..."
+                attributes:@{
+                    NSForegroundColorAttributeName:
+                        [NSColor colorWithWhite:1.0 alpha:0.4],
+                    NSFontAttributeName:
+                        [NSFont systemFontOfSize:20]
+                }];
         [g_launcher_search_field setDelegate:g_launcher_delegate];
         [g_launcher_search_field setTarget:g_launcher_delegate];
         [g_launcher_search_field setAction:@selector(launcherEnterAction:)];
-        [g_launcher_panel setDelegate:g_launcher_delegate];
-        [[g_launcher_panel contentView] addSubview:g_launcher_search_field];
-        // Status row: icon (left) + label (right).
-        NSRect iconFrame = NSMakeRect(20, 10, 24, 24);
-        g_launcher_status_icon = [[NSImageView alloc] initWithFrame:iconFrame];
+        [cv addSubview:g_launcher_search_field];
+
+        // Status row in the BOTTOM half — small icon + dim-white label.
+        // Same x-padding so it visually aligns with the search row above.
+        const CGFloat botMidY     = H * 0.25;
+        const CGFloat statusIconSz = 20.0;
+        NSRect statusIconFrame = NSMakeRect(iconPadX, botMidY - statusIconSz / 2,
+                                            statusIconSz, statusIconSz);
+        g_launcher_status_icon = [[NSImageView alloc] initWithFrame:statusIconFrame];
         [g_launcher_status_icon setImageScaling:NSImageScaleProportionallyDown];
-        [[g_launcher_panel contentView] addSubview:g_launcher_status_icon];
-        NSRect statusFrame = NSMakeRect(50, 12, 530, 22);
-        g_launcher_status_label = [[NSTextField alloc] initWithFrame:statusFrame];
+        [cv addSubview:g_launcher_status_icon];
+
+        const CGFloat statusLabelX = iconPadX + statusIconSz + 8.0;
+        const CGFloat statusLabelH = 18.0;
+        NSRect statusLabelFrame = NSMakeRect(statusLabelX,
+                                             botMidY - statusLabelH / 2,
+                                             W - statusLabelX - iconPadX,
+                                             statusLabelH);
+        g_launcher_status_label = [[NSTextField alloc] initWithFrame:statusLabelFrame];
         [g_launcher_status_label setBezeled:NO];
         [g_launcher_status_label setDrawsBackground:NO];
         [g_launcher_status_label setEditable:NO];
         [g_launcher_status_label setSelectable:NO];
-        [g_launcher_status_label setFont:[NSFont systemFontOfSize:13]];
-        [g_launcher_status_label setTextColor:[NSColor secondaryLabelColor]];
+        [g_launcher_status_label setFont:[NSFont systemFontOfSize:12]];
+        [g_launcher_status_label setTextColor:
+            [NSColor colorWithWhite:0.72 alpha:1.0]];
         [g_launcher_status_label setStringValue:@""];
-        [[g_launcher_panel contentView] addSubview:g_launcher_status_label];
+        [cv addSubview:g_launcher_status_label];
     }
     [g_launcher_search_field setStringValue:@""];
     // Center on screen of currently-active mouse cursor.
@@ -352,9 +502,8 @@ void airgenome_launcher_hide_overlay(void) {
     if (g_launcher_panel) {
         [g_launcher_panel orderOut:nil];
     }
-    // Demote back to accessory so airgenome stays out of Dock + Cmd-Tab while
-    // idle. Paired with the .regular promotion in show_overlay.
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    // Restore the input source captured by force_english on show.
+    airgenome_launcher_restore_input();
     // Drop cache on hide; freshens app list on next show (apps may install/
     // uninstall between sessions). raw 65 idempotent: re-call OK.
     g_launcher_app_cache = nil;
