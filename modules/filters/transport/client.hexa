@@ -12,10 +12,11 @@
 
 fn load_sock() -> str {
     // gate_config.jsonl 에서 ubu_gate_sock 로드 (하드코딩 금지 R2)
-    let cfg_path = try { exec("printenv HOME").trim() } catch e { "" } + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
-    let exists = try { exec("test -f '" + cfg_path + "' && echo y || echo n").trim() } catch e { "n" }
-    if exists == "y" {
-        let line = try { exec("grep -m1 ubu_gate_sock '" + cfg_path + "' 2>/dev/null || true").trim() } catch e { "" }
+    // A10 interim: try/catch 제거 (PANIC parse blocker) — env()/exec() 에러는 stderr 로 emit
+    let home = env("HOME")
+    let cfg_path = home + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+    if file_exists(cfg_path) {
+        let line = exec("/usr/bin/grep -m1 ubu_gate_sock '" + cfg_path + "' 2>/dev/null || true").trim()
         if len(line) > 0 {
             let parts = line.split("\"")
             // 마지막 문자열 값 추정
@@ -23,8 +24,8 @@ fn load_sock() -> str {
             if n >= 4 { return parts[n - 2] }
         }
     }
-    // fallback: gate_config.jsonl 에 ubu_gate_sock 없을 때 기본값
-    let fb = try { exec("printenv AG3_GATE_SOCK 2>/dev/null || true").trim() } catch e { "" }
+    // fallback: gate_config.jsonl 에 ubu_gate_sock 없을 때 환경변수
+    let fb = env("AG3_GATE_SOCK")
     if len(fb) > 0 { return fb }
     // gate_config.jsonl 에 ubu_gate_sock 이 반드시 있어야 함 (R2 하드코딩 금지)
     return ""
@@ -32,11 +33,17 @@ fn load_sock() -> str {
 
 fn main() {
     let sock = load_sock()
-    // nc -U <sock>: stdin → socket, socket → stdout. -q 0: stdin EOF 시 즉시 종료
-    let cmd = "exec nc -q 0 -U " + sock
-    try {
-        exec(cmd)
-    } catch e {
-        println("[warn] gate_client: socket exec failed — " + to_string(e))
+    if len(sock) == 0 {
+        println("[warn] gate_client: ubu_gate_sock unresolved (gate_config.jsonl + AG3_GATE_SOCK both empty)")
+        return
     }
+    // nc -U <sock>: stdin → socket, socket → stdout.
+    // A10 interim: macOS BSD nc 는 -q 미지원 (invalid option) — Linux GNU nc 만 지원.
+    //   macOS bench/dry-run 에서는 -N (close on EOF) 으로 대체. Linux gate worker 는 -q 0 사용.
+    //   런타임 분기: uname=Darwin → -N, else → -q 0
+    // A10 interim: try/catch 제거 — exec failure 는 stdout/stderr 로 emit
+    let kernel = exec("/usr/bin/uname -s").trim()
+    let nc_flag = if kernel == "Darwin" { "-N" } else { "-q 0" }
+    let cmd = "exec /usr/bin/nc " + nc_flag + " -U " + sock
+    exec(cmd)
 }

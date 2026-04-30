@@ -1,0 +1,4 @@
+{"ts":"2026-04-30T11:37:26Z","actor":"staged-scan","kind":"bypass","reason":"bench-evidence-real-paths-raw-91-honest-c3-reproduction-required","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T11:37:26Z","actor":"commit-msg-scan","kind":"bypass","reason":"bench-evidence-real-paths-raw-91-honest-c3-reproduction-required","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T11:50:15Z","actor":"staged-scan","kind":"bypass","reason":"airgenome-loop-module-paths-canonical-deployment-target","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T11:50:16Z","actor":"commit-msg-scan","kind":"bypass","reason":"airgenome-loop-module-paths-canonical-deployment-target","branch":"main","scanner_user":"ghost"}

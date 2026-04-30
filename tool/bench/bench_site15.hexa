@@ -1,0 +1,139 @@
+// tool/bench/bench_site15.hexa — own 8 site-15 + site-16 baseline
+// (predictive_throttle whitelisted + gentle_bootout_mac awk filter)
+//
+// site-15 OLD: per-agent exec("[ -f X ] && grep -Fxq Y X") = 1 fork × N agents
+//   NEW: read_file(WHITELIST) 한 번 + in-hexa membership scan = 0 fork
+//
+// site-16 OLD awk filter: exec("launchctl list | awk ...") = launchctl fork
+//   (launchctl list 자체 fork 는 필요 — system query 우회 불가)
+//   awk 부분만 in-hexa scan 으로 대체 가능 = 0 awk fork (단 launchctl 1 fork 잔존)
+//   bootout 자체 fork (per agent) = 잔존 (system call 필수)
+//
+// 본 bench 는 site-15 (whitelisted) 만 측정 — site-16 의 awk 부분은
+// site-15 win 에 흡수 (whitelisted 가 더 hot path).
+
+use "../../core/core"
+
+let WHITELIST_FILE = "/tmp/airgenome_bench_site15_whitelist"
+let AGENTS = [
+    "com.airgenome.tap",
+    "com.airgenome.harvest",
+    "com.airgenome.forecast",
+    "com.airgenome.label",
+    "com.airgenome.vacuum_watcher",
+    "com.airgenome.hook-watch",
+    "com.airgenome.settings-guard",
+    "com.airgenome.dispatch",
+    "com.airgenome.probe",
+    "com.airgenome.unknown1"
+]
+let CYCLES = 100  // 100 cycles × 10 agents = 1000 whitelisted checks
+
+fn now_ns() -> str {
+    return exec("gdate +%s%N").trim()
+}
+
+fn ns_diff(t0: str, t1: str) -> int {
+    return to_int(t1) - to_int(t0)
+}
+
+fn build_whitelist() -> void {
+    // 5개 whitelisted (절반 가량 hit, 절반 miss 시뮬레이션)
+    let content = "com.airgenome.tap\ncom.airgenome.vacuum_watcher\ncom.airgenome.hook-watch\ncom.airgenome.settings-guard\ncom.airgenome.dispatch\n"
+    write_file(WHITELIST_FILE, content)
+}
+
+// OLD: per-call exec — modules/predictive_throttle.hexa#whitelisted L155-158 정확 복제
+fn old_whitelisted(agent: str) -> bool {
+    let chk = exec("[ -f '" + WHITELIST_FILE + "' ] && grep -Fxq '" + agent + "' '" + WHITELIST_FILE + "' && echo y || echo n").trim()
+    return chk == "y"
+}
+
+// NEW: read_file 한 번 + in-hexa membership (line-exact match)
+// per-call read_file 도 0 fork — file system cache hit, ms 단위
+fn new_whitelisted(agent: str) -> bool {
+    let raw = read_file(WHITELIST_FILE)
+    if raw == "" { return false }
+    let lines = raw.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        if lines[i] == agent { return true }
+        i = i + 1
+    }
+    return false
+}
+
+fn run_old() -> int {
+    let mut hits = 0
+    let mut k = 0
+    while k < CYCLES {
+        let mut i = 0
+        while i < len(AGENTS) {
+            if old_whitelisted(AGENTS[i]) { hits = hits + 1 }
+            i = i + 1
+        }
+        k = k + 1
+    }
+    return hits
+}
+
+fn run_new() -> int {
+    let mut hits = 0
+    let mut k = 0
+    while k < CYCLES {
+        let mut i = 0
+        while i < len(AGENTS) {
+            if new_whitelisted(AGENTS[i]) { hits = hits + 1 }
+            i = i + 1
+        }
+        k = k + 1
+    }
+    return hits
+}
+
+fn diff_test() -> int {
+    let mut mismatches = 0
+    let mut i = 0
+    while i < len(AGENTS) {
+        let o = old_whitelisted(AGENTS[i])
+        let n = new_whitelisted(AGENTS[i])
+        if o != n {
+            mismatches = mismatches + 1
+            println("    DIFF agent=" + AGENTS[i] + " old=" + to_string(o) + " new=" + to_string(n))
+        }
+        i = i + 1
+    }
+    return mismatches
+}
+
+fn main() -> void {
+    println("airgenome bench/site-15 — predictive_throttle whitelisted (exec [-f]+grep vs read_file scan)")
+    println("  whitelist=" + WHITELIST_FILE + " agents=" + to_string(len(AGENTS)) + " CYCLES=" + to_string(CYCLES))
+    build_whitelist()
+
+    let mm = diff_test()
+    println("  diff_test mismatches: " + to_string(mm) + " / " + to_string(len(AGENTS)))
+    if mm != 0 {
+        println("BENCH FAIL [diff_test ≠ 0]")
+        return
+    }
+
+    let t0_old = now_ns()
+    let _o = run_old()
+    let t1_old = now_ns()
+    let ns_old = ns_diff(t0_old, t1_old)
+    let calls = CYCLES * len(AGENTS)
+    println("  OLD ([-f]+grep -Fxq) total_ns=" + to_string(ns_old) + "  per_call_ns=" + to_string(ns_old / calls))
+
+    let t0_new = now_ns()
+    let _n = run_new()
+    let t1_new = now_ns()
+    let ns_new = ns_diff(t0_new, t1_new)
+    println("  NEW (read_file+scan) total_ns=" + to_string(ns_new) + "  per_call_ns=" + to_string(ns_new / calls))
+
+    if ns_new > 0 {
+        let ratio = ns_old / ns_new
+        let saved_pct = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved_pct) + "%")
+    }
+}

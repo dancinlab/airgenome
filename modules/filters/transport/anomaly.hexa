@@ -17,10 +17,58 @@ let VERSION = "0.2.0"
 let mut AG_HOME = env("AIRGENOME_HOME")
 if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
 let GENOMES_LOG = AG_HOME + "/genomes.log"
-let STATE_PATH = try { exec("echo ${TMPDIR:-/tmp}").trim() } catch e { "/tmp" } + "/airgenome-state.json"
+// A10 interim: try/catch removed (PANIC parse blocker) — sh resolves TMPDIR fallback safely
+let STATE_PATH = exec("/bin/sh -c 'echo ${TMPDIR:-/tmp}'").trim() + "/airgenome-state.json"
 let ANOMALY_OUT = AG_HOME + "/forge/anomaly_gate.json"
 let GROWTH_BUS = AG_HOME + "/nexus/shared/growth_bus.jsonl"
 let GATE_CFG = AG_HOME + "/nexus/shared/gate_config.jsonl"
+
+// A6 RFC interim — numeric parse helpers (safari_bg_tab_throttle_genome.hexa pattern).
+// `to_float`/`to_int` panic 회피. A6 hexa-lang stdlib promote 후 제거 예정.
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    let mut seen_dot = false
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c == "." {
+            if seen_dot { return false }
+            seen_dot = true
+        } else {
+            if c < "0" { return false }
+            if c > "9" { return false }
+        }
+        i = i + 1
+    }
+    return true
+}
+fn to_float_safe(s: str) -> float {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0.0 }
+    if !is_numeric_str(trimmed) { return 0.0 }
+    return to_float(trimmed)
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    let probe = if len(head) > 0 && head.substring(0, 1) == "-" { head.substring(1, len(head)) } else { head }
+    if probe == "" { return 0 }
+    let mut k = 0
+    while k < len(probe) {
+        let c = probe.substring(k, k + 1)
+        if c < "0" { return 0 }
+        if c > "9" { return 0 }
+        k = k + 1
+    }
+    return to_int(head)
+}
 
 fn cfg_float(key: str, fallback: float) -> float {
     if file_exists(GATE_CFG) == false { return fallback }
@@ -32,7 +80,9 @@ fn cfg_float(key: str, fallback: float) -> float {
         if len(line) > 2 && line.contains("\"" + key + "\"") {
             let parsed = json_parse(line)
             if parsed["key"] == key {
-                try { return to_float(to_string(parsed["value"])) } catch e {}
+                // A10 interim: try/catch removed — to_float_safe handles non-numeric
+                let v = to_float_safe(to_string(parsed["value"]))
+                return v
             }
         }
         i = i + 1
@@ -100,10 +150,9 @@ fn parse_log() -> int {
                             let gate = gv[0]
                             let vals = gv[1].split("/")
                             if len(vals) >= 2 {
-                                let mut ram = 0.0
-                                let mut cpu = 0.0
-                                try { ram = to_float(vals[0]) } catch e {}
-                                try { cpu = to_float(vals[1]) } catch e {}
+                                // A10 interim: try/catch removed — to_float_safe handles non-numeric
+                                let ram = to_float_safe(vals[0])
+                                let cpu = to_float_safe(vals[1])
                                 total_ram = total_ram + ram
                                 total_cpu = total_cpu + cpu
                                 // per-gate accumulation
@@ -154,7 +203,8 @@ fn read_state_val(key: str) -> float {
     if raw.contains("\"" + key + "\"") == false { return 0.0 }
     let after = raw.split("\"" + key + "\"")[1]
     let val_s = after.split(":")[1].split(",")[0].split("}")[0].trim()
-    try { return to_float(val_s) } catch e { return 0.0 }
+    // A10 interim: try/catch removed — to_float_safe handles non-numeric
+    return to_float_safe(val_s)
 }
 
 // ── alert persistence ──────────────────────────────────────────────
@@ -165,7 +215,8 @@ fn load_alert_ts(key: str) -> int {
     if raw.contains("\"" + key + "\"") == false { return 0 }
     let after = raw.split("\"" + key + "\"")[1]
     let val_s = after.split(":")[1].split(",")[0].split("}")[0].trim()
-    try { return to_int(to_float(val_s)) } catch e { return 0 }
+    // A10 interim: try/catch removed — to_int_safe handles non-numeric
+    return to_int_safe(val_s)
 }
 fn save_alert_ts_entry(key: str, ts: int) {
     let mut existing = "{}"
@@ -187,7 +238,9 @@ fn save_alert_ts_entry(key: str, ts: int) {
         }
     }
     let tmp = ALERT_TS_FILE + ".tmp"
-    try { write_file(tmp, existing); exec("mv -f '" + tmp + "' '" + ALERT_TS_FILE + "'") } catch e {}
+    // A10 interim: try/catch removed — write_file/exec errors emit to stderr
+    write_file(tmp, existing)
+    exec("mv -f '" + tmp + "' '" + ALERT_TS_FILE + "'")
 }
 
 // ── main ───────────────────────────────────────────────────────────
@@ -197,7 +250,8 @@ if n_rows < 5 {
     return
 }
 
-let now_ts = try { to_int(to_float(exec("date +%s").trim())) } catch e { 0 }
+// A10 interim: try/catch removed — to_int_safe handles non-numeric (date always succeeds)
+let now_ts = to_int_safe(exec("date +%s").trim())
 let cur_cpu = read_state_val("cpu")
 let cur_ram = read_state_val("ram")
 let cur_swap = read_state_val("swap")
@@ -281,9 +335,10 @@ while gi < len(last_gate_names) {
                 let alert_key = "gate_" + gate
                 let last_a = load_alert_ts(alert_key)
                 if (now_ts - last_a) > ALERT_COOLDOWN {
-                    let ts_str = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "" }
+                    // A10 interim: try/catch removed — date / echo always succeed
+                    let ts_str = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
                     let ev = "{\"ts\":\"" + ts_str + "\",\"source\":\"anomaly_gate\",\"type\":\"gate_anomaly\",\"gate\":\"" + gate + "\",\"severity\":\"high\",\"ram_z\":" + to_string(g_ram_z) + ",\"cpu_z\":" + to_string(g_cpu_z) + "}"
-                    try { exec("echo '" + ev + "' >> '" + GROWTH_BUS + "'") } catch e {}
+                    exec("echo '" + ev + "' >> '" + GROWTH_BUS + "'")
                     save_alert_ts_entry(alert_key, now_ts)
                 }
             }
@@ -297,9 +352,10 @@ if sys_severity == "high" {
     let sys_key = "system_level"
     let last_sys_a = load_alert_ts(sys_key)
     if (now_ts - last_sys_a) > ALERT_COOLDOWN {
-        let ts_str = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "" }
+        // A10 interim: try/catch removed — date / echo always succeed
+        let ts_str = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
         let ev = "{\"ts\":\"" + ts_str + "\",\"source\":\"anomaly_gate\",\"type\":\"system_anomaly\",\"severity\":\"high\",\"ram_z\":" + to_string(sys_ram_z) + ",\"cpu_z\":" + to_string(sys_cpu_z) + ",\"flagged\":\"" + sys_flags + "\"}"
-        try { exec("echo '" + ev + "' >> '" + GROWTH_BUS + "'") } catch e {}
+        exec("echo '" + ev + "' >> '" + GROWTH_BUS + "'")
         save_alert_ts_entry(sys_key, now_ts)
     }
 }
@@ -313,12 +369,9 @@ if score < 0.0 { score = 0.0 }
 // write result
 let result = "{\"ts\":" + to_string(now_ts) + ",\"version\":\"" + VERSION + "\",\"system\":{\"ram_z\":" + to_string(sys_ram_z) + ",\"cpu_z\":" + to_string(sys_cpu_z) + ",\"severity\":\"" + sys_severity + "\",\"baseline_ram_mean\":" + to_string(sys_ram_mean) + ",\"baseline_cpu_mean\":" + to_string(sys_cpu_mean) + "},\"gates\":{\"n_checked\":" + to_string(len(last_gate_names)) + ",\"n_anomalies\":" + to_string(n_gate_anomalies) + ",\"names\":\"" + gate_anomaly_names + "\"},\"anomaly_score\":" + to_string(score) + ",\"z_threshold\":" + to_string(Z_THRESHOLD) + "}"
 let tmp = ANOMALY_OUT + ".tmp"
-try {
-    write_file(tmp, result + "\n")
-    exec("mv -f '" + tmp + "' '" + ANOMALY_OUT + "'")
-} catch e {
-    println("[anomaly] write error: " + to_string(e))
-}
+// A10 interim: try/catch removed — write / mv errors emit to stderr
+write_file(tmp, result + "\n")
+exec("mv -f '" + tmp + "' '" + ANOMALY_OUT + "'")
 
 let status = if total_anomalies == 0 { "clean" } else { to_string(total_anomalies) + " anomalies" }
 println("[anomaly] v" + VERSION + " ok: " + status + " sys_z=ram:" + to_string(sys_ram_z) + "/cpu:" + to_string(sys_cpu_z) + " gate_anomalies=" + to_string(n_gate_anomalies) + " score=" + to_string(score))
