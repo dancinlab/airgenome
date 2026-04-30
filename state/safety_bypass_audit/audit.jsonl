@@ -28,3 +28,5 @@
 {"ts":"2026-04-30T13:58:09Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-5-fix-cal-event-301x-plus-skip-revalidate-3-mail-fail-1-skip-plus-b10-rfc-plus-v3-strengthening-proposal","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T14:15:37Z","actor":"staged-scan","kind":"bypass","reason":"wave-5-mail-final-fix-envelope-1161x-plus-sender-size-96pct-lossless-plus-2-datae-integrate","branch":"main","scanner_user":"ghost"}
 {"ts":"2026-04-30T14:15:37Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-5-mail-final-fix-envelope-1161x-plus-sender-size-96pct-lossless-plus-2-datae-integrate","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T14:22:33Z","actor":"staged-scan","kind":"bypass","reason":"wave-5-memo-attachment-skip-to-pass-via-auto-discover-regular-plus-shared-media-previews","branch":"main","scanner_user":"ghost"}
+{"ts":"2026-04-30T14:22:33Z","actor":"commit-msg-scan","kind":"bypass","reason":"wave-5-memo-attachment-skip-to-pass-via-auto-discover-regular-plus-shared-media-previews","branch":"main","scanner_user":"ghost"}
