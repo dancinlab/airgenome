@@ -91,6 +91,10 @@ static int g_launcher_on = 1;   // ctrl+s app launcher overlay; hive raw 209
                                  // is "installed = working"; menubar can OFF)
 static int g_winctl_on   = 1;   // alt+1..5 window arrange; raw 209 sister axis
 static int g_hotkey_on   = 1;   // user-defined hotkey-action binder; raw 209 sister #3
+static int g_loop_on     = 0;   // raw 240 § B C4 — in-process harvest/forecast/label
+                                 // dispatcher. default OFF (보수적 — env AIRG_TAP_LOOP=1
+                                 // 명시 시만 활성화). 단일 binary, 단일 plist, 단일
+                                 // TCC client 정책 보존.
 static int g_debug       = 0;   // set via AIRG_TAP_DEBUG=1, logs every event
 
 // hive raw 209 reference impl - declared in airgenome_launcher.m, linked
@@ -102,6 +106,10 @@ extern void airgenome_winctl_reset_dock_tilesize(void);
 // hive raw 209 sister axis #3 - user-defined hotkey-action binder.
 extern BOOL airgenome_hotkey_handle_keydown(CGEventRef event);
 extern void airgenome_hotkey_load_bindings(void);
+// raw 240 § B C4 — in-process loop dispatcher (airgenome_loop.m). 함수
+// 호출은 g_loop_on=1 일 때만, default OFF.
+extern void airgenome_loop_init(void);
+extern void airgenome_loop_shutdown(void);
 
 // Magnet thresholds (pixels). Generous defaults for multi-monitor and
 // 4K/5K layouts -- a 20px reach feels invisible at high pixel densities.
@@ -1521,6 +1529,7 @@ int main(int argc, char **argv) {
         g_launcher_on       = env_flag("AIRG_TAP_LAUNCHER",       g_launcher_on);
         g_winctl_on         = env_flag("AIRG_TAP_WINCTL",         g_winctl_on);
         g_hotkey_on         = env_flag("AIRG_TAP_HOTKEY",         g_hotkey_on);
+        g_loop_on           = env_flag("AIRG_TAP_LOOP",           g_loop_on);
         g_debug             = env_flag("AIRG_TAP_DEBUG",          g_debug);
         // Persisted menubar state overrides env defaults (raw 168 minimum-viable).
         load_menubar_state();
@@ -1635,7 +1644,20 @@ int main(int argc, char **argv) {
         install_status_item();
         install_signal_handlers();
 
+        // raw 240 § B C4 — env gate. default OFF. AIRG_TAP_LOOP=1 시만
+        // dispatch_source_t timer 3개 (harvest 60s / label 300s / forecast
+        // 3600s) 활성화 + posix_spawn 자식 watchdog. 단일 binary, 단일 plist
+        // (com.airgenome.tap), 단일 TCC client 정책 보존.
+        if (g_loop_on) {
+            airgenome_loop_init();
+            fprintf(stderr,
+                "airgenome_tap: loop=on (harvest 60s / label 300s / forecast 3600s)\n");
+            fflush(stderr);
+        }
+
         [NSApp run];
+
+        if (g_loop_on) airgenome_loop_shutdown();
 
         if (src) CFRelease(src);
         if (g_tap) CFRelease(g_tap);
