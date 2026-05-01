@@ -508,8 +508,11 @@ static void airgenome_launcher_apply_history(void) {
 // Format (per 2026-05-01 mandate "json 먼저 / 이름순 보관"):
 //   [
 //     {"name": "addr",  "content": "Seoul, ROK"},
-//     {"name": "email", "content": "me@example.com"}
+//     {"name": "email", "content": "me@example.com"},
+//     {"name": "sig",   "content": "감사합니다.\n--\nme@example.com"}
 //   ]
+// Multi-line content uses standard JSON "\n" escapes — the NSString flows
+// straight through NSPasteboard so the pasted text preserves line breaks.
 // Registration UI is intentionally deferred — the user edits this file by
 // hand. Loaded on each show_overlay so edits take effect without restart.
 // Sorted case-insensitively by name for deterministic ordering when the
