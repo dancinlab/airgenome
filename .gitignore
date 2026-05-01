@@ -57,6 +57,13 @@ state/roadmap_progress.json
 # airgenome hook bus runtime (transcript-watcher mode, no Claude Code hook protocol)
 .hook-audit
 .hook-cursor.json
+
+# 외부 binary / framework (저작권 + binary)
+external/
+wine/
+tool/bench/*.exe
+tool/bench/*.dll
+tool/bench/*.dylib
 .hook-observe.jsonl
 .hook-tools.jsonl
 .hook-sessions.jsonl

@@ -1,0 +1,277 @@
+// modules/filters/process/keepalive_state_optimizer.hexa
+//   NW-C2 — TCP keepalive idle/interval/probes per-conn signal emit (KASO).
+//
+// 역할:
+//   established TCP connection 별로 KEEP / CLOSE / UNKNOWN 시그널을 emit.
+//   sysctl 의 global keepalive parameter + remote port heuristic 결합.
+//   실제 setsockopt 또는 sysctl -w 호출 0 (emit-only — F64 precedent).
+//
+// 데이터 소스:
+//   /usr/sbin/sysctl -n net.inet.tcp.keep*  (read-only)
+//   /usr/sbin/lsof -nP -iTCP -sTCP:ESTABLISHED  (5s timeout, NW-C1 reuse)
+//
+// 출력 ring: forge/keepalive_signals.ring (JSONL append-only, 480 line rotate).
+//   {"ts":"...","kind":"keepalive_state","comm":"...","pid":N,"remote":"host:port",
+//    "sysctl":{...},"decision":"KEEP|CLOSE|UNKNOWN","confidence":"NN/100",
+//    "reason":"...","classifier":"KASO-v1-2026-04-30"}
+//
+// 제약:
+//   - emit-only. 실제 setsockopt/sysctl -w 호출 0.
+//   - try/catch 0, top-level main() 0 (raw 245 호환).
+//   - HARD_NEVER 가드 (F64 verbatim).
+//
+// 5-tuple bench: tool/bench/bench_nw_c2_keepalive_state_optimizer.hexa
+//
+// R1 HEXA-FIRST: 인라인 python3. R17: /usr/bin/perl alarm 120s.
+
+use "../../../core/core"
+
+let CLASSIFIER = "KASO-v1-2026-04-30"
+let MAX_RING = 480
+let MAX_EMIT_PER_CYCLE = 16
+let LSOF_TIMEOUT_S = 5
+
+let RING = ring_path("keepalive_signals.ring")
+
+// HARD_NEVER guard — F64 verbatim
+fn is_hard_never(comm: str) -> bool {
+    let blocklist = ["WindowServer", "launchd", "loginwindow", "kernel_task",
+                     "coreaudiod", "hidd", "powerd", "configd", "mds",
+                     "Dock", "Finder", "ControlCenter", "SystemUIServer",
+                     "Safari", "WebContent", "com.apple.WebKit",
+                     "airgenome", "hexa"]
+    let mut i = 0
+    while i < len(blocklist) {
+        if comm.contains(blocklist[i]) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn sysctl_int(key: str, default_v: int) -> int {
+    let raw = exec("/usr/sbin/sysctl -n " + key + " 2>/dev/null").trim()
+    if raw == "" { return default_v }
+    // raw can be "7200000" or "7200" depending on key — we trust integer parse
+    let n = len(raw)
+    let mut i = 0
+    let mut acc = 0
+    let mut neg = false
+    if n > 0 {
+        let c0 = raw.substring(0, 1)
+        if c0 == "-" { neg = true; i = 1 }
+    }
+    while i < n {
+        let c = raw.substring(i, i + 1)
+        if c < "0" { return default_v }
+        if c > "9" { return default_v }
+        acc = acc * 10 + (to_int(c))
+        i = i + 1
+    }
+    if neg { return -acc }
+    return acc
+}
+
+fn rotate_ring() -> int {
+    let raw = read_file(RING)
+    let lines = raw.split("\n")
+    let mut all = []
+    let mut i = 0
+    while i < len(lines) {
+        if lines[i] != "" { all = all + [lines[i]] }
+        i = i + 1
+    }
+    if len(all) <= MAX_RING { return len(all) }
+    let start = len(all) - MAX_RING
+    let mut out = ""
+    let mut j = start
+    while j < len(all) {
+        out = out + all[j] + "\n"
+        j = j + 1
+    }
+    write_file(RING, out)
+    return MAX_RING
+}
+
+// Decision logic (rule-based, no ML).
+fn decide(remote_port_str: str) -> list {
+    // returns [decision, conf_str, reason]
+    let p = remote_port_str
+    if p == "443" || p == "8443" || p == "5223" || p == "5228" {
+        return ["KEEP", "85/100", "long_haul_tls_or_push"]
+    }
+    if p == "53" || p == "5353" {
+        return ["CLOSE", "80/100", "dns_no_keepalive"]
+    }
+    if p == "22" || p == "3306" || p == "5432" || p == "6379" {
+        return ["KEEP", "75/100", "db_or_ssh_persistent"]
+    }
+    return ["UNKNOWN", "50/100", "no_rule_match"]
+}
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"")
+}
+
+// parse one lsof established line into (comm, pid, host, port) tuple as list-of-str.
+struct Conn {
+    comm: str,
+    pid: int,
+    host: str,
+    port: str
+}
+
+fn parse_lsof_line(line: str) -> Conn {
+    // tab/space whitespace tokenize; keep last field intact (NAME col)
+    let n = len(line)
+    let mut starts = [0]
+    let mut in_ws = false
+    let mut i = 0
+    while i < n {
+        let ch = line.substring(i, i + 1)
+        if ch == " " || ch == "\t" {
+            if !in_ws { in_ws = true }
+        } else {
+            if in_ws {
+                starts = starts + [i]
+                in_ws = false
+            }
+        }
+        i = i + 1
+    }
+    if len(starts) < 9 {
+        return Conn { comm: "", pid: 0, host: "", port: "" }
+    }
+    let comm = line.substring(starts[0], starts[1]).trim()
+    let pid_s = line.substring(starts[1], starts[2]).trim()
+    let mut pid = 0
+    let pn = len(pid_s)
+    let mut pi = 0
+    while pi < pn {
+        let c = pid_s.substring(pi, pi + 1)
+        if c < "0" { pi = pn; pid = 0 }
+        else if c > "9" { pi = pn; pid = 0 }
+        else { pid = pid * 10 + to_int(c); pi = pi + 1 }
+    }
+    let name = line.substring(starts[8], n).trim()
+    let arr = name.split("->")
+    if len(arr) < 2 { return Conn { comm: comm, pid: pid, host: "", port: "" } }
+    let remote = arr[1].trim()
+    // strip trailing " (ESTABLISHED)" or similar
+    let sp = remote.split(" ")
+    let head = sp[0]
+    // IPv6 [::1]:443  vs ipv4 host:port
+    if head.substring(0, 1) == "[" {
+        let rb = head.split("]:")
+        if len(rb) < 2 { return Conn { comm: comm, pid: pid, host: "", port: "" } }
+        let h = rb[0].substring(1, len(rb[0]))
+        return Conn { comm: comm, pid: pid, host: h, port: rb[1] }
+    }
+    // ipv4 — split by last ":"
+    let n_h = len(head)
+    let mut last_colon = -1
+    let mut k = 0
+    while k < n_h {
+        if head.substring(k, k + 1) == ":" { last_colon = k }
+        k = k + 1
+    }
+    if last_colon < 0 { return Conn { comm: comm, pid: pid, host: "", port: "" } }
+    let h = head.substring(0, last_colon)
+    let p = head.substring(last_colon + 1, n_h)
+    return Conn { comm: comm, pid: pid, host: h, port: p }
+}
+
+fn collect_lsof() -> list {
+    let raw = exec("/usr/bin/perl -e 'alarm " + to_string(LSOF_TIMEOUT_S) + "; exec @ARGV' /usr/sbin/lsof -nP -iTCP -sTCP:ESTABLISHED 2>/dev/null")
+    let lines = raw.split("\n")
+    let mut out = []
+    let mut i = 1   // skip header
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" {
+            let c = parse_lsof_line(l)
+            if c.pid != 0 && c.port != "" && !is_hard_never(c.comm) {
+                out = out + [c]
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+pub fn run_filter() -> int {
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
+    let ts = ts_iso()
+    let kidle = sysctl_int("net.inet.tcp.keepidle", 7200000)
+    let kintvl = sysctl_int("net.inet.tcp.keepintvl", 75000)
+    let kcnt = sysctl_int("net.inet.tcp.keepcnt", 8)
+    let kalw = sysctl_int("net.inet.tcp.always_keepalive", 0)
+
+    let conns = collect_lsof()
+    if len(conns) == 0 {
+        println("keepalive_state_optimizer: no ESTABLISHED conns — pass")
+        return 0
+    }
+
+    let mut buf = ""
+    let mut emitted = 0
+    let mut k = 0
+    while k < len(conns) {
+        if emitted >= MAX_EMIT_PER_CYCLE { k = len(conns) }
+        else {
+            let c = conns[k]
+            let dec = decide(c.port)
+            let line = "{\"ts\":\"" + ts + "\""
+                     + ",\"kind\":\"keepalive_state\""
+                     + ",\"comm\":\"" + json_escape(c.comm) + "\""
+                     + ",\"pid\":" + to_string(c.pid)
+                     + ",\"remote\":\"" + json_escape(c.host) + ":" + json_escape(c.port) + "\""
+                     + ",\"sysctl\":{\"keepidle_ms\":" + to_string(kidle)
+                     + ",\"keepintvl_ms\":" + to_string(kintvl)
+                     + ",\"keepcnt\":" + to_string(kcnt)
+                     + ",\"always\":" + to_string(kalw) + "}"
+                     + ",\"decision\":\"" + dec[0] + "\""
+                     + ",\"confidence\":\"" + dec[1] + "\""
+                     + ",\"reason\":\"" + dec[2] + "\""
+                     + ",\"classifier\":\"" + CLASSIFIER + "\"}"
+            buf = buf + line + "\n"
+            emitted = emitted + 1
+            k = k + 1
+        }
+    }
+    append_file(RING, buf)
+    let kept = rotate_ring()
+    println("keepalive_state_optimizer: emitted=" + to_string(emitted)
+          + " ring_kept=" + to_string(kept)
+          + " sysctl_keepidle_ms=" + to_string(kidle))
+    return emitted
+}
+
+pub fn self_test() -> void {
+    if !is_hard_never("WindowServer") { panic("KASO self_test [WindowServer guard]") }
+    if is_hard_never("node") { panic("KASO self_test [node should not be guarded]") }
+    let d1 = decide("443")
+    if d1[0] != "KEEP" { panic("KASO self_test [443 KEEP]") }
+    let d2 = decide("53")
+    if d2[0] != "CLOSE" { panic("KASO self_test [53 CLOSE]") }
+    let d3 = decide("12345")
+    if d3[0] != "UNKNOWN" { panic("KASO self_test [12345 UNKNOWN]") }
+    let c = parse_lsof_line("Slack    1234 ghost  87u  IPv4  0xabc  0t0  TCP  10.0.0.1:54321->140.82.114.6:443 (ESTABLISHED)")
+    if c.pid != 1234 { panic("KASO self_test [parse pid]") }
+    if c.port != "443" { panic("KASO self_test [parse port]") }
+    if c.host != "140.82.114.6" { panic("KASO self_test [parse host]") }
+    println("  KASO keepalive_state_optimizer self_test PASS")
+}
+
+// auto-invoke entry — raw 245 호환 (top-level main() 호출 0).
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 && a[2] == "self-test" {
+        self_test()
+        return
+    }
+    let _ = run_filter()
+}

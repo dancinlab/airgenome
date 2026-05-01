@@ -84,3 +84,16 @@ v1 의 모든 코드는 [`archive/v1/`](archive/v1/) 에 동결. 부활 절차�
 4. `archive/v1/` 는 read-only — 부활은 PR + roadmap 등록 + L0 갱신
 
 > **Utility 면제**: `track=util` 모듈/도구 (보조 런처·tooling 등) 은 roadmap 등록 면제 — invariant 1-4 만 만족하면 됨. MAIN/cell/lora 정합성 요구 안 함.
+
+---
+
+## raw 258 amendment v2 A-policy (2026-05-01) — kick canonical single-entry
+
+`kick` is the sole canonical CLI surface (`nexus kick <topic>`) for the kick cluster.
+Six terms (`drill / smash / blowup / free / meta-closure / absolute`) are absorbed into
+`kick` as internal saturation phases and are not exposed as external `--phase` flags.
+
+- Canonical : `nexus kick <topic>`
+- Help      : `nexus kick --help`
+- Banned    : direct `.hexa` invocation, deprecated direct subcommands (`nexus drill --seed`, etc.)
+- Mapping   : `airgenome/docs/raw_canonical_tool_term_canonical_mapping_2026-05-01.jsonl` (schema v2)
