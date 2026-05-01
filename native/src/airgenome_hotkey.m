@@ -541,8 +541,58 @@ static void hotkey_toggle_app(NSString *targetPath, NSString *bundleID) {
         return;
     }
     if (app.isActive) {
+        // 2-press cycle on the active state per user mandate 2026-05-01
+        // "활성화 -> 비활성화 보단 일단 활성화 먼저 / 창이 여러개 있는경우
+        // 뒤에 숨겨진것도 다시 다 활성화 / 거기서 또 누르면 비활성화 토글":
+        //
+        //   active + has minimized windows  → un-minimize all + re-raise
+        //                                     the app (don't hide yet)
+        //   active + all windows visible    → hide
+        //
+        // Detection is via kAXMinimizedAttribute on each window. Apps
+        // hidden via Cmd+H surface as isActive=NO above, so we only
+        // need to handle the minimization sub-state here.
+        BOOL hadMinimized = NO;
+        AXUIElementRef appEl = AXUIElementCreateApplication(
+            app.processIdentifier);
+        if (appEl) {
+            CFTypeRef windowsRef = NULL;
+            if (AXUIElementCopyAttributeValue(
+                    appEl, kAXWindowsAttribute, &windowsRef)
+                == kAXErrorSuccess && windowsRef) {
+                CFArrayRef windows = (CFArrayRef)windowsRef;
+                CFIndex n = CFArrayGetCount(windows);
+                for (CFIndex i = 0; i < n; i++) {
+                    AXUIElementRef w = (AXUIElementRef)
+                        CFArrayGetValueAtIndex(windows, i);
+                    CFTypeRef minRef = NULL;
+                    if (AXUIElementCopyAttributeValue(
+                            w, kAXMinimizedAttribute, &minRef)
+                        == kAXErrorSuccess && minRef) {
+                        if (CFBooleanGetValue((CFBooleanRef)minRef)) {
+                            hadMinimized = YES;
+                            AXUIElementSetAttributeValue(
+                                w, kAXMinimizedAttribute,
+                                kCFBooleanFalse);
+                        }
+                        CFRelease(minRef);
+                    }
+                }
+                CFRelease(windows);
+            }
+            CFRelease(appEl);
+        }
+        if (hadMinimized) {
+            // Re-activate so the just-restored windows actually surface
+            // above whatever was layered in front of them.
+            hotkey_activate_running(app);
+            NSLog(@"[airgenome_hotkey] %@ → unminimize all + raise "
+                  @"(active w/ minimized windows)", bundleID);
+            return;
+        }
         hotkey_ax_hide(app.processIdentifier);
-        NSLog(@"[airgenome_hotkey] %@ → hide (was active)", bundleID);
+        NSLog(@"[airgenome_hotkey] %@ → hide (was active, all visible)",
+              bundleID);
         return;
     }
     hotkey_activate_running(app);

@@ -85,8 +85,10 @@ static void airgenome_launcher_update_ghost(NSString *typed);
 static void airgenome_launcher_apply_history(void);
 static NSArray<NSDictionary *> *airgenome_launcher_load_snippets(void);
 static NSArray<NSDictionary *> *airgenome_launcher_search_snippets(NSString *q);
-// Forward-declared so the snippet search (defined above its callee) can
-// reuse the same fuzzy ranker used for app names.
+static NSArray<NSDictionary *> *airgenome_launcher_load_bookmarks(void);
+static NSArray<NSDictionary *> *airgenome_launcher_search_bookmarks(NSString *q);
+// Forward-declared so snippet/bookmark search (defined above their callees)
+// can reuse the same fuzzy ranker used for app names.
 static NSInteger airgenome_launcher_match_score(NSString *appName, NSString *query);
 
 // Settings manager — separate titled NSPanel with two NSTabViewItems
@@ -295,6 +297,12 @@ static NSInteger g_launcher_history_position = -1;
 static NSArray<NSDictionary *> *g_launcher_snippet_cache = nil;
 static NSArray<NSDictionary *> *g_launcher_snippet_results = nil;
 static BOOL g_launcher_snippet_mode = NO;
+// Safari bookmark cache + mode state (parallel to snippet plumbing).
+// Loaded from ~/Library/Safari/Bookmarks.plist on each show_overlay so
+// fresh bookmarks become searchable without daemon restart.
+static NSArray<NSDictionary *> *g_launcher_bookmark_cache = nil;
+static NSArray<NSDictionary *> *g_launcher_bookmark_results = nil;
+static BOOL g_launcher_bookmark_mode = NO;
 
 // Outside-click dismiss monitor. Canonical Spotlight pattern (fazm.ai +
 // cindori): NSEvent +addGlobalMonitorForEvents fires the dismiss callback
@@ -430,6 +438,30 @@ static void airgenome_launcher_refresh_status(NSString *query) {
     }
 }
 
+// Synthesize ⌘V into the HID event tap. The launcher panel is non-
+// activating, so the user's prior frontmost app receives the keystroke
+// the moment hide_overlay's orderOut returns focus. Used by snippet-
+// paste (both @-prefix mode and default-mode snippet matches) to land
+// the just-clipboarded content directly in the focused text field.
+//
+// 50 ms dispatch_after wrapper is the caller's job — that buffer gives
+// the WindowServer one runloop tick to redirect keystroke routing
+// before the synthetic event arrives.
+static void airgenome_launcher_post_paste_keystroke(void) {
+    CGEventSourceRef src = CGEventSourceCreate(
+        kCGEventSourceStateHIDSystemState);
+    const int kVK_V = 0x09;  // kVK_ANSI_V
+    CGEventRef down = CGEventCreateKeyboardEvent(src, kVK_V, true);
+    CGEventSetFlags(down, kCGEventFlagMaskCommand);
+    CGEventPost(kCGHIDEventTap, down);
+    CFRelease(down);
+    CGEventRef up = CGEventCreateKeyboardEvent(src, kVK_V, false);
+    CGEventSetFlags(up, kCGEventFlagMaskCommand);
+    CGEventPost(kCGHIDEventTap, up);
+    CFRelease(up);
+    if (src) CFRelease(src);
+}
+
 // Update the trailing ghost field that shows the gray completion suffix.
 // The real search field's stringValue stays exactly equal to what the user
 // typed — the ghost is a sibling subview pinned to the right of the typed
@@ -452,6 +484,11 @@ static void airgenome_launcher_update_ghost(NSString *typed) {
                 NSString *n = g_launcher_snippet_results[0][@"name"];
                 if (n) bestName = [@"@" stringByAppendingString:n];
             }
+        } else if (g_launcher_bookmark_mode) {
+            if (g_launcher_bookmark_results.count > 0) {
+                NSString *t = g_launcher_bookmark_results[0][@"title"];
+                if (t) bestName = [@"#" stringByAppendingString:t];
+            }
         } else if (g_launcher_current_results.count > 0) {
             NSURL *url = g_launcher_current_results[0];
             bestName = [[url lastPathComponent]
@@ -460,21 +497,37 @@ static void airgenome_launcher_update_ghost(NSString *typed) {
         if (bestName && bestName.length > typed.length) {
             NSString *bnLow = [bestName lowercaseString];
             NSString *tnLow = [typed lowercaseString];
+            // For @/# modes, both typed and bestName carry the same
+            // leader char ('@' / '#'). Strip it before the substring
+            // check so e.g. typed "@nima" matches bestName "@anima"
+            // (otherwise the leader pins the comparison at column 0
+            // and substring detection fails for any non-prefix typing).
+            // User mandate 2026-05-01 "anima ← nima 로도 검색되게".
+            NSString *bnTest = bnLow;
+            NSString *tnTest = tnLow;
+            if ((g_launcher_snippet_mode || g_launcher_bookmark_mode)
+                && tnLow.length > 0 && bnLow.length > 0) {
+                tnTest = [tnLow substringFromIndex:1];
+                bnTest = [bnLow substringFromIndex:1];
+            }
             if ([bnLow hasPrefix:tnLow]) {
                 // Standard prefix completion — suffix appended directly.
                 // Suffix takes the matched name's own casing; the user's
                 // casing for the typed prefix stays untouched in the
                 // real field.
                 suffix = [bestName substringFromIndex:typed.length];
-            } else if ([bnLow rangeOfString:tnLow].location != NSNotFound) {
+            } else if (tnTest.length > 0
+                       && [bnTest rangeOfString:tnTest].location
+                          != NSNotFound) {
                 // Substring match (typed is INSIDE bestName but not at
-                // start). Example: typed "chrome" → bestName
-                // "Google Chrome". The user expects feedback — without
-                // it, the search "looks empty" even though Enter would
-                // launch the right app. Show the full match name as a
-                // hint with an arrow separator. Tab commits the full
-                // match name (replacing typed entirely, since the typed
-                // text is not a prefix of bestName).
+                // start). Example: typed "chrome" → "Google Chrome",
+                // typed "@nima" → "@anima", typed "#git" → "#GitHub".
+                // The user expects feedback — without it, the search
+                // "looks empty" even though Enter would resolve to the
+                // right item. Show the full match name as a hint with
+                // an arrow separator. Tab commits the full match name
+                // (replacing typed entirely, since typed isn't a prefix
+                // of bestName).
                 suffix = [NSString stringWithFormat:@"  →  %@", bestName];
             }
         }
@@ -512,12 +565,23 @@ static void airgenome_launcher_apply_history(void) {
     g_launcher_selection_index = 0;
     if ([q hasPrefix:@"@"]) {
         g_launcher_snippet_mode = YES;
+        g_launcher_bookmark_mode = NO;
         g_launcher_snippet_results =
             airgenome_launcher_search_snippets([q substringFromIndex:1]);
+        g_launcher_bookmark_results = @[];
+        g_launcher_current_results = @[];
+    } else if ([q hasPrefix:@"#"]) {
+        g_launcher_snippet_mode = NO;
+        g_launcher_bookmark_mode = YES;
+        g_launcher_snippet_results = @[];
+        g_launcher_bookmark_results =
+            airgenome_launcher_search_bookmarks([q substringFromIndex:1]);
         g_launcher_current_results = @[];
     } else {
         g_launcher_snippet_mode = NO;
+        g_launcher_bookmark_mode = NO;
         g_launcher_snippet_results = @[];
+        g_launcher_bookmark_results = @[];
         g_launcher_current_results = airgenome_launcher_search_apps(q);
     }
     [g_launcher_search_field setStringValue:q];
@@ -596,6 +660,94 @@ static NSArray<NSDictionary *> *airgenome_launcher_search_snippets(NSString *q) 
     }];
     NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
     for (NSDictionary *d in scored) [result addObject:d[@"snip"]];
+    return result;
+}
+
+// Recursive walker for Safari's Bookmarks.plist tree. Plain static C
+// function (not a block) so ARC doesn't have to wrestle with a self-
+// capturing block + retain cycle. Each leaf's {title, url} is appended
+// to `out`.
+static void airgenome_launcher_bookmark_walk(NSDictionary *node,
+                                              NSMutableArray *out) {
+    NSString *type = node[@"WebBookmarkType"];
+    if ([type isEqualToString:@"WebBookmarkTypeLeaf"]) {
+        NSString *url = node[@"URLString"];
+        id uri = node[@"URIDictionary"];
+        NSString *title = nil;
+        if ([uri isKindOfClass:[NSDictionary class]]) {
+            title = ((NSDictionary *)uri)[@"title"];
+        }
+        // Some leaves carry the title at the top level instead.
+        if (![title isKindOfClass:[NSString class]]
+            || title.length == 0) {
+            NSString *fallback = node[@"Title"];
+            if ([fallback isKindOfClass:[NSString class]]
+                && fallback.length > 0) title = fallback;
+        }
+        if ([url isKindOfClass:[NSString class]] && url.length > 0
+            && [title isKindOfClass:[NSString class]]
+            && title.length > 0) {
+            [out addObject:@{ @"title": title, @"url": url }];
+        }
+    } else if ([type isEqualToString:@"WebBookmarkTypeList"]) {
+        id children = node[@"Children"];
+        if ([children isKindOfClass:[NSArray class]]) {
+            for (id c in (NSArray *)children) {
+                if ([c isKindOfClass:[NSDictionary class]]) {
+                    airgenome_launcher_bookmark_walk(c, out);
+                }
+            }
+        }
+    }
+    // WebBookmarkTypeProxy / unknown types: skip.
+}
+
+// Load Safari bookmarks from ~/Library/Safari/Bookmarks.plist. Reading
+// the file requires Full Disk Access on macOS 10.15+; if the read fails
+// we silently return @[] (bookmark search becomes a no-op). The user
+// can grant access via System Settings → Privacy & Security → Full Disk
+// Access for /Applications/airgenome.app to wake the feature.
+static NSArray<NSDictionary *> *airgenome_launcher_load_bookmarks(void) {
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:
+        @"Library/Safari/Bookmarks.plist"];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data) return @[];
+    NSError *err = nil;
+    id root = [NSPropertyListSerialization
+        propertyListWithData:data
+                     options:NSPropertyListImmutable
+                      format:NULL
+                       error:&err];
+    if (err || ![root isKindOfClass:[NSDictionary class]]) {
+        if (err) NSLog(@"[airgenome_bookmark] plist parse error: %@",
+                       err.localizedDescription);
+        return @[];
+    }
+    NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
+    airgenome_launcher_bookmark_walk((NSDictionary *)root, out);
+    return out;
+}
+
+// Match bookmarks against `q` (the part after '#'). Empty `q` returns
+// the full list in load order — first bookmark's title becomes the
+// inline-completion suffix when the user types just '#'.
+static NSArray<NSDictionary *> *airgenome_launcher_search_bookmarks(NSString *q) {
+    NSArray<NSDictionary *> *all = g_launcher_bookmark_cache
+        ? g_launcher_bookmark_cache
+        : airgenome_launcher_load_bookmarks();
+    if (q == nil || q.length == 0) return all;
+    NSMutableArray *scored = [NSMutableArray array];
+    for (NSDictionary *bm in all) {
+        NSString *title = bm[@"title"] ?: @"";
+        NSInteger s = airgenome_launcher_match_score(title, q);
+        if (s > 0) [scored addObject:@{ @"bm": bm, @"score": @(s) }];
+    }
+    [scored sortUsingComparator:^NSComparisonResult(
+        NSDictionary *a, NSDictionary *b) {
+        return [b[@"score"] compare:a[@"score"]];
+    }];
+    NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+    for (NSDictionary *d in scored) [result addObject:d[@"bm"]];
     return result;
 }
 
@@ -1033,9 +1185,11 @@ static NSString *airgenome_snippets_preview(NSString *content) {
     BOOL hkOK   = airgenome_hotkey_save_to_disk(g_hotkey_edit_list);
     if (!snipOK || !hkOK) {
         NSAlert *a = [[NSAlert alloc] init];
-        a.messageText = @"airgenome settings 저장 실패";
+        a.messageText = @"airgenome settings — save failed";
         a.informativeText = [NSString stringWithFormat:
-            @"snippets:%@ / hotkeys:%@",
+            @"snippets: %@ / hotkeys: %@\n"
+            @"Check Console.app for [airgenome_snippets] / "
+            @"[airgenome_hotkey] log entries.",
             snipOK ? @"OK" : @"FAIL",
             hkOK   ? @"OK" : @"FAIL"];
         [a runModal];
@@ -1304,18 +1458,19 @@ void airgenome_settings_show_manager(void) {
         [tabView setAutoresizingMask:
             NSViewWidthSizable | NSViewHeightSizable];
 
-        // 앱 단축키 listed first per user mandate ordering
-        // ("앱단축키 , 스니펫 관리").
+        // Hotkeys listed first per user mandate ordering
+        // ("앱단축키 , 스니펫 관리"). Tab labels switched to English
+        // 2026-05-01 ("한글 → 영어로 변경").
         NSRect tabFrame = NSMakeRect(0, 0, W - 2 * pad - 8, tabH - 30);
         NSTabViewItem *hkItem = [[NSTabViewItem alloc]
             initWithIdentifier:@"hk"];
-        hkItem.label = @"앱 단축키";
+        hkItem.label = @"Hotkeys";
         hkItem.view = airgenome_settings_build_hotkey_tab(tabFrame);
         [tabView addTabViewItem:hkItem];
 
         NSTabViewItem *snipItem = [[NSTabViewItem alloc]
             initWithIdentifier:@"snip"];
-        snipItem.label = @"스니펫 관리";
+        snipItem.label = @"Snippets";
         snipItem.view = airgenome_settings_build_snippet_tab(tabFrame);
         [tabView addTabViewItem:snipItem];
 
@@ -1349,13 +1504,27 @@ void airgenome_settings_show_manager(void) {
     g_launcher_history_position = -1;  // user typed → reset history nav
     g_launcher_selection_index = 0;
     if ([q hasPrefix:@"@"]) {
+        // @-prefix: snippets only.
         g_launcher_snippet_mode = YES;
+        g_launcher_bookmark_mode = NO;
         g_launcher_snippet_results =
             airgenome_launcher_search_snippets([q substringFromIndex:1]);
+        g_launcher_bookmark_results = @[];
+        g_launcher_current_results = @[];
+    } else if ([q hasPrefix:@"#"]) {
+        // #-prefix: Safari bookmarks only.
+        g_launcher_snippet_mode = NO;
+        g_launcher_bookmark_mode = YES;
+        g_launcher_snippet_results = @[];
+        g_launcher_bookmark_results =
+            airgenome_launcher_search_bookmarks([q substringFromIndex:1]);
         g_launcher_current_results = @[];
     } else {
+        // Default: search_apps mixes apps + snippets + bookmarks.
         g_launcher_snippet_mode = NO;
+        g_launcher_bookmark_mode = NO;
         g_launcher_snippet_results = @[];
+        g_launcher_bookmark_results = @[];
         g_launcher_current_results = airgenome_launcher_search_apps(q);
     }
     airgenome_launcher_update_ghost(q);
@@ -1374,6 +1543,20 @@ void airgenome_settings_show_manager(void) {
             [g_launcher_history removeLastObject];
         }
     }
+    if (g_launcher_bookmark_mode) {
+        if (g_launcher_bookmark_results.count > 0) {
+            NSDictionary *top = g_launcher_bookmark_results[0];
+            NSString *url = top[@"url"] ?: @"";
+            if (url.length > 0) {
+                NSURL *u = [NSURL URLWithString:url];
+                if (u) [[NSWorkspace sharedWorkspace] openURL:u];
+                NSLog(@"[airgenome_launcher] bookmark opened: %@ → %@",
+                      top[@"title"] ?: @"?", url);
+            }
+        }
+        airgenome_launcher_hide_overlay();
+        return;
+    }
     if (g_launcher_snippet_mode) {
         if (g_launcher_snippet_results.count > 0) {
             NSDictionary *top = g_launcher_snippet_results[0];
@@ -1383,8 +1566,29 @@ void airgenome_settings_show_manager(void) {
             [pb setString:content forType:NSPasteboardTypeString];
             NSLog(@"[airgenome_launcher] snippet copied: @%@ (%lu chars)",
                   top[@"name"] ?: @"?", (unsigned long)content.length);
+            airgenome_launcher_hide_overlay();
+            // Two-step UX per 2026-05-01 user mandate "@스니펫 Enter →
+            // 클립보드 복사 + 기존 활성화창에 붙여넣기 2가지 작동":
+            // synthesize ⌘V into the HID event tap so the user's prior
+            // frontmost app receives a real Cmd-V keystroke. The
+            // launcher panel is non-activating, so prior-app focus
+            // returns the moment we orderOut. A 50 ms dispatch_after
+            // buffer gives the WindowServer one runloop tick to redirect
+            // keystroke routing before the synthetic event arrives,
+            // preventing the rare race where ⌘V lands while the panel
+            // is still being torn down. Skip the paste if the snippet
+            // content is empty (would otherwise dump whatever was on
+            // the clipboard before — surprising).
+            if (content.length > 0) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                             (int64_t)(50 * NSEC_PER_MSEC)),
+                    dispatch_get_main_queue(), ^{
+                        airgenome_launcher_post_paste_keystroke();
+                    });
+            }
+        } else {
+            airgenome_launcher_hide_overlay();
         }
-        airgenome_launcher_hide_overlay();
         return;
     }
     NSUInteger n = g_launcher_current_results.count;
@@ -1417,7 +1621,11 @@ void airgenome_settings_show_manager(void) {
         if (g_launcher_snippet_mode && g_launcher_snippet_results.count > 0) {
             NSString *n = g_launcher_snippet_results[0][@"name"];
             if (n) bestName = [@"@" stringByAppendingString:n];
-        } else if (!g_launcher_snippet_mode
+        } else if (g_launcher_bookmark_mode
+                   && g_launcher_bookmark_results.count > 0) {
+            NSString *t = g_launcher_bookmark_results[0][@"title"];
+            if (t) bestName = [@"#" stringByAppendingString:t];
+        } else if (!g_launcher_snippet_mode && !g_launcher_bookmark_mode
                    && g_launcher_current_results.count > 0) {
             NSURL *url = g_launcher_current_results[0];
             bestName = [[url lastPathComponent]
@@ -1702,6 +1910,9 @@ void airgenome_launcher_show_overlay(void) {
     g_launcher_snippet_mode = NO;
     g_launcher_snippet_results = nil;
     g_launcher_snippet_cache = airgenome_launcher_load_snippets();
+    g_launcher_bookmark_mode = NO;
+    g_launcher_bookmark_results = nil;
+    g_launcher_bookmark_cache = airgenome_launcher_load_bookmarks();
     // Center on screen of currently-active mouse cursor.
     NSScreen *screen = [NSScreen mainScreen];
     NSRect screenFrame = [screen visibleFrame];
@@ -1890,6 +2101,8 @@ static void airgenome_launcher_refresh_recent_set(void) {
 // history entries — is all keyed off NSURL; a synthetic URL slots into
 // the existing pipeline with one tiny intercept point in launch_app.
 NSString * const kAirgenomeSettingsSentinel = @"airgenome settings.app";
+NSString * const kAirgenomeSnippetSentinelDir = @"/__airgenome_snippet__";
+NSString * const kAirgenomeBookmarkSentinelDir = @"/__airgenome_bookmark__";
 
 static NSURL *airgenome_settings_sentinel_url(void) {
     return [NSURL fileURLWithPath:
@@ -1900,6 +2113,76 @@ BOOL airgenome_launcher_is_settings_sentinel(NSURL *url) {
     if (!url) return NO;
     return [[url lastPathComponent]
         isEqualToString:kAirgenomeSettingsSentinel];
+}
+
+// Synthetic URL for "snippet match in default search results". User mandate
+// 2026-05-01 "스니펫 검색도 그냥 하자 @ 안붙이고 같이 동일하게" — without
+// the @ prefix, search_apps mixes snippet matches in alongside app matches
+// so a single fuzzy query surfaces both kinds. The "@ 붙이면 스니펫 만"
+// path (snippet_mode YES via prefix) is unaffected and still goes through
+// g_launcher_snippet_results, which holds the raw dicts.
+//
+// URL encoding: /__airgenome_snippet__/<name>.app — the .app suffix lets
+// the existing display-name pipeline (lastPathComponent → stringByDeleting-
+// PathExtension) yield <name> without special-casing.
+static NSURL *airgenome_launcher_snippet_sentinel_url(NSString *name) {
+    NSString *path = [NSString stringWithFormat:
+        @"%@/%@.app", kAirgenomeSnippetSentinelDir, name ?: @""];
+    return [NSURL fileURLWithPath:path];
+}
+
+BOOL airgenome_launcher_is_snippet_sentinel(NSURL *url) {
+    if (!url) return NO;
+    return [url.path hasPrefix:
+        [kAirgenomeSnippetSentinelDir stringByAppendingString:@"/"]];
+}
+
+static NSDictionary *airgenome_launcher_snippet_for_url(NSURL *url) {
+    if (!airgenome_launcher_is_snippet_sentinel(url)) return nil;
+    NSString *name = [[url lastPathComponent]
+        stringByDeletingPathExtension];
+    NSArray<NSDictionary *> *all = g_launcher_snippet_cache
+        ? g_launcher_snippet_cache
+        : airgenome_launcher_load_snippets();
+    for (NSDictionary *s in all) {
+        if ([s[@"name"] isEqualToString:name]) return s;
+    }
+    return nil;
+}
+
+// Bookmark sentinel URLs follow the same shape as snippet sentinels —
+// /__airgenome_bookmark__/<title>.app — but bookmark titles can contain
+// `/` which would break NSURL fileURLWithPath. Round-trip via U+FF0F
+// FULLWIDTH SOLIDUS, which renders identically in monospace fallback
+// fonts but isn't a path separator, so the lookup remains a string
+// equality check.
+static NSURL *airgenome_launcher_bookmark_sentinel_url(NSString *title) {
+    NSString *safe = [title stringByReplacingOccurrencesOfString:@"/"
+                                                      withString:@"／"];
+    NSString *path = [NSString stringWithFormat:
+        @"%@/%@.app", kAirgenomeBookmarkSentinelDir, safe];
+    return [NSURL fileURLWithPath:path];
+}
+
+BOOL airgenome_launcher_is_bookmark_sentinel(NSURL *url) {
+    if (!url) return NO;
+    return [url.path hasPrefix:
+        [kAirgenomeBookmarkSentinelDir stringByAppendingString:@"/"]];
+}
+
+static NSDictionary *airgenome_launcher_bookmark_for_url(NSURL *url) {
+    if (!airgenome_launcher_is_bookmark_sentinel(url)) return nil;
+    NSString *file = [[url lastPathComponent]
+        stringByDeletingPathExtension];
+    NSString *title = [file stringByReplacingOccurrencesOfString:@"／"
+                                                      withString:@"/"];
+    NSArray<NSDictionary *> *all = g_launcher_bookmark_cache
+        ? g_launcher_bookmark_cache
+        : airgenome_launcher_load_bookmarks();
+    for (NSDictionary *b in all) {
+        if ([b[@"title"] isEqualToString:title]) return b;
+    }
+    return nil;
 }
 
 NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query) {
@@ -1919,6 +2202,46 @@ NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query) {
                 s += 200;
             }
             [scored addObject:@{ @"url": url, @"score": @(s) }];
+        }
+    }
+    // Snippet matches — surfaced in default-mode search per user mandate
+    // 2026-05-01 "스니펫 검색도 그냥 하자 @ 안붙이고 같이 동일하게". The
+    // dedicated @-prefix path (snippet_mode YES) bypasses search_apps
+    // entirely and uses search_snippets directly, so this branch only
+    // adds snippets to the mixed default-mode result list. +30 boost
+    // keeps a snippet adjacent to (not swallowed by) an equivalent-score
+    // app, without overpowering high-quality app prefix matches.
+    NSArray<NSDictionary *> *snippetsAll = g_launcher_snippet_cache
+        ? g_launcher_snippet_cache
+        : airgenome_launcher_load_snippets();
+    for (NSDictionary *snip in snippetsAll) {
+        NSString *name = snip[@"name"] ?: @"";
+        if (name.length == 0) continue;
+        NSInteger s = airgenome_launcher_match_score(name, query);
+        if (s > 0) {
+            [scored addObject:@{
+                @"url":   airgenome_launcher_snippet_sentinel_url(name),
+                @"score": @(s + 30)
+            }];
+        }
+    }
+    // Safari bookmark matches — same default-mode mix-in policy as
+    // snippets ("그냥 검색에 앱, 스니펫, 사파리 북마크"). +20 boost
+    // (smaller than snippets' +30) keeps a heavily-bookmarked link from
+    // outranking an obvious app match. The dedicated #-prefix path
+    // bypasses search_apps and uses search_bookmarks directly.
+    NSArray<NSDictionary *> *bookmarksAll = g_launcher_bookmark_cache
+        ? g_launcher_bookmark_cache
+        : airgenome_launcher_load_bookmarks();
+    for (NSDictionary *bm in bookmarksAll) {
+        NSString *title = bm[@"title"] ?: @"";
+        if (title.length == 0) continue;
+        NSInteger s = airgenome_launcher_match_score(title, query);
+        if (s > 0) {
+            [scored addObject:@{
+                @"url":   airgenome_launcher_bookmark_sentinel_url(title),
+                @"score": @(s + 20)
+            }];
         }
     }
     // Synthetic "airgenome settings" entry — included whenever match_score
@@ -1984,6 +2307,55 @@ BOOL airgenome_launcher_launch_app(NSURL *appBundleURL) {
     if (airgenome_launcher_is_settings_sentinel(appBundleURL)) {
         airgenome_launcher_hide_overlay();
         airgenome_settings_show_manager();
+        return YES;
+    }
+    // Synthetic bookmark match → open the bookmark's URL in the user's
+    // default browser. NSWorkspace.openURL: returns immediately; the
+    // launcher overlay closes synchronously so the panel doesn't linger
+    // over the new browser window.
+    if (airgenome_launcher_is_bookmark_sentinel(appBundleURL)) {
+        NSDictionary *bm =
+            airgenome_launcher_bookmark_for_url(appBundleURL);
+        if (bm) {
+            NSString *url = bm[@"url"] ?: @"";
+            if (url.length > 0) {
+                NSURL *u = [NSURL URLWithString:url];
+                if (u) [[NSWorkspace sharedWorkspace] openURL:u];
+                NSLog(@"[airgenome_launcher] bookmark (default) opened: "
+                      @"%@ → %@", bm[@"title"] ?: @"?", url);
+            }
+        }
+        airgenome_launcher_hide_overlay();
+        return YES;
+    }
+    // Synthetic snippet match (default-mode search injection) → same
+    // copy + paste flow as the @-prefix Enter path. The user's prior
+    // app stays frontmost during launcher use (NonactivatingPanel), so
+    // hide_overlay returns focus and the dispatched ⌘V lands in the
+    // text field they were just typing in.
+    if (airgenome_launcher_is_snippet_sentinel(appBundleURL)) {
+        NSDictionary *snip =
+            airgenome_launcher_snippet_for_url(appBundleURL);
+        if (snip) {
+            NSString *content = snip[@"content"] ?: @"";
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            [pb clearContents];
+            [pb setString:content forType:NSPasteboardTypeString];
+            NSLog(@"[airgenome_launcher] snippet (default) copied: "
+                  @"%@ (%lu chars)",
+                  snip[@"name"] ?: @"?",
+                  (unsigned long)content.length);
+            airgenome_launcher_hide_overlay();
+            if (content.length > 0) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                             (int64_t)(50 * NSEC_PER_MSEC)),
+                    dispatch_get_main_queue(), ^{
+                        airgenome_launcher_post_paste_keystroke();
+                    });
+            }
+        } else {
+            airgenome_launcher_hide_overlay();
+        }
         return YES;
     }
     // No focus-restore bookkeeping — canonical NonactivatingPanel means
