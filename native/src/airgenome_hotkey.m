@@ -135,7 +135,19 @@ static BOOL hotkey_parse_spec(NSString *spec, int *kc_out,
     else if ([keyPart isEqualToString:@"escape"]) kc = 0x35;
     else if ([keyPart isEqualToString:@"esc"])    kc = 0x35;
     else if (keyPart.length == 1) {
-        kc = hotkey_letter_to_keycode([keyPart characterAtIndex:0]);
+        char c = [keyPart characterAtIndex:0];
+        if (c >= 'a' && c <= 'z') {
+            kc = hotkey_letter_to_keycode(c);
+        } else if (c >= '0' && c <= '9') {
+            // kVK_ANSI_<digit> keycodes — separate table because the
+            // top-row digit row is non-contiguous on the macOS keymap
+            // (e.g. 5/6 swap mid-table).
+            static const int dmap[10] = {
+                0x1D, 0x12, 0x13, 0x14, 0x15,  // 0 1 2 3 4
+                0x17, 0x16, 0x1A, 0x1C, 0x19   // 5 6 7 8 9
+            };
+            kc = dmap[c - '0'];
+        }
     }
     if (kc < 0) return NO;
     *kc_out = kc;

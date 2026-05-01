@@ -634,10 +634,15 @@ static NSArray<NSString *> *airgenome_hotkey_modifier_choices(void) {
     ];
 }
 
-// Letter keys + named keys the parser in airgenome_hotkey.m supports.
+// Letter / digit / named keys the parser in airgenome_hotkey.m supports.
+// Letters first, then digits, then named keys — matches the visual order
+// users scan a popup top-to-bottom (alphabetical → numeric → special).
 static NSArray<NSString *> *airgenome_hotkey_key_choices(void) {
     NSMutableArray *out = [NSMutableArray array];
     for (char c = 'a'; c <= 'z'; c++) {
+        [out addObject:[NSString stringWithFormat:@"%c", c]];
+    }
+    for (char c = '0'; c <= '9'; c++) {
         [out addObject:[NSString stringWithFormat:@"%c", c]];
     }
     [out addObjectsFromArray:@[

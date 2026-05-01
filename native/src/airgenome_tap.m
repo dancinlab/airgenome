@@ -1564,14 +1564,26 @@ static void install_status_item(void) {
     update_menu_states();   // sync checkmarks to current real state
 
     [menu addItem:[NSMenuItem separatorItem]];
+    // airgenome settings… — opens the tabbed manager (앱 단축키 + 스니펫
+    // 관리). User mandate 2026-05-01 "menubar 에도 settings 접근 메뉴 /
+    // quit 위에". Same target object as Quit so the lookup chain
+    // (NSApp.delegate) is shared.
+    id appDelegate = (id)NSApp.delegate;
+    NSMenuItem *settingsItem = [[NSMenuItem alloc]
+        initWithTitle:@"airgenome settings…"
+               action:@selector(openSettings:)
+        keyEquivalent:@""];
+    settingsItem.target = appDelegate;
+    [menu addItem:settingsItem];
+
+    [menu addItem:[NSMenuItem separatorItem]];
     // intentional quit only — Dock quit / Cmd+Q 은 applicationShouldTerminate
     // 에서 차단됨. menubar 의 본 항목만 g_intentional_quit flag 설정 후 통과.
     // delegate 는 파일 끝쪽 g_exe_handler_delegate 정의 — runtime lookup OK.
-    id quitTarget = (id)NSApp.delegate;
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit airgenome"
                                                       action:@selector(intentionalQuit:)
                                                keyEquivalent:@"q"];
-    quitItem.target = quitTarget;
+    quitItem.target = appDelegate;
     [menu addItem:quitItem];
 
     item.menu = menu;
@@ -1599,13 +1611,23 @@ static void install_status_item(void) {
 //   별도 처리 — terminate: 거치지 않으므로 intentional flag 무관.
 static BOOL g_intentional_quit = NO;
 
+// Defined in airgenome_launcher.m — opens the tabbed settings panel
+// (앱 단축키 + 스니펫 관리). The menubar's "airgenome settings…" item
+// invokes this through the delegate's openSettings: forwarder below.
+extern void airgenome_settings_show_manager(void);
+
 @interface AirgenomeExeHandlerDelegate : NSObject <NSApplicationDelegate>
 - (void)intentionalQuit:(id)sender;
+- (void)openSettings:(id)sender;
 @end
 @implementation AirgenomeExeHandlerDelegate
 - (void)intentionalQuit:(id)sender {
     g_intentional_quit = YES;
     [NSApp terminate:sender];
+}
+- (void)openSettings:(id)sender {
+    (void)sender;
+    airgenome_settings_show_manager();
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
     if (g_intentional_quit) return NSTerminateNow;
