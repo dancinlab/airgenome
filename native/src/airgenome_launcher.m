@@ -68,6 +68,27 @@ static NSImage *airgenome_launcher_cached_icon(NSString *path);
 // before its definition lower in the file.
 static NSMutableDictionary<NSString *, NSImage *> *g_launcher_icon_cache;
 
+// Inline-completion + history + snippet (raw 168 mandate 2026-05-01).
+//   - Typed prefix lives in the real NSTextField (white text). The gray
+//     completion is a SEPARATE borderless NSTextField (the "ghost") drawn
+//     immediately to the right of the typed text — visually a placeholder
+//     hint, not part of the field's storage. User mandate
+//     "회색이란건 placeholder 영역" (2026-05-01) — keeping the suffix out
+//     of the real field's text means backspace, IME composition, and
+//     selection all behave naturally.
+//   - Tab commits the ghost suffix into the real field; Enter
+//     launches/copies; ↑/↓ navigate the last 5 typed queries.
+//   - Query starting with '@' switches to snippet mode: completion ranks
+//     against snippet names from snippets.json (name-sorted), and Enter
+//     copies the snippet's "content" to the pasteboard.
+static void airgenome_launcher_update_ghost(NSString *typed);
+static void airgenome_launcher_apply_history(void);
+static NSArray<NSDictionary *> *airgenome_launcher_load_snippets(void);
+static NSArray<NSDictionary *> *airgenome_launcher_search_snippets(NSString *q);
+// Forward-declared so the snippet search (defined above its callee) can
+// reuse the same fuzzy ranker used for app names.
+static NSInteger airgenome_launcher_match_score(NSString *appName, NSString *query);
+
 // Launch action — invoke NSWorkspace to open the chosen app bundle.
 BOOL airgenome_launcher_launch_app(NSURL *appBundleURL);
 
@@ -237,6 +258,33 @@ static NSImageView *g_launcher_status_icon = nil;
 static NSArray<NSURL *> *g_launcher_current_results = nil;
 static NSUInteger g_launcher_selection_index = 0;
 
+// Inline-completion + history + snippet state (raw 168 mandate 2026-05-01).
+//   g_launcher_ghost_field        — borderless NSTextField pinned beside the
+//                                   real search field. Holds the gray
+//                                   completion suffix. Non-editable, non-
+//                                   selectable, hidden when no suffix.
+//   g_launcher_typed              — mirrors the search field's stringValue
+//                                   (snapshot taken on every textDidChange
+//                                   and on programmatic mutations) so
+//                                   handlers reading state from key paths
+//                                   that pre-empt the field editor still
+//                                   see the right value.
+//   g_launcher_history            — last-5 typed queries (newest first,
+//                                   dedup-on-reuse). Persists across hide/
+//                                   show within the daemon process.
+//   g_launcher_history_position   — −1 means "user input / empty"; ≥0 indexes
+//                                   into g_launcher_history. ↑ increases
+//                                   (older), ↓ decreases (newer / −1).
+//   g_launcher_snippet_*          — snippet mode state, see snippet block
+//                                   below for storage format.
+static NSTextField *g_launcher_ghost_field = nil;
+static NSString *g_launcher_typed = @"";
+static NSMutableArray<NSString *> *g_launcher_history = nil;
+static NSInteger g_launcher_history_position = -1;
+static NSArray<NSDictionary *> *g_launcher_snippet_cache = nil;
+static NSArray<NSDictionary *> *g_launcher_snippet_results = nil;
+static BOOL g_launcher_snippet_mode = NO;
+
 // Outside-click dismiss monitor. Canonical Spotlight pattern (fazm.ai +
 // cindori): NSEvent +addGlobalMonitorForEvents fires the dismiss callback
 // for left/right mouse-down events occurring OUTSIDE airgenome's process,
@@ -371,6 +419,160 @@ static void airgenome_launcher_refresh_status(NSString *query) {
     }
 }
 
+// Update the trailing ghost field that shows the gray completion suffix.
+// The real search field's stringValue stays exactly equal to what the user
+// typed — the ghost is a sibling subview pinned to the right of the typed
+// text. Two layout invariants make this work without a fudge factor:
+//   1. Both fields use the same NSTextField subclass and font, so their
+//      cell horizontal padding is identical and cancels out when we set
+//      ghost.origin.x = main.origin.x + measured-typed-width.
+//   2. Both fields have drawsBackground=NO so neither paints over the
+//      other; the ghost draws strictly to the right of the field-editor
+//      cursor (which sits at the end of typed text).
+// Hidden when there is no suffix to show — keeps the right-side empty
+// area clean instead of rendering an invisible zero-length label.
+static void airgenome_launcher_update_ghost(NSString *typed) {
+    if (!g_launcher_ghost_field || !g_launcher_search_field) return;
+    NSString *suffix = nil;
+    if (typed.length > 0) {
+        NSString *bestName = nil;
+        if (g_launcher_snippet_mode) {
+            if (g_launcher_snippet_results.count > 0) {
+                NSString *n = g_launcher_snippet_results[0][@"name"];
+                if (n) bestName = [@"@" stringByAppendingString:n];
+            }
+        } else if (g_launcher_current_results.count > 0) {
+            NSURL *url = g_launcher_current_results[0];
+            bestName = [[url lastPathComponent]
+                stringByDeletingPathExtension];
+        }
+        if (bestName
+            && bestName.length > typed.length
+            && [[bestName lowercaseString]
+                hasPrefix:[typed lowercaseString]]) {
+            // Suffix takes the matched name's own casing; the user's
+            // casing for the typed prefix stays untouched in the real
+            // field.
+            suffix = [bestName substringFromIndex:typed.length];
+        }
+    }
+    [g_launcher_ghost_field setStringValue:suffix ?: @""];
+    NSFont *f = [NSFont systemFontOfSize:20];
+    CGFloat typedWidth = 0;
+    if (typed.length > 0) {
+        typedWidth = ceil([typed sizeWithAttributes:
+            @{ NSFontAttributeName: f }].width);
+    }
+    NSRect mainFrame = g_launcher_search_field.frame;
+    CGFloat ghostX = mainFrame.origin.x + typedWidth;
+    CGFloat ghostW = NSMaxX(mainFrame) - ghostX;
+    if (ghostW < 0) ghostW = 0;
+    [g_launcher_ghost_field setFrame:NSMakeRect(
+        ghostX, mainFrame.origin.y, ghostW, mainFrame.size.height)];
+    [g_launcher_ghost_field setHidden:(suffix.length == 0)];
+}
+
+// Apply the currently-selected history slot to the field. Position −1 means
+// the bottom-of-stack empty input. Re-detects snippet mode from the recalled
+// query so a recalled "@foo" still searches snippets.
+static void airgenome_launcher_apply_history(void) {
+    NSString *q = @"";
+    if (g_launcher_history_position >= 0
+        && g_launcher_history.count > 0) {
+        NSInteger idx = g_launcher_history_position;
+        if (idx >= (NSInteger)g_launcher_history.count) {
+            idx = (NSInteger)g_launcher_history.count - 1;
+        }
+        q = g_launcher_history[idx];
+    }
+    g_launcher_typed = [q copy];
+    g_launcher_selection_index = 0;
+    if ([q hasPrefix:@"@"]) {
+        g_launcher_snippet_mode = YES;
+        g_launcher_snippet_results =
+            airgenome_launcher_search_snippets([q substringFromIndex:1]);
+        g_launcher_current_results = @[];
+    } else {
+        g_launcher_snippet_mode = NO;
+        g_launcher_snippet_results = @[];
+        g_launcher_current_results = airgenome_launcher_search_apps(q);
+    }
+    [g_launcher_search_field setStringValue:q];
+    NSText *editor = [g_launcher_search_field currentEditor];
+    if (editor) [editor setSelectedRange:NSMakeRange(q.length, 0)];
+    airgenome_launcher_update_ghost(q);
+    airgenome_launcher_refresh_status(q);
+}
+
+// Snippet storage: ~/Library/Application Support/airgenome/snippets.json.
+// Format (per 2026-05-01 mandate "json 먼저 / 이름순 보관"):
+//   [
+//     {"name": "addr",  "content": "Seoul, ROK"},
+//     {"name": "email", "content": "me@example.com"}
+//   ]
+// Registration UI is intentionally deferred — the user edits this file by
+// hand. Loaded on each show_overlay so edits take effect without restart.
+// Sorted case-insensitively by name for deterministic ordering when the
+// user types "@" with no further chars.
+static NSArray<NSDictionary *> *airgenome_launcher_load_snippets(void) {
+    NSString *dir = [NSHomeDirectory()
+        stringByAppendingPathComponent:
+            @"Library/Application Support/airgenome"];
+    NSString *path = [dir stringByAppendingPathComponent:@"snippets.json"];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data) return @[];
+    NSError *err = nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:data
+                                             options:0
+                                               error:&err];
+    if (err || ![obj isKindOfClass:[NSArray class]]) {
+        if (err) {
+            NSLog(@"[airgenome_launcher] snippets.json parse error: %@",
+                  err.localizedDescription);
+        }
+        return @[];
+    }
+    NSMutableArray *valid = [NSMutableArray array];
+    for (id row in (NSArray *)obj) {
+        if (![row isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *d = row;
+        NSString *name = d[@"name"];
+        NSString *content = d[@"content"];
+        if (![name isKindOfClass:[NSString class]]) continue;
+        if (![content isKindOfClass:[NSString class]]) continue;
+        if (name.length == 0) continue;
+        [valid addObject:@{ @"name": name, @"content": content }];
+    }
+    [valid sortUsingComparator:^NSComparisonResult(
+        NSDictionary *a, NSDictionary *b) {
+        return [a[@"name"] caseInsensitiveCompare:b[@"name"]];
+    }];
+    return valid;
+}
+
+// Match snippets against `q` (the part after '@'). Empty `q` returns all
+// snippets in stored (name-sorted) order so typing just '@' shows the first
+// snippet's name as the inline-completion suffix.
+static NSArray<NSDictionary *> *airgenome_launcher_search_snippets(NSString *q) {
+    NSArray<NSDictionary *> *all = g_launcher_snippet_cache
+        ? g_launcher_snippet_cache
+        : airgenome_launcher_load_snippets();
+    if (q == nil || q.length == 0) return all;
+    NSMutableArray *scored = [NSMutableArray array];
+    for (NSDictionary *snip in all) {
+        NSString *name = snip[@"name"] ?: @"";
+        NSInteger s = airgenome_launcher_match_score(name, q);
+        if (s > 0) [scored addObject:@{ @"snip": snip, @"score": @(s) }];
+    }
+    [scored sortUsingComparator:^NSComparisonResult(
+        NSDictionary *a, NSDictionary *b) {
+        return [b[@"score"] compare:a[@"score"]];
+    }];
+    NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+    for (NSDictionary *d in scored) [result addObject:d[@"snip"]];
+    return result;
+}
+
 // Tiny delegate that bridges NSTextField text-change + Enter-key events
 // to the launcher's search/launch functions. Single shared instance.
 @interface AirgenomeLauncherDelegate : NSObject <NSTextFieldDelegate, NSWindowDelegate>
@@ -381,12 +583,48 @@ static void airgenome_launcher_refresh_status(NSString *query) {
     NSTextField *tf = (NSTextField *)note.object;
     NSString *q = [tf stringValue];
     NSLog(@"[airgenome_launcher] DBG textDidChange q='%@'", q);
-    g_launcher_current_results = airgenome_launcher_search_apps(q);
-    g_launcher_selection_index = 0;  // reset on new query
+    g_launcher_typed = [q copy];
+    g_launcher_history_position = -1;  // user typed → reset history nav
+    g_launcher_selection_index = 0;
+    if ([q hasPrefix:@"@"]) {
+        g_launcher_snippet_mode = YES;
+        g_launcher_snippet_results =
+            airgenome_launcher_search_snippets([q substringFromIndex:1]);
+        g_launcher_current_results = @[];
+    } else {
+        g_launcher_snippet_mode = NO;
+        g_launcher_snippet_results = @[];
+        g_launcher_current_results = airgenome_launcher_search_apps(q);
+    }
+    airgenome_launcher_update_ghost(q);
     airgenome_launcher_refresh_status(q);
 }
 - (void)launcherEnterAction:(id)sender {
     (void)sender;
+    // Append typed query to in-memory history (LIFO, dedup, cap 5). Both
+    // app launches and snippet copies feed history — the user's "previous
+    // input" recall (↑/↓) covers either mode.
+    if (g_launcher_typed.length > 0) {
+        if (!g_launcher_history) g_launcher_history = [NSMutableArray array];
+        [g_launcher_history removeObject:g_launcher_typed];
+        [g_launcher_history insertObject:[g_launcher_typed copy] atIndex:0];
+        while (g_launcher_history.count > 5) {
+            [g_launcher_history removeLastObject];
+        }
+    }
+    if (g_launcher_snippet_mode) {
+        if (g_launcher_snippet_results.count > 0) {
+            NSDictionary *top = g_launcher_snippet_results[0];
+            NSString *content = top[@"content"] ?: @"";
+            NSPasteboard *pb = [NSPasteboard generalPasteboard];
+            [pb clearContents];
+            [pb setString:content forType:NSPasteboardTypeString];
+            NSLog(@"[airgenome_launcher] snippet copied: @%@ (%lu chars)",
+                  top[@"name"] ?: @"?", (unsigned long)content.length);
+        }
+        airgenome_launcher_hide_overlay();
+        return;
+    }
     NSUInteger n = g_launcher_current_results.count;
     if (n > 0) {
         NSUInteger idx = g_launcher_selection_index < n
@@ -396,28 +634,69 @@ static void airgenome_launcher_refresh_status(NSString *query) {
         airgenome_launcher_hide_overlay();
     }
 }
-// NSTextFieldDelegate: handle special keys (Esc dismiss, optional arrows for
-// future result cycling). Returns YES if command consumed, NO to fall through.
+// NSTextFieldDelegate: Esc dismiss, Tab commit completion, ↑/↓ history.
 - (BOOL)control:(NSControl *)control textView:(NSTextView *)textView
     doCommandBySelector:(SEL)cmd {
     (void)control; (void)textView;
     if (cmd == @selector(cancelOperation:)) {
-        // Esc → dismiss launcher overlay.
         airgenome_launcher_hide_overlay();
         return YES;
     }
-    NSUInteger n = g_launcher_current_results.count;
-    if (n > 0 && cmd == @selector(moveDown:)) {
-        // Down arrow → next result (wrap around).
-        g_launcher_selection_index = (g_launcher_selection_index + 1) % n;
-        airgenome_launcher_refresh_status([g_launcher_search_field stringValue]);
+    if (cmd == @selector(insertTab:) || cmd == @selector(insertBacktab:)) {
+        // Tab: commit the ghost suffix into the real field so the gray
+        // hint becomes typed input. Read the suffix from the ghost field
+        // directly — it is the source of truth for "what would be
+        // completed" — instead of recomputing the top match (the cache
+        // could have changed between textDidChange and this keystroke).
+        NSString *suffix = g_launcher_ghost_field
+            ? [g_launcher_ghost_field stringValue] : @"";
+        if (suffix.length > 0) {
+            NSString *combined =
+                [g_launcher_typed stringByAppendingString:suffix];
+            g_launcher_typed = [combined copy];
+            [g_launcher_search_field setStringValue:combined];
+            NSText *editor = [g_launcher_search_field currentEditor];
+            if (editor) {
+                [editor setSelectedRange:NSMakeRange(combined.length, 0)];
+            }
+            // Re-search with the now-completed query so the ghost goes
+            // empty (typed == name → no further suffix to show).
+            if (g_launcher_snippet_mode) {
+                g_launcher_snippet_results =
+                    airgenome_launcher_search_snippets(
+                        [combined substringFromIndex:1]);
+            } else {
+                g_launcher_current_results =
+                    airgenome_launcher_search_apps(combined);
+            }
+            airgenome_launcher_update_ghost(combined);
+        }
         return YES;
     }
-    if (n > 0 && cmd == @selector(moveUp:)) {
-        // Up arrow → previous result (wrap around).
-        g_launcher_selection_index =
-            g_launcher_selection_index == 0 ? n - 1 : g_launcher_selection_index - 1;
-        airgenome_launcher_refresh_status([g_launcher_search_field stringValue]);
+    // No special-casing for deleteBackward / deleteForward: with the ghost
+    // suffix living outside the field's storage, the default delete behavior
+    // already does the right thing (one user-visible character per press),
+    // and the next textDidChange recomputes the ghost from the new typed
+    // prefix.
+    if (cmd == @selector(moveUp:)) {
+        // ↑: older (previous) keyword in history. Stops at the oldest entry
+        // (no wrap — wrapping makes it ambiguous which end of the buffer
+        // the user is at after a long hold).
+        if (g_launcher_history.count > 0
+            && g_launcher_history_position
+                < (NSInteger)g_launcher_history.count - 1) {
+            g_launcher_history_position++;
+            airgenome_launcher_apply_history();
+        }
+        return YES;
+    }
+    if (cmd == @selector(moveDown:)) {
+        // ↓: newer keyword. Past the most-recent entry the position lands
+        // at −1 = empty input (per user mandate "가장 아래쪽은 빈칸").
+        if (g_launcher_history_position >= 0) {
+            g_launcher_history_position--;
+            airgenome_launcher_apply_history();
+        }
         return YES;
     }
     return NO;
@@ -598,6 +877,31 @@ void airgenome_launcher_show_overlay(void) {
         [[g_launcher_search_field cell] setSendsActionOnEndEditing:NO];
         [cv addSubview:g_launcher_search_field];
 
+        // Ghost field — sibling subview that renders only the gray
+        // completion suffix to the right of the typed text. Same font and
+        // cell class as the real field so vertical centering and
+        // horizontal padding line up exactly. Non-editable + non-
+        // selectable + ignoresMouseDown = the user can't tab into it,
+        // click it, or otherwise steal first-responder from the real
+        // field.
+        g_launcher_ghost_field =
+            [[AirgenomeLauncherTextField alloc] initWithFrame:fieldFrame];
+        [g_launcher_ghost_field setBezeled:NO];
+        [g_launcher_ghost_field setBordered:NO];
+        [g_launcher_ghost_field setDrawsBackground:NO];
+        [g_launcher_ghost_field setEditable:NO];
+        [g_launcher_ghost_field setSelectable:NO];
+        [g_launcher_ghost_field setFocusRingType:NSFocusRingTypeNone];
+        [g_launcher_ghost_field setFont:[NSFont systemFontOfSize:20
+                                              weight:NSFontWeightRegular]];
+        [g_launcher_ghost_field setTextColor:
+            [NSColor colorWithWhite:1.0 alpha:0.4]];
+        [g_launcher_ghost_field setStringValue:@""];
+        [g_launcher_ghost_field setHidden:YES];
+        [cv addSubview:g_launcher_ghost_field
+             positioned:NSWindowBelow
+             relativeTo:g_launcher_search_field];
+
         // Status icon + label intentionally NOT created here. refresh_status
         // is guarded by `if (!g_launcher_status_label) return` so the data
         // path stays inert without UI. Selection cycling via ↑↓ still works
@@ -605,6 +909,18 @@ void airgenome_launcher_show_overlay(void) {
         // result is at index 0 / current selection.
     }
     [g_launcher_search_field setStringValue:@""];
+    if (g_launcher_ghost_field) {
+        [g_launcher_ghost_field setStringValue:@""];
+        [g_launcher_ghost_field setHidden:YES];
+    }
+    // Reset inline-completion + history + snippet state for the fresh
+    // session. History array intentionally NOT cleared — it persists across
+    // hide/show cycles within the daemon process so ↑ recalls past queries.
+    g_launcher_typed = @"";
+    g_launcher_history_position = -1;
+    g_launcher_snippet_mode = NO;
+    g_launcher_snippet_results = nil;
+    g_launcher_snippet_cache = airgenome_launcher_load_snippets();
     // Center on screen of currently-active mouse cursor.
     NSScreen *screen = [NSScreen mainScreen];
     NSRect screenFrame = [screen visibleFrame];
