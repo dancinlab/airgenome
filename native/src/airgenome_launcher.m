@@ -606,13 +606,45 @@ static NSTextView *g_snippet_content_view = nil;
 static NSMutableArray<NSMutableDictionary *> *g_snippet_edit_list = nil;
 static NSInteger g_snippet_selected_row = -1;
 
-// Hotkey tab.
+// Hotkey tab. Per 2026-05-01 user mandate "직접입력이 아닌 드랍다운 2개",
+// the hotkey value is built from a modifier popup × key popup combo
+// rather than a free-form NSTextField — eliminates typo classes (mixed
+// case, stray whitespace, unrecognized modifier names) at input time.
 static NSTableView *g_hotkey_table = nil;
-static NSTextField *g_hotkey_hotkey_field = nil;
+static NSPopUpButton *g_hotkey_mod_popup = nil;
+static NSPopUpButton *g_hotkey_key_popup = nil;
 static NSPopUpButton *g_hotkey_action_popup = nil;
 static NSTextField *g_hotkey_target_field = nil;
 static NSMutableArray<NSMutableDictionary *> *g_hotkey_edit_list = nil;
 static NSInteger g_hotkey_selected_row = -1;
+
+// Canonical-ordered modifier strings the popups offer. Listed in the
+// order ctrl → cmd → alt → shift so multi-modifier combos compose
+// deterministically (the daemon's parser is order-insensitive but the
+// JSON-on-disk should be stable for diffing). The set covers the combos
+// users actually bind in practice; exotic combos (e.g. fn+) are out of
+// scope for this UI.
+static NSArray<NSString *> *airgenome_hotkey_modifier_choices(void) {
+    return @[
+        @"ctrl", @"cmd", @"alt", @"shift",
+        @"ctrl+shift", @"ctrl+cmd", @"ctrl+alt",
+        @"cmd+shift", @"cmd+alt",
+        @"alt+shift",
+        @"ctrl+cmd+shift", @"ctrl+cmd+alt"
+    ];
+}
+
+// Letter keys + named keys the parser in airgenome_hotkey.m supports.
+static NSArray<NSString *> *airgenome_hotkey_key_choices(void) {
+    NSMutableArray *out = [NSMutableArray array];
+    for (char c = 'a'; c <= 'z'; c++) {
+        [out addObject:[NSString stringWithFormat:@"%c", c]];
+    }
+    [out addObjectsFromArray:@[
+        @"space", @"tab", @"return", @"escape"
+    ]];
+    return out;
+}
 
 // Load snippets.json into MUTABLE copies so the manager can edit values
 // in place without re-fetching the dict through immutable accessors.
@@ -788,7 +820,9 @@ static NSString *airgenome_snippets_preview(NSString *content) {
     NSInteger row = g_hotkey_selected_row;
     if (row < 0 || row >= (NSInteger)g_hotkey_edit_list.count) return;
     NSMutableDictionary *hk = g_hotkey_edit_list[row];
-    hk[@"hotkey"] = [g_hotkey_hotkey_field stringValue] ?: @"";
+    NSString *mod = g_hotkey_mod_popup.titleOfSelectedItem ?: @"ctrl";
+    NSString *key = g_hotkey_key_popup.titleOfSelectedItem ?: @"a";
+    hk[@"hotkey"] = [NSString stringWithFormat:@"%@+%@", mod, key];
     hk[@"action"] = g_hotkey_action_popup.titleOfSelectedItem
                   ?: @"activate-app";
     hk[@"target"] = [g_hotkey_target_field stringValue] ?: @"";
@@ -846,15 +880,47 @@ static NSString *airgenome_snippets_preview(NSString *content) {
         g_hotkey_selected_row = row;
         if (row >= 0 && row < (NSInteger)g_hotkey_edit_list.count) {
             NSDictionary *h = g_hotkey_edit_list[row];
-            [g_hotkey_hotkey_field setStringValue:h[@"hotkey"] ?: @""];
+            // Parse "ctrl+shift+q" → mod="ctrl+shift", key="q". The
+            // daemon's parser (airgenome_hotkey.m) is order-insensitive,
+            // but we canonicalize here so the popup selection matches one
+            // of the predefined combo entries no matter how the JSON was
+            // hand-edited (e.g. "shift+ctrl+q" → "ctrl+shift").
+            NSString *spec = [(h[@"hotkey"] ?: @"") lowercaseString];
+            NSMutableArray<NSString *> *parts = [NSMutableArray array];
+            if ([spec rangeOfString:@"ctrl"].location  != NSNotFound)
+                [parts addObject:@"ctrl"];
+            if ([spec rangeOfString:@"cmd"].location   != NSNotFound)
+                [parts addObject:@"cmd"];
+            if ([spec rangeOfString:@"alt"].location   != NSNotFound)
+                [parts addObject:@"alt"];
+            if ([spec rangeOfString:@"opt"].location   != NSNotFound
+                && [spec rangeOfString:@"alt"].location == NSNotFound)
+                [parts addObject:@"alt"];
+            if ([spec rangeOfString:@"shift"].location != NSNotFound)
+                [parts addObject:@"shift"];
+            NSString *mod = [parts componentsJoinedByString:@"+"];
+            NSRange last = [spec rangeOfString:@"+"
+                                       options:NSBackwardsSearch];
+            NSString *key = (last.location == NSNotFound)
+                ? spec
+                : [spec substringFromIndex:last.location + 1];
+            // Fall back to the first popup item when the parsed value
+            // doesn't appear in the offered set (corrupt / unsupported
+            // stored value), so the user can fix it via the popup.
+            [g_hotkey_mod_popup selectItemWithTitle:mod];
+            if (g_hotkey_mod_popup.indexOfSelectedItem < 0)
+                [g_hotkey_mod_popup selectItemAtIndex:0];
+            [g_hotkey_key_popup selectItemWithTitle:key];
+            if (g_hotkey_key_popup.indexOfSelectedItem < 0)
+                [g_hotkey_key_popup selectItemAtIndex:0];
             NSString *action = h[@"action"] ?: @"activate-app";
             [g_hotkey_action_popup selectItemWithTitle:action];
-            if (g_hotkey_action_popup.indexOfSelectedItem < 0) {
+            if (g_hotkey_action_popup.indexOfSelectedItem < 0)
                 [g_hotkey_action_popup selectItemAtIndex:0];
-            }
             [g_hotkey_target_field setStringValue:h[@"target"] ?: @""];
         } else {
-            [g_hotkey_hotkey_field setStringValue:@""];
+            [g_hotkey_mod_popup selectItemAtIndex:0];
+            [g_hotkey_key_popup selectItemAtIndex:0];
             [g_hotkey_action_popup selectItemAtIndex:0];
             [g_hotkey_target_field setStringValue:@""];
         }
@@ -890,9 +956,11 @@ static NSString *airgenome_snippets_preview(NSString *content) {
 - (void)hkAddClicked:(id)sender {
     (void)sender;
     [self flushHotkeyFields];
+    // Default to "ctrl+a" — first option of each popup; the user picks
+    // a real combo + target before saving.
     NSMutableDictionary *fresh = [NSMutableDictionary
         dictionaryWithDictionary:@{
-            @"hotkey": @"ctrl+",
+            @"hotkey": @"ctrl+a",
             @"action": @"activate-app",
             @"target": @""
         }];
@@ -902,8 +970,7 @@ static NSString *airgenome_snippets_preview(NSString *content) {
     [g_hotkey_table selectRowIndexes:[NSIndexSet indexSetWithIndex:row]
                  byExtendingSelection:NO];
     [g_hotkey_table scrollRowToVisible:row];
-    [g_settings_panel makeFirstResponder:g_hotkey_hotkey_field];
-    [g_hotkey_hotkey_field selectText:nil];
+    [g_settings_panel makeFirstResponder:g_hotkey_target_field];
 }
 
 - (void)hkDeleteClicked:(id)sender {
@@ -913,7 +980,8 @@ static NSString *airgenome_snippets_preview(NSString *content) {
     [g_hotkey_edit_list removeObjectAtIndex:row];
     g_hotkey_selected_row = -1;
     [g_hotkey_table reloadData];
-    [g_hotkey_hotkey_field setStringValue:@""];
+    [g_hotkey_mod_popup selectItemAtIndex:0];
+    [g_hotkey_key_popup selectItemAtIndex:0];
     [g_hotkey_action_popup selectItemAtIndex:0];
     [g_hotkey_target_field setStringValue:@""];
 }
@@ -1019,13 +1087,29 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
     [hkLabel setFrame:NSMakeRect(pad, hkY + 2, 60, fieldH)];
     [hkLabel setAutoresizingMask:NSViewMinYMargin];
     [root addSubview:hkLabel];
-    g_hotkey_hotkey_field = [[NSTextField alloc] initWithFrame:
-        NSMakeRect(pad + 70, hkY, W - 2 * pad - 70, fieldH)];
-    [[g_hotkey_hotkey_field cell] setPlaceholderString:
-        @"e.g. ctrl+q, cmd+shift+n"];
-    [g_hotkey_hotkey_field setAutoresizingMask:
-        NSViewWidthSizable | NSViewMinYMargin];
-    [root addSubview:g_hotkey_hotkey_field];
+    // Modifier popup × Key popup. Compact widths chosen so the "+" label
+    // sits centered between them and the row stays inside even a
+    // narrowed panel.
+    const CGFloat modW = 160, plusW = 14, keyW = 110;
+    g_hotkey_mod_popup = [[NSPopUpButton alloc] initWithFrame:
+        NSMakeRect(pad + 70, hkY - 2, modW, fieldH + 6) pullsDown:NO];
+    [g_hotkey_mod_popup addItemsWithTitles:
+        airgenome_hotkey_modifier_choices()];
+    [g_hotkey_mod_popup setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:g_hotkey_mod_popup];
+    NSTextField *plusLabel = [NSTextField labelWithString:@"+"];
+    [plusLabel setAlignment:NSTextAlignmentCenter];
+    [plusLabel setFrame:NSMakeRect(pad + 70 + modW + 2, hkY + 2,
+                                    plusW, fieldH)];
+    [plusLabel setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:plusLabel];
+    g_hotkey_key_popup = [[NSPopUpButton alloc] initWithFrame:
+        NSMakeRect(pad + 70 + modW + 2 + plusW + 2, hkY - 2,
+                   keyW, fieldH + 6) pullsDown:NO];
+    [g_hotkey_key_popup addItemsWithTitles:
+        airgenome_hotkey_key_choices()];
+    [g_hotkey_key_popup setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:g_hotkey_key_popup];
 
     CGFloat acY = hkY - 8 - fieldH;
     NSTextField *acLabel = [NSTextField labelWithString:@"Action:"];
@@ -1219,7 +1303,8 @@ void airgenome_settings_show_manager(void) {
     }
     [g_hotkey_table reloadData];
     [g_snippet_table reloadData];
-    [g_hotkey_hotkey_field setStringValue:@""];
+    [g_hotkey_mod_popup selectItemAtIndex:0];
+    [g_hotkey_key_popup selectItemAtIndex:0];
     [g_hotkey_action_popup selectItemAtIndex:0];
     [g_hotkey_target_field setStringValue:@""];
     [g_snippet_name_field setStringValue:@""];
