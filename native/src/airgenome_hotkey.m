@@ -132,8 +132,10 @@ static BOOL hotkey_parse_spec(NSString *spec, int *kc_out,
     else if ([keyPart isEqualToString:@"tab"])    kc = 0x30;
     else if ([keyPart isEqualToString:@"return"]) kc = 0x24;
     else if ([keyPart isEqualToString:@"enter"])  kc = 0x24;
-    else if ([keyPart isEqualToString:@"escape"]) kc = 0x35;
-    else if ([keyPart isEqualToString:@"esc"])    kc = 0x35;
+    else if ([keyPart isEqualToString:@"escape"])   kc = 0x35;
+    else if ([keyPart isEqualToString:@"esc"])      kc = 0x35;
+    else if ([keyPart isEqualToString:@"backtick"]) kc = 0x32;  // kVK_ANSI_Grave
+    else if ([keyPart isEqualToString:@"grave"])    kc = 0x32;
     else if (keyPart.length == 1) {
         char c = [keyPart characterAtIndex:0];
         if (c >= 'a' && c <= 'z') {
@@ -147,6 +149,8 @@ static BOOL hotkey_parse_spec(NSString *spec, int *kc_out,
                 0x17, 0x16, 0x1A, 0x1C, 0x19   // 5 6 7 8 9
             };
             kc = dmap[c - '0'];
+        } else if (c == '`') {
+            kc = 0x32;  // backtick / grave — also accepted as literal
         }
     }
     if (kc < 0) return NO;
@@ -576,6 +580,103 @@ static void hotkey_show_desktop(void) {
     NSLog(@"[airgenome_hotkey] show-desktop (CoreDockSendNotification)");
 }
 
+// cycle-windows: rotate focus across the windows of the FRONTMOST app.
+// User mandate 2026-05-01 "같은 프로그램 창끼리의 전환 cmd + esc / cmd+`".
+//
+// Mirrors macOS native ⌘` (backtick) behavior — but works for every
+// app, including ones that strip the Window menu's backtick equivalent
+// (some Electron apps, some Carbon ports). No target field needed: the
+// frontmost app is the implicit subject.
+//
+// Algorithm:
+//   1. NSWorkspace.frontmostApplication → pid
+//   2. AXUIElementCreateApplication(pid) → kAXWindowsAttribute (NSArray)
+//   3. AXUIElementCopyAttributeValue(kAXFocusedWindowAttribute) → idx
+//   4. (idx+1) mod n, skipping minimized windows (we don't auto-unminimize
+//      because the user expects ⌘` to surface visible windows only —
+//      auto-unminimize would diverge from the system behavior).
+//   5. activate the app (defensive — usually already frontmost) and
+//      AXUIElementPerformAction(target, kAXRaiseAction).
+//
+// Single-window case (n < 2): no-op. The user can still see they're at
+// the only window via the no-action feedback.
+//
+// AX permission already granted via the tap (raw 177 single TCC entry) —
+// this reuses the same AXUIElement pipeline as winctl / hotkey hide.
+static void hotkey_cycle_app_windows(void) {
+    NSRunningApplication *front =
+        [[NSWorkspace sharedWorkspace] frontmostApplication];
+    if (!front) return;
+    pid_t pid = front.processIdentifier;
+    AXUIElementRef appEl = AXUIElementCreateApplication(pid);
+    if (!appEl) return;
+
+    CFTypeRef windowsRef = NULL;
+    AXError err = AXUIElementCopyAttributeValue(
+        appEl, kAXWindowsAttribute, &windowsRef);
+    if (err != kAXErrorSuccess || !windowsRef) {
+        if (windowsRef) CFRelease(windowsRef);
+        CFRelease(appEl);
+        return;
+    }
+    CFArrayRef windows = (CFArrayRef)windowsRef;
+    CFIndex n = CFArrayGetCount(windows);
+    if (n < 2) {
+        CFRelease(windows);
+        CFRelease(appEl);
+        return;
+    }
+
+    // Locate the currently-focused window in the array.
+    CFTypeRef focusedRef = NULL;
+    CFIndex focusedIdx = -1;
+    if (AXUIElementCopyAttributeValue(
+            appEl, kAXFocusedWindowAttribute, &focusedRef)
+        == kAXErrorSuccess && focusedRef) {
+        for (CFIndex i = 0; i < n; i++) {
+            AXUIElementRef w =
+                (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
+            if (CFEqual(w, focusedRef)) { focusedIdx = i; break; }
+        }
+        CFRelease(focusedRef);
+    }
+
+    // Find next visible (non-minimized) window after focusedIdx (wrap).
+    CFIndex chosen = -1;
+    for (CFIndex step = 1; step <= n; step++) {
+        CFIndex i = ((focusedIdx >= 0 ? focusedIdx : 0) + step) % n;
+        AXUIElementRef w =
+            (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
+        CFTypeRef minRef = NULL;
+        BOOL isMin = NO;
+        if (AXUIElementCopyAttributeValue(
+                w, kAXMinimizedAttribute, &minRef)
+            == kAXErrorSuccess && minRef) {
+            isMin = CFBooleanGetValue((CFBooleanRef)minRef);
+            CFRelease(minRef);
+        }
+        if (!isMin) { chosen = i; break; }
+    }
+    if (chosen < 0) {
+        CFRelease(windows);
+        CFRelease(appEl);
+        return;
+    }
+
+    AXUIElementRef target =
+        (AXUIElementRef)CFArrayGetValueAtIndex(windows, chosen);
+    // ignoringOtherApps is a no-op on macOS 14+ (and deprecated). Pass
+    // options=0; the AX kAXRaiseAction below does the actual surfacing.
+    [front activateWithOptions:0];
+    AXUIElementSetAttributeValue(target, kAXMainAttribute, kCFBooleanTrue);
+    AXUIElementPerformAction(target, kAXRaiseAction);
+    NSLog(@"[airgenome_hotkey] cycle-windows pid=%d %ld → %ld (n=%ld)",
+          pid, (long)focusedIdx, (long)chosen, (long)n);
+
+    CFRelease(windows);
+    CFRelease(appEl);
+}
+
 BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
     if (!event || CGEventGetType(event) != kCGEventKeyDown) return NO;
     if (!g_hotkey_bindings || g_hotkey_bindings.count == 0) return NO;
@@ -601,6 +702,10 @@ BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
         }
         if ([action isEqualToString:@"show-desktop"]) {
             hotkey_show_desktop();
+            return YES;
+        }
+        if ([action isEqualToString:@"cycle-windows"]) {
+            hotkey_cycle_app_windows();
             return YES;
         }
         NSLog(@"[airgenome_hotkey] unknown action '%@' for %@",

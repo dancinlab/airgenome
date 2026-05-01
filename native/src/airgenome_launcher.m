@@ -457,14 +457,26 @@ static void airgenome_launcher_update_ghost(NSString *typed) {
             bestName = [[url lastPathComponent]
                 stringByDeletingPathExtension];
         }
-        if (bestName
-            && bestName.length > typed.length
-            && [[bestName lowercaseString]
-                hasPrefix:[typed lowercaseString]]) {
-            // Suffix takes the matched name's own casing; the user's
-            // casing for the typed prefix stays untouched in the real
-            // field.
-            suffix = [bestName substringFromIndex:typed.length];
+        if (bestName && bestName.length > typed.length) {
+            NSString *bnLow = [bestName lowercaseString];
+            NSString *tnLow = [typed lowercaseString];
+            if ([bnLow hasPrefix:tnLow]) {
+                // Standard prefix completion — suffix appended directly.
+                // Suffix takes the matched name's own casing; the user's
+                // casing for the typed prefix stays untouched in the
+                // real field.
+                suffix = [bestName substringFromIndex:typed.length];
+            } else if ([bnLow rangeOfString:tnLow].location != NSNotFound) {
+                // Substring match (typed is INSIDE bestName but not at
+                // start). Example: typed "chrome" → bestName
+                // "Google Chrome". The user expects feedback — without
+                // it, the search "looks empty" even though Enter would
+                // launch the right app. Show the full match name as a
+                // hint with an arrow separator. Tab commits the full
+                // match name (replacing typed entirely, since the typed
+                // text is not a prefix of bestName).
+                suffix = [NSString stringWithFormat:@"  →  %@", bestName];
+            }
         }
     }
     [g_launcher_ghost_field setStringValue:suffix ?: @""];
@@ -646,7 +658,7 @@ static NSArray<NSString *> *airgenome_hotkey_key_choices(void) {
         [out addObject:[NSString stringWithFormat:@"%c", c]];
     }
     [out addObjectsFromArray:@[
-        @"space", @"tab", @"return", @"escape"
+        @"space", @"tab", @"return", @"escape", @"backtick"
     ]];
     return out;
 }
@@ -1126,6 +1138,9 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
     [g_hotkey_action_popup addItemWithTitle:@"activate-app"];
     [g_hotkey_action_popup addItemWithTitle:@"toggle-app"];
     [g_hotkey_action_popup addItemWithTitle:@"show-desktop"];
+    // cycle-windows: rotate focus across windows of the FRONTMOST app
+    // (mirrors macOS native ⌘` but works app-agnostic). No target needed.
+    [g_hotkey_action_popup addItemWithTitle:@"cycle-windows"];
     [g_hotkey_action_popup setAutoresizingMask:NSViewMinYMargin];
     [root addSubview:g_hotkey_action_popup];
 
@@ -1390,24 +1405,43 @@ void airgenome_settings_show_manager(void) {
         return YES;
     }
     if (cmd == @selector(insertTab:) || cmd == @selector(insertBacktab:)) {
-        // Tab: commit the ghost suffix into the real field so the gray
-        // hint becomes typed input. Read the suffix from the ghost field
-        // directly — it is the source of truth for "what would be
-        // completed" — instead of recomputing the top match (the cache
-        // could have changed between textDidChange and this keystroke).
-        NSString *suffix = g_launcher_ghost_field
-            ? [g_launcher_ghost_field stringValue] : @"";
-        if (suffix.length > 0) {
-            NSString *combined =
-                [g_launcher_typed stringByAppendingString:suffix];
+        // Tab: commit to the top match. Two flavors:
+        //   - Prefix match  → typed + suffix = bestName (preserve typed casing)
+        //   - Substring hit → REPLACE typed with bestName (typed is mid-name,
+        //                     can't be a prefix; e.g. "chrome" → "Google Chrome")
+        // Recompute bestName here instead of trusting the ghost field's
+        // stringValue, because the substring-hit ghost format
+        // ("  →  Google Chrome") is a display-only string — appending it
+        // would produce "chrome  →  Google Chrome", obviously wrong.
+        NSString *bestName = nil;
+        if (g_launcher_snippet_mode && g_launcher_snippet_results.count > 0) {
+            NSString *n = g_launcher_snippet_results[0][@"name"];
+            if (n) bestName = [@"@" stringByAppendingString:n];
+        } else if (!g_launcher_snippet_mode
+                   && g_launcher_current_results.count > 0) {
+            NSURL *url = g_launcher_current_results[0];
+            bestName = [[url lastPathComponent]
+                stringByDeletingPathExtension];
+        }
+        if (bestName && bestName.length > 0
+            && ![[bestName lowercaseString]
+                  isEqualToString:[g_launcher_typed lowercaseString]]) {
+            NSString *combined;
+            if ([[bestName lowercaseString]
+                    hasPrefix:[g_launcher_typed lowercaseString]]) {
+                // Prefix match — preserve user's typed casing.
+                combined = [g_launcher_typed stringByAppendingString:
+                    [bestName substringFromIndex:g_launcher_typed.length]];
+            } else {
+                // Substring match — adopt bestName's casing entirely.
+                combined = bestName;
+            }
             g_launcher_typed = [combined copy];
             [g_launcher_search_field setStringValue:combined];
             NSText *editor = [g_launcher_search_field currentEditor];
             if (editor) {
                 [editor setSelectedRange:NSMakeRange(combined.length, 0)];
             }
-            // Re-search with the now-completed query so the ghost goes
-            // empty (typed == name → no further suffix to show).
             if (g_launcher_snippet_mode) {
                 g_launcher_snippet_results =
                     airgenome_launcher_search_snippets(
