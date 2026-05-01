@@ -89,6 +89,17 @@ static NSArray<NSDictionary *> *airgenome_launcher_search_snippets(NSString *q);
 // reuse the same fuzzy ranker used for app names.
 static NSInteger airgenome_launcher_match_score(NSString *appName, NSString *query);
 
+// Settings manager — separate titled NSPanel with two NSTabViewItems
+// ("앱 단축키" and "스니펫 관리"). Opened by selecting the synthetic
+// "airgenome settings" entry in the launcher's search results — the
+// launcher hides itself first, then the manager activates airgenome.
+void airgenome_settings_show_manager(void);
+
+// Defined in airgenome_hotkey.m. Reloads hotkey_bindings.json from disk
+// into the live binding table. Called after the manager writes hotkey
+// changes so the daemon picks them up without a launchd respawn.
+extern void airgenome_hotkey_load_bindings(void);
+
 // Launch action — invoke NSWorkspace to open the chosen app bundle.
 BOOL airgenome_launcher_launch_app(NSURL *appBundleURL);
 
@@ -574,6 +585,649 @@ static NSArray<NSDictionary *> *airgenome_launcher_search_snippets(NSString *q) 
     NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
     for (NSDictionary *d in scored) [result addObject:d[@"snip"]];
     return result;
+}
+
+// MARK: - Settings manager (앱 단축키 + 스니펫 관리, two NSTabViewItems).
+//
+// The launcher exposes a synthetic "airgenome settings" search result that
+// opens this panel on Enter. Two tabs share a common Save/Cancel pair at
+// the panel bottom. Save writes BOTH hotkey_bindings.json and
+// snippets.json (each sorted for deterministic ordering), then asks
+// airgenome_hotkey_load_bindings() to repopulate the daemon's live binding
+// table so changes take effect without a launchd respawn. The launcher's
+// snippet cache is rebuilt on its next show_overlay, no restart required.
+
+static NSPanel *g_settings_panel = nil;
+
+// Snippet tab.
+static NSTableView *g_snippet_table = nil;
+static NSTextField *g_snippet_name_field = nil;
+static NSTextView *g_snippet_content_view = nil;
+static NSMutableArray<NSMutableDictionary *> *g_snippet_edit_list = nil;
+static NSInteger g_snippet_selected_row = -1;
+
+// Hotkey tab.
+static NSTableView *g_hotkey_table = nil;
+static NSTextField *g_hotkey_hotkey_field = nil;
+static NSPopUpButton *g_hotkey_action_popup = nil;
+static NSTextField *g_hotkey_target_field = nil;
+static NSMutableArray<NSMutableDictionary *> *g_hotkey_edit_list = nil;
+static NSInteger g_hotkey_selected_row = -1;
+
+// Load snippets.json into MUTABLE copies so the manager can edit values
+// in place without re-fetching the dict through immutable accessors.
+static NSMutableArray<NSMutableDictionary *> *
+airgenome_snippets_load_mutable(void) {
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSDictionary *d in airgenome_launcher_load_snippets()) {
+        [out addObject:[d mutableCopy]];
+    }
+    return out;
+}
+
+// Persist snippet edit list to snippets.json. Drops empty-name entries
+// (the launcher's load_snippets validation rejects them anyway, so
+// persisting them would leave invisible rows on disk). Sorts by name
+// case-insensitively to match load-time ordering, pretty-printed JSON
+// for hand-editability.
+static BOOL airgenome_snippets_save_to_disk(
+    NSMutableArray<NSMutableDictionary *> *list) {
+    [list sortUsingComparator:^NSComparisonResult(
+        NSDictionary *a, NSDictionary *b) {
+        return [a[@"name"] caseInsensitiveCompare:b[@"name"]];
+    }];
+    NSMutableArray *valid = [NSMutableArray array];
+    for (NSDictionary *m in list) {
+        NSString *name = m[@"name"];
+        if (![name isKindOfClass:[NSString class]] || name.length == 0) continue;
+        [valid addObject:@{
+            @"name":    name,
+            @"content": m[@"content"] ?: @""
+        }];
+    }
+    NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:
+        @"Library/Application Support/airgenome"];
+    [[NSFileManager defaultManager]
+        createDirectoryAtPath:dir
+        withIntermediateDirectories:YES
+                   attributes:nil
+                        error:nil];
+    NSString *path = [dir stringByAppendingPathComponent:@"snippets.json"];
+    NSError *err = nil;
+    NSData *data = [NSJSONSerialization
+        dataWithJSONObject:valid
+                   options:NSJSONWritingPrettyPrinted
+                     error:&err];
+    if (err || !data) {
+        NSLog(@"[airgenome_snippets] JSON encode failed: %@",
+              err.localizedDescription);
+        return NO;
+    }
+    BOOL ok = [data writeToFile:path atomically:YES];
+    if (!ok) NSLog(@"[airgenome_snippets] write failed: %@", path);
+    return ok;
+}
+
+// Hotkey load: parses hotkey_bindings.json into mutable dicts so the
+// manager can edit values in place. Missing fields default to safe values.
+static NSMutableArray<NSMutableDictionary *> *
+airgenome_hotkey_load_mutable(void) {
+    NSMutableArray *out = [NSMutableArray array];
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:
+        @"Library/Application Support/airgenome/hotkey_bindings.json"];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data) return out;
+    NSError *err = nil;
+    id parsed = [NSJSONSerialization JSONObjectWithData:data
+                                                options:0 error:&err];
+    if (err || ![parsed isKindOfClass:[NSDictionary class]]) return out;
+    NSArray *bindings = ((NSDictionary *)parsed)[@"bindings"];
+    if (![bindings isKindOfClass:[NSArray class]]) return out;
+    for (id b in bindings) {
+        if (![b isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *bd = b;
+        NSMutableDictionary *m = [NSMutableDictionary dictionary];
+        m[@"hotkey"] = bd[@"hotkey"] ?: @"";
+        m[@"action"] = bd[@"action"] ?: @"activate-app";
+        m[@"target"] = bd[@"target"] ?: @"";
+        [out addObject:m];
+    }
+    return out;
+}
+
+// Hotkey save: alphabetical-by-hotkey, drops invalid rows (empty hotkey,
+// or app-action without a target). Wraps the array in {"bindings": [...]}
+// to match the existing schema airgenome_hotkey_load_bindings expects.
+static BOOL airgenome_hotkey_save_to_disk(
+    NSMutableArray<NSMutableDictionary *> *list) {
+    [list sortUsingComparator:^NSComparisonResult(
+        NSDictionary *a, NSDictionary *b) {
+        return [a[@"hotkey"] caseInsensitiveCompare:b[@"hotkey"]];
+    }];
+    NSMutableArray *valid = [NSMutableArray array];
+    for (NSDictionary *m in list) {
+        NSString *hk     = m[@"hotkey"];
+        NSString *action = m[@"action"];
+        NSString *target = m[@"target"];
+        if (![hk isKindOfClass:[NSString class]] || hk.length == 0) continue;
+        if (![action isKindOfClass:[NSString class]]
+            || action.length == 0) continue;
+        BOOL needsTarget = [action isEqualToString:@"activate-app"]
+                        || [action isEqualToString:@"toggle-app"];
+        NSMutableDictionary *out = [NSMutableDictionary dictionary];
+        out[@"hotkey"] = hk;
+        out[@"action"] = action;
+        if (needsTarget) {
+            if (![target isKindOfClass:[NSString class]]
+                || target.length == 0) continue;
+            out[@"target"] = target;
+        }
+        [valid addObject:out];
+    }
+    NSDictionary *root = @{ @"bindings": valid };
+    NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:
+        @"Library/Application Support/airgenome"];
+    [[NSFileManager defaultManager]
+        createDirectoryAtPath:dir
+        withIntermediateDirectories:YES
+                   attributes:nil
+                        error:nil];
+    NSString *path = [dir stringByAppendingPathComponent:
+        @"hotkey_bindings.json"];
+    NSError *err = nil;
+    NSData *data = [NSJSONSerialization
+        dataWithJSONObject:root
+                   options:NSJSONWritingPrettyPrinted
+                     error:&err];
+    if (err || !data) {
+        NSLog(@"[airgenome_hotkey] JSON encode failed: %@",
+              err.localizedDescription);
+        return NO;
+    }
+    BOOL ok = [data writeToFile:path atomically:YES];
+    if (!ok) NSLog(@"[airgenome_hotkey] write failed: %@", path);
+    return ok;
+}
+
+// One-line preview of a (possibly multiline) content string for the table
+// row. First line + " …" suffix when there are additional lines, so the
+// table makes it visually obvious which entries hold multiline payloads.
+static NSString *airgenome_snippets_preview(NSString *content) {
+    if (!content) return @"";
+    NSRange nl = [content rangeOfString:@"\n"];
+    if (nl.location == NSNotFound) return content;
+    return [[content substringToIndex:nl.location]
+        stringByAppendingString:@" …"];
+}
+
+@interface AirgenomeSettingsDelegate : NSObject
+    <NSTableViewDataSource, NSTableViewDelegate>
+- (void)snipAddClicked:(id)sender;
+- (void)snipDeleteClicked:(id)sender;
+- (void)hkAddClicked:(id)sender;
+- (void)hkDeleteClicked:(id)sender;
+- (void)hkBrowseClicked:(id)sender;
+- (void)saveClicked:(id)sender;
+- (void)cancelClicked:(id)sender;
+@end
+
+@implementation AirgenomeSettingsDelegate
+
+// Push edit-field text back into the selected row's working dict. Called
+// before any action that re-renders or persists, so typed-but-unsaved
+// changes don't silently get dropped on row-switch / save / cancel.
+- (void)flushSnippetFields {
+    NSInteger row = g_snippet_selected_row;
+    if (row < 0 || row >= (NSInteger)g_snippet_edit_list.count) return;
+    NSMutableDictionary *snip = g_snippet_edit_list[row];
+    snip[@"name"] = [g_snippet_name_field stringValue] ?: @"";
+    snip[@"content"] = [g_snippet_content_view string] ?: @"";
+}
+
+- (void)flushHotkeyFields {
+    NSInteger row = g_hotkey_selected_row;
+    if (row < 0 || row >= (NSInteger)g_hotkey_edit_list.count) return;
+    NSMutableDictionary *hk = g_hotkey_edit_list[row];
+    hk[@"hotkey"] = [g_hotkey_hotkey_field stringValue] ?: @"";
+    hk[@"action"] = g_hotkey_action_popup.titleOfSelectedItem
+                  ?: @"activate-app";
+    hk[@"target"] = [g_hotkey_target_field stringValue] ?: @"";
+}
+
+// Both tables share this delegate object — dispatch by tableView identity.
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tv {
+    if (tv == g_snippet_table) return g_snippet_edit_list.count;
+    if (tv == g_hotkey_table)  return g_hotkey_edit_list.count;
+    return 0;
+}
+
+- (id)tableView:(NSTableView *)tv
+    objectValueForTableColumn:(NSTableColumn *)col
+                          row:(NSInteger)row {
+    if (tv == g_snippet_table) {
+        if (row < 0 || row >= (NSInteger)g_snippet_edit_list.count) return nil;
+        NSDictionary *s = g_snippet_edit_list[row];
+        if ([col.identifier isEqualToString:@"name"]) return s[@"name"];
+        if ([col.identifier isEqualToString:@"content"])
+            return airgenome_snippets_preview(s[@"content"]);
+    } else if (tv == g_hotkey_table) {
+        if (row < 0 || row >= (NSInteger)g_hotkey_edit_list.count) return nil;
+        NSDictionary *h = g_hotkey_edit_list[row];
+        if ([col.identifier isEqualToString:@"hotkey"]) return h[@"hotkey"];
+        if ([col.identifier isEqualToString:@"action"]) return h[@"action"];
+        if ([col.identifier isEqualToString:@"target"]) {
+            // Show last path component (e.g. "Safari.app") rather than the
+            // full path — the full path lives in the edit field below.
+            NSString *t = h[@"target"] ?: @"";
+            NSString *last = [t lastPathComponent];
+            return last.length > 0 ? last : t;
+        }
+    }
+    return nil;
+}
+
+- (void)tableViewSelectionDidChange:(NSNotification *)note {
+    NSTableView *tv = note.object;
+    if (tv == g_snippet_table) {
+        [self flushSnippetFields];
+        NSInteger row = tv.selectedRow;
+        g_snippet_selected_row = row;
+        if (row >= 0 && row < (NSInteger)g_snippet_edit_list.count) {
+            NSDictionary *s = g_snippet_edit_list[row];
+            [g_snippet_name_field setStringValue:s[@"name"] ?: @""];
+            [g_snippet_content_view setString:s[@"content"] ?: @""];
+        } else {
+            [g_snippet_name_field setStringValue:@""];
+            [g_snippet_content_view setString:@""];
+        }
+    } else if (tv == g_hotkey_table) {
+        [self flushHotkeyFields];
+        NSInteger row = tv.selectedRow;
+        g_hotkey_selected_row = row;
+        if (row >= 0 && row < (NSInteger)g_hotkey_edit_list.count) {
+            NSDictionary *h = g_hotkey_edit_list[row];
+            [g_hotkey_hotkey_field setStringValue:h[@"hotkey"] ?: @""];
+            NSString *action = h[@"action"] ?: @"activate-app";
+            [g_hotkey_action_popup selectItemWithTitle:action];
+            if (g_hotkey_action_popup.indexOfSelectedItem < 0) {
+                [g_hotkey_action_popup selectItemAtIndex:0];
+            }
+            [g_hotkey_target_field setStringValue:h[@"target"] ?: @""];
+        } else {
+            [g_hotkey_hotkey_field setStringValue:@""];
+            [g_hotkey_action_popup selectItemAtIndex:0];
+            [g_hotkey_target_field setStringValue:@""];
+        }
+    }
+}
+
+- (void)snipAddClicked:(id)sender {
+    (void)sender;
+    [self flushSnippetFields];
+    NSMutableDictionary *fresh = [NSMutableDictionary
+        dictionaryWithDictionary:@{ @"name": @"new", @"content": @"" }];
+    [g_snippet_edit_list addObject:fresh];
+    [g_snippet_table reloadData];
+    NSInteger row = g_snippet_edit_list.count - 1;
+    [g_snippet_table selectRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                 byExtendingSelection:NO];
+    [g_snippet_table scrollRowToVisible:row];
+    [g_settings_panel makeFirstResponder:g_snippet_name_field];
+    [g_snippet_name_field selectText:nil];
+}
+
+- (void)snipDeleteClicked:(id)sender {
+    (void)sender;
+    NSInteger row = g_snippet_table.selectedRow;
+    if (row < 0 || row >= (NSInteger)g_snippet_edit_list.count) return;
+    [g_snippet_edit_list removeObjectAtIndex:row];
+    g_snippet_selected_row = -1;
+    [g_snippet_table reloadData];
+    [g_snippet_name_field setStringValue:@""];
+    [g_snippet_content_view setString:@""];
+}
+
+- (void)hkAddClicked:(id)sender {
+    (void)sender;
+    [self flushHotkeyFields];
+    NSMutableDictionary *fresh = [NSMutableDictionary
+        dictionaryWithDictionary:@{
+            @"hotkey": @"ctrl+",
+            @"action": @"activate-app",
+            @"target": @""
+        }];
+    [g_hotkey_edit_list addObject:fresh];
+    [g_hotkey_table reloadData];
+    NSInteger row = g_hotkey_edit_list.count - 1;
+    [g_hotkey_table selectRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                 byExtendingSelection:NO];
+    [g_hotkey_table scrollRowToVisible:row];
+    [g_settings_panel makeFirstResponder:g_hotkey_hotkey_field];
+    [g_hotkey_hotkey_field selectText:nil];
+}
+
+- (void)hkDeleteClicked:(id)sender {
+    (void)sender;
+    NSInteger row = g_hotkey_table.selectedRow;
+    if (row < 0 || row >= (NSInteger)g_hotkey_edit_list.count) return;
+    [g_hotkey_edit_list removeObjectAtIndex:row];
+    g_hotkey_selected_row = -1;
+    [g_hotkey_table reloadData];
+    [g_hotkey_hotkey_field setStringValue:@""];
+    [g_hotkey_action_popup selectItemAtIndex:0];
+    [g_hotkey_target_field setStringValue:@""];
+}
+
+- (void)hkBrowseClicked:(id)sender {
+    (void)sender;
+    NSOpenPanel *op = [NSOpenPanel openPanel];
+    [op setCanChooseFiles:YES];
+    [op setCanChooseDirectories:NO];
+    [op setAllowsMultipleSelection:NO];
+    // setAllowedFileTypes:@[@"app"] is deprecated in macOS 12+; the
+    // -setAllowedContentTypes: replacement requires UniformTypeIdentifiers
+    // and a UTType.application reference. Silence the deprecation but
+    // keep the legacy call — modern macOS still respects it, and adding
+    // the UT framework dependency for one filter is overkill.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    [op setAllowedFileTypes:@[ @"app" ]];
+#pragma clang diagnostic pop
+    [op setDirectoryURL:[NSURL fileURLWithPath:@"/Applications"]];
+    if ([op runModal] == NSModalResponseOK) {
+        NSURL *url = op.URLs.firstObject;
+        if (url) [g_hotkey_target_field setStringValue:url.path];
+    }
+}
+
+- (void)saveClicked:(id)sender {
+    (void)sender;
+    [self flushSnippetFields];
+    [self flushHotkeyFields];
+    BOOL snipOK = airgenome_snippets_save_to_disk(g_snippet_edit_list);
+    BOOL hkOK   = airgenome_hotkey_save_to_disk(g_hotkey_edit_list);
+    if (!snipOK || !hkOK) {
+        NSAlert *a = [[NSAlert alloc] init];
+        a.messageText = @"airgenome settings 저장 실패";
+        a.informativeText = [NSString stringWithFormat:
+            @"snippets:%@ / hotkeys:%@",
+            snipOK ? @"OK" : @"FAIL",
+            hkOK   ? @"OK" : @"FAIL"];
+        [a runModal];
+        return;
+    }
+    // Live-reload the daemon's hotkey table so just-saved bindings take
+    // effect on the very next keystroke (no launchd respawn needed).
+    airgenome_hotkey_load_bindings();
+    [g_settings_panel orderOut:nil];
+}
+
+- (void)cancelClicked:(id)sender {
+    (void)sender;
+    [g_settings_panel orderOut:nil];
+}
+
+@end
+
+static AirgenomeSettingsDelegate *g_settings_delegate = nil;
+
+// Build the 앱 단축키 tab content view: table on top, +/- buttons, three
+// edit rows (Hotkey / Action popup / Target with Browse…).
+static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
+    NSView *root = [[NSView alloc] initWithFrame:frame];
+    [root setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    const CGFloat W = frame.size.width, H = frame.size.height;
+    const CGFloat pad = 12.0;
+    const CGFloat tableH = 200.0, btnH = 24.0, fieldH = 22.0;
+
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:
+        NSMakeRect(pad, H - pad - tableH, W - 2 * pad, tableH)];
+    [scroll setHasVerticalScroller:YES];
+    [scroll setBorderType:NSBezelBorder];
+    [scroll setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+    g_hotkey_table = [[NSTableView alloc] initWithFrame:scroll.bounds];
+    NSTableColumn *hkCol = [[NSTableColumn alloc] initWithIdentifier:@"hotkey"];
+    hkCol.title = @"Hotkey"; hkCol.width = 120;
+    [g_hotkey_table addTableColumn:hkCol];
+    NSTableColumn *acCol = [[NSTableColumn alloc] initWithIdentifier:@"action"];
+    acCol.title = @"Action"; acCol.width = 120;
+    [g_hotkey_table addTableColumn:acCol];
+    NSTableColumn *tgCol = [[NSTableColumn alloc] initWithIdentifier:@"target"];
+    tgCol.title = @"Target"; tgCol.width = 240;
+    [g_hotkey_table addTableColumn:tgCol];
+    g_hotkey_table.delegate = g_settings_delegate;
+    g_hotkey_table.dataSource = g_settings_delegate;
+    [scroll setDocumentView:g_hotkey_table];
+    [root addSubview:scroll];
+
+    CGFloat btnY = H - pad - tableH - 8 - btnH;
+    NSButton *addBtn = [NSButton buttonWithTitle:@"+ New"
+                                           target:g_settings_delegate
+                                           action:@selector(hkAddClicked:)];
+    [addBtn setFrame:NSMakeRect(pad, btnY, 80, btnH)];
+    [addBtn setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:addBtn];
+    NSButton *delBtn = [NSButton buttonWithTitle:@"Delete"
+                                           target:g_settings_delegate
+                                           action:@selector(hkDeleteClicked:)];
+    [delBtn setFrame:NSMakeRect(pad + 90, btnY, 80, btnH)];
+    [delBtn setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:delBtn];
+
+    CGFloat hkY = btnY - 12 - fieldH;
+    NSTextField *hkLabel = [NSTextField labelWithString:@"Hotkey:"];
+    [hkLabel setFrame:NSMakeRect(pad, hkY + 2, 60, fieldH)];
+    [hkLabel setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:hkLabel];
+    g_hotkey_hotkey_field = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(pad + 70, hkY, W - 2 * pad - 70, fieldH)];
+    [[g_hotkey_hotkey_field cell] setPlaceholderString:
+        @"e.g. ctrl+q, cmd+shift+n"];
+    [g_hotkey_hotkey_field setAutoresizingMask:
+        NSViewWidthSizable | NSViewMinYMargin];
+    [root addSubview:g_hotkey_hotkey_field];
+
+    CGFloat acY = hkY - 8 - fieldH;
+    NSTextField *acLabel = [NSTextField labelWithString:@"Action:"];
+    [acLabel setFrame:NSMakeRect(pad, acY + 2, 60, fieldH)];
+    [acLabel setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:acLabel];
+    g_hotkey_action_popup = [[NSPopUpButton alloc] initWithFrame:
+        NSMakeRect(pad + 70, acY - 2, 180, fieldH + 6) pullsDown:NO];
+    [g_hotkey_action_popup addItemWithTitle:@"activate-app"];
+    [g_hotkey_action_popup addItemWithTitle:@"toggle-app"];
+    [g_hotkey_action_popup addItemWithTitle:@"show-desktop"];
+    [g_hotkey_action_popup setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:g_hotkey_action_popup];
+
+    CGFloat tgY = acY - 8 - fieldH;
+    NSTextField *tgLabel = [NSTextField labelWithString:@"Target:"];
+    [tgLabel setFrame:NSMakeRect(pad, tgY + 2, 60, fieldH)];
+    [tgLabel setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:tgLabel];
+    NSButton *browseBtn = [NSButton buttonWithTitle:@"Browse…"
+                                              target:g_settings_delegate
+                                              action:@selector(hkBrowseClicked:)];
+    const CGFloat browseW = 88;
+    [browseBtn setFrame:NSMakeRect(W - pad - browseW, tgY - 2,
+                                    browseW, fieldH + 6)];
+    [browseBtn setAutoresizingMask:NSViewMinXMargin | NSViewMinYMargin];
+    [root addSubview:browseBtn];
+    g_hotkey_target_field = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(pad + 70, tgY,
+                   W - 2 * pad - 70 - browseW - 8, fieldH)];
+    [[g_hotkey_target_field cell] setPlaceholderString:
+        @"/Applications/Safari.app  (omit for show-desktop)"];
+    [g_hotkey_target_field setAutoresizingMask:
+        NSViewWidthSizable | NSViewMinYMargin];
+    [root addSubview:g_hotkey_target_field];
+
+    return root;
+}
+
+// Build the 스니펫 관리 tab content view: table + name field + multiline
+// content textview.
+static NSView *airgenome_settings_build_snippet_tab(NSRect frame) {
+    NSView *root = [[NSView alloc] initWithFrame:frame];
+    [root setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+    const CGFloat W = frame.size.width, H = frame.size.height;
+    const CGFloat pad = 12.0;
+    const CGFloat tableH = 180.0, btnH = 24.0;
+    const CGFloat fieldH = 22.0, labelH = 18.0;
+
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:
+        NSMakeRect(pad, H - pad - tableH, W - 2 * pad, tableH)];
+    [scroll setHasVerticalScroller:YES];
+    [scroll setBorderType:NSBezelBorder];
+    [scroll setAutoresizingMask:NSViewWidthSizable | NSViewMinYMargin];
+    g_snippet_table = [[NSTableView alloc] initWithFrame:scroll.bounds];
+    NSTableColumn *nCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
+    nCol.title = @"Name"; nCol.width = 120;
+    [g_snippet_table addTableColumn:nCol];
+    NSTableColumn *cCol = [[NSTableColumn alloc] initWithIdentifier:@"content"];
+    cCol.title = @"Content (1-line preview)"; cCol.width = 340;
+    [g_snippet_table addTableColumn:cCol];
+    g_snippet_table.delegate = g_settings_delegate;
+    g_snippet_table.dataSource = g_settings_delegate;
+    [scroll setDocumentView:g_snippet_table];
+    [root addSubview:scroll];
+
+    CGFloat btnY = H - pad - tableH - 8 - btnH;
+    NSButton *addBtn = [NSButton buttonWithTitle:@"+ New"
+                                           target:g_settings_delegate
+                                           action:@selector(snipAddClicked:)];
+    [addBtn setFrame:NSMakeRect(pad, btnY, 80, btnH)];
+    [addBtn setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:addBtn];
+    NSButton *delBtn = [NSButton buttonWithTitle:@"Delete"
+                                           target:g_settings_delegate
+                                           action:@selector(snipDeleteClicked:)];
+    [delBtn setFrame:NSMakeRect(pad + 90, btnY, 80, btnH)];
+    [delBtn setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:delBtn];
+
+    CGFloat nameY = btnY - 12 - fieldH;
+    NSTextField *nameLabel = [NSTextField labelWithString:@"Name:"];
+    [nameLabel setFrame:NSMakeRect(pad, nameY + 2, 60, fieldH)];
+    [nameLabel setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:nameLabel];
+    g_snippet_name_field = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(pad + 70, nameY, W - 2 * pad - 70, fieldH)];
+    [g_snippet_name_field setAutoresizingMask:
+        NSViewWidthSizable | NSViewMinYMargin];
+    [root addSubview:g_snippet_name_field];
+
+    CGFloat contentLabelY = nameY - 8 - labelH;
+    NSTextField *contentLabel = [NSTextField labelWithString:@"Content:"];
+    [contentLabel setFrame:NSMakeRect(pad, contentLabelY, 80, labelH)];
+    [contentLabel setAutoresizingMask:NSViewMinYMargin];
+    [root addSubview:contentLabel];
+
+    CGFloat contentY = pad;
+    CGFloat contentH = contentLabelY - 4 - contentY;
+    if (contentH < 80) contentH = 80;
+    NSScrollView *contentScroll = [[NSScrollView alloc] initWithFrame:
+        NSMakeRect(pad, contentY, W - 2 * pad, contentH)];
+    [contentScroll setHasVerticalScroller:YES];
+    [contentScroll setBorderType:NSBezelBorder];
+    [contentScroll setAutoresizingMask:
+        NSViewWidthSizable | NSViewHeightSizable];
+    g_snippet_content_view = [[NSTextView alloc]
+        initWithFrame:contentScroll.bounds];
+    [g_snippet_content_view setRichText:NO];
+    [g_snippet_content_view setAllowsUndo:YES];
+    [g_snippet_content_view setFont:
+        [NSFont userFixedPitchFontOfSize:12]];
+    [g_snippet_content_view setMinSize:NSMakeSize(0, 0)];
+    [g_snippet_content_view setMaxSize:
+        NSMakeSize(FLT_MAX, FLT_MAX)];
+    [g_snippet_content_view setVerticallyResizable:YES];
+    [g_snippet_content_view setHorizontallyResizable:NO];
+    [g_snippet_content_view setAutoresizingMask:NSViewWidthSizable];
+    [g_snippet_content_view.textContainer setWidthTracksTextView:YES];
+    [contentScroll setDocumentView:g_snippet_content_view];
+    [root addSubview:contentScroll];
+
+    return root;
+}
+
+void airgenome_settings_show_manager(void) {
+    g_snippet_edit_list = airgenome_snippets_load_mutable();
+    g_snippet_selected_row = -1;
+    g_hotkey_edit_list = airgenome_hotkey_load_mutable();
+    g_hotkey_selected_row = -1;
+
+    if (!g_settings_panel) {
+        const CGFloat W = 620.0, H = 540.0;
+        const CGFloat pad = 16.0, actionH = 28.0;
+        g_settings_panel = [[NSPanel alloc]
+            initWithContentRect:NSMakeRect(0, 0, W, H)
+                      styleMask:NSWindowStyleMaskTitled
+                              | NSWindowStyleMaskClosable
+                              | NSWindowStyleMaskResizable
+                        backing:NSBackingStoreBuffered
+                          defer:NO];
+        g_settings_panel.title = @"airgenome settings";
+        [g_settings_panel setReleasedWhenClosed:NO];
+        [g_settings_panel setLevel:NSFloatingWindowLevel];
+        [g_settings_panel setHidesOnDeactivate:NO];
+
+        if (!g_settings_delegate) {
+            g_settings_delegate =
+                [[AirgenomeSettingsDelegate alloc] init];
+        }
+        NSView *cv = g_settings_panel.contentView;
+
+        NSButton *saveBtn = [NSButton buttonWithTitle:@"Save"
+                                                target:g_settings_delegate
+                                                action:@selector(saveClicked:)];
+        [saveBtn setFrame:NSMakeRect(W - pad - 80, pad, 80, actionH)];
+        [saveBtn setKeyEquivalent:@"\r"];
+        [saveBtn setAutoresizingMask:NSViewMinXMargin | NSViewMaxYMargin];
+        [cv addSubview:saveBtn];
+        NSButton *cancelBtn = [NSButton buttonWithTitle:@"Cancel"
+                                                  target:g_settings_delegate
+                                                  action:@selector(cancelClicked:)];
+        [cancelBtn setFrame:NSMakeRect(W - pad - 170, pad, 80, actionH)];
+        [cancelBtn setKeyEquivalent:@"\033"];
+        [cancelBtn setAutoresizingMask:NSViewMinXMargin | NSViewMaxYMargin];
+        [cv addSubview:cancelBtn];
+
+        CGFloat tabY = pad + actionH + 12;
+        CGFloat tabH = H - pad - tabY;
+        NSTabView *tabView = [[NSTabView alloc] initWithFrame:
+            NSMakeRect(pad, tabY, W - 2 * pad, tabH)];
+        [tabView setAutoresizingMask:
+            NSViewWidthSizable | NSViewHeightSizable];
+
+        // 앱 단축키 listed first per user mandate ordering
+        // ("앱단축키 , 스니펫 관리").
+        NSRect tabFrame = NSMakeRect(0, 0, W - 2 * pad - 8, tabH - 30);
+        NSTabViewItem *hkItem = [[NSTabViewItem alloc]
+            initWithIdentifier:@"hk"];
+        hkItem.label = @"앱 단축키";
+        hkItem.view = airgenome_settings_build_hotkey_tab(tabFrame);
+        [tabView addTabViewItem:hkItem];
+
+        NSTabViewItem *snipItem = [[NSTabViewItem alloc]
+            initWithIdentifier:@"snip"];
+        snipItem.label = @"스니펫 관리";
+        snipItem.view = airgenome_settings_build_snippet_tab(tabFrame);
+        [tabView addTabViewItem:snipItem];
+
+        [cv addSubview:tabView];
+    }
+    [g_hotkey_table reloadData];
+    [g_snippet_table reloadData];
+    [g_hotkey_hotkey_field setStringValue:@""];
+    [g_hotkey_action_popup selectItemAtIndex:0];
+    [g_hotkey_target_field setStringValue:@""];
+    [g_snippet_name_field setStringValue:@""];
+    [g_snippet_content_view setString:@""];
+    [g_settings_panel center];
+    [NSApp activateIgnoringOtherApps:YES];
+    [g_settings_panel makeKeyAndOrderFront:nil];
+    [g_settings_panel makeFirstResponder:g_hotkey_table];
 }
 
 // Tiny delegate that bridges NSTextField text-change + Enter-key events
@@ -1102,6 +1756,28 @@ static void airgenome_launcher_refresh_recent_set(void) {
     g_launcher_recent_set = set;
 }
 
+// Synthetic search-result URL representing the "airgenome settings"
+// virtual entry. The path doesn't exist on disk; launch_app intercepts
+// any URL whose last path component equals this constant and routes to
+// airgenome_settings_show_manager() instead of NSWorkspace.openApp.
+//
+// Why use an NSURL at all (instead of a typed Result struct)? The
+// launcher's UI plumbing — search results array, ghost-suffix lookup,
+// history entries — is all keyed off NSURL; a synthetic URL slots into
+// the existing pipeline with one tiny intercept point in launch_app.
+NSString * const kAirgenomeSettingsSentinel = @"airgenome settings.app";
+
+static NSURL *airgenome_settings_sentinel_url(void) {
+    return [NSURL fileURLWithPath:
+        [@"/" stringByAppendingPathComponent:kAirgenomeSettingsSentinel]];
+}
+
+BOOL airgenome_launcher_is_settings_sentinel(NSURL *url) {
+    if (!url) return NO;
+    return [[url lastPathComponent]
+        isEqualToString:kAirgenomeSettingsSentinel];
+}
+
 NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query) {
     if (!query || query.length == 0) return @[];
     // Use cached enumeration when available (populated on show_overlay).
@@ -1120,6 +1796,20 @@ NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query) {
             }
             [scored addObject:@{ @"url": url, @"score": @(s) }];
         }
+    }
+    // Synthetic "airgenome settings" entry — included whenever match_score
+    // says the query matches its display name. +50 boost over the same
+    // raw score keeps the settings entry above bare "airgenome.app" when
+    // both prefix-match the user's query, so typing "air" surfaces the
+    // settings panel as the top suggestion (and the ghost-suffix
+    // completes "genome settings").
+    NSInteger settingsScore = airgenome_launcher_match_score(
+        @"airgenome settings", query);
+    if (settingsScore > 0) {
+        [scored addObject:@{
+            @"url":   airgenome_settings_sentinel_url(),
+            @"score": @(settingsScore + 50)
+        }];
     }
     [scored sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
         return [b[@"score"] compare:a[@"score"]];
@@ -1162,6 +1852,16 @@ static void airgenome_launcher_append_history(NSURL *appURL, BOOL success) {
 
 BOOL airgenome_launcher_launch_app(NSURL *appBundleURL) {
     if (!appBundleURL) return NO;
+    // Synthetic "airgenome settings" entry → open the in-process tabbed
+    // manager instead of asking NSWorkspace to launch a non-existent
+    // /airgenome settings.app bundle. Hide the launcher first so its
+    // non-activating panel surrenders the keyboard surface before
+    // [NSApp activateIgnoringOtherApps:] hands focus to the manager.
+    if (airgenome_launcher_is_settings_sentinel(appBundleURL)) {
+        airgenome_launcher_hide_overlay();
+        airgenome_settings_show_manager();
+        return YES;
+    }
     // No focus-restore bookkeeping — canonical NonactivatingPanel means
     // airgenome was never frontmost, so the just-launched app (configured
     // below with cfg.activates=YES) takes focus directly via NSWorkspace
