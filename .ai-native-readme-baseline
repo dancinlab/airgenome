@@ -1,0 +1,12 @@
+# raw 270 + raw 271 baseline — grandfather list
+# Created 2026-05-02. 30d ramp: by 2026-06-01 each entry should either
+# (a) gain README.ai.md + core+module conform + remove from this list, OR
+# (b) explicit deferred-until annotation with reason.
+# After 2026-06-01 severity promotes warn → block; new module dirs added
+# without README.ai.md will commit-reject.
+#
+# Lint: hexa run /Users/<user>/core/hive/tool/ai_native_module_readme_lint.hexa --repo /Users/<user>/core/airgenome
+# Format: one path per line, repo-relative, # comments allowed.
+
+# airgenome/modules/ (top-level module groups)
+modules/filters
