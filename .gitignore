@@ -81,3 +81,6 @@ hooks/.hook-audit
 .workspace
 .workspace.*
 .workspace.lock
+
+# hexa binary backups (symlink switch leftovers) — added 2026-05-03
+nexus/shared/bin/*.bak
