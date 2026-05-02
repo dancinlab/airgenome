@@ -769,6 +769,14 @@ static NSTextField *g_snippet_name_field = nil;
 static NSTextView *g_snippet_content_view = nil;
 static NSMutableArray<NSMutableDictionary *> *g_snippet_edit_list = nil;
 static NSInteger g_snippet_selected_row = -1;
+// The dict the edit fields are currently bound to. Tracked as a STRONG
+// pointer (not a row index) because NSTableView selection notifications +
+// reloadDataForRowIndexes + auto-save firing per-keystroke can race row
+// indexes — but the dict identity is stable. flushSnippetFields writes to
+// this pointer; if the dict has been removed from the list, we bail. This
+// architectural guarantee replaced an earlier index-based approach that
+// silently clobbered other rows' content during fast row switches.
+static NSMutableDictionary *g_snippet_active_dict = nil;
 
 // Hotkey tab. Per 2026-05-01 user mandate "직접입력이 아닌 드랍다운 2개",
 // the hotkey value is built from a modifier popup × key popup combo
@@ -781,6 +789,21 @@ static NSPopUpButton *g_hotkey_action_popup = nil;
 static NSTextField *g_hotkey_target_field = nil;
 static NSMutableArray<NSMutableDictionary *> *g_hotkey_edit_list = nil;
 static NSInteger g_hotkey_selected_row = -1;
+// See g_snippet_active_dict.
+static NSMutableDictionary *g_hotkey_active_dict = nil;
+
+// Re-entrancy guards: programmatic setStringValue: / setString: on a focused
+// NSTextField / NSTextView can route through the field editor and trigger
+// controlTextDidChange: / textDidChange: as if the user typed it. Without a
+// guard, a row click would (a) load NEW row's content into the edit fields,
+// (b) the load fires textDidChange:, (c) autoSaveSnippets writes the just-
+// loaded content into the dict using g_snippet_selected_row — which is the
+// NEW row, so it's idempotent in that case, BUT if a popup change or any
+// other path runs between (a) and (c) the row index can desync and the
+// load-driven autosave clobbers the wrong dict. The flag lets us treat
+// "load" and "user-typed" as distinct events.
+static BOOL g_loading_snippet_fields = NO;
+static BOOL g_loading_hotkey_fields = NO;
 
 // Canonical-ordered modifier strings the popups offer. Listed in the
 // order ctrl → cmd → alt → shift so multi-modifier combos compose
@@ -831,14 +854,20 @@ airgenome_snippets_load_mutable(void) {
 // persisting them would leave invisible rows on disk). Sorts by name
 // case-insensitively to match load-time ordering, pretty-printed JSON
 // for hand-editability.
+//
+// IMPORTANT: do NOT sort `list` in place. The caller's `list` is the same
+// object the table view reads by index, and auto-save fires on every
+// keystroke — sorting in place would shuffle rows mid-edit and the next
+// keystroke would land in the wrong dictionary, scrambling content across
+// names. Sort a copy for the on-disk encoding only.
 static BOOL airgenome_snippets_save_to_disk(
     NSMutableArray<NSMutableDictionary *> *list) {
-    [list sortUsingComparator:^NSComparisonResult(
+    NSArray *sorted = [list sortedArrayUsingComparator:^NSComparisonResult(
         NSDictionary *a, NSDictionary *b) {
         return [a[@"name"] caseInsensitiveCompare:b[@"name"]];
     }];
     NSMutableArray *valid = [NSMutableArray array];
-    for (NSDictionary *m in list) {
+    for (NSDictionary *m in sorted) {
         NSString *name = m[@"name"];
         if (![name isKindOfClass:[NSString class]] || name.length == 0) continue;
         [valid addObject:@{
@@ -899,14 +928,18 @@ airgenome_hotkey_load_mutable(void) {
 // Hotkey save: alphabetical-by-hotkey, drops invalid rows (empty hotkey,
 // or app-action without a target). Wraps the array in {"bindings": [...]}
 // to match the existing schema airgenome_hotkey_load_bindings expects.
+//
+// IMPORTANT: do NOT sort `list` in place — see snippets_save_to_disk for
+// the same reasoning (auto-save fires per keystroke / popup change; an
+// in-place sort would shuffle row indexes mid-edit).
 static BOOL airgenome_hotkey_save_to_disk(
     NSMutableArray<NSMutableDictionary *> *list) {
-    [list sortUsingComparator:^NSComparisonResult(
+    NSArray *sorted = [list sortedArrayUsingComparator:^NSComparisonResult(
         NSDictionary *a, NSDictionary *b) {
         return [a[@"hotkey"] caseInsensitiveCompare:b[@"hotkey"]];
     }];
     NSMutableArray *valid = [NSMutableArray array];
-    for (NSDictionary *m in list) {
+    for (NSDictionary *m in sorted) {
         NSString *hk     = m[@"hotkey"];
         NSString *action = m[@"action"];
         NSString *target = m[@"target"];
@@ -962,39 +995,93 @@ static NSString *airgenome_snippets_preview(NSString *content) {
 }
 
 @interface AirgenomeSettingsDelegate : NSObject
-    <NSTableViewDataSource, NSTableViewDelegate>
+    <NSTableViewDataSource, NSTableViewDelegate,
+     NSTextFieldDelegate, NSTextViewDelegate>
 - (void)snipAddClicked:(id)sender;
 - (void)snipDeleteClicked:(id)sender;
 - (void)hkAddClicked:(id)sender;
 - (void)hkDeleteClicked:(id)sender;
 - (void)hkBrowseClicked:(id)sender;
-- (void)saveClicked:(id)sender;
-- (void)cancelClicked:(id)sender;
+- (void)hkPopupChanged:(id)sender;
+- (void)doneClicked:(id)sender;
+- (void)autoSaveSnippets;
+- (void)autoSaveHotkeys;
+@end
+
+// NSPanel subclass that routes the standard editing shortcuts (cmd+A/C/V/
+// X/Z, shift+cmd+Z) to the firstResponder, plus cmd+W and Esc to close.
+// Required because the daemon is LSUIElement (no main menu bar), so the
+// usual Edit-menu keyEquivalent dispatch doesn't exist — without this
+// override, cut/copy/paste/select-all/undo silently fail inside the
+// settings panel's text fields and content view.
+@interface AirgenomeSettingsPanel : NSPanel @end
+@implementation AirgenomeSettingsPanel
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    NSEventModifierFlags m =
+        event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    NSString *chars = [event.charactersIgnoringModifiers lowercaseString];
+    if (m == NSEventModifierFlagCommand) {
+        if ([chars isEqualToString:@"w"]) {
+            [self orderOut:nil];
+            return YES;
+        }
+        SEL sel = NULL;
+        if      ([chars isEqualToString:@"a"]) sel = @selector(selectAll:);
+        else if ([chars isEqualToString:@"c"]) sel = @selector(copy:);
+        else if ([chars isEqualToString:@"v"]) sel = @selector(paste:);
+        else if ([chars isEqualToString:@"x"]) sel = @selector(cut:);
+        else if ([chars isEqualToString:@"z"]) sel = @selector(undo:);
+        if (sel && [NSApp sendAction:sel to:nil from:self]) return YES;
+    }
+    if (m == (NSEventModifierFlagCommand | NSEventModifierFlagShift)
+        && [chars isEqualToString:@"z"]) {
+        if ([NSApp sendAction:@selector(redo:) to:nil from:self]) return YES;
+    }
+    if (m == 0 && chars.length == 1
+        && [chars characterAtIndex:0] == 0x1B /* Esc */) {
+        [self orderOut:nil];
+        return YES;
+    }
+    return [super performKeyEquivalent:event];
+}
 @end
 
 @implementation AirgenomeSettingsDelegate
 
-// Push edit-field text back into the selected row's working dict. Called
-// before any action that re-renders or persists, so typed-but-unsaved
-// changes don't silently get dropped on row-switch / save / cancel.
+// Push edit-field text back into the dict the fields are currently bound
+// to. Writing through the stored dict POINTER (not a row index) means we
+// can never write to the wrong row, even if reloadDataForRowIndexes,
+// auto-save, and selection-change notifications interleave in surprising
+// orders — the dict identity is what we last loaded into the fields.
 - (void)flushSnippetFields {
-    NSInteger row = g_snippet_selected_row;
-    if (row < 0 || row >= (NSInteger)g_snippet_edit_list.count) return;
-    NSMutableDictionary *snip = g_snippet_edit_list[row];
-    snip[@"name"] = [g_snippet_name_field stringValue] ?: @"";
-    snip[@"content"] = [g_snippet_content_view string] ?: @"";
+    if (!g_snippet_active_dict) return;
+    if (![g_snippet_edit_list containsObject:g_snippet_active_dict]) return;
+    // CRITICAL: -[NSTextView string] returns the textStorage's underlying
+    // NSString, which Apple documents as "may be mutable internally and
+    // may change." Storing that pointer in the dict aliases EVERY row's
+    // content with the live textStorage backing — typing into one row
+    // mutates the backing, which mutates every dict that holds the same
+    // pointer. Result: pristine "infection" of every row touched. Take
+    // an immutable copy before storing.
+    g_snippet_active_dict[@"name"] =
+        [[g_snippet_name_field stringValue] copy] ?: @"";
+    g_snippet_active_dict[@"content"] =
+        [[g_snippet_content_view string] copy] ?: @"";
 }
 
 - (void)flushHotkeyFields {
-    NSInteger row = g_hotkey_selected_row;
-    if (row < 0 || row >= (NSInteger)g_hotkey_edit_list.count) return;
-    NSMutableDictionary *hk = g_hotkey_edit_list[row];
+    if (!g_hotkey_active_dict) return;
+    if (![g_hotkey_edit_list containsObject:g_hotkey_active_dict]) return;
     NSString *mod = g_hotkey_mod_popup.titleOfSelectedItem ?: @"ctrl";
     NSString *key = g_hotkey_key_popup.titleOfSelectedItem ?: @"a";
-    hk[@"hotkey"] = [NSString stringWithFormat:@"%@+%@", mod, key];
-    hk[@"action"] = g_hotkey_action_popup.titleOfSelectedItem
-                  ?: @"activate-app";
-    hk[@"target"] = [g_hotkey_target_field stringValue] ?: @"";
+    // Defensive [copy] — same backing-string aliasing concern as snippets,
+    // even though popup titles are typically already immutable strings.
+    g_hotkey_active_dict[@"hotkey"] =
+        [[NSString stringWithFormat:@"%@+%@", mod, key] copy];
+    g_hotkey_active_dict[@"action"] =
+        [(g_hotkey_action_popup.titleOfSelectedItem ?: @"activate-app") copy];
+    g_hotkey_active_dict[@"target"] =
+        [[g_hotkey_target_field stringValue] copy] ?: @"";
 }
 
 // Both tables share this delegate object — dispatch by tableView identity.
@@ -1035,20 +1122,40 @@ static NSString *airgenome_snippets_preview(NSString *content) {
         [self flushSnippetFields];
         NSInteger row = tv.selectedRow;
         g_snippet_selected_row = row;
-        if (row >= 0 && row < (NSInteger)g_snippet_edit_list.count) {
-            NSDictionary *s = g_snippet_edit_list[row];
-            [g_snippet_name_field setStringValue:s[@"name"] ?: @""];
-            [g_snippet_content_view setString:s[@"content"] ?: @""];
-        } else {
-            [g_snippet_name_field setStringValue:@""];
-            [g_snippet_content_view setString:@""];
-        }
+        g_snippet_active_dict =
+            (row >= 0 && row < (NSInteger)g_snippet_edit_list.count)
+                ? g_snippet_edit_list[row] : nil;
+        g_loading_snippet_fields = YES;
+        NSString *loadName    = g_snippet_active_dict
+            ? (g_snippet_active_dict[@"name"]    ?: @"") : @"";
+        NSString *loadContent = g_snippet_active_dict
+            ? (g_snippet_active_dict[@"content"] ?: @"") : @"";
+        [g_snippet_name_field setStringValue:loadName];
+        // Replace via attributed-string so the textview's typing attributes
+        // (font + label color) are applied to the inserted run. A raw
+        // -[NSTextStorage replaceCharactersInRange:withString:] inherits
+        // whatever default attributes the storage holds — in dark mode
+        // that's black-on-dark, rendering loaded content nearly invisible
+        // until the user types into it.
+        NSTextStorage *ts = g_snippet_content_view.textStorage;
+        NSAttributedString *attr = [[NSAttributedString alloc]
+            initWithString:loadContent
+                attributes:g_snippet_content_view.typingAttributes];
+        [ts beginEditing];
+        [ts replaceCharactersInRange:NSMakeRange(0, ts.length)
+                withAttributedString:attr];
+        [ts endEditing];
+        g_loading_snippet_fields = NO;
     } else if (tv == g_hotkey_table) {
         [self flushHotkeyFields];
         NSInteger row = tv.selectedRow;
         g_hotkey_selected_row = row;
-        if (row >= 0 && row < (NSInteger)g_hotkey_edit_list.count) {
-            NSDictionary *h = g_hotkey_edit_list[row];
+        g_hotkey_active_dict =
+            (row >= 0 && row < (NSInteger)g_hotkey_edit_list.count)
+                ? g_hotkey_edit_list[row] : nil;
+        g_loading_hotkey_fields = YES;
+        if (g_hotkey_active_dict) {
+            NSDictionary *h = g_hotkey_active_dict;
             // Parse "ctrl+shift+q" → mod="ctrl+shift", key="q". The
             // daemon's parser (airgenome_hotkey.m) is order-insensitive,
             // but we canonicalize here so the popup selection matches one
@@ -1093,7 +1200,79 @@ static NSString *airgenome_snippets_preview(NSString *content) {
             [g_hotkey_action_popup selectItemAtIndex:0];
             [g_hotkey_target_field setStringValue:@""];
         }
+        g_loading_hotkey_fields = NO;
     }
+}
+
+// Auto-save: push the currently-edited fields into the working dict for the
+// selected row, refresh just that row in the table (so the name / preview
+// columns track the live edit), and persist to disk. Called on every
+// keystroke, popup change, +New, and Delete — saves are cheap (small JSON,
+// atomic write) and the ergonomic win (no Save button to remember) is
+// worth it. Both helpers are no-ops when no row is selected.
+- (void)autoSaveSnippets {
+    [self flushSnippetFields];
+    // Look up the row index by dict identity rather than trusting a stored
+    // index — guarantees the table reload targets the row whose dict we
+    // just wrote, even if list order shifts under us.
+    NSUInteger row = g_snippet_active_dict
+        ? [g_snippet_edit_list indexOfObjectIdenticalTo:g_snippet_active_dict]
+        : NSNotFound;
+    if (row != NSNotFound) {
+        NSIndexSet *cols = [NSIndexSet indexSetWithIndexesInRange:
+            NSMakeRange(0, g_snippet_table.numberOfColumns)];
+        [g_snippet_table
+            reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                      columnIndexes:cols];
+    }
+    airgenome_snippets_save_to_disk(g_snippet_edit_list);
+}
+
+- (void)autoSaveHotkeys {
+    [self flushHotkeyFields];
+    NSUInteger row = g_hotkey_active_dict
+        ? [g_hotkey_edit_list indexOfObjectIdenticalTo:g_hotkey_active_dict]
+        : NSNotFound;
+    if (row != NSNotFound) {
+        NSIndexSet *cols = [NSIndexSet indexSetWithIndexesInRange:
+            NSMakeRange(0, g_hotkey_table.numberOfColumns)];
+        [g_hotkey_table
+            reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                      columnIndexes:cols];
+    }
+    airgenome_hotkey_save_to_disk(g_hotkey_edit_list);
+    // Live-reload daemon so the just-saved binding takes effect on the
+    // very next keystroke (no launchd respawn needed).
+    airgenome_hotkey_load_bindings();
+}
+
+// NSTextField change → autosave the table whose field changed. Guarded
+// against programmatic loads (see g_loading_*_fields).
+- (void)controlTextDidChange:(NSNotification *)note {
+    id obj = note.object;
+    if (obj == g_snippet_name_field) {
+        if (g_loading_snippet_fields) return;
+        [self autoSaveSnippets];
+    } else if (obj == g_hotkey_target_field) {
+        if (g_loading_hotkey_fields) return;
+        [self autoSaveHotkeys];
+    }
+}
+
+// NSTextView change → snippet content view is the only multi-line editor.
+- (void)textDidChange:(NSNotification *)note {
+    if (note.object == g_snippet_content_view) {
+        if (g_loading_snippet_fields) return;
+        [self autoSaveSnippets];
+    }
+}
+
+// Hotkey popup change (mod / key / action). All three popups point here so
+// any combo edit immediately persists.
+- (void)hkPopupChanged:(id)sender {
+    (void)sender;
+    if (g_loading_hotkey_fields) return;
+    [self autoSaveHotkeys];
 }
 
 - (void)snipAddClicked:(id)sender {
@@ -1109,6 +1288,7 @@ static NSString *airgenome_snippets_preview(NSString *content) {
     [g_snippet_table scrollRowToVisible:row];
     [g_settings_panel makeFirstResponder:g_snippet_name_field];
     [g_snippet_name_field selectText:nil];
+    airgenome_snippets_save_to_disk(g_snippet_edit_list);
 }
 
 - (void)snipDeleteClicked:(id)sender {
@@ -1117,16 +1297,20 @@ static NSString *airgenome_snippets_preview(NSString *content) {
     if (row < 0 || row >= (NSInteger)g_snippet_edit_list.count) return;
     [g_snippet_edit_list removeObjectAtIndex:row];
     g_snippet_selected_row = -1;
+    g_snippet_active_dict = nil;
+    g_loading_snippet_fields = YES;
     [g_snippet_table reloadData];
     [g_snippet_name_field setStringValue:@""];
     [g_snippet_content_view setString:@""];
+    g_loading_snippet_fields = NO;
+    airgenome_snippets_save_to_disk(g_snippet_edit_list);
 }
 
 - (void)hkAddClicked:(id)sender {
     (void)sender;
     [self flushHotkeyFields];
     // Default to "ctrl+a" — first option of each popup; the user picks
-    // a real combo + target before saving.
+    // a real combo + target via the auto-saving popups / target field.
     NSMutableDictionary *fresh = [NSMutableDictionary
         dictionaryWithDictionary:@{
             @"hotkey": @"ctrl+a",
@@ -1140,6 +1324,8 @@ static NSString *airgenome_snippets_preview(NSString *content) {
                  byExtendingSelection:NO];
     [g_hotkey_table scrollRowToVisible:row];
     [g_settings_panel makeFirstResponder:g_hotkey_target_field];
+    airgenome_hotkey_save_to_disk(g_hotkey_edit_list);
+    airgenome_hotkey_load_bindings();
 }
 
 - (void)hkDeleteClicked:(id)sender {
@@ -1148,11 +1334,16 @@ static NSString *airgenome_snippets_preview(NSString *content) {
     if (row < 0 || row >= (NSInteger)g_hotkey_edit_list.count) return;
     [g_hotkey_edit_list removeObjectAtIndex:row];
     g_hotkey_selected_row = -1;
+    g_hotkey_active_dict = nil;
+    g_loading_hotkey_fields = YES;
     [g_hotkey_table reloadData];
     [g_hotkey_mod_popup selectItemAtIndex:0];
     [g_hotkey_key_popup selectItemAtIndex:0];
     [g_hotkey_action_popup selectItemAtIndex:0];
     [g_hotkey_target_field setStringValue:@""];
+    g_loading_hotkey_fields = NO;
+    airgenome_hotkey_save_to_disk(g_hotkey_edit_list);
+    airgenome_hotkey_load_bindings();
 }
 
 - (void)hkBrowseClicked:(id)sender {
@@ -1173,35 +1364,17 @@ static NSString *airgenome_snippets_preview(NSString *content) {
     [op setDirectoryURL:[NSURL fileURLWithPath:@"/Applications"]];
     if ([op runModal] == NSModalResponseOK) {
         NSURL *url = op.URLs.firstObject;
-        if (url) [g_hotkey_target_field setStringValue:url.path];
+        if (url) {
+            [g_hotkey_target_field setStringValue:url.path];
+            // setStringValue: doesn't fire controlTextDidChange:, so push
+            // the new target into the row + persist explicitly.
+            [self autoSaveHotkeys];
+        }
     }
 }
 
-- (void)saveClicked:(id)sender {
-    (void)sender;
-    [self flushSnippetFields];
-    [self flushHotkeyFields];
-    BOOL snipOK = airgenome_snippets_save_to_disk(g_snippet_edit_list);
-    BOOL hkOK   = airgenome_hotkey_save_to_disk(g_hotkey_edit_list);
-    if (!snipOK || !hkOK) {
-        NSAlert *a = [[NSAlert alloc] init];
-        a.messageText = @"airgenome settings — save failed";
-        a.informativeText = [NSString stringWithFormat:
-            @"snippets: %@ / hotkeys: %@\n"
-            @"Check Console.app for [airgenome_snippets] / "
-            @"[airgenome_hotkey] log entries.",
-            snipOK ? @"OK" : @"FAIL",
-            hkOK   ? @"OK" : @"FAIL"];
-        [a runModal];
-        return;
-    }
-    // Live-reload the daemon's hotkey table so just-saved bindings take
-    // effect on the very next keystroke (no launchd respawn needed).
-    airgenome_hotkey_load_bindings();
-    [g_settings_panel orderOut:nil];
-}
-
-- (void)cancelClicked:(id)sender {
+// Done: settings auto-save on every edit, so this just hides the panel.
+- (void)doneClicked:(id)sender {
     (void)sender;
     [g_settings_panel orderOut:nil];
 }
@@ -1227,13 +1400,17 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
     g_hotkey_table = [[NSTableView alloc] initWithFrame:scroll.bounds];
     NSTableColumn *hkCol = [[NSTableColumn alloc] initWithIdentifier:@"hotkey"];
     hkCol.title = @"Hotkey"; hkCol.width = 120;
+    hkCol.editable = NO;
     [g_hotkey_table addTableColumn:hkCol];
     NSTableColumn *acCol = [[NSTableColumn alloc] initWithIdentifier:@"action"];
     acCol.title = @"Action"; acCol.width = 120;
+    acCol.editable = NO;
     [g_hotkey_table addTableColumn:acCol];
     NSTableColumn *tgCol = [[NSTableColumn alloc] initWithIdentifier:@"target"];
     tgCol.title = @"Target"; tgCol.width = 240;
+    tgCol.editable = NO;
     [g_hotkey_table addTableColumn:tgCol];
+    [g_hotkey_table setAllowsColumnSelection:NO];
     g_hotkey_table.delegate = g_settings_delegate;
     g_hotkey_table.dataSource = g_settings_delegate;
     [scroll setDocumentView:g_hotkey_table];
@@ -1267,6 +1444,8 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
     [g_hotkey_mod_popup addItemsWithTitles:
         airgenome_hotkey_modifier_choices()];
     [g_hotkey_mod_popup setAutoresizingMask:NSViewMinYMargin];
+    g_hotkey_mod_popup.target = g_settings_delegate;
+    g_hotkey_mod_popup.action = @selector(hkPopupChanged:);
     [root addSubview:g_hotkey_mod_popup];
     NSTextField *plusLabel = [NSTextField labelWithString:@"+"];
     [plusLabel setAlignment:NSTextAlignmentCenter];
@@ -1280,6 +1459,8 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
     [g_hotkey_key_popup addItemsWithTitles:
         airgenome_hotkey_key_choices()];
     [g_hotkey_key_popup setAutoresizingMask:NSViewMinYMargin];
+    g_hotkey_key_popup.target = g_settings_delegate;
+    g_hotkey_key_popup.action = @selector(hkPopupChanged:);
     [root addSubview:g_hotkey_key_popup];
 
     CGFloat acY = hkY - 8 - fieldH;
@@ -1296,6 +1477,8 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
     // (mirrors macOS native ⌘` but works app-agnostic). No target needed.
     [g_hotkey_action_popup addItemWithTitle:@"cycle-windows"];
     [g_hotkey_action_popup setAutoresizingMask:NSViewMinYMargin];
+    g_hotkey_action_popup.target = g_settings_delegate;
+    g_hotkey_action_popup.action = @selector(hkPopupChanged:);
     [root addSubview:g_hotkey_action_popup];
 
     CGFloat tgY = acY - 8 - fieldH;
@@ -1318,6 +1501,7 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
         @"/Applications/Safari.app  (omit for show-desktop)"];
     [g_hotkey_target_field setAutoresizingMask:
         NSViewWidthSizable | NSViewMinYMargin];
+    g_hotkey_target_field.delegate = g_settings_delegate;
     [root addSubview:g_hotkey_target_field];
 
     return root;
@@ -1341,10 +1525,18 @@ static NSView *airgenome_settings_build_snippet_tab(NSRect frame) {
     g_snippet_table = [[NSTableView alloc] initWithFrame:scroll.bounds];
     NSTableColumn *nCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
     nCol.title = @"Name"; nCol.width = 120;
+    nCol.editable = NO;
     [g_snippet_table addTableColumn:nCol];
     NSTableColumn *cCol = [[NSTableColumn alloc] initWithIdentifier:@"content"];
     cCol.title = @"Content (1-line preview)"; cCol.width = 340;
+    cCol.editable = NO;
     [g_snippet_table addTableColumn:cCol];
+    // Disable inline cell editing entirely — all edits go through the
+    // separate Name / Content fields below. Inline edit on a selected row
+    // bypasses our flushSnippetFields plumbing and would silently drop
+    // typed text (no setObjectValue: handler), or worse, race with the
+    // outer fields and clobber another row's content.
+    [g_snippet_table setAllowsColumnSelection:NO];
     g_snippet_table.delegate = g_settings_delegate;
     g_snippet_table.dataSource = g_settings_delegate;
     [scroll setDocumentView:g_snippet_table];
@@ -1373,6 +1565,7 @@ static NSView *airgenome_settings_build_snippet_tab(NSRect frame) {
         NSMakeRect(pad + 70, nameY, W - 2 * pad - 70, fieldH)];
     [g_snippet_name_field setAutoresizingMask:
         NSViewWidthSizable | NSViewMinYMargin];
+    g_snippet_name_field.delegate = g_settings_delegate;
     [root addSubview:g_snippet_name_field];
 
     CGFloat contentLabelY = nameY - 8 - labelH;
@@ -1403,6 +1596,7 @@ static NSView *airgenome_settings_build_snippet_tab(NSRect frame) {
     [g_snippet_content_view setHorizontallyResizable:NO];
     [g_snippet_content_view setAutoresizingMask:NSViewWidthSizable];
     [g_snippet_content_view.textContainer setWidthTracksTextView:YES];
+    g_snippet_content_view.delegate = g_settings_delegate;
     [contentScroll setDocumentView:g_snippet_content_view];
     [root addSubview:contentScroll];
 
@@ -1412,13 +1606,15 @@ static NSView *airgenome_settings_build_snippet_tab(NSRect frame) {
 void airgenome_settings_show_manager(void) {
     g_snippet_edit_list = airgenome_snippets_load_mutable();
     g_snippet_selected_row = -1;
+    g_snippet_active_dict = nil;
     g_hotkey_edit_list = airgenome_hotkey_load_mutable();
     g_hotkey_selected_row = -1;
+    g_hotkey_active_dict = nil;
 
     if (!g_settings_panel) {
         const CGFloat W = 620.0, H = 540.0;
         const CGFloat pad = 16.0, actionH = 28.0;
-        g_settings_panel = [[NSPanel alloc]
+        g_settings_panel = [[AirgenomeSettingsPanel alloc]
             initWithContentRect:NSMakeRect(0, 0, W, H)
                       styleMask:NSWindowStyleMaskTitled
                               | NSWindowStyleMaskClosable
@@ -1436,20 +1632,15 @@ void airgenome_settings_show_manager(void) {
         }
         NSView *cv = g_settings_panel.contentView;
 
-        NSButton *saveBtn = [NSButton buttonWithTitle:@"Save"
+        // Single Done button — every edit auto-persists, so there's nothing
+        // to "save" on close. The panel subclass handles cmd+W and Esc.
+        NSButton *doneBtn = [NSButton buttonWithTitle:@"Done"
                                                 target:g_settings_delegate
-                                                action:@selector(saveClicked:)];
-        [saveBtn setFrame:NSMakeRect(W - pad - 80, pad, 80, actionH)];
-        [saveBtn setKeyEquivalent:@"\r"];
-        [saveBtn setAutoresizingMask:NSViewMinXMargin | NSViewMaxYMargin];
-        [cv addSubview:saveBtn];
-        NSButton *cancelBtn = [NSButton buttonWithTitle:@"Cancel"
-                                                  target:g_settings_delegate
-                                                  action:@selector(cancelClicked:)];
-        [cancelBtn setFrame:NSMakeRect(W - pad - 170, pad, 80, actionH)];
-        [cancelBtn setKeyEquivalent:@"\033"];
-        [cancelBtn setAutoresizingMask:NSViewMinXMargin | NSViewMaxYMargin];
-        [cv addSubview:cancelBtn];
+                                                action:@selector(doneClicked:)];
+        [doneBtn setFrame:NSMakeRect(W - pad - 80, pad, 80, actionH)];
+        [doneBtn setKeyEquivalent:@"\r"];
+        [doneBtn setAutoresizingMask:NSViewMinXMargin | NSViewMaxYMargin];
+        [cv addSubview:doneBtn];
 
         CGFloat tabY = pad + actionH + 12;
         CGFloat tabH = H - pad - tabY;
@@ -1478,6 +1669,14 @@ void airgenome_settings_show_manager(void) {
     }
     [g_hotkey_table reloadData];
     [g_snippet_table reloadData];
+    // NSTableView preserves visible row selection across reloadData and across
+    // panel re-opens, but we just reset the tracked row to -1 and will clear
+    // the edit fields below. Deselect now so the three views stay in sync —
+    // otherwise the user can see "pass" highlighted, click the same row, get
+    // no selectionDidChange (selection didn't actually change), type into the
+    // empty fields, and Save will overwrite the wrong row (or none at all).
+    [g_hotkey_table deselectAll:nil];
+    [g_snippet_table deselectAll:nil];
     [g_hotkey_mod_popup selectItemAtIndex:0];
     [g_hotkey_key_popup selectItemAtIndex:0];
     [g_hotkey_action_popup selectItemAtIndex:0];
