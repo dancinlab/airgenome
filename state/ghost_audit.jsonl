@@ -9,3 +9,16 @@
 {"ts":"2026-05-04T05:12:56Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
 {"ts":"2026-05-04T05:12:57Z","requester":"operator","tier":"broadcast_high_value","backend":"mullvad+nym","exit_jurisdiction":"JP","rationale":"test_bhv","health":"up","no_content":true}
 {"ts":"2026-05-04T05:12:58Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T05:50:31Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T05:50:42Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T05:53:50Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T05:57:14Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T05:59:18Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T05:59:29Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"test_baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T06:00:59Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T06:13:16Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T06:13:27Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T06:13:32Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T06:15:21Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T06:50:11Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
+{"ts":"2026-05-04T06:52:41Z","requester":"selftest","tier":"research","backend":"mullvad","exit_jurisdiction":"JP","rationale":"selftest baseline","health":"up","no_content":true}
