@@ -1,0 +1,69 @@
+ghost_mk1_landed
+date: 2026-05-04
+glyph: 🕶️
+mode: 3-round bg subagents (closure quality sweep)
+parent: airgenome.modules.ghost
+roadmap: modules/ghost/.roadmap.ghost (mk1, provider perspective)
+handoff: docs/ghost_mk1_landed_2026_05_04.ai.md
+trio: 🗝️ orpheus → 🫥 wraith-wallet → 🕶️ ghost (network-layer hide for the recover/sign/route pipeline)
+policy: operator-only MVP / Mullvad sole VPN backend (locked) / customer-facing → Phase 2 / additive-only / no-cleartext-logging
+mk1_vpn_backend: mullvad-cli
+mk1_decision_doc: docs/ghost_backend_comparison_2026_05_04.ai.md (18 backends × 10 axes — Mullvad selected)
+cond_status:
+  cond.0  research doc landed                         MET
+  cond.1  skeleton landed (cpre/4 + 7 stub.hexa)      MET
+  cond.2  wrap_mullvad.hexa (mk1 sole VPN)            MET
+  cond.3  wrap_tor.hexa (system tor + circuit isol)   MET
+  cond.4  route.hexa + airgenome ghost CLI dispatch   MET
+  cond.5  policy.hexa (allowlist + G5 + G10)          MET
+  cond.6  kill-switch + wraith W4 cross-repo gate     MET
+  cond.7  audit.hexa (G2 metadata-only JSONL)         MET
+  cond.8  selftest.hexa (DNS/IPv6/WebRTC/SNI)         MET
+  cond.9  capability flag pf opt-in                    DESIGN_DONE_PENDING_OPERATOR_ACTIVATION
+  cond.10 wrap_nym.hexa Phase 2 (subprocess)          MET
+  cond.11 orpheus + wraith link/ghost.hexa adapters   MET
+contracts_honored: G1 G2 G3 G4 G5 G6 G7 G8 G9 G10 (all 10 cpre/contracts.ai.md)
+cross_repo:
+  wraith-wallet:
+    - modules/link/ghost.hexa (270 lines, W1 single-edit-point)
+    - cli/wraith.hexa::cmd_tx_broadcast (W4 gate after auth check)
+    - .roadmap.wraith-wallet (wraith.cond.11 met)
+    - selftest sentinel: __WRAITH_LINK_GHOST__ PASS
+  orpheus:
+    - modules/link/ghost.hexa (268 lines, C1+W1 mirror)
+    - 3 caller integrations: puzzle_atlas/{fetch,verify}.hexa + wallet_search/dormant_atlas.hexa
+    - .roadmap.orpheus (orpheus.link_ghost_landed)
+    - escape hatch: ORPHEUS_GHOST_GATE=0
+ledger_streams:
+  - state/ghost_audit.jsonl                  (route decisions)
+  - state/ghost_audit_downgrades.jsonl       (G10 fall-back events)
+  - state/ghost_audit_capability.jsonl       (capability flag toggles)
+  - state/ghost_capability_pf_anchor.conf    (pf anchor — operator activates)
+  - state/leak_reports/<ts>.jsonl             (DNS/IPv6/WebRTC/SNI verdicts)
+operator_activation_steps:
+  1. brew install --cask mullvadvpn (Mullvad CLI 2026.2)
+  2. Cryptvice email/Signal voucher → mullvad.net 16-digit account redeem
+  3. mullvad account login <16-digit>
+  4. airgenome ghost up (tier=research baseline)
+  5. (optional) brew install tor + brew services start tor + ExcludeExitNodes {kr} in torrc
+  6. (optional Phase 2) NymVPN client install + nymvpn-x daemon-start
+  7. (optional cond.9) airgenome ghost capability set kill_switch on + airgenome ghost capability engage → run printed sudo pfctl recipe
+  8. bash scripts/ghost_live_verify.sh → confirm 12-cond live PASS
+landed_commits:
+  - cf19fdcf  feat(ghost): cond.3+5+7+8 met (parallel bg agents) + route.hexa integration
+  - c1579b18  chore(state): WIP sync — ghost capability framework + audit telemetry
+  - 7af1eb38  feat(ghost): cond.6+9+10+11 met (round-2 bg agents — airgenome layer + cross-repo trio)
+  - 5ff9571a  docs+chore(ghost): mk1 closure deliverables — handoff doc + live verify + housekeeping
+followup_notes_not_new_conds:
+  - hexa-stage1 import-as-alias void: orpheus blk.3 + ghost cond.4 use same subprocess workaround → hexa-stage2 fix would benefit trio
+  - stale ~/.hx/bin/airgenome shim (out-of-repo) dispatches to a run.hexa with explicit main() — separate cleanup, not airgenome ghost issue
+  - trio roadmap citation loop closed (airgenome/wraith/orpheus) — one-time consistency sweep optional
+  - ~30 pre-existing personal paths in modules/filters/data + older rubric docs (heredoc/fixture content) — separate housekeeping pass
+  - mk2 backend candidates (Proton secure-core / IVPN dynamic-multihop) — design researched in docs/ghost_backend_comparison, NOT scaffolded
+  - NymVPN binary name + daemon port + mode flags speculative (mk1 conservative defaults + override env); mk2 should pin known-good NymVPN client version
+  - cond.9 host-mode live PASS verification = operator-step (sudo pfctl), inherently outside .hexa control
+disk_writes:
+  - state/markers/ghost_mk1_landed.marker (NEW, this file)
+disk_modifications: 0 (sources frozen at this closure point)
+destructive_operations: 0
+migration_operations: 0 (additive-only)
