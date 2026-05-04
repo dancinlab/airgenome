@@ -978,6 +978,10 @@ cmd_ghost() {
         available)
             "$hexa_bin" run "$wrap_mv" available
             ;;
+        live-verify|verify)
+            local lv="$ag_root/modules/ghost/live_verify.hexa"
+            "$hexa_bin" run "$lv" run-all
+            ;;
         capability)
             # cond.9 — operator opt-in kernel kill-switch (macOS pf).
             # 본 진입점은 hexa-side 만 호출. sudo 명령은 stdout 출력 — 운영자가 직접 검토 + 실행.
@@ -1035,6 +1039,8 @@ usage: airgenome ghost <subcommand>
   tunnel-alive    exit code gate (0 = alive, 1 = down) — wraith W4 cross-repo gate
   selftest        wrap_mullvad + route smoke test
   available       does the system have a `mullvad` binary?
+  live-verify     호스트-모드 12-cond live 검증 (Mullvad/Tor/Nym 설치 후)
+                    → modules/ghost/live_verify.hexa run-all
   capability ...  cond.9 kernel kill-switch (operator opt-in pf rules — `capability help`)
 
 trio: 🗝️ orpheus → 🫥 wraith-wallet → 🕶️ ghost

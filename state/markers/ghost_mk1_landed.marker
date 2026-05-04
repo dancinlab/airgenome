@@ -48,7 +48,7 @@ operator_activation_steps:
   5. (optional) brew install tor + brew services start tor + ExcludeExitNodes {kr} in torrc
   6. (optional Phase 2) NymVPN client install + nymvpn-x daemon-start
   7. (optional cond.9) airgenome ghost capability set kill_switch on + airgenome ghost capability engage → run printed sudo pfctl recipe
-  8. bash scripts/ghost_live_verify.sh → confirm 12-cond live PASS
+  8. airgenome ghost live-verify → confirm 12-cond live PASS (entry: modules/ghost/live_verify.hexa)
 landed_commits:
   - cf19fdcf  feat(ghost): cond.3+5+7+8 met (parallel bg agents) + route.hexa integration
   - c1579b18  chore(state): WIP sync — ghost capability framework + audit telemetry

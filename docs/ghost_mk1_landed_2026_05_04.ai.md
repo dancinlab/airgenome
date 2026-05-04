@@ -238,7 +238,7 @@ A compromise of any single layer must not collapse the trio. The cross-repo `lin
 1. **Proton VPN secure-core** — protocol-level G8 jurisdiction-pin (Mullvad enforces via relay-set + multihop config; Proton bakes secure-core into the WireGuard handshake). **mk2 cond.12 candidate** — adds `wrap_proton.hexa` as a second G1 chokepoint.
 2. **IVPN dynamic-multihop** — session-time chain rotation (Mullvad multihop is config-time fixed). **mk2 cond.13 candidate** — adds `wrap_ivpn.hexa` + tier-level rotation in `policy.hexa`.
 3. **NymVPN client version pinning** — mk1's PROBE list (`nym-vpn-cli` / `nymvpn-cli` / `nymvpn-x` / `nym-vpnd`), daemon port (`8080`, some `53181`), and mode flags (`--enable-poisson-process` / `--use-two-hop-mixnet`) are speculative. Pin a verified version in mk2.
-4. **cond.6 host-mode live PASS** — gate wire + dry-run + REFUSED branches landed; live PASS on a host with mullvad CLI + wraith broadcast firing is an operator step. Helper `scripts/ghost_live_verify.sh` is a separate task.
+4. **cond.6 host-mode live PASS** — gate wire + dry-run + REFUSED branches landed; live PASS on a host with mullvad CLI + wraith broadcast firing is an operator step. Helper: `airgenome ghost live-verify` (entry to `modules/ghost/live_verify.hexa`).
 5. **cond.9 operator pf activation** — `pfctl -a ghost-killswitch -f <path>` runs once and persists if `/etc/pf.anchors/ghost-killswitch` is wired; persistence documented, not landed.
 6. **WebRTC + SNI leak probes** — `GUIDANCE`-only in mk1; full PASS / FAIL needs application-layer cooperation (browser + ECH server). Phase 2.
 7. **`customer` tier** — out of mk1 scope per KR ISMS / PIPA / VASP review hard line in `cpre/scope.ai.md`. Revisit at mk2.
