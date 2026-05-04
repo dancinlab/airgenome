@@ -36,7 +36,12 @@ use "../../core/core"
 
 let GHOST_AUDIT_PATH = "state/ghost_audit.jsonl"
 let GHOST_DOWNGRADE_PATH = "state/ghost_audit_downgrades.jsonl"
+let GHOST_CAPABILITY_PATH = "state/ghost_audit_capability.jsonl"
 let SELFTEST_SENTINEL = "__GHOST_AUDIT__"
+
+// capability flag whitelist (cond.9). 새 capability 추가 시 여기에만 추가.
+let CAPABILITY_NAME_WHITELIST = "kill_switch"
+let CAPABILITY_VALUE_WHITELIST = "on off"
 
 // G3-compliant health 라벨 화이트리스트.
 let HEALTH_WHITELIST = "up connecting down degraded"
@@ -45,7 +50,7 @@ let REQUESTER_WHITELIST = "operator orpheus wraith selftest"
 // tier 화이트리스트 — cpre/contracts G8 정의 + customer (Phase 2 placeholder).
 let TIER_WHITELIST = "research sweep broadcast_high_value customer"
 // backend 화이트리스트 — wrap_*.hexa 의 단일 진입점에 1:1.
-let BACKEND_WHITELIST = "mullvad tor nym mullvad+tor mullvad-fallback"
+let BACKEND_WHITELIST = "mullvad tor nym mullvad+tor mullvad+nym mullvad-fallback"
 
 // ---------------------------------------------------------------------------
 // 내부 — 화이트리스트 멤버십 검사 (공백-분리 토큰 string 안에 있는지).
@@ -245,6 +250,36 @@ fn audit_emit_downgrade(from_tier: str, to_tier: str, reason: str) -> str {
 }
 
 // ---------------------------------------------------------------------------
+// audit_emit_capability — cond.9 capability flag 변경 시 호출. 별도 stream
+// (state/ghost_audit_capability.jsonl) 으로 기록되어 일반 route 결정 stream
+// 과 섞이지 않음.
+//
+// 스키마: {ts, kind:"capability", name, value, no_content:true}
+// 검증:
+//   - name / value 누락 reject
+//   - name ∈ {kill_switch}
+//   - value ∈ {on, off}
+//   - G2 — name/value 모두 화이트리스트 라벨 → URL/IP 패턴 무관, 추가 검증 불필요
+//
+// 반환: "ok" / "rejected: missing field <name>" / "rejected: invalid <field>"
+// ---------------------------------------------------------------------------
+
+fn audit_emit_capability(name: str, value: str) -> str {
+    if name == "" { return "rejected: missing field name" }
+    if value == "" { return "rejected: missing field value" }
+
+    if !_in_whitelist(name, CAPABILITY_NAME_WHITELIST) { return "rejected: invalid name" }
+    if !_in_whitelist(value, CAPABILITY_VALUE_WHITELIST) { return "rejected: invalid value" }
+
+    let ts = _now_utc()
+    let line = "{\"ts\":\"" + ts + "\",\"kind\":\"capability\",\"name\":\"" + name + "\",\"value\":\"" + value + "\",\"no_content\":true}"
+
+    _ensure_state_dir(GHOST_CAPABILITY_PATH)
+    let _w = exec("printf '%s\\n' '" + line + "' >> '" + GHOST_CAPABILITY_PATH + "'").trim()
+    return "ok"
+}
+
+// ---------------------------------------------------------------------------
 // audit_tail — debug 용. state/ghost_audit.jsonl 의 마지막 n 줄.
 // 파일 부재 시 빈 문자열. 출력은 caller 가 신중히 다루어야 함 (G2 보장은
 // emit 단에서 끝났으므로 tail 자체는 metadata-only, 그래도 분석은 직접 검토).
@@ -378,6 +413,14 @@ fn main() -> void {
             println("emit-downgrade: usage <from_tier> <to_tier> <reason>")
             return
         }
+        if sub == "emit-capability" {
+            if len(a) >= 5 {
+                println(audit_emit_capability(a[3], a[4]))
+                return
+            }
+            println("emit-capability: usage <name> <value>")
+            return
+        }
         if sub == "tail" {
             let mut n = 10
             if len(a) >= 4 { n = to_int(a[3]) }
@@ -401,6 +444,7 @@ fn main() -> void {
     println("  self-test")
     println("  emit <requester> <tier> <backend> <jurisdiction> <rationale> <health>")
     println("  emit-downgrade <from_tier> <to_tier> <reason>")
+    println("  emit-capability <name> <value>     # name=kill_switch, value=on|off")
     println("  tail [n]                       # default n=10")
     println("  assert-clean <field> <value>   # prints 'clean' | 'violation'")
 }

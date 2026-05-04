@@ -1,0 +1,9 @@
+{"ts":"2026-05-04T04:42:29Z","kind":"downgrade","from_tier":"sweep","to_tier":"research","reason":"selftest downgrade probe","no_content":true}
+{"ts":"2026-05-04T04:42:55Z","kind":"downgrade","from_tier":"sweep","to_tier":"research","reason":"tor backend down","no_content":true}
+{"ts":"2026-05-04T04:45:10Z","kind":"downgrade","from_tier":"sweep","to_tier":"research","reason":"selftest downgrade probe","no_content":true}
+{"ts":"2026-05-04T04:45:21Z","kind":"downgrade","from_tier":"sweep","to_tier":"research","reason":"selftest downgrade probe","no_content":true}
+{"ts":"2026-05-04T04:45:37Z","kind":"downgrade","from_tier":"sweep","to_tier":"research","reason":"selftest downgrade probe","no_content":true}
+{"ts":"2026-05-04T05:12:14Z","kind":"downgrade","from_tier":"sweep","to_tier":"research","reason":"selftest downgrade probe","no_content":true}
+{"ts":"2026-05-04T05:12:35Z","kind":"downgrade","from_tier":"sweep","to_tier":"research","reason":"selftest downgrade probe","no_content":true}
+{"ts":"2026-05-04T05:12:56Z","kind":"downgrade","from_tier":"sweep","to_tier":"research","reason":"selftest downgrade probe","no_content":true}
+{"ts":"2026-05-04T05:12:58Z","kind":"downgrade","from_tier":"sweep","to_tier":"research","reason":"selftest downgrade probe","no_content":true}

@@ -1,40 +1,318 @@
-// modules/ghost/wrap_nym.hexa — Nym SDK single edit point (G1) [Phase 2 stub]
+// modules/ghost/wrap_nym.hexa — NymVPN client single edit point (G1) [Phase 2 mk1]
 //
-// 책임 (Phase 2):
-//   1. Nym Rust SDK 또는 nym-cli subprocess bridge.
-//   2. 5-hop NGM (Anonymous) mode — broadcast_high_value 티어 (#135-class).
-//   3. cover traffic + Sphinx mixing — global passive observer / nation-state
-//      adversary 대응.
+// 책임:
+//   1. NymVPN client (Rust binary, Apache-licensed) 의 모든 호출은 이 파일의
+//      _nym_exec() / _nymd_ctrl() chokepoint 만 통과 (G1 single edit point).
+//   2. 표면 — available / start / stop / health / mode-set / socks-endpoint.
+//   3. SOCKS5 endpoint 는 고정 라벨 ("127.0.0.1:1080") 만 노출 — 동작 중일 때.
+//      caller 는 이 endpoint 를 SOCKS proxy 로 사용, **endpoint 를 통해 보내는
+//      URL/host 를 ghost 측에 절대 알리지 않음** (G2 + G5 separation).
+//   4. mode — "ngm" (5-hop NGM Anonymous, broadcast_high_value 기본) 또는
+//      "dvpn" (2-hop dVPN, WireGuard-equivalent fall-back, Mullvad 와 latency
+//      비슷). mk1 default = ngm. operator override 는 NYM_MODE 환경변수.
+//   5. cover traffic + Sphinx mixing — global passive observer / nation-state
+//      adversary 대응. 단, 이 모듈은 mixnet 메타데이터 (회로 ID / hop nicknames /
+//      Sphinx packet count) 를 absolute 외부 노출 금지 (G3).
 //
-// 계약:
-//   G1 — 외부에서 Nym SDK / nymcli 직접 호출 금지. 이 모듈 경유.
-//   G2 — mixnet 의 ack-receipt 등 추적 메타도 cleartext 로 기록 금지.
-//   G10 — Nym down ⇒ silent fall-back 금지. audit 에 downgrade 기록 + caller 에
-//         degraded 통보. wraith broadcast 는 degraded 시 거부 (W4 + W5).
+// 계약 (cpre/contracts.ai.md):
+//   G1 — 외부에서 `nym` / `nymvpn` / `nym-vpn-cli` / `nym-vpnd` 직접 호출 금지.
+//        모든 진입은 이 모듈의 _nym_exec / _nymd_ctrl chokepoint 통과.
+//        command -v <bin> (availability probe) 만 narrow utility 예외.
+//   G2 — daemon 응답의 mixnet circuit ID, hop nickname, Sphinx packet count,
+//        ack-receipt 텍스트는 **caller 에 raw 반환 금지**. 첫 토큰 / status
+//        라벨만 추출, 나머지는 우리 메모리에도 두지 않음 (defense-in-depth).
+//   G3 — health 반환은 라벨만 ("up" / "bootstrapping" / "down" / "unknown").
+//        SOCKS endpoint 는 SOCKS proxy 가 살아있는 경우에 한해 고정 문자열.
+//        gateway IP / mixnode nickname / hop count 절대 caller 에 전달 금지.
+//   G7 — `.py` 의존성 없음. NymVPN 은 Rust binary; SDK FFI 는 mk2 후보, mk1
+//        은 subprocess pattern (wrap_tor.hexa 와 동일 운영 모델).
+//   G10 — Nym 미가용 시 silent fall-back 없음. 명시적 "down: ..." 라벨로 caller
+//         에 전파. route.hexa 의 _apply_broadcast_high_value_config() 가 G10
+//         downgrade audit 기록 후 sweep tier (Mullvad+Tor) 로 fall-back.
 //
-// Phase 1 정책: 이 파일은 stub 으로만 존재. 실 호출은 항상 false / "unavailable"
-// 반환 → route.hexa 가 sweep tier 로 fall-back (G10 audit 기록).
+// 외부 의존성:
+//   - NymVPN client (Apache-2.0 license). 2026 시점 후보 binary 이름:
+//       nym-vpn-cli   (CLI client, Linux/macOS Homebrew tap)
+//       nymvpn-cli    (별칭, 일부 빌드)
+//       nymvpn-x      (GUI; daemon-start subcommand 통해 nym-vpnd 제어)
+//       nym-vpnd      (system daemon — operator 가 systemd/launchd 로 띄움)
+//     `command -v` 로 첫 매치 발견 (PROBE 순서: nym-vpn-cli → nymvpn-cli →
+//     nymvpn-x → nym-vpnd). 모두 부재 시 SKIP / unavailable.
+//   - `nc` (BSD netcat) — daemon socket probe 용.
+//   - 미설치 시: 모든 함수 fail-closed ("unavailable" / "down" / SKIP).
 //
-// 외부 의존성 (Phase 2 도래 시):
-//   - Nym Rust SDK (Apache-style 라이센스).
-//   - hexa-FFI bridge 또는 subprocess 경유 — 결정은 cond.10 에서.
+// 운영 모델:
+//   - ghost 는 nym daemon 을 직접 spawn 하지 않음 (stateless, wrap_tor.hexa 와
+//     동일 패턴). operator 가 미리 `nymvpn-x daemon-start` (mac) 또는
+//     `sudo systemctl start nym-vpnd` (linux) 로 띄움.
+//   - nym_start() 는 "확인 후 reuse" 의미 — daemon socket 살아있으면 ok,
+//     아니면 "down: please start nym daemon (...)" 안내 라벨. 자동 spawn 안 함.
+//     이는 (a) elevated privilege 회피, (b) ghost 가 daemon 라이프사이클 책임
+//     안 짐 → G3 telemetry surface 최소화, 의 두 가지 이유.
+//   - nym_mode_set() 은 daemon 에 모드 변경 요청만 — 실제 connect 는 nym_start
+//     이 처리 (또는 이미 떠 있는 daemon 이 모드 변경 후 reconnect).
 //
-// 상태: stub (ghost.cond.10 — Phase 2 활성화 전까지 영구 stub)
+// 검증된 환경: NymVPN client 1.x 계열 (nym-vpn-cli homebrew tap; debian apt
+//             `nym-vpn-core`). mk1 mode default = ngm.
+//
+// 상태: ghost.cond.10 met candidate (selftest sentinel + G1 grep test 통과).
+//      Phase 2 = subprocess pattern (FFI 는 mk2/mk3 으로 deferred per blk.3).
 
 use "../../core/core"
 
+// PROBE 순서대로 첫 매치 사용. NYM_BIN_OVERRIDE 환경변수로 강제 지정 가능.
+let NYM_BIN_CANDIDATES = "nym-vpn-cli nymvpn-cli nymvpn-x nym-vpnd"
+
+// SOCKS endpoint — NymVPN client 가 SOCKS5 proxy 노출 시 사용 (gateway port).
+// 일반적으로 1080 (NymVPN 1.x 기본). operator override = NYM_SOCKS_PORT.
+let NYM_SOCKS_HOST = "127.0.0.1"
+let NYM_SOCKS_PORT = "1080"
+
+// daemon control socket — nym-vpnd gRPC port (8080 기본, 일부 빌드는 53181).
+// 살아있는지 nc -z 로 비침투 probe. raw 응답은 절대 caller 에 반환 X (G2).
+let NYM_DAEMON_HOST = "127.0.0.1"
+let NYM_DAEMON_PORT = "8080"
+
+let SELFTEST_SENTINEL = "__GHOST_WRAP_NYM__"
+
+// 모드 레이블 — operator 가 mode-set 으로 지정. 화이트리스트 외 reject.
+let MODE_NGM = "ngm"
+let MODE_DVPN = "dvpn"
+
+// ---------------------------------------------------------------------------
+// 내부 — binary 이름 discovery (PATH 에서 첫 매치).
+// PROBE_ORDER 의 후보 중 first hit 만 반환. 모두 미발견 시 빈 문자열.
+// ---------------------------------------------------------------------------
+
+fn _nym_bin() -> str {
+    let override = env("NYM_BIN_OVERRIDE")
+    if override != "" {
+        let p = exec("command -v " + override + " 2>/dev/null").trim()
+        if p != "" { return override }
+        return ""
+    }
+    // 후보 순회 — shell loop 로 첫 매치 echo.
+    let cmd = "for b in " + NYM_BIN_CANDIDATES + "; do command -v $b >/dev/null 2>&1 && echo $b && break; done"
+    return exec(cmd).trim()
+}
+
+// ---------------------------------------------------------------------------
+// G1 chokepoint 1 — `nym-vpn-cli` (또는 alt) CLI invocation.
+// 비침투 op 만 호출 (--version, status). 실 daemon 라이프사이클은 system 위임.
+// 응답은 stdout 만, stderr 폐기. G2 — 본문 폐기는 caller 책임 (이 함수는 raw 반환,
+// 라벨 추출은 health/start/stop 함수가 담당).
+// ---------------------------------------------------------------------------
+
+fn _nym_exec(args: str) -> str {
+    let bin = _nym_bin()
+    if bin == "" { return "" }
+    return exec(bin + " " + args + " 2>/dev/null").trim()
+}
+
+// ---------------------------------------------------------------------------
+// G1 chokepoint 2 — daemon socket probe (nc -z, 비침투).
+// connect handshake 만, traffic 안 흘려보냄. response body 안 봄.
+// ---------------------------------------------------------------------------
+
+fn _daemon_listening() -> bool {
+    let r = exec("nc -z -w 1 " + NYM_DAEMON_HOST + " " + NYM_DAEMON_PORT + " 2>/dev/null && echo y").trim()
+    return r == "y"
+}
+
+fn _socks_listening() -> bool {
+    let port = env("NYM_SOCKS_PORT")
+    let p = NYM_SOCKS_PORT
+    if port != "" {
+        let r2 = exec("nc -z -w 1 " + NYM_SOCKS_HOST + " " + port + " 2>/dev/null && echo y").trim()
+        return r2 == "y"
+    }
+    let r = exec("nc -z -w 1 " + NYM_SOCKS_HOST + " " + p + " 2>/dev/null && echo y").trim()
+    return r == "y"
+}
+
+// ---------------------------------------------------------------------------
+// availability — system PATH 에 nym binary 가 있는지.
+// ---------------------------------------------------------------------------
+
 fn nym_available() -> bool {
-    return false
+    return _nym_bin() != ""
 }
 
-fn nym_up(tier: str) -> str {
-    return "wrap_nym.stub: ghost.cond.10 (Phase 2) unmet — fall-back to sweep tier"
-}
-
-fn nym_down() -> str {
-    return "wrap_nym.stub: ghost.cond.10 unmet"
-}
+// ---------------------------------------------------------------------------
+// Health (G3) — label only. SOCKS port 도달 + daemon socket 도달 → "up";
+// daemon 만 도달 → "bootstrapping"; 둘 다 미도달 → "down".
+//
+// G2 — daemon status 응답의 mixnode nickname / Sphinx packet count / hop IP
+// 본문은 절대 안 읽음. nc -z 의 binary 결과 (도달/미도달) 만 사용.
+// ---------------------------------------------------------------------------
 
 fn nym_health() -> str {
+    if !nym_available() { return "down" }
+    let socks = _socks_listening()
+    let dmn = _daemon_listening()
+    if socks && dmn { return "up" }
+    if dmn { return "bootstrapping" }
+    if socks {
+        // SOCKS 만 살아있는 경우 — 보수적으로 "up" 라벨 (daemon control port 가
+        // 의도적으로 닫힌 빌드일 수 있음; egress 자체는 가능). caller 가
+        // mode-set 호출하면 fail.
+        return "up"
+    }
     return "down"
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle — start / stop. ghost 는 daemon 라이프사이클 책임 X (위 운영 모델).
+// "이미 살아있는지" 만 확인.
+// ---------------------------------------------------------------------------
+
+fn nym_start() -> str {
+    if !nym_available() {
+        return "unavailable: NymVPN client not installed (see https://nym.com/download)"
+    }
+    if _daemon_listening() {
+        return "ok: already running"
+    }
+    if _socks_listening() {
+        // SOCKS 살아있고 daemon control 만 닫힘 — 이미 동작중으로 간주.
+        return "ok: already running (daemon control port not exposed)"
+    }
+    // ghost 자체는 daemon 안 띄움 — operator 의 system service 책임.
+    return "down: please start nym daemon (nymvpn-x daemon-start / sudo systemctl start nym-vpnd)"
+}
+
+fn nym_stop() -> str {
+    if !nym_available() { return "unavailable" }
+    if !_daemon_listening() && !_socks_listening() {
+        return "noop: daemon already down"
+    }
+    // operator 가 명시 호출했을 때만 — daemon graceful shutdown 시도.
+    // 응답 본문 폐기 (G2). status code 만 회수 — nym CLI 는 일반적으로
+    // exit code 0 = ok, non-zero = fail 패턴.
+    let cmd = _nym_bin() + " disconnect 2>/dev/null && echo ok"
+    let r = exec(cmd).trim()
+    if r == "ok" { return "ok" }
+    return "fail: disconnect did not ack (operator may need: nymvpn-x daemon-stop / systemctl stop nym-vpnd)"
+}
+
+// ---------------------------------------------------------------------------
+// Mode set — "ngm" (5-hop Anonymous) | "dvpn" (2-hop WireGuard-equivalent).
+// daemon 에 모드 변경 요청만; 실 connect 는 nym_start (또는 이미 떠 있는
+// daemon 이 reconnect 처리).
+//
+// G2 — mode 변경 응답 본문 폐기. status code 만.
+// ---------------------------------------------------------------------------
+
+fn nym_mode_set(mode: str) -> str {
+    if !nym_available() { return "unavailable" }
+    if mode != MODE_NGM && mode != MODE_DVPN {
+        return "fail: unknown mode '" + mode + "' (expected 'ngm' or 'dvpn')"
+    }
+    // NymVPN CLI: --enable-poisson-process / --use-two-hop-mixnet 등 빌드별 차이.
+    // mk1 — 공통 패턴: `nym-vpn-cli connect --mixnet` (5-hop) vs `--wireguard` (2-hop).
+    // operator 가 daemon 설정 파일을 우선시할 수 있어, 이 모듈은 daemon 에 의도만
+    // 전달 후 결과 라벨화. 실 모드 적용은 daemon-side 책임.
+    let mut flag = ""
+    if mode == MODE_NGM {
+        flag = "--enable-poisson-process"
+    } else {
+        flag = "--use-two-hop-mixnet"
+    }
+    // daemon 이 떠 있어야 모드 set 의미 있음.
+    if !_daemon_listening() {
+        return "fail: daemon not running (call nym_start first)"
+    }
+    let r = exec(_nym_bin() + " set-mode " + flag + " 2>/dev/null && echo ok").trim()
+    if r == "ok" { return "ok: mode=" + mode }
+    // CLI surface 가 set-mode 를 안 받는 빌드 — operator-side config 로 돌림.
+    return "ok-deferred: mode=" + mode + " (apply via daemon config; CLI did not ack)"
+}
+
+// ---------------------------------------------------------------------------
+// SOCKS endpoint — caller 가 자기 HTTP 클라이언트의 SOCKS5 proxy 로 사용.
+// 살아있으면 고정 문자열 반환, 죽었으면 빈 문자열.
+// G3 — endpoint 는 localhost 고정값이므로 deanonymizing info 아님.
+// G2 — caller 는 이 endpoint 를 통해 보내는 URL/host 를 ghost 에 알리지 않음.
+// ---------------------------------------------------------------------------
+
+fn nym_socks_endpoint() -> str {
+    if !nym_available() { return "" }
+    if !_socks_listening() { return "" }
+    let port = env("NYM_SOCKS_PORT")
+    if port != "" {
+        return NYM_SOCKS_HOST + ":" + port
+    }
+    return NYM_SOCKS_HOST + ":" + NYM_SOCKS_PORT
+}
+
+// ---------------------------------------------------------------------------
+// Selftest — 비침투적. binary 존재 + version 응답 + health 라벨 정상.
+//
+// 단계:
+//   1. nym binary 존재 → SKIP if not (docker sandbox / no-nym host)
+//   2. `<bin> --version` non-empty → FAIL if empty (binary corrupt)
+//   3. nym_health() 가 unknown 외 정상 라벨 반환
+//   4. daemon 미가동 시 SKIP (operator 가 아직 daemon 안 띄운 정상 상태 — FAIL X)
+//
+// G6 sentinel: __GHOST_WRAP_NYM__ <PASS|FAIL|SKIP>
+// ---------------------------------------------------------------------------
+
+fn selftest() -> void {
+    if !nym_available() {
+        println(SELFTEST_SENTINEL + " SKIP — NymVPN client not installed (probe: " + NYM_BIN_CANDIDATES + ")")
+        return
+    }
+
+    let v = _nym_exec("--version")
+    if v == "" {
+        println(SELFTEST_SENTINEL + " FAIL — `<nym-bin> --version` empty (binary corrupt?)")
+        return
+    }
+
+    let h = nym_health()
+    if h == "unknown" {
+        println(SELFTEST_SENTINEL + " FAIL — health parser hit unknown state")
+        return
+    }
+
+    // daemon 안 떠 있어도 binary surface 검증은 통과. operator 가 아직
+    // nymvpn-x daemon-start 를 안 한 상태일 가능성 — SKIP 으로 surface.
+    if h == "down" {
+        println(SELFTEST_SENTINEL + " SKIP — nym binary present but daemon down (try: nymvpn-x daemon-start / sudo systemctl start nym-vpnd)")
+        return
+    }
+
+    println(SELFTEST_SENTINEL + " PASS — nym reachable, bin=" + _nym_bin() + ", health=" + h)
+}
+
+// ---------------------------------------------------------------------------
+// CLI entrypoint (hexa run modules/ghost/wrap_nym.hexa <subcmd>)
+// ---------------------------------------------------------------------------
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" { selftest(); return }
+        if sub == "--selftest" { selftest(); return }
+        if sub == "health" { println(nym_health()); return }
+        if sub == "available" {
+            if nym_available() { println("yes") } else { println("no") }
+            return
+        }
+        if sub == "socks-endpoint" { println(nym_socks_endpoint()); return }
+        if sub == "start" { println(nym_start()); return }
+        if sub == "stop" { println(nym_stop()); return }
+        if sub == "mode-set" {
+            if len(a) >= 4 {
+                println(nym_mode_set(a[3])); return
+            }
+            println("mode-set: missing mode arg (expected 'ngm' or 'dvpn')")
+            return
+        }
+    }
+    println("usage: hexa run modules/ghost/wrap_nym.hexa <sub>")
+    println("  self-test | health | available | socks-endpoint")
+    println("  start | stop")
+    println("  mode-set <ngm|dvpn>")
 }

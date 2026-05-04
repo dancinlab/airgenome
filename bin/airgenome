@@ -951,6 +951,7 @@ cmd_ghost() {
     fi
     local route="$ag_root/modules/ghost/route.hexa"
     local wrap_mv="$ag_root/modules/ghost/wrap_mullvad.hexa"
+    local policy="$ag_root/modules/ghost/policy.hexa"
     case "$sub" in
         up)
             local tier="${1:-research}"
@@ -977,6 +978,49 @@ cmd_ghost() {
         available)
             "$hexa_bin" run "$wrap_mv" available
             ;;
+        capability)
+            # cond.9 — operator opt-in kernel kill-switch (macOS pf).
+            # 본 진입점은 hexa-side 만 호출. sudo 명령은 stdout 출력 — 운영자가 직접 검토 + 실행.
+            local cap_sub="${1:-status}"
+            shift || true
+            case "$cap_sub" in
+                status)
+                    "$hexa_bin" run "$policy" kernel-kill-switch-status
+                    ;;
+                set)
+                    # usage: airgenome ghost capability set kill_switch on|off
+                    "$hexa_bin" run "$policy" capability-set "$@"
+                    ;;
+                engage)
+                    "$hexa_bin" run "$route" capability-engage
+                    ;;
+                disengage)
+                    "$hexa_bin" run "$route" capability-disengage
+                    ;;
+                help|-h|--help)
+                    cat >&2 <<'EOF'
+🕶️ airgenome ghost capability — cond.9 kernel kill-switch (operator opt-in)
+
+usage: airgenome ghost capability <subcommand>
+
+  status                    show flag state: enabled | disabled (default disabled)
+  set kill_switch on|off    toggle the operator opt-in flag (writes ~/.airgenome/ghost_capability)
+  engage                    print sudo pfctl commands to load the ghost-killswitch anchor
+                              (no-op unless `set kill_switch on` first; never runs sudo itself)
+  disengage                 print sudo pfctl commands to flush the anchor
+
+posture: this CLI never invokes sudo. It only emits the commands. Operator
+reviews the rendered anchor (state/ghost_capability_pf_anchor.conf) and runs
+pfctl manually. Without the flag, ghost runs in userland-only cooperative gate
+mode (cond.4) — kernel kill-switch is strictly opt-in.
+EOF
+                    ;;
+                *)
+                    echo "usage: airgenome ghost capability {status|set kill_switch on|off|engage|disengage}" >&2
+                    return 2
+                    ;;
+            esac
+            ;;
         help|-h|--help|*)
             cat >&2 <<'EOF'
 🕶️ airgenome ghost — network-layer anonymity (Mullvad mk1)
@@ -991,6 +1035,7 @@ usage: airgenome ghost <subcommand>
   tunnel-alive    exit code gate (0 = alive, 1 = down) — wraith W4 cross-repo gate
   selftest        wrap_mullvad + route smoke test
   available       does the system have a `mullvad` binary?
+  capability ...  cond.9 kernel kill-switch (operator opt-in pf rules — `capability help`)
 
 trio: 🗝️ orpheus → 🫥 wraith-wallet → 🕶️ ghost
 docs: modules/ghost/cpre/*.ai.md  ·  docs/ghost_*_2026_05_04.ai.md
