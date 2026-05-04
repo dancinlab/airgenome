@@ -1498,9 +1498,10 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
     // Single action, unified per user mandate 2026-05-04 "activate-app
     // 하나로 통일 / 토글기능도 자동으로 같이 갖는거야": activate-app's
     // 4-state machine (launch / activate / unminimize-all / hide)
-    // covers everything the old toggle-app did. show-desktop and
-    // cycle-windows are OS-native base features (fn+F11, ⌘`) — not
-    // re-exposed here.
+    // covers everything the old toggle-app did. show-desktop is a
+    // hardcoded built-in (⌃D, see airgenome_hotkey.m
+    // airgenome_hotkey_handle_default_keydown) — not user-bindable.
+    // cycle-windows is delegated to OS ⌘` (no parity past n=2 on Tahoe-26).
     [g_hotkey_action_popup addItemWithTitle:@"activate-app"];
     [g_hotkey_action_popup setAutoresizingMask:NSViewMinYMargin];
     g_hotkey_action_popup.target = g_settings_delegate;

@@ -37,9 +37,13 @@
 //                  every window visible dismisses it; pressing again
 //                  re-activates.
 //
-// show-desktop and cycle-windows are NOT bindable here — they are
-// OS-native base features (fn+F11 / Mission Control, ⌘`) per user
-// mandate 2026-05-04 "기본기능으로, hotkey 아님".
+// show-desktop is a hardcoded built-in (⌃D, see
+// airgenome_hotkey_handle_default_keydown below) — NOT user-bindable.
+// User mandate 2026-05-04 round 2 "기본기능으로 구현해야됨 / hotkey
+// 아님" clarifies the earlier same-day mandate: "기본기능" means
+// always-on built-in inside airgenome's own tap, not "delegate to OS
+// fn+F11". cycle-windows remains delegated to OS ⌘` (no airgenome
+// implementation reproduced parity past n=2 on Tahoe-26).
 //
 // Hotkey conflict policy: CGEventTap consumes matched events (return NULL
 // from tap callback), so user-bound combos OVERRIDE the focused app's
@@ -77,7 +81,23 @@ extern CGError _SLPSSetFrontProcessWithOptions(ProcessSerialNumber *psn,
 
 // Public API — extern'd by airgenome_tap.m and main() startup.
 extern BOOL airgenome_hotkey_handle_keydown(CGEventRef event);
+extern BOOL airgenome_hotkey_handle_default_keydown(CGEventRef event);
 extern void airgenome_hotkey_load_bindings(void);
+
+// Show Desktop: posts the same private Dock notification that Mission
+// Control fires on fn+F11. Identified via Mission Control binary string-
+// scan; documented across third-party automation tools (yabai #147
+// catalogues four such notifications). Synthesizing fn+F11 via
+// CGEventPost was tried first (kCGHIDEventTap and kCGSessionEventTap,
+// NULL and CombinedSessionState sources) — first press triggers but the
+// macOS hotkey dispatcher silently drops the toggle-back. Posting the
+// Dock notification directly bypasses the keystroke dispatcher and uses
+// the system's own toggle state, so the second ⌃D consistently slides
+// windows back. Stable 10.7 → Tahoe-26 per yabai/Hammerspoon usage.
+//
+// raw 213 Tier-C exempt: in-process private API call. Single TCC grant
+// preserved (no AppleEvents, no admin auth).
+extern void CoreDockSendNotification(CFStringRef notification, void *unused);
 
 // Forward decl: resolver lives below, but the binding loader (above) calls it.
 static BOOL hotkey_resolve_target(NSString *raw, NSString **outPath,
@@ -586,12 +606,30 @@ static void hotkey_activate_app(NSString *targetPath, NSString *bundleID) {
     NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", bundleID);
 }
 
-// show-desktop and cycle-windows used to live here as bindable hotkey
-// actions. Removed 2026-05-04 per user mandate "show-desktop, cycle-
-// windows 는 기본기능으로, hotkey 아님" — these are OS-native base
-// features (fn+F11 / Mission Control for show-desktop, ⌘` for cycle-
-// windows). The hotkey binder no longer intercepts or re-implements
-// them; users invoke them via the macOS-native shortcuts directly.
+// Built-in defaults — hardcoded in airgenome's tap, NOT routed through
+// hotkey_bindings.json. User mandate 2026-05-04 round 2 "기본기능으로
+// 구현해야됨 / hotkey 아님": treat these as always-on base features
+// inside our own tap (the earlier same-day delete-and-defer-to-OS
+// interpretation was wrong — fn+F11 was never the user's request).
+//
+//   ⌃D  show-desktop  CoreDockSendNotification("com.apple.showdesktop.awake")
+//
+// Evaluated before the user-binding lookup so a stale ctrl+D entry in
+// hotkey_bindings.json (e.g. the pre-refactor show-desktop binding)
+// doesn't shadow the built-in. Returns YES to consume the event.
+BOOL airgenome_hotkey_handle_default_keydown(CGEventRef event) {
+    if (!event || CGEventGetType(event) != kCGEventKeyDown) return NO;
+    CGEventFlags relevant = CGEventGetFlags(event)
+        & (kCGEventFlagMaskControl | kCGEventFlagMaskCommand
+           | kCGEventFlagMaskAlternate | kCGEventFlagMaskShift);
+    int64_t kc = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    if (relevant == kCGEventFlagMaskControl && kc == kVK_ANSI_D) {
+        CoreDockSendNotification(CFSTR("com.apple.showdesktop.awake"), NULL);
+        NSLog(@"[airgenome_hotkey] ⌃D → show-desktop (built-in)");
+        return YES;
+    }
+    return NO;
+}
 
 BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
     if (!event || CGEventGetType(event) != kCGEventKeyDown) return NO;

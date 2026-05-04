@@ -107,6 +107,9 @@ extern BOOL airgenome_winctl_handle_keydown(CGEventRef event);
 extern void airgenome_winctl_reset_dock_tilesize(void);
 // hive raw 209 sister axis #3 - user-defined hotkey-action binder.
 extern BOOL airgenome_hotkey_handle_keydown(CGEventRef event);
+// Built-in defaults (⌃D show-desktop). Always evaluated before the
+// user-binding lookup so a stale json entry can't shadow them.
+extern BOOL airgenome_hotkey_handle_default_keydown(CGEventRef event);
 extern void airgenome_hotkey_load_bindings(void);
 // raw 240 § B C4 — in-process loop dispatcher (airgenome_loop.m). 함수
 // 호출은 g_loop_on=1 일 때만, default OFF.
@@ -843,7 +846,11 @@ static CGEventRef tap_callback(CGEventTapProxy proxy,
     // action binder. Consumes matched events globally (overrides focused
     // app's binding — user mandate "글로벌"). Config at
     // ~/Library/Application Support/airgenome/hotkey_bindings.json.
+    // Built-in defaults (⌃D show-desktop) run first so they can't be
+    // shadowed by a stale json entry — user mandate 2026-05-04 round 2
+    // "기본기능으로 구현해야됨 / hotkey 아님".
     if (g_hotkey_on && type == kCGEventKeyDown) {
+        if (airgenome_hotkey_handle_default_keydown(event)) return NULL;
         if (airgenome_hotkey_handle_keydown(event)) return NULL;
     }
 
