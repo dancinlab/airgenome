@@ -462,6 +462,32 @@ static void airgenome_launcher_post_paste_keystroke(void) {
     if (src) CFRelease(src);
 }
 
+// Copy snippet content to the general pasteboard. Currently disabled at
+// the call site (raw 168 mandate 2026-05-04 "클립보드 복사 off"); kept
+// here so re-enabling is a one-line uncomment. __attribute__((unused))
+// silences -Wunused-function while the call site is commented out.
+__attribute__((unused))
+static void airgenome_launcher_copy_snippet_to_pasteboard(NSString *content) {
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb setString:content forType:NSPasteboardTypeString];
+}
+
+// Paste into the prior frontmost app by synthesizing ⌘V. The launcher
+// panel is non-activating, so prior-app focus returns the moment
+// hide_overlay's orderOut runs; the 50 ms dispatch_after gives
+// WindowServer one runloop tick to redirect keystroke routing before
+// the synthetic event arrives. Skips empty content so we don't dump
+// whatever was on the pasteboard before — surprising.
+static void airgenome_launcher_paste_snippet_to_frontmost(NSString *content) {
+    if (content.length == 0) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(50 * NSEC_PER_MSEC)),
+        dispatch_get_main_queue(), ^{
+            airgenome_launcher_post_paste_keystroke();
+        });
+}
+
 // Update the trailing ghost field that shows the gray completion suffix.
 // The real search field's stringValue stays exactly equal to what the user
 // typed — the ghost is a sibling subview pinned to the right of the typed
@@ -1760,31 +1786,13 @@ void airgenome_settings_show_manager(void) {
         if (g_launcher_snippet_results.count > 0) {
             NSDictionary *top = g_launcher_snippet_results[0];
             NSString *content = top[@"content"] ?: @"";
-            NSPasteboard *pb = [NSPasteboard generalPasteboard];
-            [pb clearContents];
-            [pb setString:content forType:NSPasteboardTypeString];
-            NSLog(@"[airgenome_launcher] snippet copied: @%@ (%lu chars)",
+            // 클립보드 복사 off (raw 168 mandate 2026-05-04). Uncomment
+            // to restore the original two-step copy+paste UX.
+            // airgenome_launcher_copy_snippet_to_pasteboard(content);
+            NSLog(@"[airgenome_launcher] snippet paste: @%@ (%lu chars)",
                   top[@"name"] ?: @"?", (unsigned long)content.length);
             airgenome_launcher_hide_overlay();
-            // Two-step UX per 2026-05-01 user mandate "@스니펫 Enter →
-            // 클립보드 복사 + 기존 활성화창에 붙여넣기 2가지 작동":
-            // synthesize ⌘V into the HID event tap so the user's prior
-            // frontmost app receives a real Cmd-V keystroke. The
-            // launcher panel is non-activating, so prior-app focus
-            // returns the moment we orderOut. A 50 ms dispatch_after
-            // buffer gives the WindowServer one runloop tick to redirect
-            // keystroke routing before the synthetic event arrives,
-            // preventing the rare race where ⌘V lands while the panel
-            // is still being torn down. Skip the paste if the snippet
-            // content is empty (would otherwise dump whatever was on
-            // the clipboard before — surprising).
-            if (content.length > 0) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                             (int64_t)(50 * NSEC_PER_MSEC)),
-                    dispatch_get_main_queue(), ^{
-                        airgenome_launcher_post_paste_keystroke();
-                    });
-            }
+            airgenome_launcher_paste_snippet_to_frontmost(content);
         } else {
             airgenome_launcher_hide_overlay();
         }
