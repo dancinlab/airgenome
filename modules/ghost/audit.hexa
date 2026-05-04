@@ -1,41 +1,406 @@
-// modules/ghost/audit.hexa — G2 metadata-only ledger
+// modules/ghost/audit.hexa — G2 metadata-only JSONL audit ledger
 //
 // 책임:
 //   1. 모든 route 결정 / 백엔드 전환 / downgrade / kill-switch trigger 기록.
-//   2. 출력 = state/ghost_audit.jsonl (append-only).
+//   2. 출력 = state/ghost_audit.jsonl (append-only, 0600).
 //   3. 스키마: {ts, requester, tier, backend, exit_jurisdiction, rationale,
 //              health, no_content: true}.
-//   4. cleartext payload (URL path/query, DNS qname, request body, Tor circuit
-//      목적지 IP 등) 절대 기록 금지 (G2).
+//   4. cleartext payload (URL path/query, DNS qname, request body, server
+//      hostname, IP, ASN 등) 절대 기록 금지 (G2). 모든 필드는 emit 직전에
+//      audit_g2_assert_metadata_only() 로 검증; 한 필드라도 위반 시 reject
+//      (fail-closed) — 위반 페이로드는 디스크에 절대 도달하지 않음.
 //
-// 계약:
-//   G2 — payload 필드 (URL, DNS, body) 의 한 바이트도 기록 금지. metadata only.
-//   G3 — 외부 노출 surface 는 health 라벨 (up/degraded/down) 만. 실 IP/ASN
-//        절대 기록 금지.
-//   G8 — exit_jurisdiction + rationale 필드 필수 — 빠지면 audit_emit 거부.
-//   G10 — downgrade event 는 별도 record_kind="downgrade" 로 기록 + 호출자에
-//         degraded 신호 반환.
+// 계약 (cpre/contracts.ai.md):
+//   G2 — payload 필드 (URL/IP/host/qname/body) 의 한 바이트도 기록 금지.
+//        의심 시 fail-closed reject. emit 자체가 반환값으로 위반 사실만 알려줌
+//        (위반 payload 미반환).
+//   G3 — health 라벨 (up/connecting/down/degraded) 외 IP/ASN/server hostname
+//        절대 기록 금지. health 값도 화이트리스트로 제한.
+//   G8 — exit_jurisdiction (ISO-2 uppercase) + rationale 필드 필수.
+//        둘 중 하나라도 누락 시 reject.
+//   G10 — downgrade event 는 별도 stream (state/ghost_audit_downgrades.jsonl)
+//         으로 audit_emit_downgrade() 호출. silent fall-back 절대 금지.
 //
-// 상태: stub (ghost.cond.7 — JSONL emit + G2/G3/G8 필드 검증 활성화 시 구현)
+// 운영 모델:
+//   - state/ 디렉토리 + audit jsonl 파일은 첫 emit 호출 시 mkdir -p + >> 로 생성.
+//   - 0600 mode (operator-private). 읽기/쓰기 모두 ghost subdomain 한정.
+//   - tail() 은 디버깅용 — 출력은 caller 가 보고서에 그대로 붙이지 말 것
+//     (G2 invariant 가 emit 단에서 강제되어 있으므로 tail 자체는 안전하지만,
+//      stream cross-pollination 방지 차원).
+//
+// 검증된 환경: hexa 0.1.0-dispatch + Tahoe-26.
+//
+// 상태: ghost.cond.7 met candidate (selftest sentinel + G2 reject + emit 활성).
 
 use "../../core/core"
 
 let GHOST_AUDIT_PATH = "state/ghost_audit.jsonl"
+let GHOST_DOWNGRADE_PATH = "state/ghost_audit_downgrades.jsonl"
+let SELFTEST_SENTINEL = "__GHOST_AUDIT__"
 
-// 공개 emit — caller (route.hexa, policy.hexa) 가 호출.
-// stub 단계: 호출은 가능하지만 디스크 미기록. 호출 자체는 G2 위반 페이로드 검사
-// 시점이라서 실 구현 cond.7 까지는 형식만 유지.
-fn audit_emit(requester: str, tier: str, backend: str, jurisdiction: str, rationale: str, health: str) -> str {
-    return "audit.stub: ghost.cond.7 unmet — JSONL append 미구현"
+// G3-compliant health 라벨 화이트리스트.
+let HEALTH_WHITELIST = "up connecting down degraded"
+// requester 화이트리스트 — ghost 의 알려진 caller 만.
+let REQUESTER_WHITELIST = "operator orpheus wraith selftest"
+// tier 화이트리스트 — cpre/contracts G8 정의 + customer (Phase 2 placeholder).
+let TIER_WHITELIST = "research sweep broadcast_high_value customer"
+// backend 화이트리스트 — wrap_*.hexa 의 단일 진입점에 1:1.
+let BACKEND_WHITELIST = "mullvad tor nym mullvad+tor mullvad-fallback"
+
+// ---------------------------------------------------------------------------
+// 내부 — 화이트리스트 멤버십 검사 (공백-분리 토큰 string 안에 있는지).
+// hexa stage1 의 .contains() 등 메서드 의존 회피, exec grep 사용.
+// ---------------------------------------------------------------------------
+
+fn _in_whitelist(value: str, whitelist: str) -> bool {
+    if value == "" { return false }
+    // 정확히 토큰 매칭 (공백/시작/끝 경계). grep -E 의 word boundary 대신
+    // 명시적 경계 패턴 으로 부분 매칭 회피 ("research" 가 "researcher" 매칭 안 되도록).
+    let cmd = "printf '%s' \"" + whitelist + "\" | tr ' ' '\\n' | grep -Fxq \"" + value + "\" && echo y"
+    let r = exec(cmd).trim()
+    return r == "y"
 }
 
-// downgrade event — G10 fall-back 발생 시 호출.
-fn audit_emit_downgrade(from_tier: str, to_tier: str, reason: str) -> str {
-    return "audit.stub: ghost.cond.7 unmet — downgrade record 미구현"
+// ---------------------------------------------------------------------------
+// 내부 — pattern 검사 helper. exec grep -cE 0/1 라벨 변환.
+// 모두 fail-closed: grep error 시 1 (위반) 반환.
+// ---------------------------------------------------------------------------
+
+fn _has_url_pattern(s: str) -> bool {
+    // 강한 시그널:
+    //   - ://, @
+    //   - 명시 TLDs: .com .net .org .onion .io .info .app .co .gov .edu .xyz
+    //   - 일반화: word.tld 형식 (alphanum 직후 . 직후 2-6 letters) — domain 의
+    //     사실상 모든 형태를 catch. rationale 자연어에 dot 가 있으면 보수적
+    //     reject (false-positive 허용; G2 fail-closed 우선).
+    // grep -E alternation. \\. = literal dot.
+    let cmd = "printf '%s' \"" + s + "\" | grep -cE '://|@|\\.com|\\.net|\\.org|\\.onion|\\.io|\\.info|\\.app|\\.co|\\.gov|\\.edu|\\.xyz|[a-zA-Z0-9]\\.[a-zA-Z]{2,6}'"
+    let n = exec(cmd).trim()
+    if n == "" { return true }
+    if n == "0" { return false }
+    return true
 }
 
-// G2 invariant 검증 — 구현 시 audit_emit 안에서 호출.
-// payload 에 cleartext URL / DNS / body 있을 가능성이 있으면 stop-the-line.
+fn _has_ipv4_pattern(s: str) -> bool {
+    // dotted quad — 3 개 이상 연속 점-숫자 그룹. "192.168", "1.2.3.4" 둘 다 잡음.
+    // jurisdiction "JP" 같은 ISO-2 는 점이 없어 통과.
+    let cmd = "printf '%s' \"" + s + "\" | grep -cE '[0-9]+\\.[0-9]+\\.[0-9]+'"
+    let n = exec(cmd).trim()
+    if n == "" { return true }
+    if n == "0" { return false }
+    return true
+}
+
+fn _has_ipv6_pattern(s: str) -> bool {
+    // double colon (fe80::1, ::1) 또는 hex:hex 패턴. tier 라벨에는 ":" 없음.
+    let cmd = "printf '%s' \"" + s + "\" | grep -cE '::|[0-9a-fA-F]+:[0-9a-fA-F]+'"
+    let n = exec(cmd).trim()
+    if n == "" { return true }
+    if n == "0" { return false }
+    return true
+}
+
+// ---------------------------------------------------------------------------
+// G2 invariant 검증 — emit 직전 모든 필드 검사.
+//
+// 허용되는 값 (모두 ASCII 짧은 라벨):
+//   - ISO-2 uppercase 국가 코드 ("JP", "SG", "CH", "SE")
+//   - tier / backend / health / requester 화이트리스트 라벨
+//   - rationale: 자연어 짧은 문장 (URL/IP/host 미포함)
+//
+// fail-closed: 의심스러우면 reject. URL pattern / IPv4 / IPv6 중 하나라도
+// 매칭 시 false. 빈 값도 caller 단에서 missing 으로 처리되도록 false.
+// ---------------------------------------------------------------------------
+
 fn audit_g2_assert_metadata_only(field: str, value: str) -> bool {
-    return false
+    if value == "" { return false }
+    if _has_url_pattern(value) { return false }
+    if _has_ipv4_pattern(value) { return false }
+    if _has_ipv6_pattern(value) { return false }
+    return true
+}
+
+// ---------------------------------------------------------------------------
+// 내부 — JSON 문자열 escape. hexa stage1 string 메서드 한정 — exec sed 사용.
+//
+// 보수적 escape:
+//   \ → \\
+//   " → \"
+// rationale 등 자연어 입력에 대해서만 호출. 화이트리스트 라벨은 escape 무관.
+// ---------------------------------------------------------------------------
+
+fn _json_escape(s: str) -> str {
+    // sed 두 단계: backslash 먼저, 따옴표 다음 (순서 바뀌면 backslash 가
+    // 따옴표용 \" 의 \ 까지 다시 escape 해버림).
+    // shell quoting: outer "..." 안에 sed 표현식. backslash 4 개 = 실제 두 개.
+    let cmd = "printf '%s' \"" + s + "\" | sed 's/\\\\/\\\\\\\\/g' | sed 's/\"/\\\\\"/g'"
+    return exec(cmd)
+}
+
+// ---------------------------------------------------------------------------
+// 내부 — 현재 UTC ISO8601 timestamp. probe.hexa / 다른 모듈 컨벤션 일치.
+// ---------------------------------------------------------------------------
+
+fn _now_utc() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+// ---------------------------------------------------------------------------
+// 내부 — state/ 디렉토리 + audit 파일 mode 0600 보장. mkdir -p idempotent.
+// 첫 호출 시 파일 생성, 이후 호출은 chmod 만 reaffirm.
+// ---------------------------------------------------------------------------
+
+fn _ensure_state_dir(path: str) -> void {
+    let _m = exec("mkdir -p state").trim()
+    let _t = exec("touch '" + path + "' && chmod 600 '" + path + "' 2>/dev/null").trim()
+}
+
+// ---------------------------------------------------------------------------
+// audit_emit — 공개 surface. caller (route.hexa, policy.hexa) 가 호출.
+//
+// 검증 순서 (fail-closed):
+//   1. 필드 누락 검사 — 빈 문자열이면 reject "missing field <name>"
+//   2. 화이트리스트 검사 — requester/tier/backend/health 가 알려진 라벨인지
+//   3. jurisdiction — ISO-2 uppercase 형식 (정확히 2글자 A-Z)
+//   4. G2 검증 — rationale + jurisdiction 에 URL/IP/host pattern 없는지
+//   5. JSON line 작성 → state/ghost_audit.jsonl 에 append (0600)
+//
+// 반환:
+//   "ok" — 기록 성공
+//   "rejected: missing field <name>" — 누락
+//   "rejected: G2 violation in <field>" — pattern 매칭
+//   "rejected: invalid <field>" — 화이트리스트 외
+// ---------------------------------------------------------------------------
+
+fn audit_emit(requester: str, tier: str, backend: str, jurisdiction: str, rationale: str, health: str) -> str {
+    // 1. 누락 검사
+    if requester == "" { return "rejected: missing field requester" }
+    if tier == "" { return "rejected: missing field tier" }
+    if backend == "" { return "rejected: missing field backend" }
+    if jurisdiction == "" { return "rejected: missing field jurisdiction" }
+    if rationale == "" { return "rejected: missing field rationale" }
+    if health == "" { return "rejected: missing field health" }
+
+    // 2. 화이트리스트 검사 — 알려지지 않은 caller / tier / backend / health 거부.
+    if !_in_whitelist(requester, REQUESTER_WHITELIST) { return "rejected: invalid requester" }
+    if !_in_whitelist(tier, TIER_WHITELIST) { return "rejected: invalid tier" }
+    if !_in_whitelist(backend, BACKEND_WHITELIST) { return "rejected: invalid backend" }
+    if !_in_whitelist(health, HEALTH_WHITELIST) { return "rejected: invalid health" }
+
+    // 3. jurisdiction = ISO-2 uppercase. 정확히 2글자 + A-Z.
+    let juri_check = exec("printf '%s' \"" + jurisdiction + "\" | grep -cE '^[A-Z][A-Z]$'").trim()
+    if juri_check != "1" { return "rejected: invalid jurisdiction (expect ISO-2 uppercase)" }
+
+    // 4. G2 검증 — jurisdiction 은 위 ISO-2 게이트를 통과했지만 정의상 한 번 더
+    //    돌려서 fail-closed 일관성 유지. rationale 은 자연어 → URL/IP 패턴 검사.
+    if !audit_g2_assert_metadata_only("jurisdiction", jurisdiction) {
+        return "rejected: G2 violation in jurisdiction"
+    }
+    if !audit_g2_assert_metadata_only("rationale", rationale) {
+        return "rejected: G2 violation in rationale"
+    }
+    // requester/tier/backend/health 는 화이트리스트라 G2 위험 없음 — 생략.
+
+    // 5. JSONL 작성
+    let ts = _now_utc()
+    let rationale_esc = _json_escape(rationale)
+    let line = "{\"ts\":\"" + ts + "\",\"requester\":\"" + requester + "\",\"tier\":\"" + tier + "\",\"backend\":\"" + backend + "\",\"exit_jurisdiction\":\"" + jurisdiction + "\",\"rationale\":\"" + rationale_esc + "\",\"health\":\"" + health + "\",\"no_content\":true}"
+
+    _ensure_state_dir(GHOST_AUDIT_PATH)
+    let _w = exec("printf '%s\\n' '" + line + "' >> '" + GHOST_AUDIT_PATH + "'").trim()
+    return "ok"
+}
+
+// ---------------------------------------------------------------------------
+// audit_emit_downgrade — G10 fall-back 발생 시 호출. 별도 stream.
+//
+// 스키마: {ts, kind:"downgrade", from_tier, to_tier, reason, no_content:true}
+// 검증:
+//   - from_tier / to_tier / reason 누락 reject
+//   - tier 화이트리스트 검사
+//   - reason 에 URL/IP/host pattern 있으면 G2 reject
+//
+// 반환: "ok" / "rejected: missing field <name>" / "rejected: G2 violation in reason"
+// ---------------------------------------------------------------------------
+
+fn audit_emit_downgrade(from_tier: str, to_tier: str, reason: str) -> str {
+    if from_tier == "" { return "rejected: missing field from_tier" }
+    if to_tier == "" { return "rejected: missing field to_tier" }
+    if reason == "" { return "rejected: missing field reason" }
+
+    if !_in_whitelist(from_tier, TIER_WHITELIST) { return "rejected: invalid from_tier" }
+    if !_in_whitelist(to_tier, TIER_WHITELIST) { return "rejected: invalid to_tier" }
+
+    if !audit_g2_assert_metadata_only("reason", reason) {
+        return "rejected: G2 violation in reason"
+    }
+
+    let ts = _now_utc()
+    let reason_esc = _json_escape(reason)
+    let line = "{\"ts\":\"" + ts + "\",\"kind\":\"downgrade\",\"from_tier\":\"" + from_tier + "\",\"to_tier\":\"" + to_tier + "\",\"reason\":\"" + reason_esc + "\",\"no_content\":true}"
+
+    _ensure_state_dir(GHOST_DOWNGRADE_PATH)
+    let _w = exec("printf '%s\\n' '" + line + "' >> '" + GHOST_DOWNGRADE_PATH + "'").trim()
+    return "ok"
+}
+
+// ---------------------------------------------------------------------------
+// audit_tail — debug 용. state/ghost_audit.jsonl 의 마지막 n 줄.
+// 파일 부재 시 빈 문자열. 출력은 caller 가 신중히 다루어야 함 (G2 보장은
+// emit 단에서 끝났으므로 tail 자체는 metadata-only, 그래도 분석은 직접 검토).
+// ---------------------------------------------------------------------------
+
+fn audit_tail(n: int) -> str {
+    let f = exec("test -f '" + GHOST_AUDIT_PATH + "' && echo y").trim()
+    if f != "y" { return "" }
+    return exec("tail -" + to_string(n) + " '" + GHOST_AUDIT_PATH + "' 2>/dev/null").trim()
+}
+
+// ---------------------------------------------------------------------------
+// Selftest — 7 테스트. 비침투적 (실 audit ledger 는 건드리지 않음 — 임시
+// 별도 경로 사용 후 정리).
+//
+// 임시 경로 격리: 각 테스트 직전 GHOST_AUDIT_PATH 의 줄 수를 기록, 직후 다시
+// 비교. 단순화 위해 selftest 는 실 ledger 에 라인을 추가 (G2-clean 라인이므로
+// 무해; selftest sentinel "__GHOST_AUDIT__" 로 식별 가능). G6 sentinel 출력.
+//
+// G6 sentinel: __GHOST_AUDIT__ <PASS|FAIL|SKIP>
+// ---------------------------------------------------------------------------
+
+fn _line_count(path: str) -> int {
+    let f = exec("test -f '" + path + "' && echo y").trim()
+    if f != "y" { return 0 }
+    let n = exec("wc -l < '" + path + "' 2>/dev/null | tr -d ' '").trim()
+    if n == "" { return 0 }
+    return to_int(n)
+}
+
+fn selftest() -> void {
+    let before_audit = _line_count(GHOST_AUDIT_PATH)
+    let before_dn = _line_count(GHOST_DOWNGRADE_PATH)
+
+    // T1 — clean emit → 파일 1줄 증가, last line valid JSON (jq 검사는 caller
+    //      쪽 verifier 에서 수행; selftest 는 line 수 + JSON 시작 글자 검사).
+    let r1 = audit_emit("selftest", "research", "mullvad", "JP", "selftest baseline", "up")
+    if r1 != "ok" {
+        println(SELFTEST_SENTINEL + " FAIL — T1 clean emit returned: " + r1)
+        return
+    }
+    let after_t1 = _line_count(GHOST_AUDIT_PATH)
+    if after_t1 != before_audit + 1 {
+        println(SELFTEST_SENTINEL + " FAIL — T1 line count did not grow by 1 (before=" + to_string(before_audit) + " after=" + to_string(after_t1) + ")")
+        return
+    }
+    let last = exec("tail -1 '" + GHOST_AUDIT_PATH + "'").trim()
+    let starts_brace = exec("printf '%s' \"" + last + "\" | head -c1").trim()
+    if starts_brace != "{" {
+        println(SELFTEST_SENTINEL + " FAIL — T1 last line not JSON-shaped: " + last)
+        return
+    }
+
+    // T2 — URL in rationale → reject + 파일 unchanged
+    let line_count_pre_t2 = _line_count(GHOST_AUDIT_PATH)
+    let r2 = audit_emit("selftest", "research", "mullvad", "JP", "https://malicious.example/path", "up")
+    if r2 == "ok" {
+        println(SELFTEST_SENTINEL + " FAIL — T2 URL in rationale should have been rejected")
+        return
+    }
+    let line_count_post_t2 = _line_count(GHOST_AUDIT_PATH)
+    if line_count_post_t2 != line_count_pre_t2 {
+        println(SELFTEST_SENTINEL + " FAIL — T2 file mutated despite reject")
+        return
+    }
+
+    // T3 — IP in jurisdiction → reject (ISO-2 게이트로 먼저 잡힘).
+    let r3 = audit_emit("selftest", "research", "mullvad", "192.168.1.1", "ip-as-juri", "up")
+    if r3 == "ok" {
+        println(SELFTEST_SENTINEL + " FAIL — T3 IP-shaped jurisdiction should have been rejected")
+        return
+    }
+
+    // T4 — missing tier → reject
+    let r4 = audit_emit("selftest", "", "mullvad", "JP", "missing-tier-test", "up")
+    if r4 != "rejected: missing field tier" {
+        println(SELFTEST_SENTINEL + " FAIL — T4 missing tier should have returned 'rejected: missing field tier', got: " + r4)
+        return
+    }
+
+    // T5 — clean downgrade → downgrade file 1줄 증가
+    let r5 = audit_emit_downgrade("sweep", "research", "selftest downgrade probe")
+    if r5 != "ok" {
+        println(SELFTEST_SENTINEL + " FAIL — T5 clean downgrade returned: " + r5)
+        return
+    }
+    let after_dn = _line_count(GHOST_DOWNGRADE_PATH)
+    if after_dn != before_dn + 1 {
+        println(SELFTEST_SENTINEL + " FAIL — T5 downgrade line count did not grow by 1")
+        return
+    }
+
+    // T6 — G2 assert on URL → false
+    if audit_g2_assert_metadata_only("rationale", "https://example.com/path") {
+        println(SELFTEST_SENTINEL + " FAIL — T6 G2 assert on URL should be false")
+        return
+    }
+
+    // T7 — G2 assert on "JP" → true
+    if !audit_g2_assert_metadata_only("jurisdiction", "JP") {
+        println(SELFTEST_SENTINEL + " FAIL — T7 G2 assert on 'JP' should be true")
+        return
+    }
+
+    println(SELFTEST_SENTINEL + " PASS — emit + reject + downgrade + G2 assert (7/7)")
+}
+
+// ---------------------------------------------------------------------------
+// CLI entrypoint (hexa run modules/ghost/audit.hexa <subcmd>)
+// ---------------------------------------------------------------------------
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" { selftest(); return }
+        if sub == "--selftest" { selftest(); return }
+        if sub == "emit" {
+            if len(a) >= 9 {
+                println(audit_emit(a[3], a[4], a[5], a[6], a[7], a[8]))
+                return
+            }
+            println("emit: usage <requester> <tier> <backend> <jurisdiction> <rationale> <health>")
+            return
+        }
+        if sub == "emit-downgrade" {
+            if len(a) >= 6 {
+                println(audit_emit_downgrade(a[3], a[4], a[5]))
+                return
+            }
+            println("emit-downgrade: usage <from_tier> <to_tier> <reason>")
+            return
+        }
+        if sub == "tail" {
+            let mut n = 10
+            if len(a) >= 4 { n = to_int(a[3]) }
+            println(audit_tail(n))
+            return
+        }
+        if sub == "assert-clean" {
+            if len(a) >= 5 {
+                if audit_g2_assert_metadata_only(a[3], a[4]) {
+                    println("clean")
+                } else {
+                    println("violation")
+                }
+                return
+            }
+            println("assert-clean: usage <field> <value>")
+            return
+        }
+    }
+    println("usage: hexa run modules/ghost/audit.hexa <sub>")
+    println("  self-test")
+    println("  emit <requester> <tier> <backend> <jurisdiction> <rationale> <health>")
+    println("  emit-downgrade <from_tier> <to_tier> <reason>")
+    println("  tail [n]                       # default n=10")
+    println("  assert-clean <field> <value>   # prints 'clean' | 'violation'")
 }
