@@ -37,13 +37,25 @@
 //                  every window visible dismisses it; pressing again
 //                  re-activates.
 //
-// show-desktop is a hardcoded built-in (⌃D, see
-// airgenome_hotkey_handle_default_keydown below) — NOT user-bindable.
-// User mandate 2026-05-04 round 2 "기본기능으로 구현해야됨 / hotkey
-// 아님" clarifies the earlier same-day mandate: "기본기능" means
-// always-on built-in inside airgenome's own tap, not "delegate to OS
-// fn+F11". cycle-windows remains delegated to OS ⌘` (no airgenome
-// implementation reproduced parity past n=2 on Tahoe-26).
+// Hardcoded built-ins (see airgenome_hotkey_handle_default_keydown
+// below) — NOT user-bindable. User mandate 2026-05-04 round 2 "기본기능
+// 으로 구현해야됨 / hotkey 아님" clarifies the same-day mandate: "기본
+// 기능" means always-on built-in inside airgenome's own tap, NOT
+// "delegate to OS shortcut" (the earlier delete-and-defer interpretation
+// was wrong twice — first for fn+F11, then for ⌘`).
+//
+//   ⌃D            show-desktop  CoreDockSendNotification awake
+//   ⌘Esc / ⌘`     cycle-windows AX raise on stable-WID-sorted window list
+//
+// cycle-windows: round 3 attempt (cf6b42ba v1 cycled only 2 windows on
+// Safari n>=3 because kAXWindowsAttribute returns z-order — after raising
+// window B it becomes index 0, "next" is always index 1 → oscillates).
+// Fix: stable ordering via _AXUIElementGetWindow's CGWindowID + a static
+// "last-raised WID" so the next press picks the WID strictly greater
+// than last (wrapping to smallest). Independent of post-raise z-order
+// changes → cycles cleanly through n>=3 windows. macOS native ⌘` had
+// the same n>=3 regression on Tahoe-26 (user mandate 2026-05-04 "보니까
+// 2개까지는 되는데 3개부터 또 안됨"), which is why we own this path.
 //
 // Hotkey conflict policy: CGEventTap consumes matched events (return NULL
 // from tap callback), so user-bound combos OVERRIDE the focused app's
@@ -98,6 +110,18 @@ extern void airgenome_hotkey_load_bindings(void);
 // raw 213 Tier-C exempt: in-process private API call. Single TCC grant
 // preserved (no AppleEvents, no admin auth).
 extern void CoreDockSendNotification(CFStringRef notification, void *unused);
+
+// AX → CGWindowID. Private but stable since 10.5; used by yabai, Hammer-
+// spoon, Rectangle, etc. Required for cycle-windows stable ordering:
+// kAXWindowsAttribute returns windows in z-order, so the array index of
+// any given window changes after every raise. CGWindowID is allocated
+// monotonically per-window-creation and never changes for the lifetime
+// of the window → gives us a key we can sort by deterministically.
+//
+// raw 213 Tier-C exempt: in-process private symbol, no TCC delta (AX
+// permission already granted via CGEventTap).
+extern AXError _AXUIElementGetWindow(AXUIElementRef element,
+                                     uint32_t *windowID);
 
 // Forward decl: resolver lives below, but the binding loader (above) calls it.
 static BOOL hotkey_resolve_target(NSString *raw, NSString **outPath,
@@ -606,17 +630,125 @@ static void hotkey_activate_app(NSString *targetPath, NSString *bundleID) {
     NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", bundleID);
 }
 
+// Cycle through the frontmost app's windows in stable WID order. Picks
+// the window whose CGWindowID is the smallest one strictly greater than
+// the previously-raised WID for this pid; wraps to the smallest WID
+// when no such window exists. Per-pid memory of "last raised" lets us
+// keep cycling forward across n>=3 windows even though kAXWindowsAttribute
+// keeps reordering by z-order behind us. Skips minimized windows so
+// behavior matches user expectation of ⌘` (visible windows only).
+//
+// state reset on pid change: when frontmost app changes, last_pid no
+// longer matches, so we start from current focused window's WID.
+static void hotkey_cycle_app_windows(void) {
+    static pid_t   s_last_pid = 0;
+    static uint32_t s_last_wid = 0;
+
+    NSRunningApplication *front =
+        [[NSWorkspace sharedWorkspace] frontmostApplication];
+    if (!front) return;
+    pid_t pid = front.processIdentifier;
+    AXUIElementRef appEl = AXUIElementCreateApplication(pid);
+    if (!appEl) return;
+
+    CFTypeRef windowsRef = NULL;
+    AXError e = AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute,
+                                              &windowsRef);
+    if (e != kAXErrorSuccess || !windowsRef) {
+        if (windowsRef) CFRelease(windowsRef);
+        CFRelease(appEl);
+        return;
+    }
+    CFArrayRef windows = (CFArrayRef)windowsRef;
+    CFIndex n = CFArrayGetCount(windows);
+    if (n < 2) { CFRelease(windows); CFRelease(appEl); return; }
+
+    // Build (wid, AXUIElementRef) list for non-minimized windows only.
+    uint32_t        wids[64];
+    AXUIElementRef  refs[64];
+    CFIndex visible = 0;
+    for (CFIndex i = 0; i < n && visible < 64; i++) {
+        AXUIElementRef w = (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
+        CFTypeRef minRef = NULL;
+        BOOL isMin = NO;
+        if (AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute, &minRef)
+                == kAXErrorSuccess && minRef) {
+            isMin = CFBooleanGetValue((CFBooleanRef)minRef);
+            CFRelease(minRef);
+        }
+        if (isMin) continue;
+        uint32_t wid = 0;
+        if (_AXUIElementGetWindow(w, &wid) != kAXErrorSuccess || wid == 0)
+            continue;
+        wids[visible] = wid;
+        refs[visible] = w;
+        visible++;
+    }
+    if (visible < 2) { CFRelease(windows); CFRelease(appEl); return; }
+
+    // Insertion sort (visible <= 64, almost always <10).
+    for (CFIndex i = 1; i < visible; i++) {
+        uint32_t kw = wids[i]; AXUIElementRef kr = refs[i]; CFIndex j = i;
+        while (j > 0 && wids[j - 1] > kw) {
+            wids[j] = wids[j - 1]; refs[j] = refs[j - 1]; j--;
+        }
+        wids[j] = kw; refs[j] = kr;
+    }
+
+    // Pick smallest wid > s_last_wid (if pid matches), else smallest.
+    CFIndex chosen = 0;
+    if (pid == s_last_pid && s_last_wid != 0) {
+        chosen = -1;
+        for (CFIndex i = 0; i < visible; i++) {
+            if (wids[i] > s_last_wid) { chosen = i; break; }
+        }
+        if (chosen < 0) chosen = 0;  // wrap
+    } else {
+        // First press on this app: jump to the next window after the
+        // currently-focused one so the very first ⌘` advances rather
+        // than re-raising the already-focused window.
+        uint32_t focusedWid = 0;
+        CFTypeRef focusedRef = NULL;
+        if (AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute,
+                                          &focusedRef) == kAXErrorSuccess
+            && focusedRef) {
+            _AXUIElementGetWindow((AXUIElementRef)focusedRef, &focusedWid);
+            CFRelease(focusedRef);
+        }
+        chosen = 0;
+        if (focusedWid != 0) {
+            for (CFIndex i = 0; i < visible; i++) {
+                if (wids[i] > focusedWid) { chosen = i; break; }
+            }
+        }
+    }
+
+    [front activateWithOptions:0];
+    AXUIElementSetAttributeValue(refs[chosen], kAXMainAttribute,
+                                 kCFBooleanTrue);
+    AXUIElementPerformAction(refs[chosen], kAXRaiseAction);
+    s_last_pid = pid;
+    s_last_wid = wids[chosen];
+    NSLog(@"[airgenome_hotkey] cycle-windows pid=%d wid=%u (idx=%ld/%ld)",
+          pid, wids[chosen], (long)chosen, (long)visible);
+
+    CFRelease(windows);
+    CFRelease(appEl);
+}
+
 // Built-in defaults — hardcoded in airgenome's tap, NOT routed through
 // hotkey_bindings.json. User mandate 2026-05-04 round 2 "기본기능으로
 // 구현해야됨 / hotkey 아님": treat these as always-on base features
 // inside our own tap (the earlier same-day delete-and-defer-to-OS
-// interpretation was wrong — fn+F11 was never the user's request).
+// interpretation was wrong — fn+F11 was never the user's request, and
+// macOS native ⌘` has the same n>=3 regression on Tahoe-26).
 //
-//   ⌃D  show-desktop  CoreDockSendNotification("com.apple.showdesktop.awake")
+//   ⌃D            show-desktop   CoreDockSendNotification awake
+//   ⌘Esc / ⌘`     cycle-windows  stable-WID AX raise
 //
-// Evaluated before the user-binding lookup so a stale ctrl+D entry in
-// hotkey_bindings.json (e.g. the pre-refactor show-desktop binding)
-// doesn't shadow the built-in. Returns YES to consume the event.
+// Evaluated before the user-binding lookup so a stale matching entry in
+// hotkey_bindings.json doesn't shadow the built-in. Returns YES to
+// consume the event.
 BOOL airgenome_hotkey_handle_default_keydown(CGEventRef event) {
     if (!event || CGEventGetType(event) != kCGEventKeyDown) return NO;
     CGEventFlags relevant = CGEventGetFlags(event)
@@ -626,6 +758,11 @@ BOOL airgenome_hotkey_handle_default_keydown(CGEventRef event) {
     if (relevant == kCGEventFlagMaskControl && kc == kVK_ANSI_D) {
         CoreDockSendNotification(CFSTR("com.apple.showdesktop.awake"), NULL);
         NSLog(@"[airgenome_hotkey] ⌃D → show-desktop (built-in)");
+        return YES;
+    }
+    if (relevant == kCGEventFlagMaskCommand
+        && (kc == kVK_Escape || kc == kVK_ANSI_Grave)) {
+        hotkey_cycle_app_windows();
         return YES;
     }
     return NO;
