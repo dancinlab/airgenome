@@ -20,30 +20,26 @@
 // Schema:
 //   {
 //     "bindings": [
-//       {"hotkey": "ctrl+q", "action": "toggle-app",
-//        "target": "/Applications/Void.app"},
-//       {"hotkey": "ctrl+d", "action": "show-desktop"}
+//       {"hotkey": "ctrl+q", "action": "activate-app",
+//        "target": "/Applications/Void.app"}
 //     ]
 //   }
 //
-// Action types (raw 168 minimum-viable):
-//   activate-app: 2-state activate-only on the target app (user mandate
-//                  2026-04-30 "이미 실행되있으면 활성화" / no-hide):
-//                  (a) not running       → launch via NSWorkspace + activate
-//                  (b) running, inactive → activate (bring to front)
-//                  (c) running, active   → no-op (already focused)
-//                  Use this for "switcher" hotkeys where repeat-press should
-//                  not hide (e.g. ⌃Q→Void, ⌃W→Safari, ⌃F→Finder).
-//   toggle-app:   3-state activate-or-hide on the target app (user mandate
-//                  2026-04-30 ⌃R 메모 토글):
-//                  (a) not running       → launch via NSWorkspace + activate
-//                  (b) running, inactive → activate (bring to front)
-//                  (c) running, active   → hide (NSRunningApplication.hide)
-//                  Use this for "popover" hotkeys where the second press
-//                  should dismiss the panel (e.g. ⌃R→Notes scratchpad).
-//   show-desktop: invoke Mission Control's native Show Desktop via private
-//                  CoreDockSendNotification "com.apple.showdesktop.awake".
-//                  Inherent toggle — system tracks desktop state.
+// Action types (single canonical action per user mandate 2026-05-04
+// "activate-app 하나로 통일 / 토글기능도 자동으로 같이 갖는거야"):
+//   activate-app: 4-state launch / activate / unminimize / hide cycle:
+//                  (a) not running               → launch + activate
+//                  (b) running, inactive         → activate (raise)
+//                  (c) active w/ minimized wins  → unminimize-all + raise
+//                  (d) active, all visible       → hide
+//                  Use for any app hotkey: switcher, popover, scratchpad.
+//                  Pressing the hotkey while the app is foregrounded with
+//                  every window visible dismisses it; pressing again
+//                  re-activates.
+//
+// show-desktop and cycle-windows are NOT bindable here — they are
+// OS-native base features (fn+F11 / Mission Control, ⌘`) per user
+// mandate 2026-05-04 "기본기능으로, hotkey 아님".
 //
 // Hotkey conflict policy: CGEventTap consumes matched events (return NULL
 // from tap callback), so user-bound combos OVERRIDE the focused app's
@@ -91,7 +87,7 @@ static BOOL hotkey_resolve_target(NSString *raw, NSString **outPath,
 //   keycode    NSNumber (int kVK_*)
 //   modifiers  NSNumber (CGEventFlags packed)
 //   target     NSString (bundle path; absent for non-app actions)
-//   action     NSString ("activate-app" | "toggle-app" | "show-desktop")
+//   action     NSString ("activate-app" — the only action type)
 //   spec       NSString (original "ctrl+q" form, for diagnostic logs)
 static NSMutableArray<NSDictionary *> *g_hotkey_bindings = nil;
 
@@ -189,8 +185,7 @@ void airgenome_hotkey_load_bindings(void) {
         NSString *target = b[@"target"];
         NSString *action = b[@"action"] ?: @"activate-app";
         if (![spec isKindOfClass:[NSString class]]) continue;
-        BOOL needsTarget = [action isEqualToString:@"activate-app"]
-                        || [action isEqualToString:@"toggle-app"];
+        BOOL needsTarget = [action isEqualToString:@"activate-app"];
         if (needsTarget && ![target isKindOfClass:[NSString class]]) {
             NSLog(@"[airgenome_hotkey] %@ missing target: %@", action, spec);
             continue;
@@ -493,36 +488,28 @@ static void hotkey_activate_running(NSRunningApplication *app) {
 // Already-active is a no-op (no hide). User mandate 2026-04-30 rejected
 // the earlier 3-state hide-on-repeat cycle. raw 91 honest C3: launch
 // failure NSLog'd.
+// activate-app: launch (if not running) → activate (if running but
+// inactive) → unminimize-all (if active w/ minimized windows) → hide
+// (if active w/ all windows visible). Toggle-on-active is built in
+// per user mandate 2026-05-04 "활성화 + 토글기능도 자동으로 같이
+// 갖는거야" — collapses what used to be two separate action types
+// (activate-app + toggle-app) into one canonical behavior.
+//
+// State machine (4-state, evaluated in order):
+//   (a) not running                       → launch (NSWorkspace open)
+//   (b) running, inactive                 → activate (raise frontmost)
+//   (c) active w/ minimized windows       → un-minimize all + re-raise
+//   (d) active, all windows visible       → hide
+//
+// User mandate threading:
+//   2026-04-30 "⌃R → Notes scratchpad: pressing again from inside Notes
+//                should dismiss it" — gives state (d).
+//   2026-05-01 "활성화 -> 비활성화 보단 일단 활성화 먼저 / 창이 여러개
+//                있는경우 뒤에 숨겨진것도 다시 다 활성화 / 거기서 또
+//                누르면 비활성화 토글" — gives state (c) two-press cycle.
+//   2026-05-04 "activate-app 하나로 통일 / 토글기능도 자동으로 같이
+//                갖는거야" — collapse to single action.
 static void hotkey_activate_app(NSString *targetPath, NSString *bundleID) {
-    NSRunningApplication *app = hotkey_find_running(bundleID);
-    if (!app) {
-        NSURL *url = [NSURL fileURLWithPath:targetPath];
-        NSWorkspaceOpenConfiguration *cfg =
-            [NSWorkspaceOpenConfiguration configuration];
-        cfg.activates = YES;
-        [[NSWorkspace sharedWorkspace]
-            openApplicationAtURL:url
-                   configuration:cfg
-               completionHandler:^(NSRunningApplication *r, NSError *e) {
-            if (e) NSLog(@"[airgenome_hotkey] launch failed: %@ (%@)",
-                         targetPath, e.localizedDescription);
-            else   NSLog(@"[airgenome_hotkey] launched: %@ pid=%d",
-                         targetPath, r.processIdentifier);
-        }];
-        return;
-    }
-    if (app.isActive) {
-        NSLog(@"[airgenome_hotkey] %@ → already active (no-op)", bundleID);
-        return;
-    }
-    hotkey_activate_running(app);
-    NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", bundleID);
-}
-
-// toggle-app: same as activate-app for states (a)+(b), but state (c) hides
-// instead of no-op. User mandate 2026-04-30 specifically for ⌃R → Notes
-// scratchpad: pressing again from inside Notes should dismiss it.
-static void hotkey_toggle_app(NSString *targetPath, NSString *bundleID) {
     NSRunningApplication *app = hotkey_find_running(bundleID);
     if (!app) {
         NSURL *url = [NSURL fileURLWithPath:targetPath];
@@ -599,133 +586,12 @@ static void hotkey_toggle_app(NSString *targetPath, NSString *bundleID) {
     NSLog(@"[airgenome_hotkey] %@ → activate (was inactive)", bundleID);
 }
 
-// Show Desktop: invoke macOS Mission Control's native Show Desktop via the
-// private CoreDock notification "com.apple.showdesktop.awake". This is
-// the EXACT same internal trigger the system uses when the user presses
-// fn+F11 — same animation (windows slide off-screen), same toggle
-// behaviour (second invocation slides them back). Identified by string-
-// scanning the Mission Control binary; documented across third-party
-// macOS automation tools (yabai issue #147 catalogues four such
-// notifications: expose.awake / showdesktop.awake / expose.front.awake /
-// launchpad.toggle).
-//
-// Why not synthesize fn+F11 via CGEventPost: tested against kCGHIDEventTap
-// and kCGSessionEventTap, with both NULL source and CGEventSourceState-
-// CombinedSessionState. First press triggers Show Desktop; second press
-// (toggle-back) is silently dropped by the macOS hotkey dispatcher —
-// the dispatcher debounces or filters synthesized fn-modifier events at
-// the toggle boundary. CoreDockSendNotification bypasses the keystroke
-// path entirely and posts directly to the Dock process's notification
-// listener, which is what owns Show Desktop's toggle state.
-//
-// raw 213 compliance: Tier-C exempt — private API call into Apple's own
-// Dock framework via dlopen-free extern. NO admin privileges, NO shell-
-// out. Stable across 10.7 → Sequoia (15) per yabai/Hammerspoon community
-// usage. Tahoe-26 verified at install time (this file's deploy target).
-extern void CoreDockSendNotification(CFStringRef notification,
-                                     void *unused);
-
-static void hotkey_show_desktop(void) {
-    CoreDockSendNotification(CFSTR("com.apple.showdesktop.awake"), NULL);
-    NSLog(@"[airgenome_hotkey] show-desktop (CoreDockSendNotification)");
-}
-
-// cycle-windows: rotate focus across the windows of the FRONTMOST app.
-// User mandate 2026-05-01 "같은 프로그램 창끼리의 전환 cmd + esc / cmd+`".
-//
-// Mirrors macOS native ⌘` (backtick) behavior — but works for every
-// app, including ones that strip the Window menu's backtick equivalent
-// (some Electron apps, some Carbon ports). No target field needed: the
-// frontmost app is the implicit subject.
-//
-// Algorithm:
-//   1. NSWorkspace.frontmostApplication → pid
-//   2. AXUIElementCreateApplication(pid) → kAXWindowsAttribute (NSArray)
-//   3. AXUIElementCopyAttributeValue(kAXFocusedWindowAttribute) → idx
-//   4. (idx+1) mod n, skipping minimized windows (we don't auto-unminimize
-//      because the user expects ⌘` to surface visible windows only —
-//      auto-unminimize would diverge from the system behavior).
-//   5. activate the app (defensive — usually already frontmost) and
-//      AXUIElementPerformAction(target, kAXRaiseAction).
-//
-// Single-window case (n < 2): no-op. The user can still see they're at
-// the only window via the no-action feedback.
-//
-// AX permission already granted via the tap (raw 177 single TCC entry) —
-// this reuses the same AXUIElement pipeline as winctl / hotkey hide.
-static void hotkey_cycle_app_windows(void) {
-    NSRunningApplication *front =
-        [[NSWorkspace sharedWorkspace] frontmostApplication];
-    if (!front) return;
-    pid_t pid = front.processIdentifier;
-    AXUIElementRef appEl = AXUIElementCreateApplication(pid);
-    if (!appEl) return;
-
-    CFTypeRef windowsRef = NULL;
-    AXError err = AXUIElementCopyAttributeValue(
-        appEl, kAXWindowsAttribute, &windowsRef);
-    if (err != kAXErrorSuccess || !windowsRef) {
-        if (windowsRef) CFRelease(windowsRef);
-        CFRelease(appEl);
-        return;
-    }
-    CFArrayRef windows = (CFArrayRef)windowsRef;
-    CFIndex n = CFArrayGetCount(windows);
-    if (n < 2) {
-        CFRelease(windows);
-        CFRelease(appEl);
-        return;
-    }
-
-    // Locate the currently-focused window in the array.
-    CFTypeRef focusedRef = NULL;
-    CFIndex focusedIdx = -1;
-    if (AXUIElementCopyAttributeValue(
-            appEl, kAXFocusedWindowAttribute, &focusedRef)
-        == kAXErrorSuccess && focusedRef) {
-        for (CFIndex i = 0; i < n; i++) {
-            AXUIElementRef w =
-                (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
-            if (CFEqual(w, focusedRef)) { focusedIdx = i; break; }
-        }
-        CFRelease(focusedRef);
-    }
-
-    // Find next visible (non-minimized) window after focusedIdx (wrap).
-    CFIndex chosen = -1;
-    for (CFIndex step = 1; step <= n; step++) {
-        CFIndex i = ((focusedIdx >= 0 ? focusedIdx : 0) + step) % n;
-        AXUIElementRef w =
-            (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
-        CFTypeRef minRef = NULL;
-        BOOL isMin = NO;
-        if (AXUIElementCopyAttributeValue(
-                w, kAXMinimizedAttribute, &minRef)
-            == kAXErrorSuccess && minRef) {
-            isMin = CFBooleanGetValue((CFBooleanRef)minRef);
-            CFRelease(minRef);
-        }
-        if (!isMin) { chosen = i; break; }
-    }
-    if (chosen < 0) {
-        CFRelease(windows);
-        CFRelease(appEl);
-        return;
-    }
-
-    AXUIElementRef target =
-        (AXUIElementRef)CFArrayGetValueAtIndex(windows, chosen);
-    // ignoringOtherApps is a no-op on macOS 14+ (and deprecated). Pass
-    // options=0; the AX kAXRaiseAction below does the actual surfacing.
-    [front activateWithOptions:0];
-    AXUIElementSetAttributeValue(target, kAXMainAttribute, kCFBooleanTrue);
-    AXUIElementPerformAction(target, kAXRaiseAction);
-    NSLog(@"[airgenome_hotkey] cycle-windows pid=%d %ld → %ld (n=%ld)",
-          pid, (long)focusedIdx, (long)chosen, (long)n);
-
-    CFRelease(windows);
-    CFRelease(appEl);
-}
+// show-desktop and cycle-windows used to live here as bindable hotkey
+// actions. Removed 2026-05-04 per user mandate "show-desktop, cycle-
+// windows 는 기본기능으로, hotkey 아님" — these are OS-native base
+// features (fn+F11 / Mission Control for show-desktop, ⌘` for cycle-
+// windows). The hotkey binder no longer intercepts or re-implements
+// them; users invoke them via the macOS-native shortcuts directly.
 
 BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
     if (!event || CGEventGetType(event) != kCGEventKeyDown) return NO;
@@ -745,18 +611,6 @@ BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
         if ([action isEqualToString:@"activate-app"]) {
             hotkey_activate_app(b[@"target"], b[@"bundle_id"]);
             return YES;  // CONSUME — global override per user mandate
-        }
-        if ([action isEqualToString:@"toggle-app"]) {
-            hotkey_toggle_app(b[@"target"], b[@"bundle_id"]);
-            return YES;
-        }
-        if ([action isEqualToString:@"show-desktop"]) {
-            hotkey_show_desktop();
-            return YES;
-        }
-        if ([action isEqualToString:@"cycle-windows"]) {
-            hotkey_cycle_app_windows();
-            return YES;
         }
         NSLog(@"[airgenome_hotkey] unknown action '%@' for %@",
               action, b[@"spec"]);

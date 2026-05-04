@@ -946,8 +946,7 @@ static BOOL airgenome_hotkey_save_to_disk(
         if (![hk isKindOfClass:[NSString class]] || hk.length == 0) continue;
         if (![action isKindOfClass:[NSString class]]
             || action.length == 0) continue;
-        BOOL needsTarget = [action isEqualToString:@"activate-app"]
-                        || [action isEqualToString:@"toggle-app"];
+        BOOL needsTarget = [action isEqualToString:@"activate-app"];
         NSMutableDictionary *out = [NSMutableDictionary dictionary];
         out[@"hotkey"] = hk;
         out[@"action"] = action;
@@ -1470,12 +1469,13 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
     [root addSubview:acLabel];
     g_hotkey_action_popup = [[NSPopUpButton alloc] initWithFrame:
         NSMakeRect(pad + 70, acY - 2, 180, fieldH + 6) pullsDown:NO];
+    // Single action, unified per user mandate 2026-05-04 "activate-app
+    // 하나로 통일 / 토글기능도 자동으로 같이 갖는거야": activate-app's
+    // 4-state machine (launch / activate / unminimize-all / hide)
+    // covers everything the old toggle-app did. show-desktop and
+    // cycle-windows are OS-native base features (fn+F11, ⌘`) — not
+    // re-exposed here.
     [g_hotkey_action_popup addItemWithTitle:@"activate-app"];
-    [g_hotkey_action_popup addItemWithTitle:@"toggle-app"];
-    [g_hotkey_action_popup addItemWithTitle:@"show-desktop"];
-    // cycle-windows: rotate focus across windows of the FRONTMOST app
-    // (mirrors macOS native ⌘` but works app-agnostic). No target needed.
-    [g_hotkey_action_popup addItemWithTitle:@"cycle-windows"];
     [g_hotkey_action_popup setAutoresizingMask:NSViewMinYMargin];
     g_hotkey_action_popup.target = g_settings_delegate;
     g_hotkey_action_popup.action = @selector(hkPopupChanged:);
@@ -1498,7 +1498,7 @@ static NSView *airgenome_settings_build_hotkey_tab(NSRect frame) {
         NSMakeRect(pad + 70, tgY,
                    W - 2 * pad - 70 - browseW - 8, fieldH)];
     [[g_hotkey_target_field cell] setPlaceholderString:
-        @"/Applications/Safari.app  (omit for show-desktop)"];
+        @"/Applications/Safari.app"];
     [g_hotkey_target_field setAutoresizingMask:
         NSViewWidthSizable | NSViewMinYMargin];
     g_hotkey_target_field.delegate = g_settings_delegate;
