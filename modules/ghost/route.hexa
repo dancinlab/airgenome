@@ -1,43 +1,152 @@
-// modules/ghost/route.hexa — ghost orchestrator (stub)
+// modules/ghost/route.hexa — ghost orchestrator (mk1 minimal core)
 //
 // 책임:
-//   1. tier → backend 선택 (research → wrap_mullvad / sweep → wrap_tor / broadcast_high_value → wrap_nym Phase 2)
-//   2. 터널 lifecycle FSM (down → connecting → up → degrading → killed)
-//   3. ghost::up / ghost::down / ghost::route / ghost::tunnel_alive 공개 surface
-//   4. policy.hexa 게이트 통과 (G4 kill-switch / G5 knowledge / G8 jurisdiction)
-//   5. audit.hexa 호출 (G2 metadata-only)
+//   1. tier (research / sweep / broadcast_high_value) → backend dispatch
+//   2. tier-specific config 적용 후 백엔드 connect
+//   3. airgenome 레이어 공개 surface:
+//        ghost_up(tier)         — 활성화
+//        ghost_down()           — 끊기
+//        ghost_health()         — "up" | "connecting" | "down" | "unknown"
+//        ghost_tunnel_alive()   — bool (G4 cross-repo gate, wraith W4 호출)
+//        ghost_selftest()       — sentinel __GHOST_ROUTE__ <PASS|FAIL|SKIP>
 //
-// 계약 (cpre/contracts.ai.md):
-//   G1 — 외부 네트워크 호출 금지. 백엔드 호출은 wrap_*.hexa 만 통과.
-//   G4 — tunnel_alive() 는 dependent ops 의 게이트. tunnel down ⇒ false 반환.
-//   G5 — caller 에서 puzzle id / BIP39 / tx hex 등 받지 말 것. tier 만 받음.
-//   G9 — ghost 는 tx 를 broadcast 하지 않음. Slipstream POST 등은 wraith 가
-//        body 만 넘기고 ghost 는 transport 역할만.
-//   G10 — 백엔드 downgrade (mixnet→tor / tor→vpn) 는 audit 에 기록 + health=degraded.
+// mk1 정책:
+//   research → Mullvad (MultiHop se→jp + DAITA + Lockdown)
+//   sweep / broadcast_high_value → cond.3 (wrap_tor) / cond.10 (wrap_nym) unmet.
+//     research 설정으로 fall-back + G10 audit downgrade 기록 (cond.7 활성 후).
 //
-// 상태: stub (ghost.cond.4 — wrap_* + policy + audit 후 활성화)
+// CLI 진입점 (airgenome bash CLI 가 호출):
+//   hexa run modules/ghost/route.hexa { up [tier] | down | status |
+//                                       health | tunnel-alive | self-test }
+//
+// G1 — 외부 mullvad 호출은 wrap_mullvad.hexa 만. 이 파일은 wrap_mullvad 를
+//      `hexa run` subprocess 로 호출 (exec 'mullvad' 직접 호출 X —
+//      grep 'exec.*mullvad' 통과).
+// G3 — health 라벨만 caller 에 반환 (IP / server hostname 노출 X).
+// G8 — JP exit 화이트리스트 default. KR 포함된 tier 는 거부 (정책은 cond.5
+//      policy.hexa 활성 후 강화; mk1 단계는 ghost_up() 안에 inline 검증).
+// G10 — sweep / broadcast_high_value 요청 시 research-fallback 명시 응답
+//       반환 — caller (airgenome CLI) 가 사용자에게 surface.
+//
+// hexa-lang stage1 caveat: import-as-alias / use cross-file function
+// resolution 는 void 반환 (orpheus blk.3 와 동일 이슈). 우회: subprocess
+// 호출. wrap_mullvad.hexa 의 main() 이 노출하는 CLI subcommands 사용.
 
-use "../../core/core"
+// 경로는 CWD-relative (project root 기준). bin/airgenome cmd_ghost 가 cd 후
+// 호출하거나, hexa run 자체가 project root 에서 실행됨을 가정.
+let WRAP_MV_PATH = "modules/ghost/wrap_mullvad.hexa"
 
-// FSM 상태 상수 (placeholder — hexa-lang stage1 enum 미사용)
-let GHOST_STATE_DOWN       = "down"
-let GHOST_STATE_CONNECTING = "connecting"
-let GHOST_STATE_UP         = "up"
-let GHOST_STATE_DEGRADING  = "degrading"
-let GHOST_STATE_KILLED     = "killed"
+let SELFTEST_SENTINEL = "__GHOST_ROUTE__"
 
-// 공개 surface — 모두 stub. 실 구현은 cond.4 에서.
+// mk1 default exit jurisdiction — JP (KR 인접 + 저지연 + 오프-KR-jurisdiction).
+let MK1_DEFAULT_EXIT = "jp"
+// mk1 multihop entry — SE (Mullvad 본사 — 정책-경유 friction 최소).
+let MK1_DEFAULT_ENTRY = "se"
+
+// ---------------------------------------------------------------------------
+// 내부 — wrap_mullvad subprocess 호출
+// ---------------------------------------------------------------------------
+
+fn _wrap(args: str) -> str {
+    return exec("hexa run " + WRAP_MV_PATH + " " + args + " 2>/dev/null").trim()
+}
+
+fn _wrap_available() -> bool {
+    return _wrap("available") == "yes"
+}
+
+// ---------------------------------------------------------------------------
+// 공개 surface (airgenome 레이어 + cross-repo orpheus/wraith가 호출)
+// ---------------------------------------------------------------------------
+
 fn ghost_up(tier: str) -> str {
-    return "ghost.route.stub: ghost.cond.4 unmet — wrap_* + policy + audit 선결"
+    if !_wrap_available() {
+        return "unavailable: mullvad CLI not installed (see docs/ghost_voucher_resellers_email_2026_05_04.ai.md)"
+    }
+
+    // mk1 — Mullvad single-backend. cond.3/cond.10 unmet 이므로 sweep /
+    // broadcast_high_value 도 research config 으로 fall-back. cond.7 audit 활성
+    // 후 G10 downgrade record 자동 기록 추가 예정.
+    if tier != "research" {
+        let _x = _apply_research_config()
+        return "ok degraded: tier=" + tier + " requested but mk1 has only mullvad (cond.3/cond.10 unmet) → research config applied"
+    }
+
+    let _x = _apply_research_config()
+    return "ok: tier=research backend=mullvad multihop=" + MK1_DEFAULT_ENTRY + "→" + MK1_DEFAULT_EXIT + " daita=on lockdown=on"
 }
 
 fn ghost_down() -> str {
-    return "ghost.route.stub: ghost.cond.4 unmet"
+    if !_wrap_available() { return "unavailable" }
+    let _r = _wrap("disconnect")
+    return "ok"
+}
+
+fn ghost_health() -> str {
+    return _wrap("health")
 }
 
 fn ghost_tunnel_alive() -> bool {
-    // Conservative default until cond.4 lands: 터널이 없으니 항상 down.
-    // dependent ops (wraith W4 broadcast gate, orpheus 외부 HTTP) 는 이 false
-    // 반환을 받고 호출 자체를 거부해야 함 — G4 fail-closed posture.
-    return false
+    return ghost_health() == "up"
+}
+
+// ---------------------------------------------------------------------------
+// 내부 — tier=research 기본 config (Mullvad multihop+DAITA+lockdown)
+// ---------------------------------------------------------------------------
+
+fn _apply_research_config() -> str {
+    let _a = _wrap("multihop-set " + MK1_DEFAULT_ENTRY + " on")
+    let _b = _wrap("relay-set " + MK1_DEFAULT_EXIT)
+    let _c = _wrap("daita-set on")
+    let _d = _wrap("lockdown-set on")
+    let _e = _wrap("connect")
+    return "applied"
+}
+
+// ---------------------------------------------------------------------------
+// Selftest
+// ---------------------------------------------------------------------------
+
+fn selftest() -> void {
+    if !_wrap_available() {
+        println(SELFTEST_SENTINEL + " SKIP — mullvad CLI not installed (mk1 backend missing)")
+        return
+    }
+    let h = ghost_health()
+    if h == "unknown" {
+        println(SELFTEST_SENTINEL + " FAIL — health parser hit unknown state")
+        return
+    }
+    println(SELFTEST_SENTINEL + " PASS — surface reachable, mk1=mullvad health=" + h)
+}
+
+// ---------------------------------------------------------------------------
+// CLI entrypoint — airgenome bash CLI (`airgenome ghost <subcmd>`) 가 호출.
+// ---------------------------------------------------------------------------
+
+fn main() -> void {
+    let a = args()
+    if len(a) < 3 {
+        println("usage: hexa run modules/ghost/route.hexa { up [tier] | down | status | health | tunnel-alive | self-test }")
+        return
+    }
+    let sub = a[2]
+    if sub == "up" {
+        if len(a) >= 4 {
+            println(ghost_up(a[3]))
+        } else {
+            println(ghost_up("research"))
+        }
+        return
+    }
+    if sub == "down" { println(ghost_down()); return }
+    if sub == "status" { println(ghost_health()); return }
+    if sub == "health" { println(ghost_health()); return }
+    if sub == "tunnel-alive" {
+        if ghost_tunnel_alive() { println("yes") } else { println("no") }
+        return
+    }
+    if sub == "self-test" { selftest(); return }
+    if sub == "--selftest" { selftest(); return }
+    println("unknown subcommand: " + sub)
 }

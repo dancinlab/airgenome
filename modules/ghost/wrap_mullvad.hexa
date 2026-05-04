@@ -183,6 +183,10 @@ fn selftest() -> void {
 // CLI entrypoint (hexa run modules/ghost/wrap_mullvad.hexa <subcmd>)
 // ---------------------------------------------------------------------------
 
+fn _bool_arg(s: str) -> bool {
+    return s == "on" || s == "true" || s == "1" || s == "yes"
+}
+
 fn main() -> void {
     let a = args()
     if len(a) >= 3 {
@@ -194,6 +198,43 @@ fn main() -> void {
             if mullvad_available() { println("yes") } else { println("no") }
             return
         }
+        if sub == "connect" { println(mullvad_connect()); return }
+        if sub == "disconnect" { println(mullvad_disconnect()); return }
+        if sub == "reconnect" { println(mullvad_reconnect()); return }
+        if sub == "relay-set" {
+            if len(a) >= 4 {
+                println(mullvad_relay_set_location(a[3])); return
+            }
+            println("relay-set: missing country arg (e.g. jp / se / ch / sg)")
+            return
+        }
+        if sub == "multihop-set" {
+            if len(a) >= 5 {
+                println(mullvad_multihop_set(a[3], _bool_arg(a[4]))); return
+            }
+            println("multihop-set: usage <entry-country> <on|off>")
+            return
+        }
+        if sub == "daita-set" {
+            if len(a) >= 4 {
+                println(mullvad_daita_set(_bool_arg(a[3]))); return
+            }
+            println("daita-set: usage <on|off>")
+            return
+        }
+        if sub == "lockdown-set" {
+            if len(a) >= 4 {
+                println(mullvad_lockdown_set(_bool_arg(a[3]))); return
+            }
+            println("lockdown-set: usage <on|off>")
+            return
+        }
     }
-    println("usage: hexa run modules/ghost/wrap_mullvad.hexa { self-test | health | available }")
+    println("usage: hexa run modules/ghost/wrap_mullvad.hexa <sub>")
+    println("  self-test | health | available")
+    println("  connect | disconnect | reconnect")
+    println("  relay-set <country>           e.g. jp / se / ch / sg")
+    println("  multihop-set <entry> <on|off>")
+    println("  daita-set <on|off>")
+    println("  lockdown-set <on|off>")
 }

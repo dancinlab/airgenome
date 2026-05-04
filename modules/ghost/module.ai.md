@@ -48,20 +48,75 @@ modules/ghost/
 | `broadcast_high_value` | #135-class sweep (≥10 BTC) | Tor over Mullvad | Nym mixnet 5-hop |
 | `customer` (DEFER) | customer-facing recovery contact | — (Phase 2 only) | Nym mixnet |
 
-## Surface (planned — defined as conds land)
+## Surface (mk1 — airgenome layer entry)
 
-The wrap_*.hexa files expose adapter functions; `route.hexa` exposes the public surface to the rest of airgenome and to cross-repo callers (orpheus / wraith-wallet, via the cond.11 link adapters):
+### airgenome bash CLI (operator-facing)
 
 ```
-ghost::up(tier: str) -> handle              # cond.4
-ghost::down() -> ()                          # cond.4
-ghost::route(tier: str) -> session_handle    # cond.4 + cond.11
-ghost::tunnel_alive() -> bool                # cond.6 (cross-repo G4↔W4 gate)
-ghost::selftest() -> report                  # cond.8
-ghost::audit_emit(decision) -> ()            # cond.7 (G2 + G8 enforced)
+airgenome ghost up [tier]      enable VPN — Mullvad MultiHop SE→JP + DAITA + Lockdown
+                                 tier ∈ research (default) | sweep | broadcast_high_value
+                                 mk1 = Mullvad only; non-research tiers fall-back with
+                                 explicit "ok degraded" surface (G10 audit downgrade)
+airgenome ghost down            disable VPN
+airgenome ghost status          state label: up | connecting | down | unknown
+airgenome ghost health          alias of status
+airgenome ghost tunnel-alive    exit 0 if alive / exit 1 if down (wraith W4 gate)
+airgenome ghost selftest        wrap_mullvad + route smoke test
+airgenome ghost available       does the system have `mullvad` binary?
 ```
 
-Function signatures are illustrative; final hexa-lang signatures land per the conds.
+### hexa-side surface (route.hexa, called by airgenome CLI)
+
+`route.hexa` exposes mk1 functions; orchestration shells out to `wrap_mullvad.hexa`
+subcommands via subprocess (workaround for hexa stage1 import-as-alias void bug —
+mirrors orpheus `blk.3`).
+
+```
+ghost_up(tier: str) -> str          "ok: ..." / "ok degraded: ..." / "unavailable: ..."
+ghost_down() -> str                 "ok" / "unavailable"
+ghost_health() -> str               "up" | "connecting" | "down" | "unknown"
+ghost_tunnel_alive() -> bool        cross-repo G4↔W4 gate
+selftest() -> void                  emits __GHOST_ROUTE__ <PASS|FAIL|SKIP>
+```
+
+### wrap_mullvad.hexa CLI (G1 chokepoint, 직접 호출 권장 X)
+
+```
+hexa run modules/ghost/wrap_mullvad.hexa <sub>
+  self-test | health | available
+  connect | disconnect | reconnect
+  relay-set <country>           e.g. jp / se / ch / sg
+  multihop-set <entry> <on|off>
+  daita-set <on|off>
+  lockdown-set <on|off>
+```
+
+route.hexa 가 위 subcommands 를 subprocess 로 호출 — 일반 호출자는 `airgenome ghost`
+또는 `route.hexa` 의 ghost_* 함수만 사용.
+
+## Cross-repo gate (cond.6 paired)
+
+wraith-wallet 의 W4 broadcast policy gate 는 broadcast 직전 다음 호출:
+
+```bash
+# wraith side (예시)
+if ! airgenome ghost tunnel-alive; then
+    echo "broadcast denied: ghost tunnel down (G4)" >&2
+    exit 1
+fi
+# proceed with broadcast through ghost::route(tier=sweep)
+```
+
+orpheus 의 외부 HTTP 호출도 동일 패턴 — research tier 가 활성 상태인지 먼저 확인.
+
+## Tier ↔ backend mapping (mk1)
+
+| tier | backend (mk1) | backend (mk2 candidate) | 정책 |
+|---|---|---|---|
+| research | Mullvad MultiHop SE→JP + DAITA + Lockdown | + Proton secure-core (cond.12+) | 기본값 |
+| sweep | (mk1) Mullvad fall-back + G10 downgrade record | Tor over Mullvad (cond.3) | 카드결제 voucher 권장 |
+| broadcast_high_value | (mk1) Mullvad fall-back + G10 | Nym mixnet 5-hop (cond.10) | cash/Monero only |
+| customer (DEFER) | — (Phase 2 only) | Nym mixnet | KR ISMS/PIPA review 후 |
 
 ## Status
 
