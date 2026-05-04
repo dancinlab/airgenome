@@ -1,0 +1,43 @@
+// modules/ghost/route.hexa — ghost orchestrator (stub)
+//
+// 책임:
+//   1. tier → backend 선택 (research → wrap_mullvad / sweep → wrap_tor / broadcast_high_value → wrap_nym Phase 2)
+//   2. 터널 lifecycle FSM (down → connecting → up → degrading → killed)
+//   3. ghost::up / ghost::down / ghost::route / ghost::tunnel_alive 공개 surface
+//   4. policy.hexa 게이트 통과 (G4 kill-switch / G5 knowledge / G8 jurisdiction)
+//   5. audit.hexa 호출 (G2 metadata-only)
+//
+// 계약 (cpre/contracts.ai.md):
+//   G1 — 외부 네트워크 호출 금지. 백엔드 호출은 wrap_*.hexa 만 통과.
+//   G4 — tunnel_alive() 는 dependent ops 의 게이트. tunnel down ⇒ false 반환.
+//   G5 — caller 에서 puzzle id / BIP39 / tx hex 등 받지 말 것. tier 만 받음.
+//   G9 — ghost 는 tx 를 broadcast 하지 않음. Slipstream POST 등은 wraith 가
+//        body 만 넘기고 ghost 는 transport 역할만.
+//   G10 — 백엔드 downgrade (mixnet→tor / tor→vpn) 는 audit 에 기록 + health=degraded.
+//
+// 상태: stub (ghost.cond.4 — wrap_* + policy + audit 후 활성화)
+
+use "../../core/core"
+
+// FSM 상태 상수 (placeholder — hexa-lang stage1 enum 미사용)
+let GHOST_STATE_DOWN       = "down"
+let GHOST_STATE_CONNECTING = "connecting"
+let GHOST_STATE_UP         = "up"
+let GHOST_STATE_DEGRADING  = "degrading"
+let GHOST_STATE_KILLED     = "killed"
+
+// 공개 surface — 모두 stub. 실 구현은 cond.4 에서.
+fn ghost_up(tier: str) -> str {
+    return "ghost.route.stub: ghost.cond.4 unmet — wrap_* + policy + audit 선결"
+}
+
+fn ghost_down() -> str {
+    return "ghost.route.stub: ghost.cond.4 unmet"
+}
+
+fn ghost_tunnel_alive() -> bool {
+    // Conservative default until cond.4 lands: 터널이 없으니 항상 down.
+    // dependent ops (wraith W4 broadcast gate, orpheus 외부 HTTP) 는 이 false
+    // 반환을 받고 호출 자체를 거부해야 함 — G4 fail-closed posture.
+    return false
+}

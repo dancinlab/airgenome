@@ -1,0 +1,43 @@
+// modules/ghost/wrap_mullvad.hexa — Mullvad CLI single edit point (G1)
+//
+// 책임:
+//   1. `mullvad` CLI 의 모든 subprocess 호출은 이 파일에서만.
+//   2. connect / disconnect / status / relay set location 캡슐화.
+//   3. MultiHop + DAITA 옵션 (tier=research 기본).
+//   4. exit jurisdiction 은 호출자가 G8 정책으로 결정 (JP/SG/CH/SE 화이트리스트).
+//
+// 계약:
+//   G1 — 외부에서 `mullvad` 직접 호출 금지. 무조건 이 모듈 경유.
+//   G2 — stderr/stdout 의 traffic 내용 (URL, DNS qname 등) 로깅 금지.
+//        `mullvad status` 의 IP/지오 필드도 G3 telemetry leak — 호출자에 그대로
+//        전달하지 말고 health: up|down 으로 추상화.
+//   G8 — relay set 호출 시 exit_jurisdiction 인자 검증은 policy.hexa 가 담당.
+//        이 파일은 검증된 인자만 받음.
+//
+// 외부 의존성:
+//   - Mullvad client (GPLv3) — 시스템 PATH 에 `mullvad` 바이너리 필요.
+//   - 미설치 시: `mullvad_available()` false 반환, 호출자가 fall-back 결정.
+//
+// 상태: stub (ghost.cond.2 — Mullvad CLI wrap 활성화 시 구현)
+
+use "../../core/core"
+
+fn mullvad_available() -> bool {
+    let path = exec("command -v mullvad 2>/dev/null").trim()
+    return path != ""
+}
+
+// 모든 stub — 실 구현 cond.2 에서. fail-closed: 미구현 상태에서 호출되면
+// 거짓을 답해서 dependent ops 가 진행되지 않도록 함.
+fn mullvad_connect(jurisdiction: str, multihop: bool, daita: bool) -> str {
+    return "wrap_mullvad.stub: ghost.cond.2 unmet"
+}
+
+fn mullvad_disconnect() -> str {
+    return "wrap_mullvad.stub: ghost.cond.2 unmet"
+}
+
+fn mullvad_health() -> str {
+    // G3 — 절대 IP / ASN 필드 그대로 반환하지 말 것. health label 만.
+    return "down"
+}

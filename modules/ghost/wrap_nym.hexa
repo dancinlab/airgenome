@@ -1,0 +1,40 @@
+// modules/ghost/wrap_nym.hexa — Nym SDK single edit point (G1) [Phase 2 stub]
+//
+// 책임 (Phase 2):
+//   1. Nym Rust SDK 또는 nym-cli subprocess bridge.
+//   2. 5-hop NGM (Anonymous) mode — broadcast_high_value 티어 (#135-class).
+//   3. cover traffic + Sphinx mixing — global passive observer / nation-state
+//      adversary 대응.
+//
+// 계약:
+//   G1 — 외부에서 Nym SDK / nymcli 직접 호출 금지. 이 모듈 경유.
+//   G2 — mixnet 의 ack-receipt 등 추적 메타도 cleartext 로 기록 금지.
+//   G10 — Nym down ⇒ silent fall-back 금지. audit 에 downgrade 기록 + caller 에
+//         degraded 통보. wraith broadcast 는 degraded 시 거부 (W4 + W5).
+//
+// Phase 1 정책: 이 파일은 stub 으로만 존재. 실 호출은 항상 false / "unavailable"
+// 반환 → route.hexa 가 sweep tier 로 fall-back (G10 audit 기록).
+//
+// 외부 의존성 (Phase 2 도래 시):
+//   - Nym Rust SDK (Apache-style 라이센스).
+//   - hexa-FFI bridge 또는 subprocess 경유 — 결정은 cond.10 에서.
+//
+// 상태: stub (ghost.cond.10 — Phase 2 활성화 전까지 영구 stub)
+
+use "../../core/core"
+
+fn nym_available() -> bool {
+    return false
+}
+
+fn nym_up(tier: str) -> str {
+    return "wrap_nym.stub: ghost.cond.10 (Phase 2) unmet — fall-back to sweep tier"
+}
+
+fn nym_down() -> str {
+    return "wrap_nym.stub: ghost.cond.10 unmet"
+}
+
+fn nym_health() -> str {
+    return "down"
+}

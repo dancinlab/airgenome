@@ -1,0 +1,45 @@
+// modules/ghost/selftest.hexa — leak pre-flight + fingerprint check
+//
+// 책임:
+//   1. DNS leak — `dnsleaktest.com` 등을 Tor/VPN 외부 resolver 가 보는지 확인.
+//      G2 — 응답 IP/qname 그대로 audit 기록 금지. PASS/FAIL 만.
+//   2. IPv6 leak — IPv6 어드레스가 터널 우회로 노출되는지 검사.
+//   3. WebRTC leak — 네트워크 레이어 단독으로는 해결 불가, 검출만 가능 — 브라우저
+//      설정 권장 surface 출력.
+//   4. SNI / fingerprint match — 터널 통과 트래픽의 SNI 가 exit 로 추적 가능한지.
+//   5. broadcast tier 직전 호출 — 결과 PASS 가 아니면 wraith broadcast 거부 (W4
+//      쪽 정책 게이트가 ghost.selftest 결과를 확인).
+//
+// 계약:
+//   G2 — leak 검출 시 노출된 IP/qname/엔드포인트 절대 기록 금지. 항목 라벨만.
+//   G6 — 결과 sentinel `__GHOST_SELFTEST__ <PASS|FAIL> <kind>` stderr 출력.
+//   G8 — 검사 자체 트래픽도 ghost route 통과 (외부 직접 호출 금지) — 즉
+//        wrap_*.hexa 경유.
+//
+// 상태: stub (ghost.cond.8 — 4 종 leak probe 활성화 시 구현)
+
+use "../../core/core"
+
+let GHOST_SELFTEST_SENTINEL = "__GHOST_SELFTEST__"
+
+// 4 종 검사 stub. 실 구현은 cond.8 에서, route.hexa 가 up 인 상태에서 wrap_*
+// 경유로 외부 endpoint 호출.
+fn selftest_dns_leak() -> str {
+    return GHOST_SELFTEST_SENTINEL + " SKIP dns_leak — ghost.cond.8 unmet"
+}
+
+fn selftest_ipv6_leak() -> str {
+    return GHOST_SELFTEST_SENTINEL + " SKIP ipv6_leak — ghost.cond.8 unmet"
+}
+
+fn selftest_webrtc_leak() -> str {
+    return GHOST_SELFTEST_SENTINEL + " SKIP webrtc_leak — ghost.cond.8 unmet (브라우저 설정 surface)"
+}
+
+fn selftest_sni_fingerprint() -> str {
+    return GHOST_SELFTEST_SENTINEL + " SKIP sni_fingerprint — ghost.cond.8 unmet"
+}
+
+fn selftest_run_all() -> str {
+    return GHOST_SELFTEST_SENTINEL + " SKIP all — ghost.cond.8 unmet"
+}

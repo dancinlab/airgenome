@@ -1,0 +1,49 @@
+// modules/ghost/wrap_tor.hexa — system Tor single edit point (G1)
+//
+// 책임:
+//   1. 시스템 `tor` 데몬 (homebrew 또는 official) 의 lifecycle 관리.
+//   2. SOCKS5 endpoint 노출 (default 127.0.0.1:9050).
+//   3. control port (9051) 경유 circuit isolation — sweep tier 는 broadcast 마다
+//      fresh circuit (NEWNYM signal).
+//   4. KR exit 차단 (`policy.hexa::allow_kr_tor_exit == false` 강제) — tor
+//      `ExitNodes` config 에 `{??}` 한국 ISO 제외 명시.
+//
+// 계약:
+//   G1 — 외부에서 `tor` / `torify` / SOCKS5 직접 호출 금지. 이 모듈 경유.
+//   G2 — Tor control port 응답 ("CIRC <id> ..." 등) 의 cleartext 필드 (목적지
+//        호스트, 회로 노드 IP) 절대 audit 에 그대로 기록하지 말 것. 회로 ID 만.
+//   G8 — KR Tor exit 절대 금지 — 정책 위반은 stop-the-line.
+//
+// 외부 의존성:
+//   - system tor — 시스템 PATH `tor` 바이너리. 미설치 시 fall-back.
+//   - 향후 arti (Rust) 옵션 검토 — 현재는 system tor 만.
+//
+// 상태: stub (ghost.cond.3 — Tor wrap + circuit isolation 활성화 시 구현)
+
+use "../../core/core"
+
+fn tor_available() -> bool {
+    let path = exec("command -v tor 2>/dev/null").trim()
+    return path != ""
+}
+
+fn tor_start() -> str {
+    return "wrap_tor.stub: ghost.cond.3 unmet"
+}
+
+fn tor_stop() -> str {
+    return "wrap_tor.stub: ghost.cond.3 unmet"
+}
+
+// fresh circuit — sweep tier broadcast 직전 호출.
+fn tor_new_circuit() -> str {
+    return "wrap_tor.stub: ghost.cond.3 unmet"
+}
+
+fn tor_socks_endpoint() -> str {
+    return ""
+}
+
+fn tor_health() -> str {
+    return "down"
+}

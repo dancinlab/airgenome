@@ -1,0 +1,52 @@
+// modules/ghost/policy.hexa — G4 kill-switch + G5 knowledge gate + G8 jurisdiction allowlist
+//
+// 책임:
+//   1. exit jurisdiction 화이트리스트 검증 (JP / SG / CH / SE 만 sweep 티어 허용).
+//   2. KR Tor exit 절대 차단 (`allow_kr_tor_exit = false` 하드코딩).
+//   3. capability flag — 커널 레벨 pf / NetworkExtension 활성화 여부.
+//   4. G5 knowledge guard — 호출자 인자에 puzzle/BIP39/tx-hex 가 들어오면 거부.
+//   5. G4 kill-switch FSM — 터널 down 신호 시 dependent op block 반환.
+//   6. G10 downgrade decision — backend down 시 fall-back 허용 여부 결정 + audit.
+//
+// 계약:
+//   G4 — kill-switch 는 fail-closed. 의심스러운 상태 (tunnel down/degraded) 면
+//        무조건 dependent op 거부.
+//   G5 — caller 에서 G5 위반 인자 (recovery context / wallet keys 등) 발견 시
+//        stop-the-line panic 또는 explicit reject. log 에는 위반 사실만 기록,
+//        실 페이로드는 절대 기록 금지.
+//   G8 — exit_jurisdiction 인자가 화이트리스트에 없으면 reject.
+//   G10 — downgrade 는 audit 기록 후 허용. silent fall-back 절대 금지.
+//
+// 상태: stub (ghost.cond.5 — exit allowlist / G5 guard / G10 분기 활성화 시 구현)
+
+use "../../core/core"
+
+// Sweep / broadcast 티어에 허용된 exit 국가 ISO-2 코드. 변경은 정책 결정.
+let SWEEP_EXIT_ALLOWLIST = "JP,SG,CH,SE"
+
+// KR Tor exit 절대 차단 (cpre/contracts.ai.md G8) — 코드 레벨 invariant.
+let ALLOW_KR_TOR_EXIT = false
+
+// capability flag (cond.9) — kernel pf/NE 활성화 여부.
+// false 면 userland-only 협력 게이트 모드.
+let KERNEL_KILL_SWITCH_ENABLED = false
+
+fn policy_check_exit(tier: str, jurisdiction: str) -> bool {
+    // stub — cond.5 에서 SWEEP_EXIT_ALLOWLIST contains 검사 + tier 별 분기.
+    return false
+}
+
+fn policy_check_g5_clean(payload_kind: str) -> bool {
+    // payload_kind 이 "tier_label" / "health_query" 이외이면 G5 위반 가능 — reject.
+    // 실 검사 로직 cond.5 에서.
+    return false
+}
+
+fn policy_kill_switch_engage() -> str {
+    return "policy.stub: ghost.cond.5 unmet — kill-switch engage 미구현"
+}
+
+fn policy_allow_downgrade(from_tier: str, to_tier: str, reason: str) -> bool {
+    // G10 — downgrade 는 audit 후 허용. stub 단계에서는 차단 (fail-closed).
+    return false
+}
