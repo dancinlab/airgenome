@@ -85,14 +85,7 @@ hooks/.hook-audit
 # hexa binary backups (symlink switch leftovers) — added 2026-05-03
 nexus/shared/bin/*.bak
 
-# ghost runtime artifacts (route audit, capability toggles, leak verdicts, pf anchor) — added 2026-05-04
-state/ghost_audit.jsonl
-state/ghost_audit_downgrades.jsonl
-state/ghost_audit_capability.jsonl
-state/ghost_capability_pf_anchor.conf
-state/leak_reports/*.jsonl
-
-# ghost watcher/runtime markers (vacuum, mpq archive load, audit) — added 2026-05-04
+# watcher/runtime markers (vacuum, mpq archive load, audit) — added 2026-05-04
 state/markers/vacuum_watcher_*.marker
 state/markers/pe_d2r_mpq_archive_load_*.marker
 state/markers/audit_*.marker

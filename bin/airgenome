@@ -923,134 +923,6 @@ EOF
 }
 
 # ============================================================
-# 🕶️ ghost — network-layer anonymity (Mullvad mk1 wrap)
-# ============================================================
-# layer-from-airgenome 진입점. modules/ghost/route.hexa 가 모든 orchestration,
-# wrap_mullvad.hexa 가 Mullvad CLI G1 단일 edit point.
-#
-# tunnel-alive 은 wraith W4 cross-repo gate — exit 0 = alive, 1 = down.
-# G3 — 라벨만 출력. IP / server hostname 절대 노출 X.
-
-cmd_ghost() {
-    local sub="${1:-help}"
-    shift || true
-    # Resolve hexa binary — prefer $HEXA env, fall back to PATH lookup
-    # (legacy $HEXA default near top of script may point to a stale install).
-    local hexa_bin="$HEXA"
-    if [ ! -x "$hexa_bin" ]; then
-        hexa_bin="$(command -v hexa 2>/dev/null || true)"
-    fi
-    if [ -z "$hexa_bin" ] || [ ! -x "$hexa_bin" ]; then
-        echo "ghost: hexa binary not found (HEXA env unset and not on PATH)" >&2
-        return 1
-    fi
-    # Resolve airgenome root — prefer derived from this script's location.
-    local ag_root="$AIRGENOME_ROOT"
-    if [ ! -d "$ag_root/modules/ghost" ]; then
-        ag_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    fi
-    local route="$ag_root/modules/ghost/route.hexa"
-    local wrap_mv="$ag_root/modules/ghost/wrap_mullvad.hexa"
-    local policy="$ag_root/modules/ghost/policy.hexa"
-    case "$sub" in
-        up)
-            local tier="${1:-research}"
-            "$hexa_bin" run "$route" up "$tier"
-            ;;
-        down|off)
-            "$hexa_bin" run "$route" down
-            ;;
-        status|health)
-            "$hexa_bin" run "$route" health
-            ;;
-        tunnel-alive)
-            local out
-            out="$("$hexa_bin" run "$route" tunnel-alive 2>/dev/null | tail -1)"
-            if [ "$out" = "yes" ]; then
-                echo "alive"; return 0
-            fi
-            echo "down"; return 1
-            ;;
-        selftest|self-test)
-            "$hexa_bin" run "$route" self-test
-            "$hexa_bin" run "$wrap_mv" self-test
-            ;;
-        available)
-            "$hexa_bin" run "$wrap_mv" available
-            ;;
-        live-verify|verify)
-            local lv="$ag_root/modules/ghost/live_verify.hexa"
-            "$hexa_bin" run "$lv" run-all
-            ;;
-        capability)
-            # cond.9 — operator opt-in kernel kill-switch (macOS pf).
-            # 본 진입점은 hexa-side 만 호출. sudo 명령은 stdout 출력 — 운영자가 직접 검토 + 실행.
-            local cap_sub="${1:-status}"
-            shift || true
-            case "$cap_sub" in
-                status)
-                    "$hexa_bin" run "$policy" kernel-kill-switch-status
-                    ;;
-                set)
-                    # usage: airgenome ghost capability set kill_switch on|off
-                    "$hexa_bin" run "$policy" capability-set "$@"
-                    ;;
-                engage)
-                    "$hexa_bin" run "$route" capability-engage
-                    ;;
-                disengage)
-                    "$hexa_bin" run "$route" capability-disengage
-                    ;;
-                help|-h|--help)
-                    cat >&2 <<'EOF'
-🕶️ airgenome ghost capability — cond.9 kernel kill-switch (operator opt-in)
-
-usage: airgenome ghost capability <subcommand>
-
-  status                    show flag state: enabled | disabled (default disabled)
-  set kill_switch on|off    toggle the operator opt-in flag (writes ~/.airgenome/ghost_capability)
-  engage                    print sudo pfctl commands to load the ghost-killswitch anchor
-                              (no-op unless `set kill_switch on` first; never runs sudo itself)
-  disengage                 print sudo pfctl commands to flush the anchor
-
-posture: this CLI never invokes sudo. It only emits the commands. Operator
-reviews the rendered anchor (state/ghost_capability_pf_anchor.conf) and runs
-pfctl manually. Without the flag, ghost runs in userland-only cooperative gate
-mode (cond.4) — kernel kill-switch is strictly opt-in.
-EOF
-                    ;;
-                *)
-                    echo "usage: airgenome ghost capability {status|set kill_switch on|off|engage|disengage}" >&2
-                    return 2
-                    ;;
-            esac
-            ;;
-        help|-h|--help|*)
-            cat >&2 <<'EOF'
-🕶️ airgenome ghost — network-layer anonymity (Mullvad mk1)
-
-usage: airgenome ghost <subcommand>
-
-  up [tier]       enable VPN — applies Mullvad MultiHop SE→JP + DAITA + Lockdown
-                    tier: research (default) | sweep | broadcast_high_value
-                    mk1 = Mullvad only; non-research tiers fall-back with G10 audit downgrade
-  down            disable VPN (mullvad disconnect)
-  status / health VPN state label: up | connecting | down | unknown
-  tunnel-alive    exit code gate (0 = alive, 1 = down) — wraith W4 cross-repo gate
-  selftest        wrap_mullvad + route smoke test
-  available       does the system have a `mullvad` binary?
-  live-verify     호스트-모드 12-cond live 검증 (Mullvad/Tor/Nym 설치 후)
-                    → modules/ghost/live_verify.hexa run-all
-  capability ...  cond.9 kernel kill-switch (operator opt-in pf rules — `capability help`)
-
-trio: 🗝️ orpheus → 🫥 wraith-wallet → 🕶️ ghost
-docs: modules/ghost/cpre/*.ai.md  ·  docs/ghost_*_2026_05_04.ai.md
-EOF
-            ;;
-    esac
-}
-
-# ============================================================
 # plugin — user-data plugin manager (~/.airgenome/plugins/)
 # ============================================================
 # 가벼운 facade: airgenome 본체는 plugin 코드 import 하지 않음 — exec 만.
@@ -1224,7 +1096,6 @@ main() {
         mouse|mouse-remap)    cmd_mouse "$@" ;;    # legacy alias → cmd_tap
         magnet|window-magnet) cmd_magnet "$@" ;;   # legacy alias → cmd_tap
         launcher)      cmd_launcher "$@" ;;   # hive raw 209 reference impl scaffold
-        ghost)         cmd_ghost "$@" ;;      # 🕶️ network-layer anonymity (Mullvad mk1)
         # plugin/plugins handled above (case ordering preserved)
         guard-loop)    guard_loop ;;   # 독립 디버그용
         help|-h|--help)
@@ -1256,17 +1127,6 @@ usage: airgenome <command>
                  / 'Wake when lid closed' 토글로 이전 (raw 213, 2026-04-30).
                  in-process IOPMAssertionCreateWithName 사용 — admin auth dialog 없음.
                  legacy LaunchAgent (com.airgenome.wake) 는 새 binary 첫 launch 시 자동 정리.
-  ghost <sub>    🕶️ network-layer anonymity (operator opsec) — mk1 = Mullvad VPN:
-                   sub: up [tier] / down / status / health / tunnel-alive /
-                        selftest / available
-                   tier: research (default) / sweep / broadcast_high_value
-                   mk1 정책: research 만 활성 (Mullvad MultiHop SE→JP + DAITA +
-                   Lockdown). sweep/high-value 는 cond.3/cond.10 unmet 으로
-                   research 로 fall-back (G10 audit downgrade 표시).
-                   wraith W4 broadcast gate: `airgenome ghost tunnel-alive`
-                   exit 0 ⇒ alive, 1 ⇒ down/degraded.
-                   docs: modules/ghost/cpre/{intent,scope,contracts,identity}.ai.md
-
   tap <sub>      airgenome native shim (단일 binary, 1 Accessibility grant):
                    (a) mouse button 4/5 → Cmd+[/]   (b) mouse wheel 반전
                    (c) 8-zone 드래그-스냅 + macOS 기본 tiling 비활성화 (종료 시 복구)
