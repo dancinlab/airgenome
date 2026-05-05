@@ -147,19 +147,10 @@ emulation code.
 | Dispatch | `airgenome exe <path>` — picks the highest-priority handler whose `handles[]` matches the file |
 | List | `airgenome plugins` — enumerates discovered manifests + handled extensions |
 
-Reference plugin:
-
-> **[🎮 airgenome-gamebox](https://github.com/dancinlife/airgenome-gamebox)** — DIY hexa Win32 emulation.
-> Apple-only · Wine 0 · own 1/2 mandates. PE loader + Win32 shim + DirectX 11/12 → Metal.
-
-```bash
-# clone into the plugin dir (or use a sibling repo for dev mode)
-git clone https://github.com/dancinlife/airgenome-gamebox ~/.airgenome/plugins/gamebox
-
-# verify discovery + handler routing
-airgenome plugins
-airgenome exe ~/Downloads/SomeWindowsApp.exe
-```
+External tools: see <https://github.com/need-singularity/> for sibling repos
+(formerly the `airgenome-gamebox` Win32 runtime is now standalone at
+<https://github.com/need-singularity/gamebox> as of 2026-05-05; the
+plugin-registry pattern remains for future external handlers).
 
 ## Roadmap (rebuild v2)
 
