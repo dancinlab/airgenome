@@ -574,5 +574,3 @@ fn main() -> void {
     }
     println("airgenome: unknown subcommand '" + sub + "'. try 'airgenome help'.")
 }
-
-main()

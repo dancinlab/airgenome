@@ -145,5 +145,3 @@ fn main() -> int {
     println(out)
     return 0
 }
-
-main()

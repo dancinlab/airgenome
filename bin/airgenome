@@ -23,7 +23,7 @@ set -eu
 AIRGENOME_ROOT="${AIRGENOME_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 HEXA="${HEXA:-$(command -v hexa 2>/dev/null || echo hexa)}"
 LOG_DIR="$HOME/.airgenome"
-PLIST_SRC="$AIRGENOME_ROOT/shared/launchagents/com.airgenome.plist"
+PLIST_SRC="$AIRGENOME_ROOT/launchd/com.airgenome.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/com.airgenome.plist"
 LABEL="com.airgenome"
 UID_VAL="$(id -u)"

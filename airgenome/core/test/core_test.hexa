@@ -82,5 +82,3 @@ fn main() -> void {
 fn make_v(cpu: float, ram: float) -> Vitals {
     return Vitals { cpu: cpu, ram: ram, gpu: 0.0, npu: 0.0, power: 0.0, io: 0.0 }
 }
-
-main()
