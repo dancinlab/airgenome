@@ -1668,15 +1668,19 @@ extern void airgenome_settings_show_manager(void);
     return resp;
 }
 
-// gamebox plugin 검색 (manifest 존재 여부) — sibling 또는 ~/.airgenome/plugins/
-- (NSString *)findGameboxPluginDir {
-    NSString *userPlugin = [NSString stringWithFormat:@"%@/.airgenome/plugins/gamebox",
-                            NSHomeDirectory()];
-    NSString *userPluginManifest = [userPlugin stringByAppendingPathComponent:@"plugin.json"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:userPluginManifest]) {
-        return userPlugin;
+// .exe handler plugin 검색 (manifest 존재 여부) — ~/.airgenome/plugins/* 우선, 그 다음 sibling.
+- (NSString *)findExeHandlerPluginDir {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    // 1) ~/.airgenome/plugins/<any>/plugin.json
+    NSString *pluginsRoot = [NSString stringWithFormat:@"%@/.airgenome/plugins",
+                             NSHomeDirectory()];
+    NSArray<NSString *> *entries = [fm contentsOfDirectoryAtPath:pluginsRoot error:nil];
+    for (NSString *name in entries) {
+        NSString *cand = [pluginsRoot stringByAppendingPathComponent:name];
+        NSString *manifest = [cand stringByAppendingPathComponent:@"plugin.json"];
+        if ([fm fileExistsAtPath:manifest]) return cand;
     }
-    // sibling: airgenome root 의 부모 디렉토리에서 airgenome-gamebox 찾기
+    // 2) sibling dev repos: any sibling dir under candidate parents with plugin.json
     NSString *envRoot = [[[NSProcessInfo processInfo] environment]
                          objectForKey:@"AIRGENOME_ROOT"];
     NSMutableArray<NSString *> *parents = [NSMutableArray array];
@@ -1687,55 +1691,15 @@ extern void airgenome_settings_show_manager(void);
     [parents addObject:[NSString stringWithFormat:@"%@/core", NSHomeDirectory()]];
     [parents addObject:[NSString stringWithFormat:@"%@/.airgenome", NSHomeDirectory()]];
     for (NSString *parent in parents) {
-        NSString *cand = [parent stringByAppendingPathComponent:@"airgenome-gamebox"];
-        NSString *manifest = [cand stringByAppendingPathComponent:@"plugin.json"];
-        if ([[NSFileManager defaultManager] fileExistsAtPath:manifest]) {
-            return cand;
+        NSArray<NSString *> *sibs = [fm contentsOfDirectoryAtPath:parent error:nil];
+        for (NSString *name in sibs) {
+            if ([name isEqualToString:@"airgenome"]) continue;
+            NSString *cand = [parent stringByAppendingPathComponent:name];
+            NSString *manifest = [cand stringByAppendingPathComponent:@"plugin.json"];
+            if ([fm fileExistsAtPath:manifest]) return cand;
         }
     }
     return nil;
-}
-
-// 백그라운드에서 git clone 실행 후 dialog 으로 결과 보고.
-- (BOOL)installGameboxPlugin {
-    NSString *target = [NSString stringWithFormat:@"%@/.airgenome/plugins/gamebox",
-                        NSHomeDirectory()];
-    NSString *parent = [target stringByDeletingLastPathComponent];
-    [[NSFileManager defaultManager] createDirectoryAtPath:parent
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:nil];
-
-    NSTask *task = [[NSTask alloc] init];
-    task.launchPath = @"/usr/bin/env";
-    task.arguments = @[
-        @"git", @"clone", @"--depth=1",
-        @"https://github.com/dancinlife/airgenome-gamebox", target
-    ];
-    NSPipe *out = [NSPipe pipe];
-    task.standardOutput = out;
-    task.standardError = out;
-    @try {
-        [task launch];
-        [task waitUntilExit];
-    }
-    @catch (NSException *ex) {
-        [self showAlertWithMessage:@"gamebox install failed"
-                              info:[NSString stringWithFormat:@"git clone exception: %@",
-                                    ex.description]
-                          firstBtn:@"OK" secondBtn:nil];
-        return NO;
-    }
-    if (task.terminationStatus != 0) {
-        NSData *errData = [[out fileHandleForReading] readDataToEndOfFile];
-        NSString *err = [[NSString alloc] initWithData:errData
-                                              encoding:NSUTF8StringEncoding];
-        [self showAlertWithMessage:@"gamebox install failed"
-                              info:err ?: @"git clone returned non-zero status."
-                          firstBtn:@"OK" secondBtn:nil];
-        return NO;
-    }
-    return YES;
 }
 
 - (BOOL)application:(NSApplication *)sender openFile:(NSString *)filename {
@@ -1762,39 +1726,19 @@ extern void airgenome_settings_show_manager(void);
         return NO;
     }
 
-    // 2. gamebox plugin check
-    NSString *pluginDir = [self findGameboxPluginDir];
+    // 2. exe handler plugin check
+    NSString *pluginDir = [self findExeHandlerPluginDir];
     if (!pluginDir) {
-        NSModalResponse resp = [self
-            showAlertWithMessage:@"gamebox 플러그인 미설치"
-                            info:[NSString stringWithFormat:
-                                  @"Windows .exe (%@) 를 실행하려면 gamebox 플러그인이 필요합니다.\n\n"
-                                  @"gamebox: Apple Silicon native PE loader + Win32 shim (Wine 0).\n"
-                                  @"위치: ~/.airgenome/plugins/gamebox\n"
-                                  @"소스: https://github.com/dancinlife/airgenome-gamebox\n\n"
-                                  @"지금 install 하시겠습니까?",
-                                  [filename lastPathComponent]]
-                        firstBtn:@"Install gamebox"
-                       secondBtn:@"Cancel"];
-        if (resp != NSAlertFirstButtonReturn) {
-            fprintf(stderr, "airgenome_tap: user canceled plugin install\n");
-            fflush(stderr);
-            return NO;
-        }
-        // git clone (sync — wait until done)
-        if (![self installGameboxPlugin]) return NO;
-        pluginDir = [self findGameboxPluginDir];
-        if (!pluginDir) {
-            [self showAlertWithMessage:@"install 후에도 plugin 발견 X"
-                                  info:@"~/.airgenome/plugins/gamebox 확인하세요."
-                              firstBtn:@"OK" secondBtn:nil];
-            return NO;
-        }
-        [self showAlertWithMessage:@"gamebox 설치 완료"
+        [self showAlertWithMessage:@"exe handler 플러그인 미설치"
                               info:[NSString stringWithFormat:
-                                    @"위치: %@\n\n이어서 %@ dispatch.",
-                                    pluginDir, [filename lastPathComponent]]
+                                    @"Windows .exe (%@) 를 실행하려면 exe handler 플러그인이 필요합니다.\n\n"
+                                    @"설치 (예: gamebox — Apple Silicon native PE loader):\n"
+                                    @"  git clone https://github.com/need-singularity/gamebox \\\n"
+                                    @"      ~/.airgenome/plugins/gamebox\n\n"
+                                    @"또는 sibling dev mode: plugin.json 가진 dir 을 airgenome 옆에 배치.",
+                                    [filename lastPathComponent]]
                           firstBtn:@"OK" secondBtn:nil];
+        return NO;
     }
 
     // 3. airgenome modules/exe_dispatch.hexa 경로 (env 우선, 다음 dev/install)
@@ -1844,7 +1788,7 @@ extern void airgenome_settings_show_manager(void);
         // (step 2) noise filter — cosmetic shell warnings 제거
         NSArray<NSString *> *lines = [output componentsSeparatedByString:@"\n"];
         NSMutableArray<NSString *> *kept = [NSMutableArray array];
-        // (step 3) summary key=value 파싱 — gamebox install --summary
+        // (step 3) summary key=value 파싱 — handler install --summary
         NSMutableDictionary<NSString *, NSString *> *kv = [NSMutableDictionary dictionary];
         BOOL prevBlank = NO;
         for (NSString *raw in lines) {
@@ -1912,12 +1856,12 @@ extern void airgenome_settings_show_manager(void);
         dispatch_async(dispatch_get_main_queue(), ^{
             NSString *title;
             if (rc == 0 && kpiBlock) {
-                title = [NSString stringWithFormat:@"gamebox 분석 완료 (호환률 %@)",
+                title = [NSString stringWithFormat:@"exe handler 분석 완료 (호환률 %@)",
                          kv[@"coverage"] ?: @"?"];
             } else if (rc == 0) {
-                title = @"gamebox dispatch 완료";
+                title = @"exe handler dispatch 완료";
             } else {
-                title = [NSString stringWithFormat:@"gamebox 종료 (exit=%d)", rc];
+                title = [NSString stringWithFormat:@"exe handler 종료 (exit=%d)", rc];
             }
             [self showAlertWithMessage:title
                                   info:finalInfo

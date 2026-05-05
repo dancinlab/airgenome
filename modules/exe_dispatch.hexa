@@ -1,21 +1,21 @@
 // modules/exe_dispatch.hexa — airgenome exe dispatcher (lightweight)
 //
 // .exe 받으면 plugin registry 보고 handler 로 forward.
-// airgenome 자체는 PE loader 코드 0 줄 — handler plugin (gamebox 등) 이 처리.
+// airgenome 자체는 PE loader 코드 0 줄 — 외부 handler plugin 이 처리.
 //
 // 사용:
 //   airgenome exe <path/to.exe>
 //   → plugin registry 에서 ".exe" handler 찾기
-//   → 없으면: "gamebox plugin install?" 물어보기
+//   → 없으면: "exe handler plugin 미설치" 안내
 //   → 있으면: handler entry 실행
 //
 // plugin manifest 위치 (자동 검색 순서):
 //   1. ~/.airgenome/plugins/*/plugin.json  (user install)
-//   2. ../airgenome-*/plugin.json          (sibling repo, dev mode)
+//   2. ../<sibling>/plugin.json            (sibling repo, dev mode)
 //
 // plugin.json schema:
 //   {
-//     "name": "gamebox",
+//     "name": "<handler>",
 //     "type": "exe-runner",
 //     "handles": [{"extension": ".exe", "platforms": [...], "priority": 100}],
 //     "entry": "entry"
@@ -48,11 +48,11 @@ fn discover_plugins() -> array {
             }
         }
     }
-    // 2) sibling dev repos
+    // 2) sibling dev repos — any sibling dir with plugin.json
     let here = exec("pwd").trim()
     let parent = exec("cd '" + here + "/..' && pwd 2>/dev/null").trim()
     if parent != "" {
-        let sibs = exec("ls '" + parent + "' 2>/dev/null | grep -E 'airgenome-'").trim()
+        let sibs = exec("ls '" + parent + "' 2>/dev/null").trim()
         if sibs != "" {
             let slines = sibs.split("\n")
             let j = 0
@@ -118,10 +118,10 @@ fn dispatch_exe(path: str) -> int {
     if handler == "" {
         println("airgenome: no .exe handler plugin installed.")
         println("")
-        println("Install gamebox plugin (manual step):")
-        println("  git clone https://github.com/dancinlife/airgenome-gamebox ~/.airgenome/plugins/gamebox")
+        println("Install an exe handler plugin (e.g. gamebox):")
+        println("  git clone https://github.com/need-singularity/gamebox ~/.airgenome/plugins/gamebox")
         println("")
-        println("Or dev mode: place airgenome-gamebox/ next to airgenome/ (auto-discovered).")
+        println("Or dev mode: place plugin dir (with plugin.json) next to airgenome/ (auto-discovered).")
         return 1
     }
     let dir = plugin_dir(handler)
