@@ -103,6 +103,6 @@ C3-5 — **2-census FD-age proxy degenerate at first run**: first cycle has no p
 
 ## §F. Verdict
 
-- V3 Σ = **400/400** ≥ 380 → **만점 IMPL** (`modules/filters/process/keepalive_state_optimizer.hexa`).
+- V3 Σ = **400/400** ≥ 380 → **만점 IMPL** (`filters/module/process/keepalive_state_optimizer.hexa`).
 - Bench: `tool/bench/bench_nw_c2_keepalive_state_optimizer.hexa` synth 600-conn decision throughput (rule scan vs dict-lookup).
 - Expected ROI: 600 decisions in <10ms (synth); per-conn decision <20us; ring overhead <5KB per cycle.

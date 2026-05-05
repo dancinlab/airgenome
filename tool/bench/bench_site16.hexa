@@ -1,7 +1,7 @@
 // tool/bench/bench_site16.hexa — own 8 site-16 baseline
 // (predictive_throttle gentle_bootout_mac launchctl list awk filter)
 //
-// modules/predictive_throttle.hexa#gentle_bootout_mac (L162-178):
+// predictive_throttle/module/predictive_throttle.hexa#gentle_bootout_mac (L162-178):
 //   site-16 OLD: exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./{print $3}'")
 //                = launchctl fork (필수 system query) + awk fork (제거 가능)
 //   NEW:        exec("launchctl list 2>/dev/null") + in-hexa column-3 startswith scan
@@ -15,7 +15,7 @@
 // awk fork 1회 제거 (~ms 단위) — launchctl 자체가 dominant 일 수 있어 negative 가능성.
 // 측정 후 결정.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let CYCLES = 50  // 50 cycles — gentle_bootout_mac 는 발화 시점에만 호출 (rare path)
 
@@ -27,7 +27,7 @@ fn ns_diff(t0: str, t1: str) -> int {
     return to_int(t1) - to_int(t0)
 }
 
-// OLD: exec("launchctl list | awk ...") — modules/predictive_throttle.hexa#gentle_bootout_mac L163 정확 복제
+// OLD: exec("launchctl list | awk ...") — predictive_throttle/module/predictive_throttle.hexa#gentle_bootout_mac L163 정확 복제
 fn old_list_airgenome() -> list {
     let raw = exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./{print $3}'")
     let lines = raw.split("\n")

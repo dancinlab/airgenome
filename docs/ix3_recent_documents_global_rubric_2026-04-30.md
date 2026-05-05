@@ -117,7 +117,7 @@ V4 wins: app-id u8 dict (bundle-id → idx, ≤255) gives O(1) GROUP BY app + 1-
 
 1. `/Users/ghost/core/airgenome/docs/ix3_recent_documents_global_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/ix3_recent_documents_global_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/recent_documents_global.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/recent_documents_global.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_ix3_recent_documents_global.hexa`
 
 **Final IX3 score: 400/400 (V2 base ceiling, B10 deliberately deferred — atomic per-file replacement is not stream-rotation).**

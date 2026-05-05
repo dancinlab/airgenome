@@ -11,12 +11,12 @@ Host: darwin-arm64 (Apple Silicon), `~/.airgenome/loop-run-once.log` 캡처.
 
 | # | Filter | Path | Wall | Exit | Output Status |
 |---|--------|------|------|------|---------------|
-| 1 | anomaly | `modules/filters/transport/anomaly.hexa` | 0.46s | 0 | parse-warn (try/catch 4건) → run → `[anomaly] skip: 0 rows < 5` (baseline 부족 — genomes.log empty) |
-| 2 | client | `modules/filters/transport/client.hexa` | 0.49s | 0 | parse-warn (try/catch 4건) → `printenv: not found` → `nc -q invalid` → soft-exit (BusyBox nc fallback) |
-| 3 | safari_mmap (E4) | `modules/filters/data/safari_mmap.hexa` | 0.25s | 0 | OK — encode 19.9ms, urls=2058, blob=383.5KB (7.6%), **blob 18.7μs/q vs sqlite cold 395.2μs → 21.1× / persistent 50.5μs → 2.7×** |
-| 4 | safari_bookmarks_shbf (F18) | `modules/filters/data/safari_bookmarks_shbf.hexa` | 1.82s | 0 | OK — encode 3.8ms, urls=55 (실 사용자), blob=3.7KB (1.4%), **blob 3.1μs/q vs plistlib cold 1147.4μs → 365.0× / persistent 4.8μs → 1.5×** |
-| 5 | prefix_trie_mmap (F58 PTBF) | `modules/filters/data/prefix_trie_mmap.hexa` | **2.91s** | 0 | OK first-measurement — encode 25.2ms, n=10000 synth, blob=265.4KB (raw_est 499.9KB → **53.1%**), **bisect 54.9μs/q (linear→bisect 13.9×)**; trie traversal 5696.9μs/q **0.1× (slower)** |
-| 6 | dns_blocklist_aho_corasick (F7) | `modules/filters/transport/dns_blocklist_aho_corasick.hexa` | 35.1s | 137 | **TIMEOUT/SIGKILL** — default mode=encode AC trie build 10K domains in pure-hexa hangs at "loaded 10000 domains in 152ms" then watchdog SIGKILL. bench mode 별도 실행 필요. 이전 측정 (`bench_f7_dns_blocklist.hexa`) 의 hashset 66μs/q vs AC 357μs/q 본 wave 재현 미달성 — entry point 가 bench harness 가 아닌 default encode. |
+| 1 | anomaly | `filters/module/transport/anomaly.hexa` | 0.46s | 0 | parse-warn (try/catch 4건) → run → `[anomaly] skip: 0 rows < 5` (baseline 부족 — genomes.log empty) |
+| 2 | client | `filters/module/transport/client.hexa` | 0.49s | 0 | parse-warn (try/catch 4건) → `printenv: not found` → `nc -q invalid` → soft-exit (BusyBox nc fallback) |
+| 3 | safari_mmap (E4) | `filters/module/data/safari_mmap.hexa` | 0.25s | 0 | OK — encode 19.9ms, urls=2058, blob=383.5KB (7.6%), **blob 18.7μs/q vs sqlite cold 395.2μs → 21.1× / persistent 50.5μs → 2.7×** |
+| 4 | safari_bookmarks_shbf (F18) | `filters/module/data/safari_bookmarks_shbf.hexa` | 1.82s | 0 | OK — encode 3.8ms, urls=55 (실 사용자), blob=3.7KB (1.4%), **blob 3.1μs/q vs plistlib cold 1147.4μs → 365.0× / persistent 4.8μs → 1.5×** |
+| 5 | prefix_trie_mmap (F58 PTBF) | `filters/module/data/prefix_trie_mmap.hexa` | **2.91s** | 0 | OK first-measurement — encode 25.2ms, n=10000 synth, blob=265.4KB (raw_est 499.9KB → **53.1%**), **bisect 54.9μs/q (linear→bisect 13.9×)**; trie traversal 5696.9μs/q **0.1× (slower)** |
+| 6 | dns_blocklist_aho_corasick (F7) | `filters/module/transport/dns_blocklist_aho_corasick.hexa` | 35.1s | 137 | **TIMEOUT/SIGKILL** — default mode=encode AC trie build 10K domains in pure-hexa hangs at "loaded 10000 domains in 152ms" then watchdog SIGKILL. bench mode 별도 실행 필요. 이전 측정 (`bench_f7_dns_blocklist.hexa`) 의 hashset 66μs/q vs AC 357μs/q 본 wave 재현 미달성 — entry point 가 bench harness 가 아닌 default encode. |
 
 5-tuple 요약 (filter, mode, exit, wall_s, key-metric):
 ```
@@ -44,7 +44,7 @@ Host: darwin-arm64 (Apple Silicon), `~/.airgenome/loop-run-once.log` 캡처.
 
 ## 3. PTBF 첫 측정값 (압축률 + query latency)
 
-`modules/filters/data/prefix_trie_mmap.hexa` (F58 PTBF variant):
+`filters/module/data/prefix_trie_mmap.hexa` (F58 PTBF variant):
 
 - **압축률**: blob 265.4KB / raw_est 499.9KB = **53.1%** of raw
   - 추정 1.8% (safari_bench 의 `prefix_trie_pct: 1.8`) **미달성** — 이는 safari_bench 가 sorted real URL 의 common-prefix dedup 에서 1.8% 도달했고, 본 PTBF 는 synthetic 10K URL (rng path/sub) 로 prefix 다양성 ↑ → cp 누적 덜됨.

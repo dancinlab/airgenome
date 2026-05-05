@@ -1,7 +1,7 @@
 // tool/bench/bench_site13.hexa — own 8 site-13 + site-14 baseline
 // (predictive_throttle append_history + read_history fork → in-hexa)
 //
-// modules/predictive_throttle.hexa#append_history (L46-56) + #read_history (L58-70):
+// predictive_throttle/module/predictive_throttle.hexa#append_history (L46-56) + #read_history (L58-70):
 //   site-13 OLD: per-cycle exec(printf '%s\n' >> HISTORY)  + exec(wc -l)  + 옵션 rotate (tail+mv)
 //                = 2-4 fork/cycle
 //   site-14 OLD: read_history per call exec("tail -N HISTORY | jq -r '.field'") = 1 fork/call,
@@ -12,7 +12,7 @@
 // MAX_HISTORY=30 라 in-hexa list concat O(n²) 안전 영역 (own 6 site-7 5000 라인
 // 부정 사례 와 다름 — 30 elements = 900 ops, 무시).
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let BENCH_HISTORY = "/tmp/airgenome_bench_site13.jsonl"
 let MAX_HISTORY = 30

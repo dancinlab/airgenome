@@ -9,11 +9,11 @@
 
 | # | Filter | Before | After | `hexa parse` |
 |---|---|---|---|---|
-| E1 | `modules/filters/data/claude_quantum.hexa` | 2 try/catch (date, perl-exec) | 0 | **PASS** |
-| E2 | `modules/filters/data/claude_bytes.hexa` | 2 try/catch (date, perl-exec) | 0 | **PASS** |
-| E3 | `modules/filters/data/claude_runtime.hexa` | 2 try/catch (date, perl-exec) | 0 | **PASS** |
-| —  | `modules/filters/transport/anomaly.hexa` | 11 try/catch (parse + exec mix) | 0 | **PASS** |
-| —  | `modules/filters/transport/client.hexa` | 5 try/catch + `nc -q` invalid on Darwin | 0 | **PASS** |
+| E1 | `filters/module/data/claude_quantum.hexa` | 2 try/catch (date, perl-exec) | 0 | **PASS** |
+| E2 | `filters/module/data/claude_bytes.hexa` | 2 try/catch (date, perl-exec) | 0 | **PASS** |
+| E3 | `filters/module/data/claude_runtime.hexa` | 2 try/catch (date, perl-exec) | 0 | **PASS** |
+| —  | `filters/module/transport/anomaly.hexa` | 11 try/catch (parse + exec mix) | 0 | **PASS** |
+| —  | `filters/module/transport/client.hexa` | 5 try/catch + `nc -q` invalid on Darwin | 0 | **PASS** |
 
 **Total**: 22 try/catch sites removed across 5 files. `hexa parse <file>` clean for all 5.
 
@@ -117,10 +117,10 @@ Run via `airgenome.app --mode=run-once` → exit=0 silent.
 
 ## 5. Files Touched (no commits — main agent will batch)
 
-- `modules/filters/data/claude_quantum.hexa` — try/catch ×2 → 0
-- `modules/filters/data/claude_bytes.hexa` — try/catch ×2 → 0
-- `modules/filters/data/claude_runtime.hexa` — try/catch ×2 → 0
-- `modules/filters/transport/anomaly.hexa` — try/catch ×11 → 0 (added is_numeric_str / to_float_safe / to_int_safe inline helpers)
-- `modules/filters/transport/client.hexa` — try/catch ×5 → 0; `nc -q` → uname-branched flag
+- `filters/module/data/claude_quantum.hexa` — try/catch ×2 → 0
+- `filters/module/data/claude_bytes.hexa` — try/catch ×2 → 0
+- `filters/module/data/claude_runtime.hexa` — try/catch ×2 → 0
+- `filters/module/transport/anomaly.hexa` — try/catch ×11 → 0 (added is_numeric_str / to_float_safe / to_int_safe inline helpers)
+- `filters/module/transport/client.hexa` — try/catch ×5 → 0; `nc -q` → uname-branched flag
 
 All 5 files pass `hexa parse` clean. 3 of 5 measured against live 5.23 MB JSONL corpus; 1 against synthetic fixture; 1 dry-run only (production validation gated on Linux-side socket).

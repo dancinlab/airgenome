@@ -1,0 +1,238 @@
+// filters/module/data/claude_cwd_session_inverted_index.hexa
+//   C8 — Claude session JSONL → cwd inverted index (#13) + roaring-style bitmap (#14).
+//
+//   목적: ~/.claude*/projects/<repo-slug>/<session>.jsonl 안에 흩어진
+//         { cwd, session_id } 매핑을 매번 linear scan 하던 워크플로우를,
+//         하나의 mmap blob 으로 치환. cwd → session_id list 즉시 lookup.
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "CCWD"
+//     version : 4B  u32  (1)
+//     n_cwd   : 4B  u32  unique cwd count
+//     n_sess  : 4B  u32  total session count
+//     str_sz  : 4B  u32  cwd pool 바이트
+//     [n_cwd*4]: u32 cwd_offs   pool 내 시작
+//     [n_cwd*4]: u32 cwd_lens   length
+//     [n_cwd*4]: u32 post_off   posting list 시작 (in posting blob)
+//     [n_cwd*4]: u32 post_len   posting list 길이 (#sessions)
+//     [str_sz] : utf-8 cwd pool (정렬된 cwd)
+//     posting  : u32[total_sessions] — session_id index (per-cwd, sorted)
+//     sess_pool_sz : 4B u32
+//     [n_sess*4]   : u32 sess_offs
+//     [n_sess*4]   : u32 sess_lens
+//     [sess_pool_sz]: utf-8 session-id pool
+//
+//   query: cwd → bisect cwd pool → posting list → session_id list. instant.
+//
+// 모드:
+//   encode : ~/.claude*/projects 전부 스캔 → /tmp/claude_cwd_idx.bin
+//   bench  : encode + linear vs blob lookup (50 query)
+//
+// R1 HEXA-FIRST: 인라인 python3.
+
+let PAYLOAD = "import sys,os,glob,json,struct,time,bisect,array,mmap,resource,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/claude_cwd_idx.bin'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"\n" +
+"def find_session_files():\n" +
+"    out=[]\n" +
+"    for root in glob.glob(HOME+'/.claude*/projects'):\n" +
+"        for proj in os.listdir(root):\n" +
+"            pdir=os.path.join(root,proj)\n" +
+"            if not os.path.isdir(pdir): continue\n" +
+"            for fn in os.listdir(pdir):\n" +
+"                if fn.endswith('.jsonl'):\n" +
+"                    out.append(os.path.join(pdir,fn))\n" +
+"    return out\n" +
+"\n" +
+"def first_cwd(path):\n" +
+"    # session 의 첫 user line 의 cwd 만 채집 (대부분 session 내내 동일)\n" +
+"    f=None\n" +
+"    try:\n" +
+"        f=open(path,'rb')\n" +
+"        cnt=0\n" +
+"        while cnt<8:\n" +
+"            ln=f.readline()\n" +
+"            if not ln: break\n" +
+"            cnt+=1\n" +
+"            i=ln.find(b'\\\"cwd\\\":')\n" +
+"            if i<0: continue\n" +
+"            j=ln.find(b'\\\"',i+7)\n" +
+"            if j<0: continue\n" +
+"            k=ln.find(b'\\\"',j+1)\n" +
+"            if k<0: continue\n" +
+"            return ln[j+1:k].decode('utf-8','replace')\n" +
+"    finally:\n" +
+"        if f is not None: f.close()\n" +
+"    return ''\n" +
+"\n" +
+"def collect():\n" +
+"    files=find_session_files()\n" +
+"    pairs=[]\n" +
+"    for fp in files:\n" +
+"        sid=os.path.basename(fp)[:-6]\n" +
+"        c=first_cwd(fp)\n" +
+"        if c: pairs.append((c,sid))\n" +
+"    return pairs\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    pairs=collect()\n" +
+"    # session_id pool (정렬 없이 etc 입력 순서)\n" +
+"    sids=sorted({s for _,s in pairs})\n" +
+"    sid_to_idx={s:i for i,s in enumerate(sids)}\n" +
+"    # cwd → posting list\n" +
+"    posting={}\n" +
+"    for c,s in pairs:\n" +
+"        posting.setdefault(c,[]).append(sid_to_idx[s])\n" +
+"    cwds=sorted(posting.keys())\n" +
+"    n_cwd=len(cwds); n_sess=len(sids)\n" +
+"    cwd_pool=bytearray()\n" +
+"    cwd_offs=array.array('I',[0]*n_cwd)\n" +
+"    cwd_lens=array.array('I',[0]*n_cwd)\n" +
+"    post_off=array.array('I',[0]*n_cwd)\n" +
+"    post_len=array.array('I',[0]*n_cwd)\n" +
+"    posting_blob=bytearray()\n" +
+"    cur=0\n" +
+"    for i,c in enumerate(cwds):\n" +
+"        cb=c.encode('utf-8','replace')\n" +
+"        cwd_offs[i]=len(cwd_pool); cwd_lens[i]=len(cb)\n" +
+"        cwd_pool.extend(cb)\n" +
+"        ids=sorted(set(posting[c]))\n" +
+"        post_off[i]=cur; post_len[i]=len(ids)\n" +
+"        posting_blob.extend(array.array('I',ids).tobytes())\n" +
+"        cur+=len(ids)\n" +
+"    sess_pool=bytearray()\n" +
+"    sess_offs=array.array('I',[0]*n_sess)\n" +
+"    sess_lens=array.array('I',[0]*n_sess)\n" +
+"    for i,s in enumerate(sids):\n" +
+"        sb=s.encode('utf-8','replace')\n" +
+"        sess_offs[i]=len(sess_pool); sess_lens[i]=len(sb)\n" +
+"        sess_pool.extend(sb)\n" +
+"    header=struct.pack('<4sIIII',b'CCWD',1,n_cwd,n_sess,len(cwd_pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(cwd_offs.tobytes()); f.write(cwd_lens.tobytes())\n" +
+"        f.write(post_off.tobytes()); f.write(post_len.tobytes())\n" +
+"        f.write(bytes(cwd_pool))\n" +
+"        f.write(bytes(posting_blob))\n" +
+"        f.write(struct.pack('<I',len(sess_pool)))\n" +
+"        f.write(sess_offs.tobytes()); f.write(sess_lens.tobytes())\n" +
+"        f.write(bytes(sess_pool))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'encode_ns':t1-t0,'n_cwd':n_cwd,'n_sess':n_sess,'pairs':pairs,'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"class CwdIndex:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n_cwd,n_sess,str_sz=struct.unpack_from('<4sIIII',self.mm,0)\n" +
+"        assert magic==b'CCWD' and ver==1\n" +
+"        self.n_cwd=n_cwd; self.n_sess=n_sess\n" +
+"        base=20\n" +
+"        self.cwd_offs=array.array('I'); self.cwd_offs.frombytes(self.mm[base:base+4*n_cwd])\n" +
+"        b1=base+4*n_cwd\n" +
+"        self.cwd_lens=array.array('I'); self.cwd_lens.frombytes(self.mm[b1:b1+4*n_cwd])\n" +
+"        b2=b1+4*n_cwd\n" +
+"        self.post_off=array.array('I'); self.post_off.frombytes(self.mm[b2:b2+4*n_cwd])\n" +
+"        b3=b2+4*n_cwd\n" +
+"        self.post_len=array.array('I'); self.post_len.frombytes(self.mm[b3:b3+4*n_cwd])\n" +
+"        b4=b3+4*n_cwd\n" +
+"        self.cwd_pool=bytes(self.mm[b4:b4+str_sz])\n" +
+"        b5=b4+str_sz\n" +
+"        # posting blob: 길이는 sum(post_len) 이지만 sess_pool_sz 이전까지\n" +
+"        post_total=sum(self.post_len)\n" +
+"        self.posting=array.array('I'); self.posting.frombytes(self.mm[b5:b5+4*post_total])\n" +
+"        b6=b5+4*post_total\n" +
+"        sess_pool_sz=struct.unpack_from('<I',self.mm,b6)[0]\n" +
+"        b7=b6+4\n" +
+"        self.sess_offs=array.array('I'); self.sess_offs.frombytes(self.mm[b7:b7+4*n_sess])\n" +
+"        b8=b7+4*n_sess\n" +
+"        self.sess_lens=array.array('I'); self.sess_lens.frombytes(self.mm[b8:b8+4*n_sess])\n" +
+"        b9=b8+4*n_sess\n" +
+"        self.sess_pool=bytes(self.mm[b9:b9+sess_pool_sz])\n" +
+"        # cwd 정렬되어 있으므로 bisect 가능. cwd 키 list 만 미리 추출.\n" +
+"        self.cwds=[bytes(self.cwd_pool[self.cwd_offs[i]:self.cwd_offs[i]+self.cwd_lens[i]]) for i in range(n_cwd)]\n" +
+"    def lookup(self,cwd):\n" +
+"        cb=cwd.encode('utf-8') if isinstance(cwd,str) else cwd\n" +
+"        i=bisect.bisect_left(self.cwds,cb)\n" +
+"        if i>=self.n_cwd or self.cwds[i]!=cb: return []\n" +
+"        off=self.post_off[i]; ln=self.post_len[i]\n" +
+"        ids=self.posting[off:off+ln]\n" +
+"        return [bytes(self.sess_pool[self.sess_offs[j]:self.sess_offs[j]+self.sess_lens[j]]).decode('utf-8','replace') for j in ids]\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def linear_lookup(pairs,cwd):\n" +
+"    return [s for c,s in pairs if c==cwd]\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    pairs=info['pairs']\n" +
+"    print(f'[encode] {info[\"encode_ns\"]/1e6:.1f}ms n_cwd={info[\"n_cwd\"]} n_sess={info[\"n_sess\"]} blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n_cwd']==0:\n" +
+"        print('[bench] no sessions — skip'); return\n" +
+"    idx=CwdIndex(BIN)\n" +
+"    random.seed(42)\n" +
+"    cwds=sorted({c for c,_ in pairs})\n" +
+"    samples=[random.choice(cwds) for _ in range(50)]\n" +
+"    # warmup\n" +
+"    for s in samples[:5]: idx.lookup(s)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    nh=0\n" +
+"    for s in samples: nh+=len(idx.lookup(s))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    blob_ns=(t1-t0)//len(samples)\n" +
+"    # OLD: linear scan over pairs\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    nh2=0\n" +
+"    for s in samples: nh2+=len(linear_lookup(pairs,s))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    lin_ns=(t1-t0)//len(samples)\n" +
+"    idx.close()\n" +
+"    print(f'[query 50] hits blob={nh} linear={nh2}')\n" +
+"    print(f'  linear scan all sessions   : {lin_ns:10d} ns/query')\n" +
+"    print(f'  blob mmap + bisect+posting : {blob_ns:10d} ns/query')\n" +
+"    if blob_ns>0:\n" +
+"        ratio=lin_ns/blob_ns\n" +
+"        saved=((lin_ns-blob_ns)*100)//max(lin_ns,1)\n" +
+"        print(f'  speedup={ratio:.1f}x saved={saved}%')\n" +
+"    print(f'[rss] {fmt(rss())}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode()\n" +
+"    print(f'encoded {info[\"n_cwd\"]} cwds / {info[\"n_sess\"]} sessions in {info[\"encode_ns\"]/1e6:.1f}ms → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("claude_cwd_session_inverted_index")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/claude_cwd_idx_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

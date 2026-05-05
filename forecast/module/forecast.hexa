@@ -1,0 +1,359 @@
+// forecast/module/forecast.hexa — 7d genome 추세 → 1h 예측 (M6 + M11d)
+//
+// 책임:
+//   1. forge/<ring>.ring 의 최근 N 게놈 (7d 등가) 스캔
+//      - 단일호스트: genomes.ring (기본)
+//      - 멀티호스트: AIRGENOME_RING_NAME=genomes.unified.ring (host 필드 + pid="host.pid")
+//   2. 각 KEY (=pid string) ×axis 별 Holt's 이중 지수평활 (level + trend) 적합
+//      - unified ring 의 pid 는 "host.pid" string → host×pid 2차원이 자동으로 분리됨
+//   3. 1-step ahead 예측 = level + h*trend → forge/forecast.jsonl 한 줄/KEY (host 보존)
+//
+// 평가 (self-test):
+//   - 합성 선형 시리즈 (slope=k, noise≈0) 로 fit
+//   - held-out 마지막 1점 예측 → MAE < 15%
+//
+// 알고리즘 (Holt's linear, int 연산만):
+//   alpha = 30/100 (level smoothing), beta = 20/100 (trend smoothing)
+//   level_t = alpha*y_t + (100-alpha)*(level_{t-1} + trend_{t-1}), 100-scale
+//   trend_t = beta*(level_t - level_{t-1}) + (100-beta)*trend_{t-1}
+//   forecast(t+1) = level_t + trend_t
+//
+// 제약:
+//   - use "../../airgenome/core/airgenome" 만
+//   - try/catch 미사용
+//   - int 연산만 (float quirk 우회)
+
+use "../../airgenome/core/airgenome"
+
+let RING = default_ring_path()
+let OUT  = ring_path("forecast.jsonl")
+let SCAN_LINES = 5000
+let TOP_N_PIDS = 20
+
+let ALPHA_NUM = 50   // alpha = 50/100 — responsive to recent
+let BETA_NUM  = 50   // beta  = 50/100 — responsive trend (선형 시리즈에서 MAE<15% 만족)
+
+// own 6 site-6: per-genome per-key exec(echo|jq) → in-hexa anchor + slice (0 fork).
+// expr 형식: ".key" (top-level scalar). .vitals[i] 는 vit_at() 별도 사용.
+// 측정: tool/bench/bench_site6.hexa — 6.09ms→3.69μs/call (1649×, 99%↓), diff_test=0/800.
+fn jq_field(line: str, expr: str) -> str {
+    if line == "" { return "" }
+    if len(expr) < 2 { return "" }
+    let key = expr.substring(1, len(expr))
+    let anchor = "\"" + key + "\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return "" }
+    let after = parts[1]
+    if len(after) == 0 { return "" }
+    let c0 = after.substring(0, 1)
+    if c0 == "\"" {
+        let body = after.substring(1, len(after))
+        let end_split = body.split("\"")
+        if len(end_split) < 1 { return "" }
+        return end_split[0]
+    }
+    let mut i = 0
+    let n = len(after)
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return after.substring(0, i).trim() }
+        if ch == "}" { return after.substring(0, i).trim() }
+        if ch == "]" { return after.substring(0, i).trim() }
+        i = i + 1
+    }
+    return after.trim()
+}
+
+fn to_int_safe(s: str) -> int {
+    if s == "" { return 0 }
+    let parts = s.split(".")
+    if len(parts) == 0 { return 0 }
+    if parts[0] == "" { return 0 }
+    return to_int(parts[0])
+}
+
+// own 6 site-6 동반: vitals[idx] in-hexa 추출 — own 5 site-2 (harvest.hexa) 패턴 이식.
+fn vit_at(line: str, idx: int) -> int {
+    if line == "" { return 0 }
+    let parts = line.split("\"vitals\":[")
+    if len(parts) < 2 { return 0 }
+    let after_open = parts[1]
+    let close_split = after_open.split("]")
+    if len(close_split) < 1 { return 0 }
+    let inner = close_split[0]
+    let nums = inner.split(",")
+    if idx < 0 { return 0 }
+    if idx >= len(nums) { return 0 }
+    let s = nums[idx].trim()
+    if s == "" { return 0 }
+    let dot_parts = s.split(".")
+    if len(dot_parts) == 0 { return 0 }
+    if dot_parts[0] == "" { return 0 }
+    return to_int(dot_parts[0])
+}
+
+// Holt 한 스텝 갱신
+struct HoltState {
+    level: int,
+    trend: int,
+    initialized: bool,
+    prev_level: int
+}
+
+fn holt_init() -> HoltState {
+    return HoltState { level: 0, trend: 0, initialized: false, prev_level: 0 }
+}
+
+fn holt_step(s: HoltState, y: int) -> HoltState {
+    if !s.initialized {
+        s.level = y
+        s.trend = 0
+        s.prev_level = y
+        s.initialized = true
+        return s
+    }
+    // smoothing — int 연산
+    // L_new = (alpha*y + (100-alpha)*(L + T)) / 100
+    let level_new = (ALPHA_NUM * y + (100 - ALPHA_NUM) * (s.level + s.trend)) / 100
+    // T_new = (beta*(L_new - L_old) + (100-beta)*T) / 100
+    let trend_new = (BETA_NUM * (level_new - s.level) + (100 - BETA_NUM) * s.trend) / 100
+    s.prev_level = s.level
+    s.level = level_new
+    s.trend = trend_new
+    return s
+}
+
+fn forecast_h(s: HoltState, h: int) -> int {
+    if !s.initialized { return 0 }
+    return s.level + h * s.trend
+}
+
+fn abs_int(x: int) -> int {
+    if x < 0 { return 0 - x }
+    return x
+}
+
+// MAE percentage = |pred - actual| * 100 / max(|actual|, 1)
+fn mae_pct(pred: int, actual: int) -> int {
+    let denom = abs_int(actual)
+    if denom < 1 { denom = 1 }
+    return abs_int(pred - actual) * 100 / denom
+}
+
+fn read_recent_genomes() -> list {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" { result = result + [l] }
+        i = i + 1
+    }
+    return result
+}
+
+// distinct KEYs (pid string — unified ring 일 때 "host.pid", 단일호스트 일 때 그냥 "pid")
+fn distinct_keys(genomes: list, cap: int) -> list {
+    let seen = []
+    let mut i = 0
+    while i < len(genomes) {
+        let key = jq_field(genomes[i], ".pid")
+        if key != "" {
+            let mut found = false
+            let mut j = 0
+            while j < len(seen) {
+                if seen[j] == key { found = true }
+                j = j + 1
+            }
+            if !found { seen = seen + [key] }
+        }
+        if len(seen) >= cap { return seen }
+        i = i + 1
+    }
+    return seen
+}
+
+// 특정 KEY (pid string) 의 시계열 (axis) 추출
+fn series_for_key(genomes: list, key: str, axis: int) -> list {
+    let result = []
+    let mut i = 0
+    while i < len(genomes) {
+        let g = genomes[i]
+        let p = jq_field(g, ".pid")
+        if p == key {
+            result = result + [vit_at(g, axis)]
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// KEY 의 host 추출 — unified ring 의 .host 우선, 없으면 "local"
+fn host_for_key(genomes: list, key: str) -> str {
+    let mut i = 0
+    while i < len(genomes) {
+        let g = genomes[i]
+        let p = jq_field(g, ".pid")
+        if p == key {
+            let h = jq_field(g, ".host")
+            if h != "" { return h }
+            return "local"
+        }
+        i = i + 1
+    }
+    return "local"
+}
+
+// 시리즈 fit + 1-step ahead 예측
+fn predict_one_ahead(series: list) -> int {
+    let mut s = holt_init()
+    let mut i = 0
+    while i < len(series) {
+        s = holt_step(s, series[i])
+        i = i + 1
+    }
+    return forecast_h(s, 1)
+}
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+// own 6 site-8: per-prediction exec(printf >>) → buffer + 단일 append_file batch.
+// 측정 (bench_site8.hexa): 2.79ms→55μs/line (50×, 98%↓), diff_byte_identical=true.
+// own 5 site-3 (harvest append_ring) 패턴 직접 이식. own 1 heredoc-arg-max-guard
+// 자연 만족 (append_file builtin).
+fn run_forecast() -> int {
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
+    let genomes = read_recent_genomes()
+    if len(genomes) == 0 { return 0 }
+
+    let keys = distinct_keys(genomes, TOP_N_PIDS)
+    let ts = ts_iso()
+    let mut buf = ""
+    let mut written = 0
+    let mut i = 0
+    while i < len(keys) {
+        let key = keys[i]
+        let s_cpu = series_for_key(genomes, key, 0)
+        let s_ram = series_for_key(genomes, key, 1)
+        if len(s_cpu) >= 2 {
+            let pred_cpu = predict_one_ahead(s_cpu)
+            let pred_ram = predict_one_ahead(s_ram)
+            let host = host_for_key(genomes, key)
+            let line = "{\"ts\":\"" + ts + "\",\"pid\":\"" + key + "\""
+                     + ",\"host\":\"" + host + "\""
+                     + ",\"horizon\":\"1step\",\"pred_cpu\":" + to_string(pred_cpu)
+                     + ",\"pred_ram\":" + to_string(pred_ram)
+                     + ",\"samples\":" + to_string(len(s_cpu)) + "}"
+            buf = buf + line + "\n"
+            written = written + 1
+        }
+        i = i + 1
+    }
+    if buf != "" {
+        append_file(OUT, buf)
+    }
+    return written
+}
+
+fn self_test() -> void {
+    // 1. holt_init
+    let s0 = holt_init()
+    if s0.initialized { panic("self_test FAIL [init flag]") }
+    if forecast_h(s0, 1) != 0 { panic("self_test FAIL [forecast empty]") }
+
+    // 2. holt_step 첫 sample → level=y, trend=0
+    let mut s1 = holt_init()
+    s1 = holt_step(s1, 50)
+    if !s1.initialized { panic("self_test FAIL [first step init]") }
+    if s1.level != 50 { panic("self_test FAIL [first step level]") }
+    if s1.trend != 0 { panic("self_test FAIL [first step trend]") }
+
+    // 3. abs_int
+    if abs_int(0 - 7) != 7 { panic("self_test FAIL [abs neg]") }
+
+    // 4. mae_pct boundary
+    if mae_pct(100, 100) != 0 { panic("self_test FAIL [mae perfect]") }
+    if mae_pct(110, 100) != 10 { panic("self_test FAIL [mae 10%]") }
+
+    // 5. 합성 선형 시리즈 — slope=10, 시작 0
+    //    series: 0,10,20,30,40,50,60,70,80,90 — held out 90, fit on 0..80
+    let train = [0, 10, 20, 30, 40, 50, 60, 70, 80]
+    let mut sH = holt_init()
+    let mut k = 0
+    while k < len(train) {
+        sH = holt_step(sH, train[k])
+        k = k + 1
+    }
+    let pred = forecast_h(sH, 1)
+    let actual = 90
+    let err = mae_pct(pred, actual)
+    if err >= 15 {
+        panic("self_test FAIL [linear MAE>=15%, got " + to_string(err) + "% pred=" + to_string(pred) + "]")
+    }
+
+    // 6. 합성 평탄 시리즈 — 모두 30 → trend=0, forecast=30, MAE=0
+    let flat = [30, 30, 30, 30, 30, 30, 30, 30]
+    let mut sF = holt_init()
+    let mut m = 0
+    while m < len(flat) {
+        sF = holt_step(sF, flat[m])
+        m = m + 1
+    }
+    let pred_f = forecast_h(sF, 1)
+    if mae_pct(pred_f, 30) >= 15 { panic("self_test FAIL [flat MAE]") }
+
+    // 7. distinct_keys + series_for_key + host_for_key (M11d unified ring 지원)
+    //    합성 unified-스타일 게놈 5건 (host=mac/ubu 섞임, pid="host.N" string)
+    let g_a = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[10,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
+    let g_b = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[20,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
+    let g_c = "{\"ts\":\"x\",\"pid\":\"ubu.1\",\"comm\":\"b\",\"vitals\":[80,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let g_d = "{\"ts\":\"x\",\"pid\":\"ubu.1\",\"comm\":\"b\",\"vitals\":[90,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let g_e = "{\"ts\":\"x\",\"pid\":\"htz.7\",\"comm\":\"c\",\"vitals\":[50,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"htz\"}"
+    let synth = [g_a, g_b, g_c, g_d, g_e]
+
+    let keys = distinct_keys(synth, 10)
+    if len(keys) != 3 { panic("self_test FAIL [distinct_keys count, got " + to_string(len(keys)) + "]") }
+    if keys[0] != "mac.1" { panic("self_test FAIL [distinct_keys[0]]") }
+    if keys[1] != "ubu.1" { panic("self_test FAIL [distinct_keys[1] — host.pid 분리 실패]") }
+    if keys[2] != "htz.7" { panic("self_test FAIL [distinct_keys[2]]") }
+
+    let s_mac = series_for_key(synth, "mac.1", 0)
+    if len(s_mac) != 2 { panic("self_test FAIL [series_for_key mac.1 count]") }
+    if s_mac[0] != 10 { panic("self_test FAIL [series_for_key mac.1[0]]") }
+    if s_mac[1] != 20 { panic("self_test FAIL [series_for_key mac.1[1]]") }
+
+    let s_ubu = series_for_key(synth, "ubu.1", 0)
+    if len(s_ubu) != 2 { panic("self_test FAIL [series_for_key ubu.1 count]") }
+    if s_ubu[0] != 80 { panic("self_test FAIL [series_for_key ubu.1[0] — pid 충돌!]") }
+
+    if host_for_key(synth, "ubu.1") != "ubu" { panic("self_test FAIL [host_for_key ubu]") }
+    if host_for_key(synth, "htz.7") != "htz" { panic("self_test FAIL [host_for_key htz]") }
+    if host_for_key(synth, "missing") != "local" { panic("self_test FAIL [host_for_key missing fallback]") }
+
+    // 8. 단일호스트 (host 필드 없는) record 도 동작
+    let g_legacy = "{\"ts\":\"x\",\"pid\":\"123\",\"comm\":\"d\",\"vitals\":[40,5,0,0,0,0],\"ema\":[0,0,0,0,0,0]}"
+    let leg_keys = distinct_keys([g_legacy], 5)
+    if len(leg_keys) != 1 { panic("self_test FAIL [legacy distinct_keys count]") }
+    if leg_keys[0] != "123" { panic("self_test FAIL [legacy distinct_keys value]") }
+    if host_for_key([g_legacy], "123") != "local" { panic("self_test FAIL [legacy host_for_key]") }
+
+    println("  ✅ forecast self_test PASS — linear MAE=" + to_string(err) + "% (<15%)")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" {
+            self_test()
+            return
+        }
+    }
+
+    let n = run_forecast()
+    println("forecast done — wrote " + to_string(n) + " predictions")
+}

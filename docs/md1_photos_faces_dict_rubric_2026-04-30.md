@@ -128,4 +128,4 @@ C3-6 — **ZDETECTEDFACE → ZPERSON join NULL surface**: faces detected but unc
 - MD1 hybrid Σ = **380/400** ≥ 350 → **IMPLEMENT**.
 - TCC: accessible on probe host (ZPERSON open OK) but row count = 0 → **synth fallback fires** (md1_zero_persons reason_code).
 - Pattern: MA3 mail_sender_dict #99 enum dict applied verbatim to ZPERSON surface + ZFACECOUNT u32 sidecar for top-K-by-face-count axis.
-- Deliverables (4 of 8): this .md + companion .rubric.jsonl + modules/filters/data/photos_faces_dict.hexa + tool/bench/bench_md1_photos_faces_dict.hexa.
+- Deliverables (4 of 8): this .md + companion .rubric.jsonl + filters/module/data/photos_faces_dict.hexa + tool/bench/bench_md1_photos_faces_dict.hexa.

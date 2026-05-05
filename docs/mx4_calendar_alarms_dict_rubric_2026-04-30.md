@@ -3,9 +3,9 @@
 Origin: 2026-04-30 — user directive: "Design + implement G. Mail/Calendar 보강 wave (4 filters)". MX4 = Calendar.sqlitedb ZALARM table (alarm time/type/relativeOffset enum dict).
 
 Pattern parents (READ FIRST):
-- `/Users/ghost/core/airgenome/modules/filters/data/mail_sender_dict.hexa` (MA3, 400) — 1B enum dict.
-- `/Users/ghost/core/airgenome/modules/filters/data/calendar_event_shbf.hexa` (CA1) — Calendar.sqlitedb path probe.
-- `/Users/ghost/core/airgenome/modules/filters/data/calendar_recurring_pack.hexa` (CA2) — bit-pack record per RRule (relevant pattern: pack alarm fields into u64 record).
+- `/Users/ghost/core/airgenome/filters/module/data/mail_sender_dict.hexa` (MA3, 400) — 1B enum dict.
+- `/Users/ghost/core/airgenome/filters/module/data/calendar_event_shbf.hexa` (CA1) — Calendar.sqlitedb path probe.
+- `/Users/ghost/core/airgenome/filters/module/data/calendar_recurring_pack.hexa` (CA2) — bit-pack record per RRule (relevant pattern: pack alarm fields into u64 record).
 
 Rubric source: `/Users/ghost/core/hive/.raw` raw 240 V2. 9 blocks, 400pt ceiling.
 
@@ -71,7 +71,7 @@ Total honest-C3 gap count: **4**.
 
 ## Deliverables
 
-- Filter:    `/Users/ghost/core/airgenome/modules/filters/data/calendar_alarms_dict.hexa`
+- Filter:    `/Users/ghost/core/airgenome/filters/module/data/calendar_alarms_dict.hexa`
 - Bench:     `/Users/ghost/core/airgenome/tool/bench/bench_mx4_calendar_alarms_dict.hexa`
 - Rubric md: `/Users/ghost/core/airgenome/docs/mx4_calendar_alarms_dict_rubric_2026-04-30.md`
 - Rubric jsonl: `/Users/ghost/core/airgenome/docs/mx4_calendar_alarms_dict_rubric_2026-04-30.rubric.jsonl`

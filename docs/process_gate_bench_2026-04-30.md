@@ -1,7 +1,7 @@
 # Mac process gate 7 filter — production-test + 측정 + hexa-lang gap
 
 **일자**: 2026-04-30
-**대상**: `modules/filters/process/` 의 Type A 프로세스 게이트 7종 (compute.hexa 는 L0/AG6 mark — 본 wave 제외)
+**대상**: `filters/module/process/` 의 Type A 프로세스 게이트 7종 (compute.hexa 는 L0/AG6 mark — 본 wave 제외)
 **환경**: macOS (Darwin 25.4.0), airgenome 단일 binary `--mode=run-once=`, hexa interpreter
 **실행 방식**: `/Applications/airgenome.app/Contents/MacOS/airgenome --mode=run-once=<filter> --timeout=60`
 **상태**: read-only 측정 — 코드 수정 0, git commit 0, hive/hexa-lang touch 0, taskpolicy_bg 실 적용 0 (filter 가 추천만 emit)
@@ -108,7 +108,7 @@ pub fn pfs_mtime(path: string) -> int    // unix epoch sec, 미존재 = -1
 pub fn pfs_now_sec() -> int              // wall clock (이미 pfs_now_ns 존재 → /1e9 wrap도 가능)
 ```
 
-**Caller in airgenome**: `modules/filters/process/claude.hexa#claude_dir loop`. 적용시 N instance × 3 fork → 0 fork (~50× per instance).
+**Caller in airgenome**: `filters/module/process/claude.hexa#claude_dir loop`. 적용시 N instance × 3 fork → 0 fork (~50× per instance).
 
 **Priority**: 🟡 medium — claude 가 multi-instance 시 큰 win, 단 instance 1개면 작음.
 
@@ -140,8 +140,8 @@ pub fn json_field_float(s: string, key: string) -> float
 
 | 후보 | 본 wave 에서 surface? | 비고 |
 |---|---|---|
-| A1 (pfs_clone) | no | core/core.hexa rotate — 본 wave 무관 |
-| A2 (xxh64 stdlib) | no | core/core.hexa fingerprint — 본 wave 무관 |
+| A1 (pfs_clone) | no | airgenome/core/airgenome.hexa rotate — 본 wave 무관 |
+| A2 (xxh64 stdlib) | no | airgenome/core/airgenome.hexa fingerprint — 본 wave 무관 |
 | A3 (pfs_tail_lines) | no | harvest 영역 |
 | A4 (pfs_now_ns bench) | no | bench harness |
 | A5 (pfs_writev) | no | append_ring — 본 wave 무관 |

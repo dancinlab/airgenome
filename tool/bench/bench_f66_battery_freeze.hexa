@@ -1,6 +1,6 @@
 // tool/bench/bench_f66_battery_freeze.hexa — F66 5-tuple bench
 //
-// Target: modules/filters/process/safari_battery_freeze_filter.hexa
+// Target: filters/module/process/safari_battery_freeze_filter.hexa
 //
 // OLD:
 //   1) pmset -g batt → fork 1
@@ -17,7 +17,7 @@
 //   4) 1회 append_file → 0 fork
 //   합계: 2 fork/cycle 고정
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 fn is_numeric_str(s: str) -> bool {
     let n = len(s)

@@ -3,8 +3,8 @@
 Origin: 2026-04-30 — user directive: "Design + implement G. Mail/Calendar 보강 wave (4 filters) for airgenome with raw 240 V2 rubric". MX1 = `~/Library/Mail/V*/MailData/SyncedRules.plist` rule-name dict + criteria column.
 
 Pattern parents (READ FIRST):
-- `/Users/ghost/core/airgenome/modules/filters/data/mail_sender_dict.hexa` (MA3, score 400) — 1B enum dict + sorted name pool, sqlite source.
-- `/Users/ghost/core/airgenome/modules/filters/data/mail_envelope_shbf.hexa` (MA1, score ~395 with V10 schema fix) — Mail/V<n>/MailData path probe + immutable=1 RO open.
+- `/Users/ghost/core/airgenome/filters/module/data/mail_sender_dict.hexa` (MA3, score 400) — 1B enum dict + sorted name pool, sqlite source.
+- `/Users/ghost/core/airgenome/filters/module/data/mail_envelope_shbf.hexa` (MA1, score ~395 with V10 schema fix) — Mail/V<n>/MailData path probe + immutable=1 RO open.
 
 Rubric source: `/Users/ghost/core/hive/.raw` raw 240 V2. 9 blocks, 400pt ceiling.
 
@@ -74,7 +74,7 @@ Total honest-C3 gap count: **4**.
 
 ## Deliverables
 
-- Filter:    `/Users/ghost/core/airgenome/modules/filters/data/mail_rules_dict.hexa`
+- Filter:    `/Users/ghost/core/airgenome/filters/module/data/mail_rules_dict.hexa`
 - Bench:     `/Users/ghost/core/airgenome/tool/bench/bench_mx1_mail_rules_dict.hexa`
 - Rubric md: `/Users/ghost/core/airgenome/docs/mx1_mail_rules_dict_rubric_2026-04-30.md` (this file)
 - Rubric jsonl: `/Users/ghost/core/airgenome/docs/mx1_mail_rules_dict_rubric_2026-04-30.rubric.jsonl`

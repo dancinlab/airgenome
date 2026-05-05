@@ -100,6 +100,6 @@ C3-5 — **synth fallback 신뢰성**: Chrome 항상 running 일 때 real signal
 
 ## §F. Verdict
 
-- BR1-h Σ = **376/400** ≥ 350 → **IMPL** (`modules/filters/data/chrome_history_shbf.hexa`).
+- BR1-h Σ = **376/400** ≥ 350 → **IMPL** (`filters/module/data/chrome_history_shbf.hexa`).
 - Bench: `tool/bench/bench_br1_chrome_history.hexa` synth 5000-url SHBF encode + 100 prefix-topK query.
 - Expected ROI: encode 50–80ms (synth), lookup 5–20μs (mmap+bisect), speedup vs cold sqlite ≥1000×.

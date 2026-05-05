@@ -122,7 +122,7 @@ ps -p $(cat /tmp/com.airgenome.tap.lock)  # pid alive?
 [airgenome_loop] harvest pid=N: timeout 30s → SIGTERM
 [airgenome_loop] harvest pid=N: SIGKILL after 3s grace
 ```
-모듈 (modules/harvest.hexa) hang 의심. 단발성 = 정상 (hexa runtime 일시 지연), 반복 = 모듈 버그. `~/.airgenome/loop-harvest.log` 확인.
+모듈 (harvest/module/harvest.hexa) hang 의심. 단발성 = 정상 (hexa runtime 일시 지연), 반복 = 모듈 버그. `~/.airgenome/loop-harvest.log` 확인.
 
 ### binary 업그레이드 후 TCC 재승인 필요
 - 증상: `make install` 후 Accessibility 동작 안 함

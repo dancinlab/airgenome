@@ -167,5 +167,5 @@ Gap count: **6**.
 ## §H. Cross-Repo Carve-Out
 
 - hive: emit `.raw` ledger entry `cl3-icloud-documents-shbf` with blob hash + path count + app count for cross-repo session inspection (parallel to K2 ledger).
-- airgenome: filter resides at `modules/filters/data/icloud_documents_shbf.hexa`; bench at `tool/bench/bench_cl3_icloud_documents.hexa`.
+- airgenome: filter resides at `filters/module/data/icloud_documents_shbf.hexa`; bench at `tool/bench/bench_cl3_icloud_documents.hexa`.
 - anima: 3-hop trace = iCloud Documents local cache → cwd correlation → Claude session genome (paired with K2 SharedFileList recent for cross-corroboration of "what did the user just open").

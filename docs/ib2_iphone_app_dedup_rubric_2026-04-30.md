@@ -94,7 +94,7 @@ Query patterns:
 
 1. `/Users/ghost/core/airgenome/docs/ib2_iphone_app_dedup_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/ib2_iphone_app_dedup_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/iphone_app_dedup.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/iphone_app_dedup.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_ib2_iphone_app_dedup.hexa`
 
 **Final IB2 score: 400/400.**

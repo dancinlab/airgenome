@@ -1,6 +1,6 @@
 // tool/bench/bench_f65_youtube_gpu.hexa — F65 5-tuple bench
 //
-// Target: modules/filters/process/safari_youtube_gpu_filter.hexa
+// Target: filters/module/process/safari_youtube_gpu_filter.hexa
 //
 // OLD:
 //   1) per candidate: lsof -p PID + grep youtube → N fork
@@ -17,7 +17,7 @@
 //   5) in-hexa scan + 1 append_file → 0 fork
 //   합계: 4 fork/cycle 고정
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 fn is_numeric_str(s: str) -> bool {
     let n = len(s)

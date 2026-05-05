@@ -3,8 +3,8 @@
 Origin: 2026-04-30 — user directive: "Design + implement G. Mail/Calendar 보강 wave (4 filters)". MX2 = `~/Library/Mail/V*/MailData/SmartMailboxes.plist` mailbox name + NSPredicate-string column.
 
 Pattern parents (READ FIRST):
-- `/Users/ghost/core/airgenome/modules/filters/data/mail_sender_dict.hexa` (MA3, 400) — 1B enum dict + name pool.
-- `/Users/ghost/core/airgenome/modules/filters/data/shortcuts_config_mmap.hexa` (existing plist-mmap) — plist-driven mmap layout sibling.
+- `/Users/ghost/core/airgenome/filters/module/data/mail_sender_dict.hexa` (MA3, 400) — 1B enum dict + name pool.
+- `/Users/ghost/core/airgenome/filters/module/data/shortcuts_config_mmap.hexa` (existing plist-mmap) — plist-driven mmap layout sibling.
 
 Rubric source: `/Users/ghost/core/hive/.raw` raw 240 V2. 9 blocks, 400pt ceiling.
 
@@ -81,7 +81,7 @@ Total honest-C3 gap count: **4**.
 
 ## Deliverables
 
-- Filter:    `/Users/ghost/core/airgenome/modules/filters/data/mail_smart_mailboxes.hexa`
+- Filter:    `/Users/ghost/core/airgenome/filters/module/data/mail_smart_mailboxes.hexa`
 - Bench:     `/Users/ghost/core/airgenome/tool/bench/bench_mx2_mail_smart_mailboxes.hexa`
 - Rubric md: `/Users/ghost/core/airgenome/docs/mx2_mail_smart_mailboxes_rubric_2026-04-30.md`
 - Rubric jsonl: `/Users/ghost/core/airgenome/docs/mx2_mail_smart_mailboxes_rubric_2026-04-30.rubric.jsonl`

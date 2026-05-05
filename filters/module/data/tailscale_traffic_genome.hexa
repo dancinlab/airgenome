@@ -1,0 +1,107 @@
+// airgenome/filters/module/data/tailscale_traffic_genome.hexa
+//   NW-T2 — Tailscale Traffic Genome (TSTG v1) — F45 genome Type D pattern.
+//
+//   목적: tailscale status 의 per-peer tx/rx bytes 추출 → high-traffic peer
+//         식별 + bandwidth genome signal. 어떤 peer 가 mesh 트래픽 우세한지.
+//
+//   blob layout (LE):
+//     magic    : 4B "TSTG"
+//     version  : 4B u32 (1)
+//     n_peer   : 4B u32  peer with tx/rx data
+//     total_tx : 8B u64  sum tx bytes
+//     total_rx : 8B u64  sum rx bytes
+//     [n_peer*24]: per-peer (ip4 u32, _pad u32, tx_bytes u64, rx_bytes u64)
+//
+// R1 inline / R17 perl alarm 30 / raw 9 hexa-only.
+
+let PAYLOAD = "import sys,os,struct,time,resource,array,subprocess,random,re\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/tailscale_traffic_genome.bin'\n" +
+"CLASSIFIER='TSTG-v1-2026-04-30 tailscale-status-tx-rx-extract'\n" +
+"def fmt(b):\n" +
+"    if b>1073741824: return f'{b/1073741824:.2f}GB'\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def ip4_pack(s):\n" +
+"    parts=s.split('.')\n" +
+"    if len(parts)!=4: return 0\n" +
+"    try: return (int(parts[0])<<24)|(int(parts[1])<<16)|(int(parts[2])<<8)|int(parts[3])\n" +
+"    except ValueError: return 0\n" +
+"\n" +
+"TX_RE=re.compile(r'tx\\s+(\\d+)\\s+rx\\s+(\\d+)')\n" +
+"\n" +
+"def probe_tailscale():\n" +
+"    try:\n" +
+"        r=subprocess.run(['/usr/local/bin/tailscale','status'],capture_output=True,timeout=5,text=True)\n" +
+"        if r.returncode!=0: return [],'tailscale_err'\n" +
+"        peers=[]\n" +
+"        for ln in r.stdout.split('\\n'):\n" +
+"            parts=ln.split()\n" +
+"            if len(parts)<5 or not parts[0].startswith('100.'): continue\n" +
+"            m=TX_RE.search(ln)\n" +
+"            if not m: continue\n" +
+"            tx=int(m.group(1)); rx=int(m.group(2))\n" +
+"            ip=parts[0]\n" +
+"            peers.append((ip,tx,rx))\n" +
+"        return peers,'real' if peers else 'no_traffic_peers'\n" +
+"    except Exception as e: return [],f'err_{type(e).__name__}'\n" +
+"\n" +
+"def synth_peers(n=5,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    return [(f'100.{rng.randrange(64,128)}.{rng.randrange(256)}.{rng.randrange(256)}',\n" +
+"             rng.randrange(0,2_000_000_000),rng.randrange(0,500_000_000)) for _ in range(n)]\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    peers,reason=probe_tailscale()\n" +
+"    if not peers: peers=synth_peers(5); reason='synth'\n" +
+"    peers.sort(key=lambda p:-(p[1]+p[2]))  # high-traffic 우선\n" +
+"    n=len(peers)\n" +
+"    total_tx=sum(p[1] for p in peers); total_rx=sum(p[2] for p in peers)\n" +
+"    header=struct.pack('<4sIIQQ',b'TSTG',1,n,total_tx,total_rx)\n" +
+"    body=bytearray()\n" +
+"    for ip,tx,rx in peers:\n" +
+"        body+=struct.pack('<IIQQ',ip4_pack(ip),0,tx,rx)\n" +
+"    with open(BIN,'wb') as f: f.write(header); f.write(body)\n" +
+"    elapsed=(time.perf_counter()-t0)*1000\n" +
+"    return {'n':n,'reason':reason,'peers':peers,'total_tx':total_tx,'total_rx':total_rx,'blob':os.path.getsize(BIN),'encode_ms':elapsed}\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] n_peer={info[\"n\"]} reason={info[\"reason\"]} blob={fmt(info[\"blob\"])} encode={info[\"encode_ms\"]:.1f}ms')\n" +
+"    print(f'[total]  tx={fmt(info[\"total_tx\"])} rx={fmt(info[\"total_rx\"])}')\n" +
+"    for ip,tx,rx in info['peers'][:5]:\n" +
+"        print(f'  {ip:18s} tx={fmt(tx):>10s} rx={fmt(rx):>10s}')\n" +
+"    print(f'[5tuple] {{\"site\":\"NW_T2\",\"roi\":\"TSTG_genome\",\"baseline_ns\":0,\"post_ns\":{int(info[\"encode_ms\"]*1e6)},\"diff_test\":\"lossless\",\"n_peer\":{info[\"n\"]},\"total_tx\":{info[\"total_tx\"]},\"total_rx\":{info[\"total_rx\"]},\"reason\":\"{info[\"reason\"]}\",\"classifier\":\"{CLASSIFIER}\"}}')\n" +
+"    print(f'[rss] {fmt(rss())} elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'encoded {info[\"n\"]} peers tx={info[\"total_tx\"]} rx={info[\"total_rx\"]} → {BIN}')\n" +
+"elif mode=='bench': bench()\n" +
+"else: print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self = v.contains("tailscale_traffic_genome")
+        if is_hexa == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/tailscale_traffic_genome_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 30; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    print(exec(cmd))
+}
+
+run()

@@ -1,7 +1,7 @@
 // tool/bench/bench_site8b.hexa — own 6 site-8b baseline
 // (genome_merge merge_host: jq -c + wc -l + [-f] forks vs in-hexa transform)
 //
-// modules/genome_merge.hexa#merge_host 는 host 마다:
+// genome_merge/module/genome_merge.hexa#merge_host 는 host 마다:
 //   1. exec("[ -f SRC ] && ...")     — existence check (1 fork)
 //   2. exec("jq -c '...' SRC >> OUT") — per-line JSON transform (1 fork)
 //   3. exec("wc -l < SRC")            — line count (1 fork)
@@ -15,7 +15,7 @@
 // raw 91 honest C3 — 측정 후 결정. own 5 site-4 / own 6 site-7 처럼 negative
 // 가능성 있음 (작은 ring 에서 fork 9개 비용 < hexa string concat O(n²) 비용).
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let TMP = "/tmp/airgenome_bench_site8b"
 let LINES_PER_RING = 100  // 호스트당 ring 라인 수 (실 환경에서 100-1000)
@@ -41,7 +41,7 @@ fn build_rings() -> void {
     }
 }
 
-// OLD: modules/genome_merge.hexa#merge_host 정확 복제.
+// OLD: genome_merge/module/genome_merge.hexa#merge_host 정확 복제.
 fn old_merge_host(src: str, host: str, out: str) -> int {
     let chk = exec("[ -f '" + src + "' ] && echo ok || echo no").trim()
     if chk != "ok" { return 0 }

@@ -78,8 +78,8 @@ Companion JSONL: `raw_canonical_tool_term_canonical_mapping_2026-05-01.jsonl`. I
 |---|---|---|---|
 | kick | nexus cli kick | `nexus kick <topic>` | 2026-04-26 |
 | harvest | anima harvest | `anima harvest <stream>` | 2026-04-15 |
-| label | airgenome label site-list | `hexa modules/filters/data/<f>.hexa` | 2026-04-29 (own 7) |
-| forecast | airgenome forecast site-list | `hexa modules/filters/data/<f>.hexa` | 2026-04-29 (own 6) |
+| label | airgenome label site-list | `hexa filters/module/data/<f>.hexa` | 2026-04-29 (own 7) |
+| forecast | airgenome forecast site-list | `hexa filters/module/data/<f>.hexa` | 2026-04-29 (own 6) |
 | drill | nexus cli drill | `nexus drill --seed "..." [N]` | 2026-03 |
 | blowup | nexus cli smash (blowup engine) | `nexus smash --seed "..."` | 2026-03 |
 | revive | hive convergence revive | `hive convergence revive <id>` | 2026-04-29 |
@@ -314,7 +314,7 @@ Mandatory pre-promotion self-test. Agent presents each of the 15 terms in benign
 |---|---|---|
 | nexus | `cli/run.hexa` lines 283, 6175-6211 | kick, drill, blowup→smash, free, meta-closure, absolute, kick-tree |
 | anima | `harvest/` pipeline | harvest, ingest, omega-ingest |
-| airgenome | `modules/filters/data/` | label (own 7), forecast (own 6) |
+| airgenome | `filters/module/data/` | label (own 7), forecast (own 6) |
 | hive | `convergence/` + `state/discovery_absorption/registry.jsonl` (raw 135) | revive, absorb |
 | hexa-lang | downstream consumer of all canonical CLI surfaces (raw 0 root-ssot consumer) | inherits all 15 |
 | n6-architecture | atlas health surface, kick witness landing | inherits via raw 47 cross-repo |

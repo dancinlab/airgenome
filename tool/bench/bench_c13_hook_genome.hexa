@@ -1,6 +1,6 @@
 // tool/bench/bench_c13_hook_genome.hexa — C13 5-tuple bench
 //
-// Target: modules/filters/data/claude_hook_event_genome.hexa
+// Target: filters/module/data/claude_hook_event_genome.hexa
 // Pattern: F45 (safari_bg_tab_throttle_genome) 변종 — fork 다수 → 1 fork batch.
 //
 // 5-tuple (per-cycle):

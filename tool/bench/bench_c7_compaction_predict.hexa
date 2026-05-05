@@ -1,6 +1,6 @@
 // tool/bench/bench_c7_compaction_predict.hexa — C7 5-tuple bench
 //
-// Target: modules/filters/data/claude_compaction_predict.hexa
+// Target: filters/module/data/claude_compaction_predict.hexa
 // Pattern: predictive_throttle.hexa Holt linear 직접 이식 — compaction trigger
 //          시점 예측 정확도 (accuracy) + per-call latency.
 //

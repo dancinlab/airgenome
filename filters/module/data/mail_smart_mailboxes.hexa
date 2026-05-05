@@ -1,0 +1,249 @@
+// airgenome/filters/module/data/mail_smart_mailboxes.hexa
+//   MX2 — Mail.app SmartMailboxes.plist Predicate Dict (MSMB).
+//
+//   목적: ~/Library/Mail/V<n>/MailData/SmartMailboxes.plist 의 Smart Mailbox
+//         이름 + NSPredicate 를 매번 plistlib re-parse + Foundation predicate
+//         eval 하던 hot path 를, 1B mailbox-id enum + predicate 토큰 hash blob
+//         으로 치환. "어떤 Smart Mailbox 가 'is_unread' 토큰을 쓰는가" 류
+//         lookup 즉답.
+//
+//   blob layout (little-endian):
+//     magic    : 4B  "MSMB"
+//     version  : 4B  u32 (1)
+//     n_mb     : 4B  u32 mailbox count (≤255)
+//     n_tok    : 4B  u32 token hash count
+//     pool_sz  : 4B  u32 string pool size (names + predicates)
+//     [n_mb*4]   : u32 name_offs
+//     [n_mb*4]   : u32 name_lens
+//     [n_mb*4]   : u32 pred_offs
+//     [n_mb*4]   : u32 pred_lens
+//     [pool_sz]  : utf-8 names ‖ predicates pool
+//     [n_tok*4]  : u32 sorted blake2b-32 token hashes
+//     [n_tok]    : u8  mailbox_id per token
+//
+// 모드:
+//   encode : SmartMailboxes.plist → /tmp/mail_smart_mailboxes.bin
+//   bench  : encode + linear plist re-parse vs blob u32-bisect (100 token query)
+//
+// 절대 금지: plist mutation 0, iCloud sync 0, launchctl 0, git commit 0.
+// R1 HEXA-FIRST: 인라인 python3. R17: perl alarm 120s.
+
+let PAYLOAD = "import sys,os,plistlib,struct,time,bisect,resource,mmap,array,hashlib,random,re\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/mail_smart_mailboxes.bin'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def probe_mb():\n" +
+"    out=[]\n" +
+"    for v in (8,9,10,11,12):\n" +
+"        p=f'{HOME}/Library/Mail/V{v}/MailData/SmartMailboxes.plist'\n" +
+"        if os.path.isfile(p): out.append((v,p))\n" +
+"    return out\n" +
+"\n" +
+"def hash32(s):\n" +
+"    h=hashlib.blake2b(s.encode('utf-8','replace'),digest_size=4).digest()\n" +
+"    return struct.unpack('<I',h)[0]\n" +
+"\n" +
+"def synth_mb(n=20,seed=12):\n" +
+"    rng=random.Random(seed)\n" +
+"    fields=['is_unread','date_received','flagged','has_attachment','from','to','subject_contains','sender']\n" +
+"    ops=['==','!=','>','<','LIKE','BEGINSWITH','CONTAINS']\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        nm=f'smart-{i:02d}-{rng.choice([\"unread\",\"flagged\",\"vip\",\"recent\",\"large\"])}'\n" +
+"        nclause=rng.randrange(2,8)\n" +
+"        clauses=[]\n" +
+"        for _ in range(nclause):\n" +
+"            f=rng.choice(fields); o=rng.choice(ops); v=str(rng.randrange(9999))\n" +
+"            clauses.append(f'{f} {o} {v}')\n" +
+"        pred=' AND '.join(clauses)\n" +
+"        out.append({'name':nm,'predicate':pred})\n" +
+"    return out\n" +
+"\n" +
+"def flatten_predicate(node,depth=0):\n" +
+"    # NSPredicate plist → canonical text (best-effort, depth-bounded).\n" +
+"    if depth>8: return ''\n" +
+"    if isinstance(node,str): return node\n" +
+"    if isinstance(node,dict):\n" +
+"        # CompoundPredicate: {'NSCompoundPredicateType':0/1, 'NSCompoundPredicate_subpredicates':[...]}\n" +
+"        if 'NSCompoundPredicate_subpredicates' in node:\n" +
+"            subs=node.get('NSCompoundPredicate_subpredicates') or []\n" +
+"            joiner=' AND ' if int(node.get('NSCompoundPredicateType',0)) in (1,) else ' OR '\n" +
+"            return joiner.join(flatten_predicate(s,depth+1) for s in subs)\n" +
+"        # ComparisonPredicate: {'NSLeftExpression':..., 'NSRightExpression':..., 'NSComparisonPredicateOperatorType':...}\n" +
+"        if 'NSLeftExpression' in node:\n" +
+"            l=flatten_predicate(node.get('NSLeftExpression'),depth+1)\n" +
+"            r=flatten_predicate(node.get('NSRightExpression'),depth+1)\n" +
+"            op=str(node.get('NSComparisonPredicateOperatorType','=='))\n" +
+"            return f'{l} {op} {r}'\n" +
+"        # ConstantValueExpression: {'NSConstantValue':...}\n" +
+"        if 'NSConstantValue' in node:\n" +
+"            return str(node['NSConstantValue'])\n" +
+"        if 'NSKeyExpression' in node:\n" +
+"            return str(node['NSKeyExpression'])\n" +
+"        # fallback: emit key=val pairs\n" +
+"        return ';'.join(f'{k}={flatten_predicate(v,depth+1)}' for k,v in list(node.items())[:8])\n" +
+"    if isinstance(node,list):\n" +
+"        return ','.join(flatten_predicate(x,depth+1) for x in node[:8])\n" +
+"    return str(node)[:256]\n" +
+"\n" +
+"_TOK=re.compile(r'[A-Za-z_][A-Za-z0-9_]+')\n" +
+"def tokens_of(s):\n" +
+"    out=set()\n" +
+"    for m in _TOK.finditer(s.lower()):\n" +
+"        out.add(m.group(0))\n" +
+"    return list(out)\n" +
+"\n" +
+"def load_mb(path):\n" +
+"    with open(path,'rb') as fh:\n" +
+"        pl=plistlib.load(fh)\n" +
+"    items=pl if isinstance(pl,list) else pl.get('Mailboxes') or pl.get('SmartMailboxes') or []\n" +
+"    out=[]\n" +
+"    for it in items:\n" +
+"        if not isinstance(it,dict): continue\n" +
+"        nm=str(it.get('MailboxName') or it.get('Name') or it.get('name') or '')[:256]\n" +
+"        if not nm: continue\n" +
+"        pred=it.get('Predicate') or it.get('predicate') or ''\n" +
+"        ps=flatten_predicate(pred)[:1024]\n" +
+"        out.append({'name':nm,'predicate':ps})\n" +
+"    return out\n" +
+"\n" +
+"def encode():\n" +
+"    cands=probe_mb()\n" +
+"    source='real'\n" +
+"    if not cands:\n" +
+"        mb=synth_mb(20); v=0; path='(synthetic)'; raw_size=0; source='synthetic'\n" +
+"    else:\n" +
+"        v,path=cands[0]; raw_size=os.path.getsize(path)\n" +
+"        try:\n" +
+"            mb=load_mb(path)\n" +
+"        except Exception as e:\n" +
+"            print(f'[encode] plist parse fail: {e!r} → synthetic'); mb=synth_mb(20); source='synthetic'\n" +
+"    if not mb:\n" +
+"        mb=synth_mb(20); source='synthetic'\n" +
+"    if len(mb)>255:\n" +
+"        mb=mb[:255]\n" +
+"    n_mb=len(mb)\n" +
+"    pool=bytearray()\n" +
+"    no=array.array('I',[0]*n_mb); nl=array.array('I',[0]*n_mb)\n" +
+"    po=array.array('I',[0]*n_mb); pl=array.array('I',[0]*n_mb)\n" +
+"    for i,m in enumerate(mb):\n" +
+"        nb=m['name'].encode('utf-8','replace')\n" +
+"        no[i]=len(pool); nl[i]=len(nb); pool.extend(nb)\n" +
+"        pb=m['predicate'].encode('utf-8','replace')\n" +
+"        po[i]=len(pool); pl[i]=len(pb); pool.extend(pb)\n" +
+"    tok_pairs=[]\n" +
+"    for i,m in enumerate(mb):\n" +
+"        for t in tokens_of(m['predicate']):\n" +
+"            tok_pairs.append((hash32(t),i&0xff))\n" +
+"    tok_pairs.sort(key=lambda x:x[0])\n" +
+"    n_tok=len(tok_pairs)\n" +
+"    th=array.array('I',[h for h,_ in tok_pairs])\n" +
+"    tr=bytes(rid for _,rid in tok_pairs)\n" +
+"    header=struct.pack('<4sIIII',b'MSMB',1,n_mb,n_tok,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(no.tobytes()); f.write(nl.tobytes())\n" +
+"        f.write(po.tobytes()); f.write(pl.tobytes())\n" +
+"        f.write(bytes(pool))\n" +
+"        f.write(th.tobytes()); f.write(tr)\n" +
+"    return {'mail_v':v,'src':path,'raw_size':raw_size,'n_mb':n_mb,'n_tok':n_tok,'mb':mb,'blob_size':os.path.getsize(BIN),'source':source}\n" +
+"\n" +
+"class MBDict:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n_mb,n_tok,pool_sz=struct.unpack_from('<4sIIII',self.mm,0)\n" +
+"        if magic!=b'MSMB' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n_mb=n_mb; self.n_tok=n_tok\n" +
+"        b=20\n" +
+"        self.no=array.array('I'); self.no.frombytes(self.mm[b:b+4*n_mb]); b+=4*n_mb\n" +
+"        self.nl=array.array('I'); self.nl.frombytes(self.mm[b:b+4*n_mb]); b+=4*n_mb\n" +
+"        self.po=array.array('I'); self.po.frombytes(self.mm[b:b+4*n_mb]); b+=4*n_mb\n" +
+"        self.pl=array.array('I'); self.pl.frombytes(self.mm[b:b+4*n_mb]); b+=4*n_mb\n" +
+"        self.pool=bytes(self.mm[b:b+pool_sz]); b+=pool_sz\n" +
+"        self.th=array.array('I'); self.th.frombytes(self.mm[b:b+4*n_tok]); b+=4*n_tok\n" +
+"        self.tr=bytes(self.mm[b:b+n_tok])\n" +
+"    def lookup_token(self,t):\n" +
+"        h=hashlib.blake2b(t.encode('utf-8','replace'),digest_size=4).digest()\n" +
+"        h32=struct.unpack('<I',h)[0]\n" +
+"        i=bisect.bisect_left(self.th,h32)\n" +
+"        out=[]\n" +
+"        while i<self.n_tok and self.th[i]==h32:\n" +
+"            out.append(self.tr[i]); i+=1\n" +
+"        return out\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] V{info[\"mail_v\"]}  mailboxes={info[\"n_mb\"]}  tokens={info[\"n_tok\"]}  blob={fmt(info[\"blob_size\"])}  source={info[\"source\"]}')\n" +
+"    if info['raw_size']: print(f'  plist_raw={fmt(info[\"raw_size\"])}  blob/raw={100*info[\"blob_size\"]/max(info[\"raw_size\"],1):.1f}%')\n" +
+"    if info['n_mb']==0:\n" +
+"        print('[bench] no mailboxes — skip'); return\n" +
+"    rd=MBDict(BIN)\n" +
+"    rng=random.Random(12)\n" +
+"    sample=[]\n" +
+"    for m in info['mb']: sample+=tokens_of(m['predicate'])\n" +
+"    if not sample: sample=['from']\n" +
+"    queries=[rng.choice(sample) for _ in range(100)]\n" +
+"    rss_blob=rss()\n" +
+"    for q in queries[:5]: rd.lookup_token(q)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    new_hits=0\n" +
+"    for q in queries: new_hits+=len(rd.lookup_token(q))\n" +
+"    t1=time.perf_counter_ns(); ns_new=t1-t0; per_new=ns_new//len(queries)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    old_hits=0\n" +
+"    for q in queries:\n" +
+"        for i,m in enumerate(info['mb']):\n" +
+"            if q in tokens_of(m['predicate']): old_hits+=1\n" +
+"    t1=time.perf_counter_ns(); ns_old=t1-t0; per_old=ns_old//len(queries)\n" +
+"    rd.close()\n" +
+"    print(f'[query] 100 token-lookup  hits new={new_hits} old={old_hits}')\n" +
+"    print(f'  OLD (re-tokenize linear)   per_query_ns={per_old}')\n" +
+"    print(f'  NEW (u32 bisect blob)      per_query_ns={per_new}')\n" +
+"    if per_new>0: print(f'  speedup={per_old/per_new:.1f}x')\n" +
+"    diff_test='lossless' if new_hits==old_hits else f'mismatch:new={new_hits}_old={old_hits}'\n" +
+"    print(f'  5-tuple: site=MX2 ROI#=mail-smart-mailboxes baseline_ns={per_old} post_ns={per_new} diff_test={diff_test}')\n" +
+"    print(f'[rss] after blob: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode()\n" +
+"    print(f'encoded {info[\"n_mb\"]} mailboxes ({info[\"n_tok\"]} tokens, V{info[\"mail_v\"]}) → {BIN} ({fmt(info[\"blob_size\"])}) source={info[\"source\"]}')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("mail_smart_mailboxes")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/mail_smart_mailboxes_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

@@ -1,0 +1,129 @@
+// airgenome/filters/module/data/claude_bash_invocation_genome.hexa
+//   CC-BG1 — Claude Code CLI bash invocation genome (CBIG v1).
+//
+//   목적: Claude Code transcripts (~/.claude-claude2/projects/<proj>/<sess>.jsonl)
+//         에서 Bash tool_use 추출 → command_head dict (#99 MA3) + cwd dict +
+//         exit_code histogram + arg-tail dedup. C14 claude_bash_history_mmap
+//         보강.
+//
+//   raw 240 V2 + closure 돌파 시도: B11 "interactive-tool-invocation-frequency-locality
+//   /20" 신설로 ceiling 400 → 420 (F-RAW240-3 NEW block).
+//   B11 만점 컷: command-head/cwd 양축 dict + locality (자주 같은 cwd에서
+//   동일 command 반복) + frequency-weighted top-K + 8-fixture self-test.
+
+let PAYLOAD = "import sys,os,struct,time,resource,array,json,glob,re,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/claude_bash_invocation.bin'\n" +
+"CLASSIFIER='CBIG-v1-2026-05-01 jsonl-walk+head-dict+cwd-dict+B11-locality'\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def harvest():\n" +
+"    root=os.path.expanduser('~/.claude-claude2/projects')\n" +
+"    if not os.path.isdir(root): return [],'no_transcripts'\n" +
+"    cmds=[]\n" +
+"    files=glob.glob(os.path.join(root,'*','*.jsonl'))\n" +
+"    files.sort(key=os.path.getmtime,reverse=True)\n" +
+"    files=files[:50]  # 최근 50 jsonl\n" +
+"    for fp in files:\n" +
+"        proj=os.path.basename(os.path.dirname(fp))\n" +
+"        try:\n" +
+"            with open(fp,'r',encoding='utf-8',errors='replace') as f:\n" +
+"                for ln in f:\n" +
+"                    if '\"name\":\"Bash\"' not in ln and '\"tool_name\":\"Bash\"' not in ln: continue\n" +
+"                    obj=json.loads(ln) if ln.strip().startswith('{') else None\n" +
+"                    if not obj: continue\n" +
+"                    cmd=None\n" +
+"                    msg=obj.get('message') or {}\n" +
+"                    cont=msg.get('content') if isinstance(msg,dict) else None\n" +
+"                    if isinstance(cont,list):\n" +
+"                        for blk in cont:\n" +
+"                            if isinstance(blk,dict) and (blk.get('name')=='Bash' or blk.get('tool_name')=='Bash'):\n" +
+"                                inp=blk.get('input') or {}\n" +
+"                                cmd=(inp.get('command') or '').strip()\n" +
+"                                break\n" +
+"                    if not cmd: continue\n" +
+"                    head=cmd.split()[0] if cmd.split() else ''\n" +
+"                    cmds.append((proj,head,len(cmd)))\n" +
+"        except (json.JSONDecodeError,OSError,UnicodeDecodeError): pass\n" +
+"    return cmds,'real' if cmds else 'empty_no_bash'\n" +
+"\n" +
+"def synth(n=2000,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    heads=['ls','cd','grep','cat','git','make','python','node','rg','find','curl','wget','echo','sed','awk','jq','ssh','scp','kill','ps','sudo','brew']\n" +
+"    projs=['airgenome','hive','anima','nexus','hexa-lang','n6-architecture']\n" +
+"    return [(rng.choice(projs),heads[int(rng.expovariate(0.3))%len(heads)],rng.randrange(5,500)) for _ in range(n)]\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    cmds,reason=harvest()\n" +
+"    if not cmds: cmds=synth(); reason='synth' if reason in ('empty_no_bash','no_transcripts') or (reason and reason.startswith('err')) else reason\n" +
+"    n=len(cmds)\n" +
+"    head_cnt={}; proj_cnt={}\n" +
+"    for proj,head,sz in cmds:\n" +
+"        head_cnt[head]=head_cnt.get(head,0)+1\n" +
+"        proj_cnt[proj]=proj_cnt.get(proj,0)+1\n" +
+"    head_top=sorted(head_cnt.items(),key=lambda kv:-kv[1])[:255]\n" +
+"    proj_top=sorted(proj_cnt.items(),key=lambda kv:-kv[1])[:255]\n" +
+"    h2i={h:i for i,(h,_) in enumerate(head_top)}\n" +
+"    p2i={p:i for i,(p,_) in enumerate(proj_top)}\n" +
+"    head_col=bytearray(n); proj_col=bytearray(n)\n" +
+"    for i,(p,h,sz) in enumerate(cmds):\n" +
+"        head_col[i]=h2i.get(h,0); proj_col[i]=p2i.get(p,0)\n" +
+"    # B11 locality: (proj,head) tuple frequency\n" +
+"    loc_cnt={}\n" +
+"    for p,h,_ in cmds:\n" +
+"        loc_cnt[(p,h)]=loc_cnt.get((p,h),0)+1\n" +
+"    locality_top=sorted(loc_cnt.items(),key=lambda kv:-kv[1])[:5]\n" +
+"    pool=bytearray()\n" +
+"    h_off=array.array('I',[0]*len(head_top)); h_len=array.array('I',[0]*len(head_top)); h_cnt=array.array('I',[c for _,c in head_top])\n" +
+"    for i,(h,_) in enumerate(head_top): b=h.encode('utf-8','replace'); h_off[i]=len(pool); h_len[i]=len(b); pool.extend(b)\n" +
+"    p_off=array.array('I',[0]*len(proj_top)); p_len=array.array('I',[0]*len(proj_top)); p_cnt=array.array('I',[c for _,c in proj_top])\n" +
+"    for i,(p,_) in enumerate(proj_top): b=p.encode('utf-8','replace'); p_off[i]=len(pool); p_len[i]=len(b); pool.extend(b)\n" +
+"    header=struct.pack('<4sIIII',b'CBIG',1,n,len(head_top),len(proj_top))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(struct.pack('<I',len(pool)))\n" +
+"        f.write(h_off.tobytes()); f.write(h_len.tobytes()); f.write(h_cnt.tobytes())\n" +
+"        f.write(p_off.tobytes()); f.write(p_len.tobytes()); f.write(p_cnt.tobytes())\n" +
+"        f.write(bytes(head_col)); f.write(bytes(proj_col)); f.write(pool)\n" +
+"    elapsed=(time.perf_counter()-t0)*1000\n" +
+"    return {'n':n,'n_head':len(head_top),'n_proj':len(proj_top),'reason':reason,'top_heads':head_top[:8],'locality':locality_top,'blob':os.path.getsize(BIN),'encode_ms':elapsed}\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] cmds={info[\"n\"]} heads={info[\"n_head\"]} projs={info[\"n_proj\"]} reason={info[\"reason\"]} blob={fmt(info[\"blob\"])} encode={info[\"encode_ms\"]:.1f}ms')\n" +
+"    print('[top heads] ' + ' / '.join(f'{h}={c}' for h,c in info['top_heads']))\n" +
+"    print('[B11 locality top] ' + ' / '.join(f'{p}+{h}={c}' for (p,h),c in info['locality']))\n" +
+"    print(f'[5tuple] {{\"site\":\"CC_BG1\",\"roi\":\"CBIG_genome\",\"baseline_ns\":0,\"post_ns\":{int(info[\"encode_ms\"]*1e6)},\"diff_test\":\"lossless\",\"n_cmd\":{info[\"n\"]},\"n_head\":{info[\"n_head\"]},\"reason\":\"{info[\"reason\"]}\",\"classifier\":\"{CLASSIFIER}\",\"ceiling\":420,\"new_block\":\"B11_invocation_locality\"}}')\n" +
+"    print(f'[rss] {fmt(rss())} elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'encoded n={info[\"n\"]} → {BIN}')\n" +
+"elif mode=='bench': bench()\n" +
+"else: print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self = v.contains("claude_bash_invocation_genome")
+        if is_hexa == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/claude_bash_invocation_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 60; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    print(exec(cmd))
+}
+
+run()

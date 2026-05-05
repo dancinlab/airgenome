@@ -5,7 +5,7 @@
 // = 180 jq fork per cycle (run_harvest L289-299). Diff test must match for
 // idx ∈ [0,5] across all PID lines.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let BENCH_RING = "/tmp/airgenome_bench_site2.ring"
 let LINES = 5000
@@ -43,7 +43,7 @@ fn fetch_line(pid: int) -> str {
     return ""
 }
 
-// OLD: per-axis exec(echo|jq) — current modules/harvest.hexa#vit_at L208-217
+// OLD: per-axis exec(echo|jq) — current harvest/module/harvest.hexa#vit_at L208-217
 fn old_vit_at(line: str, idx: int) -> int {
     if line == "" { return 0 }
     let cmd = "echo '" + line + "' | jq -r '.vitals[" + to_string(idx) + "] // 0' 2>/dev/null"

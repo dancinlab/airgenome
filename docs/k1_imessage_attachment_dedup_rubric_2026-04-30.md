@@ -3,8 +3,8 @@
 Origin: 2026-04-30 — user directive: "Implement K1 iMessage attachment dedup filter for airgenome — T2 telegram_media_dedup + M2 memo_attachment_dedup pattern direct transfer". Companion to existing `IM1 imessage_chat_shbf` (already committed). Source: `~/Library/Messages/Attachments/` (sandboxed RW for the user, read-only for our process via `os.lstat` + `open('rb')`).
 
 Pattern parents (READ FIRST):
-- `/Users/ghost/core/airgenome/modules/filters/data/telegram_media_dedup.hexa` (T2, score 395, ROI 237×) — content-hash blake2b 64bit + sorted blob + bisect cluster lookup, file walk + head 64KB hashing.
-- `/Users/ghost/core/airgenome/modules/filters/data/memo_attachment_dedup.hexa` (M2, score 400, ROI ~300×) — sqlite3 driven path discovery + full-file hash + sorted blob + path pool.
+- `/Users/ghost/core/airgenome/filters/module/data/telegram_media_dedup.hexa` (T2, score 395, ROI 237×) — content-hash blake2b 64bit + sorted blob + bisect cluster lookup, file walk + head 64KB hashing.
+- `/Users/ghost/core/airgenome/filters/module/data/memo_attachment_dedup.hexa` (M2, score 400, ROI ~300×) — sqlite3 driven path discovery + full-file hash + sorted blob + path pool.
 
 Rubric source: `/Users/ghost/core/hive/.raw` raw 240 V2 + `hive/docs/brainstorm-2026-04-30-raw-240-strengthen-v2.md`. 9 blocks, 400pt ceiling.
 
@@ -98,7 +98,7 @@ Total honest-C3 gap count: **5**.
 
 ## Deliverables
 
-- Filter:    `/Users/ghost/core/airgenome/modules/filters/data/imessage_attachment_dedup.hexa`
+- Filter:    `/Users/ghost/core/airgenome/filters/module/data/imessage_attachment_dedup.hexa`
 - Bench:     `/Users/ghost/core/airgenome/tool/bench/bench_im2_attachment_dedup.hexa`
 - Rubric md: `/Users/ghost/core/airgenome/docs/k1_imessage_attachment_dedup_rubric_2026-04-30.md` (this file)
 - Rubric jsonl: `/Users/ghost/core/airgenome/docs/k1_imessage_attachment_dedup_rubric_2026-04-30.rubric.jsonl`

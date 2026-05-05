@@ -1,0 +1,122 @@
+// filters/module/data/claude_token_columnar.hexa — Claude jsonl token-count 컬럼 필터.
+//
+// raw#9 hexa-only · raw#11 snake_case · py 0
+//
+// 기능: Claude conversation .jsonl 의 .message.usage 4축 (input_tokens,
+// cache_creation_input_tokens, cache_read_input_tokens, output_tokens) 을
+// 단일 컬럼 파일로 추출. 후속 sum / max / histogram 등 token 분석 쿼리는
+// jq full-scan 대신 컬럼 파일 (line-per-record) 로 처리.
+//
+// 패턴 ref:
+//   - columnar_projection.hexa (P3 commit 0037276b) 의 multi-field 변종
+//   - catalog #99 dict column (sparse usage missing → 0 fallback)
+//
+// 1회 prep (jq 1패스) 후 sum/avg/percentile 모든 후속 쿼리는 컬럼 캐시 hit.
+// 정식 사용 시: 동일 jsonl 에 token 분석 반복 — statusline / cost-tracker.
+//
+// 사용:
+//   hexa filters/module/data/claude_token_columnar.hexa <jsonl-path>
+//
+// 출력 경로: <input>.tokens.col   (line-per-record)
+//   각 줄 형식: "<input>,<cache_creation>,<cache_read>,<output>"
+//   usage 부재 레코드 → "0,0,0,0"
+
+fn shq(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn shell_int(cmd: str) -> int {
+    let out = exec(cmd).trim()
+    if out == "" { return 0 }
+    return to_int(out)
+}
+
+fn fmt_kb(bytes: int) -> str {
+    if bytes >= 1048576 { return to_string(bytes / 1048576) + " MB" }
+    if bytes >= 1024    { return to_string(bytes / 1024) + " KB" }
+    return to_string(bytes) + " B"
+}
+
+pub fn token_columnar_extract(jsonl_path: str, out_path: str) -> int {
+    // 4축 token usage 한 줄로 직렬화. usage 가 null/없음 → 모두 0.
+    // ((.message.usage // {}) | "(.input_tokens//0)|.." 형태 — jq -r 1패스.
+    let jq_expr = "(.message.usage // {}) | [(.input_tokens // 0), (.cache_creation_input_tokens // 0), (.cache_read_input_tokens // 0), (.output_tokens // 0)] | @csv"
+    let t0 = shell_int("date +%s%N")
+    let _ = exec("jq -r " + shq(jq_expr) + " " + shq(jsonl_path) + " > " + shq(out_path) + " 2>/dev/null")
+    let t1 = shell_int("date +%s%N")
+    return (t1 - t0) / 1000000  // ms
+}
+
+// 컬럼 파일에서 4축 sum 을 awk 로 계산 — 이후 query 의 typical 사용 패턴.
+pub fn token_columnar_sum(col_path: str) -> str {
+    let cmd = "awk -F, '{a+=$1; b+=$2; c+=$3; d+=$4} END{printf \"%d %d %d %d\", a, b, c, d}' " + shq(col_path)
+    return exec(cmd).trim()
+}
+
+// jq full-scan 으로 동일 sum 계산 — baseline.
+pub fn token_jq_sum(jsonl_path: str) -> str {
+    let jq_expr = "[(.message.usage.input_tokens // 0), (.message.usage.cache_creation_input_tokens // 0), (.message.usage.cache_read_input_tokens // 0), (.message.usage.output_tokens // 0)] | @csv"
+    let cmd = "jq -r " + shq(jq_expr) + " " + shq(jsonl_path) + " 2>/dev/null | awk -F, '{a+=$1; b+=$2; c+=$3; d+=$4} END{printf \"%d %d %d %d\", a, b, c, d}'"
+    return exec(cmd).trim()
+}
+
+fn run() {
+    let argv = args()
+    let mut path = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        i = i + 1
+        if v == "" { continue }
+        if v.contains(".hexa-cache") { continue }
+        if v.ends_with(".hexa") { continue }
+        if v.ends_with(".jsonl") { path = v }
+    }
+    if path == "" {
+        // fallback synthetic — sample local jsonl
+        let fallback = "/Users/ghost/.claude-claude1/projects/-Users-ghost-core-airgenome/0546427f-3c43-464e-af6a-034b9a268214.jsonl"
+        if file_exists(fallback) {
+            path = fallback
+            println("usage: hexa claude_token_columnar.hexa <jsonl-path>")
+            println("  no path given — using sample: " + fallback)
+        } else {
+            println("usage: hexa claude_token_columnar.hexa <jsonl-path>")
+            return
+        }
+    }
+    if file_exists(path) == false {
+        println("ERROR: not found: " + path)
+        return
+    }
+    let out_path = path + ".tokens.col"
+    let raw_size = shell_int("wc -c < " + shq(path))
+    let prep_ms = token_columnar_extract(path, out_path)
+    let col_size = shell_int("wc -c < " + shq(out_path))
+    let n_records = shell_int("wc -l < " + shq(out_path))
+    // 4축 sum (column file via awk — fast follow-up query)
+    let t_col_0 = shell_int("date +%s%N")
+    let sum_col = token_columnar_sum(out_path)
+    let t_col_1 = shell_int("date +%s%N")
+    let q_col_ms = (t_col_1 - t_col_0) / 1000000
+    // 4축 sum (jq full-scan — baseline)
+    let t_jq_0 = shell_int("date +%s%N")
+    let sum_jq = token_jq_sum(path)
+    let t_jq_1 = shell_int("date +%s%N")
+    let q_jq_ms = (t_jq_1 - t_jq_0) / 1000000
+
+    println("claude_token_columnar: " + path)
+    let mut ratio_pct = 0
+    if raw_size > 0 { ratio_pct = (col_size * 100) / raw_size }
+    println("  raw=" + fmt_kb(raw_size) + "  col=" + fmt_kb(col_size) + "  ratio=" + to_string(ratio_pct) + "%")
+    println("  records=" + to_string(n_records))
+    println("  prep=" + to_string(prep_ms) + " ms")
+    println("  sum_col=[" + sum_col + "]  sum_jq=[" + sum_jq + "]  match=" + (if sum_col == sum_jq { "true" } else { "false" }))
+    println("  query_ms col=" + to_string(q_col_ms) + " ms   jq=" + to_string(q_jq_ms) + " ms")
+    if q_col_ms > 0 {
+        let speedup = q_jq_ms / q_col_ms
+        println("  speedup query: " + to_string(speedup) + "x (col vs jq full-scan)")
+    }
+    println("  output: " + out_path)
+}
+
+run()

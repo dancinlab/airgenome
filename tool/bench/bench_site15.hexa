@@ -12,7 +12,7 @@
 // 본 bench 는 site-15 (whitelisted) 만 측정 — site-16 의 awk 부분은
 // site-15 win 에 흡수 (whitelisted 가 더 hot path).
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let WHITELIST_FILE = "/tmp/airgenome_bench_site15_whitelist"
 let AGENTS = [
@@ -43,7 +43,7 @@ fn build_whitelist() -> void {
     write_file(WHITELIST_FILE, content)
 }
 
-// OLD: per-call exec — modules/predictive_throttle.hexa#whitelisted L155-158 정확 복제
+// OLD: per-call exec — predictive_throttle/module/predictive_throttle.hexa#whitelisted L155-158 정확 복제
 fn old_whitelisted(agent: str) -> bool {
     let chk = exec("[ -f '" + WHITELIST_FILE + "' ] && grep -Fxq '" + agent + "' '" + WHITELIST_FILE + "' && echo y || echo n").trim()
     return chk == "y"

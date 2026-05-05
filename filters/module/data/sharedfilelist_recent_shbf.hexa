@@ -1,0 +1,232 @@
+// airgenome/filters/module/data/sharedfilelist_recent_shbf.hexa
+//   K2 — SharedFileList Recent Sorted-Blob bisect Filter (KSFL).
+//
+//   목적: ~/Library/Application Support/com.apple.sharedfilelist/*.sfl3/*.sfl4
+//         (NSKeyedArchiver bplist00) 의 recent file/app/server/volume path 를
+//         hot-path 마다 plistlib.loads + NSKeyedArchiver $objects walk 으로
+//         재파싱하던 것을, path 정렬 단일 mmap blob 으로 치환.
+//         prefix bisect O(log n) 로 directory subtree 탐색.
+//
+//   F18 SBBF axis. FI1 finder_recent_file_shbf 패턴 transfer
+//   (sfl2 heuristic → sfl3/sfl4 NSKeyedArchiver 확장).
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "KSFL"          (Keyed Shared File List)
+//     version : 4B  u32             (1)
+//     n       : 4B  u32             path 개수
+//     str_sz  : 4B  u32             string pool 바이트 길이
+//     [n*4]   : u32 path_offsets    pool 내 path 오프셋 (정렬됨)
+//     [n*4]   : u32 path_lens       path 길이
+//     [n*4]   : u32 last_used_ts    u32 epoch-2000 days (file mtime fallback)
+//     [str_sz]: utf-8 string pool   raw bytes (NUL 없음)
+//
+// 모드:
+//   encode : sfl3/sfl4 probe → /tmp/sharedfilelist_recent.bin
+//   bench  : encode + 50 prefix-count linear vs blob mmap+bisect
+//
+// macOS path probe (read-only, $HOME no TCC):
+//   primary  : ~/Library/Application Support/com.apple.sharedfilelist/*.sfl3 + *.sfl4
+//              plistlib.loads → walk $objects → bytes 엔트리에 path-regex 적용
+//   absent   : synth fallback (2000 paths over ~/Documents tree)
+//
+// R1 HEXA-FIRST: 신규 .py/.sh 금지. 인라인 python3 페이로드.
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,resource,mmap,array,random,glob,re,plistlib\n" +
+"mode=sys.argv[1]\n" +
+"BIN='/tmp/sharedfilelist_recent.bin'\n" +
+"CLASSIFIER_VERSION='K2.KSFL.v1.2026-04-30'\n" +
+"PATH_RE=re.compile(rb'(?:/Users/|/Applications/|/Volumes/|/System/|/Library/)[\\w\\-./ ]{2,200}')\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"EPOCH_2000=946684800\n" +
+"def days_since_2000(ts):\n" +
+"    d=int((ts-EPOCH_2000)//86400)\n" +
+"    if d<0: return 0\n" +
+"    if d>0xffffffff: return 0xffffffff\n" +
+"    return d\n" +
+"\n" +
+"def synth(n=2000,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    home=os.environ.get('HOME','/Users/x')\n" +
+"    dirs=['Documents/Projects','Documents/Notes','Desktop','Downloads','Pictures','Music']\n" +
+"    paths=[]\n" +
+"    now_days=days_since_2000(time.time())\n" +
+"    for i in range(n):\n" +
+"        d=dirs[i%len(dirs)]\n" +
+"        sub=f'sub{(i//50)%20}'\n" +
+"        p=f'{home}/{d}/{sub}/file_{i}.{rng.choice([\"txt\",\"md\",\"pdf\",\"png\",\"swift\",\"py\"])}'\n" +
+"        ts=now_days-rng.randrange(0,30)\n" +
+"        paths.append((p,ts))\n" +
+"    return paths\n" +
+"\n" +
+"def extract_paths_from_obj(obj,acc):\n" +
+"    # NSKeyedArchiver $objects 항목별 path 후보 추출\n" +
+"    if isinstance(obj,bytes):\n" +
+"        for m in PATH_RE.finditer(obj):\n" +
+"            s=m.group(0)\n" +
+"            if 5<len(s)<2048: acc.add(s.decode('utf-8','replace'))\n" +
+"    elif isinstance(obj,str):\n" +
+"        if obj.startswith('file://'):\n" +
+"            try:\n" +
+"                from urllib.parse import unquote\n" +
+"                p=unquote(obj[7:])\n" +
+"                if 5<len(p)<2048: acc.add(p)\n" +
+"            except Exception: pass\n" +
+"        elif obj.startswith(('/Users/','/Applications/','/Volumes/','/System/','/Library/')):\n" +
+"            if 5<len(obj)<2048: acc.add(obj)\n" +
+"\n" +
+"def load_paths_from_sfl(path):\n" +
+"    with open(path,'rb') as fd: data=fd.read()\n" +
+"    if data[:8]!=b'bplist00': return set(), 0\n" +
+"    try: p=plistlib.loads(data)\n" +
+"    except Exception: return set(), 0\n" +
+"    objs=p.get('$objects') if isinstance(p,dict) else None\n" +
+"    if not isinstance(objs,(list,tuple)): return set(), 0\n" +
+"    acc=set()\n" +
+"    for o in objs:\n" +
+"        extract_paths_from_obj(o,acc)\n" +
+"    mtime=int(os.path.getmtime(path))\n" +
+"    return acc, mtime\n" +
+"\n" +
+"def load_paths():\n" +
+"    home=os.environ.get('HOME','')\n" +
+"    if not home: return synth(),'synth'\n" +
+"    g=home+'/Library/Application Support/com.apple.sharedfilelist/'\n" +
+"    files=sorted(set(glob.glob(g+'*.sfl3')+glob.glob(g+'*.sfl4')))\n" +
+"    rows=[]\n" +
+"    for f in files:\n" +
+"        ps,mt=load_paths_from_sfl(f)\n" +
+"        if not ps: continue\n" +
+"        d=days_since_2000(mt)\n" +
+"        for p in ps: rows.append((p,d))\n" +
+"    if rows:\n" +
+"        # dedupe by path keeping max ts\n" +
+"        m={}\n" +
+"        for p,t in rows:\n" +
+"            if p not in m or t>m[p]: m[p]=t\n" +
+"        return [(p,t) for p,t in m.items()],'sfl3+sfl4'\n" +
+"    return synth(),'synth'\n" +
+"\n" +
+"def encode(rows):\n" +
+"    rows=sorted(set(rows),key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    tss =array.array('I',[0]*n)\n" +
+"    for i,(p,t) in enumerate(rows):\n" +
+"        pb=p.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(pb); tss[i]=int(t)&0xffffffff\n" +
+"        pool.extend(pb)\n" +
+"    header=struct.pack('<4sIII',b'KSFL',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(tss.tobytes())\n" +
+"        f.write(pool)\n" +
+"    return {'n':n,'blob_size':os.path.getsize(BIN),'rows':rows}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb'); self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        assert magic==b'KSFL' and ver==1\n" +
+"        self.n=n\n" +
+"        base=16; offs_off=base; lens_off=base+4*n; ts_off=base+8*n; pool_off=base+12*n\n" +
+"        mv=memoryview(self.mm)\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(mv[offs_off:offs_off+4*n]))\n" +
+"        lens=array.array('I'); lens.frombytes(bytes(mv[lens_off:lens_off+4*n]))\n" +
+"        pool=bytes(mv[pool_off:pool_off+pool_sz])\n" +
+"        self.paths=[pool[offs[i]:offs[i]+lens[i]] for i in range(n)]\n" +
+"    def prefix_count(self,prefix):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        a=bisect.bisect_left(self.paths,pb)\n" +
+"        b=bisect.bisect_left(self.paths,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        return b-a\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def linear_prefix_count(rows,prefix):\n" +
+"    c=0; pl=len(prefix)\n" +
+"    for p,_ in rows:\n" +
+"        if len(p)>=pl and p[:pl]==prefix: c+=1\n" +
+"    return c\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome filter/K2 — sharedfilelist recent SHBF (KSFL)')\n" +
+"    print(f'  classifier_version={CLASSIFIER_VERSION}')\n" +
+"    rows,src_kind=load_paths()\n" +
+"    print(f'[source] {src_kind}  n={len(rows)}')\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    info=encode(rows)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    print(f'[encode] {(t1-t0)/1e6:.1f} ms  paths={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n']==0: print('[bench] no paths — skip'); return\n" +
+"    paths=[p for p,_ in info['rows']]\n" +
+"    rng=random.Random(7)\n" +
+"    samples=[]\n" +
+"    for _ in range(50):\n" +
+"        i=rng.randrange(len(paths))\n" +
+"        p=paths[i]\n" +
+"        slash=p.rfind('/')\n" +
+"        pref=p[:slash] if slash>0 else p[:8]\n" +
+"        samples.append(pref)\n" +
+"    b=Blob(BIN)\n" +
+"    for s in samples[:5]: b.prefix_count(s)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    bh=0\n" +
+"    for s in samples: bh+=b.prefix_count(s)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    blob_us=(t1-t0)/1000/len(samples)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    lh=0\n" +
+"    for s in samples: lh+=linear_prefix_count(info['rows'],s)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    lin_us=(t1-t0)/1000/len(samples)\n" +
+"    b.close()\n" +
+"    print(f'[query] 50 prefix-count  (hits blob={bh} linear={lh})')\n" +
+"    print(f'  python linear scan : {lin_us:10.1f} us')\n" +
+"    print(f'  blob mmap+bisect   : {blob_us:10.1f} us')\n" +
+"    if blob_us>0:\n" +
+"        print(f'  speedup            : {lin_us/blob_us:6.1f}x')\n" +
+"    print(f'  (note: plistlib.loads + NSKeyedArchiver walk cold ~5-20ms x 8 files = 40-160ms — speedup 추가)')\n" +
+"    print(f'[rss] {fmt(rss())}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    rows,kind=load_paths()\n" +
+"    info=encode(rows)\n" +
+"    print(f'encoded {info[\"n\"]} paths ({kind}) -> {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("sharedfilelist_recent_shbf")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/sharedfilelist_recent_shbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

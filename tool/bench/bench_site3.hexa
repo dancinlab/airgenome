@@ -1,10 +1,10 @@
 // tool/bench/bench_site3.hexa — own 5 site-3 baseline (append_ring per-line exec vs append_file batch)
 //
-// modules/harvest.hexa#append_ring 는 per-process exec("printf '%s\n' LINE >> RING") 호출 (30 fork/cycle).
+// harvest/module/harvest.hexa#append_ring 는 per-process exec("printf '%s\n' LINE >> RING") 호출 (30 fork/cycle).
 // 직접 적용: TOP_N 라인 buffer build → 단일 append_file(RING, buffer) 호출 (0 fork).
 // own 1 heredoc-arg-max-guard 자연 만족 (write_file builtin 사용).
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let BENCH_FILE_OLD = "/tmp/airgenome_bench_site3_old.ring"
 let BENCH_FILE_NEW = "/tmp/airgenome_bench_site3_new.ring"
@@ -23,7 +23,7 @@ fn make_line(n: int) -> str {
     return "{\"ts\":\"2026-04-30T00:00:00Z\",\"pid\":" + to_string(1000 + n) + ",\"comm\":\"proc" + to_string(n) + "\",\"rss_kb\":1024,\"vitals\":[" + to_string(n) + "," + to_string(n) + ",0,0,0,0],\"ema\":[" + to_string(n) + "," + to_string(n) + ",0,0,0,0]}"
 }
 
-// OLD: per-line exec(printf >>) — modules/harvest.hexa#append_ring L238-240
+// OLD: per-line exec(printf >>) — harvest/module/harvest.hexa#append_ring L238-240
 fn old_append_ring(path: str, line: str) -> void {
     let _ = exec("printf '%s\\n' '" + line + "' >> '" + path + "'")
 }

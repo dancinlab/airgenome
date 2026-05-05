@@ -130,7 +130,7 @@ existing B7 / B8 / B5 axes. **No new block needed.** Ceiling stays 400.
 
 1. `/Users/ghost/core/airgenome/docs/ct1_podman_containers_dict_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/ct1_podman_containers_dict_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/podman_containers_dict.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/podman_containers_dict.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_ct1_podman_containers_dict.hexa`
 
 **Final CT1 score: 400/400 (V2 ceiling, no B10).**

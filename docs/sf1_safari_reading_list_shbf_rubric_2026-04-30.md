@@ -97,7 +97,7 @@ honest-C3 gap count: **7**.
 
 - `/Users/ghost/core/airgenome/docs/sf1_safari_reading_list_shbf_rubric_2026-04-30.md` (this)
 - `/Users/ghost/core/airgenome/docs/sf1_safari_reading_list_shbf_rubric_2026-04-30.rubric.jsonl`
-- `/Users/ghost/core/airgenome/modules/filters/data/safari_reading_list_shbf.hexa`
+- `/Users/ghost/core/airgenome/filters/module/data/safari_reading_list_shbf.hexa`
 - `/Users/ghost/core/airgenome/tool/bench/bench_sf1_safari_reading_list_shbf.hexa`
 
 Verdict: **IMPL** (374/400 ≥ 350).

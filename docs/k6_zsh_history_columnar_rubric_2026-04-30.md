@@ -104,7 +104,7 @@ backs the python dict during encode; final blob stores plain string keys.
 
 1. `/Users/ghost/core/airgenome/docs/k6_zsh_history_columnar_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/k6_zsh_history_columnar_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/zsh_history_columnar.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/zsh_history_columnar.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_k6_zsh_history.hexa`
 
 **Final K6 score: 400/400.**

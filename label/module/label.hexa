@@ -1,0 +1,355 @@
+// label/module/label.hexa — anomaly genome → behavior 라벨링 (T15 + M11d)
+//
+// 책임:
+//   1. forge/<ring>.ring 의 최근 N 라인 스캔
+//      - 단일호스트: genomes.ring (기본)
+//      - 멀티호스트: AIRGENOME_RING_NAME=genomes.unified.ring (host 필드 포함)
+//   2. config/label_rules.jsonl 의 rule 마다 vitals 평가
+//      - rule 의 host 필드가 있으면 해당 host 일 때만 매치 (M11d)
+//   3. match → forge/labeled_anomaly.jsonl 에 append (host 보존)
+//
+// 제약:
+//   - use "../../airgenome/core/airgenome" 만
+//   - 하드코딩 금지 — 모든 임계치/라벨은 label_rules.jsonl SSOT
+//   - try/catch 미사용
+//
+// 라벨 (예시 rule, 확장 가능):
+//   CPU_SPIKE / MEM_LEAK / FORK_BOMB / IO_STORM / GPU_HOG / REMOTE_CPU_SPIKE
+
+use "../../airgenome/core/airgenome"
+
+let RING = default_ring_path()
+let RULES = airgenome_root() + "/config/label_rules.jsonl"
+let OUT = ring_path("labeled_anomaly.jsonl")
+let SCAN_LINES = 1000
+
+struct Rule {
+    label: str,
+    axis: int,
+    op: str,
+    threshold: int,
+    and_axis: int,
+    and_op: str,
+    and_threshold: int,
+    has_and: bool,
+    host_filter: str
+}
+
+// own 7 site-9: per-rule-per-genome exec(echo|jq) → in-hexa anchor + slice (0 fork).
+// expr 형식: ".key" (top-level scalar). .vitals[i] 는 vit_at() 별도 사용.
+// 측정: tool/bench/bench_site9.hexa — 6.79ms→2.08μs/call (3269×, 99%↓), diff_test=0/1600.
+fn jq_field(line: str, expr: str) -> str {
+    if line == "" { return "" }
+    if len(expr) < 2 { return "" }
+    let key = expr.substring(1, len(expr))
+    let anchor = "\"" + key + "\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return "" }
+    let after = parts[1]
+    if len(after) == 0 { return "" }
+    let c0 = after.substring(0, 1)
+    if c0 == "\"" {
+        let body = after.substring(1, len(after))
+        let end_split = body.split("\"")
+        if len(end_split) < 1 { return "" }
+        return end_split[0]
+    }
+    let mut i = 0
+    let n = len(after)
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return after.substring(0, i).trim() }
+        if ch == "}" { return after.substring(0, i).trim() }
+        if ch == "]" { return after.substring(0, i).trim() }
+        i = i + 1
+    }
+    return after.trim()
+}
+
+fn to_int_safe(s: str) -> int {
+    if s == "" { return 0 }
+    let parts = s.split(".")
+    if len(parts) == 0 { return 0 }
+    if parts[0] == "" { return 0 }
+    return to_int(parts[0])
+}
+
+// own 7 site-10: 8× jq_field (8 line.split) → 단일 split(",") + key prefix 매칭 1패스.
+// rule 라인은 단순 JSON (값에 ',' 미포함) — 안전. 측정: tool/bench/bench_site10.hexa
+// per_call 3638ns → 1730ns (2.10×, 52%↓), diff_test=0/7. ROI #1 string slice view.
+fn parse_rule(line: str) -> Rule {
+    let mut label = ""
+    let mut axis = 0
+    let mut op = ""
+    let mut threshold = 0
+    let mut and_axis = 0
+    let mut and_op = ""
+    let mut and_threshold = 0
+    let mut host_filter = ""
+    let mut has_and = false
+    let n = len(line)
+    if n >= 2 {
+        let inner = line.substring(1, n - 1)  // strip { and }
+        let pairs = inner.split(",")
+        let mut i = 0
+        while i < len(pairs) {
+            let kv = pairs[i]
+            let colon = kv.split(":")
+            if len(colon) >= 2 {
+                let mut k = colon[0]
+                if len(k) >= 2 {
+                    let k0 = k.substring(0, 1)
+                    if k0 == "\"" {
+                        k = k.substring(1, len(k))
+                        let kn = len(k)
+                        if kn >= 1 {
+                            let kl = k.substring(kn - 1, kn)
+                            if kl == "\"" { k = k.substring(0, kn - 1) }
+                        }
+                    }
+                }
+                let mut v = colon[1]
+                if len(v) >= 2 {
+                    let v0 = v.substring(0, 1)
+                    if v0 == "\"" {
+                        v = v.substring(1, len(v))
+                        let vn = len(v)
+                        if vn >= 1 {
+                            let vl = v.substring(vn - 1, vn)
+                            if vl == "\"" { v = v.substring(0, vn - 1) }
+                        }
+                    }
+                }
+                if k == "label" { label = v }
+                if k == "axis" { axis = to_int_safe(v) }
+                if k == "op" { op = v }
+                if k == "threshold" { threshold = to_int_safe(v) }
+                if k == "and_axis" {
+                    and_axis = to_int_safe(v)
+                    has_and = v != ""
+                }
+                if k == "and_op" { and_op = v }
+                if k == "and_threshold" { and_threshold = to_int_safe(v) }
+                if k == "host" { host_filter = v }
+            }
+            i = i + 1
+        }
+    }
+    return Rule {
+        label: label,
+        axis: axis,
+        op: op,
+        threshold: threshold,
+        and_axis: and_axis,
+        and_op: and_op,
+        and_threshold: and_threshold,
+        has_and: has_and,
+        host_filter: host_filter
+    }
+}
+
+fn load_rules() -> list {
+    let raw = exec("cat '" + RULES + "' 2>/dev/null")
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if l != "" {
+            let r = parse_rule(l)
+            if r.label != "" { result = result + [r] }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn op_match(value: int, op: str, threshold: int) -> bool {
+    if op == "gt" { return value > threshold }
+    if op == "lt" { return value < threshold }
+    if op == "gte" { return value >= threshold }
+    if op == "lte" { return value <= threshold }
+    if op == "eq" { return value == threshold }
+    return false
+}
+
+// own 7 site-9 동반: 게놈 vitals[idx] 추출 — own 5 site-2 (harvest.hexa) 패턴 이식.
+// anchor "vitals":[ → split(",") → idx → .split(".")[0] int parse. 0 fork.
+fn vit_at(line: str, idx: int) -> int {
+    if line == "" { return 0 }
+    let parts = line.split("\"vitals\":[")
+    if len(parts) < 2 { return 0 }
+    let after_open = parts[1]
+    let close_split = after_open.split("]")
+    if len(close_split) < 1 { return 0 }
+    let inner = close_split[0]
+    let nums = inner.split(",")
+    if idx < 0 { return 0 }
+    if idx >= len(nums) { return 0 }
+    let s = nums[idx].trim()
+    if s == "" { return 0 }
+    let dot_parts = s.split(".")
+    if len(dot_parts) == 0 { return 0 }
+    if dot_parts[0] == "" { return 0 }
+    return to_int(dot_parts[0])
+}
+
+fn rule_match(genome_line: str, r: Rule) -> bool {
+    if r.host_filter != "" {
+        let h = jq_field(genome_line, ".host")
+        if h != r.host_filter { return false }
+    }
+    let v = vit_at(genome_line, r.axis)
+    if !op_match(v, r.op, r.threshold) { return false }
+    if !r.has_and { return true }
+    let v2 = vit_at(genome_line, r.and_axis)
+    return op_match(v2, r.and_op, r.and_threshold)
+}
+
+// pid 가 unified 일 때 string ("mac.123"), 단일호스트 일 때 int — 항상 quote 해서 안전.
+fn extract_meta(genome_line: str) -> str {
+    let pid = jq_field(genome_line, ".pid")
+    let comm = jq_field(genome_line, ".comm")
+    let ts = jq_field(genome_line, ".ts")
+    let host = jq_field(genome_line, ".host")
+    let base = "\"ts\":\"" + ts + "\",\"pid\":\"" + pid + "\",\"comm\":\"" + comm + "\""
+    if host == "" { return base }
+    return base + ",\"host\":\"" + host + "\""
+}
+
+fn json_escape(s: str) -> str {
+    let no_bs = s.replace("\\", "")
+    return no_bs.replace("\"", "")
+}
+
+fn make_labeled_line(genome_line: str, label: str) -> str {
+    let meta = extract_meta(genome_line)
+    let safe_label = json_escape(label)
+    return "{" + meta + ",\"label\":\"" + safe_label + "\"}"
+}
+
+// own 7 site-12: per-label exec(printf >>) → buffer + 단일 append_file batch.
+// 측정 (bench_site12.hexa): 2.60ms→18μs/line (141×, 99%↓), diff_byte_identical=true.
+// own 5 site-3 / own 6 site-8 패턴 직접 이식. run_label 의 (genomes × rules) 이중 루프
+// 안에서 buf 누적, 루프 종료 후 1회 append_file 호출 (run_label 내부에서 처리).
+
+fn read_recent_genomes() -> list {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" { result = result + [l] }
+        i = i + 1
+    }
+    return result
+}
+
+fn run_label() -> int {
+    // 출력 디렉토리 보장
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
+
+    let rules = load_rules()
+    if len(rules) == 0 { return 0 }
+
+    let genomes = read_recent_genomes()
+    let mut buf = ""
+    let mut labeled = 0
+    let mut i = 0
+    while i < len(genomes) {
+        let g = genomes[i]
+        let mut j = 0
+        while j < len(rules) {
+            let r = rules[j]
+            if rule_match(g, r) {
+                let out_line = make_labeled_line(g, r.label)
+                buf = buf + out_line + "\n"
+                labeled = labeled + 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    if buf != "" {
+        append_file(OUT, buf)
+    }
+    return labeled
+}
+
+fn self_test() -> void {
+    // 1. op_match
+    if !op_match(100, "gt", 50) { panic("self_test FAIL [gt true]") }
+    if op_match(50, "gt", 50) { panic("self_test FAIL [gt boundary]") }
+    if !op_match(50, "gte", 50) { panic("self_test FAIL [gte boundary]") }
+    if op_match(60, "lt", 50) { panic("self_test FAIL [lt false]") }
+    if !op_match(50, "eq", 50) { panic("self_test FAIL [eq]") }
+    if op_match(10, "unknown", 5) { panic("self_test FAIL [unknown op]") }
+
+    // 2. parse_rule
+    let r1 = parse_rule("{\"label\":\"CPU_SPIKE\",\"axis\":0,\"op\":\"gt\",\"threshold\":80}")
+    if r1.label != "CPU_SPIKE" { panic("self_test FAIL [parse label]") }
+    if r1.axis != 0 { panic("self_test FAIL [parse axis]") }
+    if r1.threshold != 80 { panic("self_test FAIL [parse threshold]") }
+    if r1.has_and { panic("self_test FAIL [no and detected wrongly]") }
+
+    let r2 = parse_rule("{\"label\":\"FORK_BOMB\",\"axis\":0,\"op\":\"gt\",\"threshold\":50,\"and_axis\":1,\"and_op\":\"gt\",\"and_threshold\":20}")
+    if !r2.has_and { panic("self_test FAIL [and not detected]") }
+    if r2.and_threshold != 20 { panic("self_test FAIL [and_threshold]") }
+
+    // 3. rule_match — 합성 게놈
+    let g_spike = "{\"ts\":\"x\",\"pid\":1,\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[90,5,0,0,0,0],\"ema\":[0,0,0,0,0,0]}"
+    if !rule_match(g_spike, r1) { panic("self_test FAIL [CPU_SPIKE should match]") }
+
+    let g_clean = "{\"ts\":\"x\",\"pid\":1,\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[10,5,0,0,0,0],\"ema\":[0,0,0,0,0,0]}"
+    if rule_match(g_clean, r1) { panic("self_test FAIL [clean should not match]") }
+
+    let g_fork = "{\"ts\":\"x\",\"pid\":1,\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[60,30,0,0,0,0],\"ema\":[0,0,0,0,0,0]}"
+    if !rule_match(g_fork, r2) { panic("self_test FAIL [FORK_BOMB should match AND]") }
+    if rule_match(g_spike, r2) { panic("self_test FAIL [CPU_SPIKE should NOT match FORK_BOMB AND clause]") }
+
+    // 4. extract_meta + make_labeled_line
+    let lab = make_labeled_line(g_spike, "CPU_SPIKE")
+    if len(lab) < 30 { panic("self_test FAIL [labeled line len]") }
+
+    // 5. json_escape
+    let esc = json_escape("a\"b\\c")
+    if esc != "abc" { panic("self_test FAIL [json_escape]") }
+
+    // 6. unified record + host_filter (M11d)
+    let g_unified_ubu = "{\"ts\":\"x\",\"pid\":\"ubu.42\",\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[95,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let g_unified_mac = "{\"ts\":\"x\",\"pid\":\"mac.42\",\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[95,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
+
+    // 6a. host_filter 미사용 rule 은 호스트와 무관
+    if !rule_match(g_unified_ubu, r1) { panic("self_test FAIL [unified ubu CPU_SPIKE]") }
+    if !rule_match(g_unified_mac, r1) { panic("self_test FAIL [unified mac CPU_SPIKE]") }
+
+    // 6b. host=ubu 한정 rule
+    let r_ubu = parse_rule("{\"label\":\"REMOTE_CPU_SPIKE\",\"axis\":0,\"op\":\"gt\",\"threshold\":80,\"host\":\"ubu\"}")
+    if r_ubu.host_filter != "ubu" { panic("self_test FAIL [host_filter parse]") }
+    if !rule_match(g_unified_ubu, r_ubu) { panic("self_test FAIL [host=ubu match]") }
+    if rule_match(g_unified_mac, r_ubu) { panic("self_test FAIL [host=ubu must not match mac]") }
+
+    // 6c. unified extract_meta 에 host 포함, 기본은 미포함
+    let meta_u = extract_meta(g_unified_ubu)
+    if len(meta_u.split("\"host\":\"ubu\"")) < 2 { panic("self_test FAIL [unified meta host missing]") }
+    let meta_base = extract_meta(g_spike)
+    if len(meta_base.split("\"host\"")) > 1 { panic("self_test FAIL [base meta has host wrongly]") }
+
+    println("  ✅ label self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" {
+            self_test()
+            return
+        }
+    }
+
+    let n = run_label()
+    println("label done — labeled=" + to_string(n))
+}

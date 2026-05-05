@@ -96,6 +96,6 @@ C3-5 — **classifier-version skew** — `CBBF-v1-2026-04-30` 박제.
 
 ## §F. Verdict
 
-- BR2-h Σ = **374/400** ≥ 350 → **IMPL** (`modules/filters/data/chrome_bookmarks_shbf.hexa`).
+- BR2-h Σ = **374/400** ≥ 350 → **IMPL** (`filters/module/data/chrome_bookmarks_shbf.hexa`).
 - Bench: `tool/bench/bench_br2_chrome_bookmarks.hexa`.
 - Expected ROI: encode 5–15ms (synth 5000), lookup ~10μs, speedup vs json parse + linear scan ≥500×.

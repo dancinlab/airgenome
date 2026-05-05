@@ -1,6 +1,6 @@
 // tool/bench/bench_c3_claude_permission.hexa — C3 5-tuple bench
 //
-// Target: modules/filters/transport/claude_permission_aho_corasick.hexa
+// Target: filters/module/transport/claude_permission_aho_corasick.hexa
 // Pattern: F7 변종 — regex iter (per-rule prefix-startsWith) vs AC trie multi-pattern.
 //
 // 5-tuple:

@@ -1,0 +1,212 @@
+// airgenome/filters/module/data/calendar_alarms_dict.hexa
+//   MX4 — Calendar.sqlitedb#ZALARM Alarms Dict (CALD).
+//
+//   목적: Calendar.sqlitedb 의 ZALARM 행은 한 사용자 기준 보통 수백~수천 건.
+//         매번 sqlite3 SELECT + Foundation type-string parse 하던 hot path 를
+//         columnar 1B type-enum + i32 relative-offset + i64 trigger_unix 로
+//         치환. GROUP BY type / offset histogram 즉답.
+//
+//   blob layout (little-endian):
+//     magic    : 4B  "CALD"
+//     version  : 4B  u32 (1)
+//     n        : 4B  u32 alarm count
+//     pad      : 4B  u32 (0)
+//     [n*4]    : u32 ZALARM_PK   (debug / join key)
+//     [n]      : u8  type enum   (0=NONE,1=display,2=audio,3=email,4=procedure)
+//     [n*4]    : i32 offset_sec  (ZRELATIVEOFFSET, signed seconds)
+//     [n*8]    : i64 trigger_unix (ZTRIGGERDATE → unix epoch seconds; 0 if NULL)
+//
+//   query: count_by_type = u8 1-pass; offset histogram = i32 array bisect.
+//
+// 모드:
+//   encode : Calendar.sqlitedb#ZALARM → /tmp/calendar_alarms_cald.bin
+//   bench  : encode + GROUP BY type old (Counter on str) vs u8 scan
+//
+// 절대 금지: Calendar.sqlitedb 쓰기 0, EventKit alarm fire 0, launchctl 0,
+//   git commit 0. sqlite open 은 immutable=1 read-only.
+// R1 HEXA-FIRST: 인라인 python3. R17: perl alarm 120s.
+
+let PAYLOAD = "import sys,os,sqlite3,tempfile,struct,time,resource,mmap,array,random\n" +
+"from collections import Counter\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"src=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"BIN='/tmp/calendar_alarms_cald.bin'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"CFB=978307200  # CFAbsoluteTime epoch (2001-01-01) → unix\n" +
+"\n" +
+"TYPE_NAME={0:'NONE',1:'display',2:'audio',3:'email',4:'procedure'}\n" +
+"def map_type(t):\n" +
+"    # ZTYPE in Calendar.sqlitedb is integer 1..4; some legacy strings\n" +
+"    if t is None: return 0\n" +
+"    if isinstance(t,(int,float)):\n" +
+"        ti=int(t)\n" +
+"        return ti if 0<=ti<=4 else 0\n" +
+"    s=str(t).lower()\n" +
+"    for k,v in TYPE_NAME.items():\n" +
+"        if v==s: return k\n" +
+"    return 0\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def safe_copy(p):\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); tmp.close()\n" +
+"    with open(p,'rb') as fr, open(tmp.name,'wb') as fw:\n" +
+"        fw.write(fr.read())\n" +
+"    return tmp.name\n" +
+"\n" +
+"def open_ro(p):\n" +
+"    uri=f'file:{p}?immutable=1'\n" +
+"    return sqlite3.connect(uri,uri=True,timeout=2.0)\n" +
+"\n" +
+"def probe_db():\n" +
+"    p=f'{HOME}/Library/Calendars/Calendar.sqlitedb'\n" +
+"    return p if os.path.isfile(p) else ''\n" +
+"\n" +
+"def synth_alarms(n=800,seed=14):\n" +
+"    rng=random.Random(seed)\n" +
+"    base=int(time.time())-86400*30\n" +
+"    rows=[]\n" +
+"    for i in range(n):\n" +
+"        tp=rng.choice([1,1,1,2,3,4])\n" +
+"        off=-rng.choice([300,600,900,1800,3600,86400])\n" +
+"        tg=base+rng.randrange(86400*60)\n" +
+"        rows.append((i+1,tp,off,tg))\n" +
+"    return rows\n" +
+"\n" +
+"def load_alarms(db_path,limit=20000):\n" +
+"    rows=[]\n" +
+"    if not db_path or not os.path.isfile(db_path): return rows\n" +
+"    try:\n" +
+"        copy=safe_copy(db_path); con=sqlite3.connect(copy); cur=con.cursor()\n" +
+"        cur.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")\n" +
+"        tabs={r[0] for r in cur.fetchall()}\n" +
+"        if 'ZALARM' not in tabs:\n" +
+"            con.close(); os.unlink(copy); return rows\n" +
+"        cur.execute('PRAGMA table_info(ZALARM)')\n" +
+"        cols={c[1] for c in cur.fetchall()}\n" +
+"        tcol='ZTYPE' if 'ZTYPE' in cols else None\n" +
+"        ocol='ZRELATIVEOFFSET' if 'ZRELATIVEOFFSET' in cols else None\n" +
+"        gcol='ZTRIGGERDATE' if 'ZTRIGGERDATE' in cols else None\n" +
+"        sel_t=tcol if tcol else 'NULL'\n" +
+"        sel_o=ocol if ocol else '0'\n" +
+"        sel_g=gcol if gcol else '0'\n" +
+"        cur.execute(f'SELECT Z_PK,{sel_t},{sel_o},{sel_g} FROM ZALARM LIMIT {int(limit)}')\n" +
+"        for pk,tp,off,tg in cur.fetchall():\n" +
+"            te=map_type(tp)\n" +
+"            try: oi=int(float(off or 0))\n" +
+"            except (TypeError,ValueError): oi=0\n" +
+"            try:\n" +
+"                tu=int(float(tg)+CFB) if tg is not None else 0\n" +
+"            except (TypeError,ValueError): tu=0\n" +
+"            rows.append((int(pk or 0),te,oi,tu))\n" +
+"        con.close(); os.unlink(copy)\n" +
+"    except Exception as e:\n" +
+"        print(f'[encode] zalarm load fail: {e!r}')\n" +
+"    return rows\n" +
+"\n" +
+"def encode(src):\n" +
+"    db=src if (src and src.endswith('.sqlitedb') and os.path.isfile(src)) else probe_db()\n" +
+"    rows=load_alarms(db) if db else []\n" +
+"    source='real'\n" +
+"    raw_size=os.path.getsize(db) if db else 0\n" +
+"    if not rows:\n" +
+"        rows=synth_alarms(800); source='synthetic'\n" +
+"    n=len(rows)\n" +
+"    pks=array.array('I',[r[0]&0xffffffff for r in rows])\n" +
+"    types=bytes(r[1]&0xff for r in rows)\n" +
+"    offs=array.array('i',[max(min(int(r[2]),2**31-1),-(2**31)) for r in rows])\n" +
+"    trigs=array.array('q',[max(min(int(r[3]),2**63-1),-(2**63)) for r in rows])\n" +
+"    header=struct.pack('<4sIII',b'CALD',1,n,0)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(pks.tobytes())\n" +
+"        f.write(types)\n" +
+"        f.write(offs.tobytes())\n" +
+"        f.write(trigs.tobytes())\n" +
+"    return {'n':n,'rows':rows,'src':db,'raw_size':raw_size,'blob_size':os.path.getsize(BIN),'source':source}\n" +
+"\n" +
+"class Alarms:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,_=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        if magic!=b'CALD' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n=n; b=16\n" +
+"        self.pks=array.array('I'); self.pks.frombytes(self.mm[b:b+4*n]); b+=4*n\n" +
+"        self.types=bytes(self.mm[b:b+n]); b+=n\n" +
+"        self.offs=array.array('i'); self.offs.frombytes(self.mm[b:b+4*n]); b+=4*n\n" +
+"        self.trigs=array.array('q'); self.trigs.frombytes(self.mm[b:b+8*n])\n" +
+"    def count_by_type(self):\n" +
+"        c=[0]*5\n" +
+"        for t in self.types:\n" +
+"            if t<5: c[t]+=1\n" +
+"        return c\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] alarms={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}  source={info[\"source\"]}')\n" +
+"    if info['raw_size']: print(f'  db_raw={fmt(info[\"raw_size\"])}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no alarms — skip'); return\n" +
+"    a=Alarms(BIN)\n" +
+"    rss_blob=rss()\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    new_counts=a.count_by_type()\n" +
+"    t1=time.perf_counter_ns(); ns_new=t1-t0\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    cc=Counter(TYPE_NAME.get(r[1],'NONE') for r in info['rows'])\n" +
+"    t1=time.perf_counter_ns(); ns_old=t1-t0\n" +
+"    a.close()\n" +
+"    new_named={TYPE_NAME[i]:new_counts[i] for i in range(5)}\n" +
+"    mismatch=0\n" +
+"    for k in TYPE_NAME.values():\n" +
+"        if new_named.get(k,0)!=cc.get(k,0): mismatch+=1\n" +
+"    print(f'  OLD (Counter on str)         total_ns={ns_old}')\n" +
+"    print(f'  NEW (u8 enum 1-pass scan)    total_ns={ns_new}')\n" +
+"    if ns_new>0: print(f'  speedup={ns_old/ns_new:.1f}x')\n" +
+"    print(f'  diff_test mismatches: {mismatch}')\n" +
+"    diff_test='lossless' if mismatch==0 else f'mismatch:{mismatch}'\n" +
+"    print(f'  5-tuple: site=MX4 ROI#=calendar-alarms-dict baseline_ns={ns_old} post_ns={ns_new} diff_test={diff_test}')\n" +
+"    print(f'[rss] after blob: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} alarms → {BIN} ({fmt(info[\"blob_size\"])}) source={info[\"source\"]}')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench [<Calendar.sqlitedb>]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("calendar_alarms_dict")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".sqlitedb") || v.contains("/Calendars") { target = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/calendar_alarms_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

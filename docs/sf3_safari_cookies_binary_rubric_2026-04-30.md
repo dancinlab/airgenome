@@ -134,7 +134,7 @@ honest-C3 gap count: **8**.
 
 - `/Users/ghost/core/airgenome/docs/sf3_safari_cookies_binary_rubric_2026-04-30.md` (this)
 - `/Users/ghost/core/airgenome/docs/sf3_safari_cookies_binary_rubric_2026-04-30.rubric.jsonl`
-- `/Users/ghost/core/airgenome/modules/filters/data/safari_cookies_binary.hexa`
+- `/Users/ghost/core/airgenome/filters/module/data/safari_cookies_binary.hexa`
 - `/Users/ghost/core/airgenome/tool/bench/bench_sf3_safari_cookies_binary.hexa`
 
 Verdict: **IMPL** (378/400 ≥ 350).

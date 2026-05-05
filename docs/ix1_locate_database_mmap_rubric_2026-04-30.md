@@ -152,7 +152,7 @@ V5 closes G1 (rotation-fold) and incidentally upgrades B8 35→40 (rotated-DB ad
 
 1. `/Users/ghost/core/airgenome/docs/ix1_locate_database_mmap_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/ix1_locate_database_mmap_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/locate_database_mmap.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/locate_database_mmap.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_ix1_locate_database_mmap.hexa`
 
 **Final IX1 score: 420/420 (V2 expanded ceiling via NEW B10 carry-over from K Docker).**

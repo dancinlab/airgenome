@@ -153,7 +153,7 @@ V2 §F-RAW240-3: any rubric-uncovered? **No.** Ceiling stays 400.
 
 1. `/Users/ghost/core/airgenome/docs/ct2_colima_lima_state_rubric_2026-04-30.md`
 2. `/Users/ghost/core/airgenome/docs/ct2_colima_lima_state_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/colima_lima_state.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/colima_lima_state.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_ct2_colima_lima_state.hexa`
 
 **Final CT2 score: 400/400 (V2 ceiling, no B10).**

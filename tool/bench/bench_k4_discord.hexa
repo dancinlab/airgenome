@@ -152,7 +152,7 @@ let PAYLOAD = "import sys,os,struct,time,bisect,resource,mmap,array,glob,re,subp
 "        sz=os.path.getsize(f); total+=sz\n" +
 "        print(f'  {os.path.basename(f)}  {fmt(sz)}')\n" +
 "    print(f'  total {fmt(total)}')\n" +
-"    print('  (real harvest is performed by modules/filters/data/discord_localstorage_shbf.hexa, not by bench)')\n" +
+"    print('  (real harvest is performed by filters/module/data/discord_localstorage_shbf.hexa, not by bench)')\n" +
 "\n" +
 "def main():\n" +
 "    bench_synth()\n" +

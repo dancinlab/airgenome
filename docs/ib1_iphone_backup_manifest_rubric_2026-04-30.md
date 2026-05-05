@@ -104,7 +104,7 @@ Query patterns:
 
 1. `/Users/ghost/core/airgenome/docs/ib1_iphone_backup_manifest_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/ib1_iphone_backup_manifest_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/iphone_backup_manifest.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/iphone_backup_manifest.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_ib1_iphone_backup_manifest.hexa`
 
 **Final IB1 score: 400/400.**

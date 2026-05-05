@@ -127,5 +127,5 @@ Gap count: **5**.
 ## §H. Cross-Repo Carve-Out
 
 - hive: emit `.raw` ledger of SL1 KCRD blob hash + crash count + top-3 app_name dict.
-- airgenome: filter resides at `modules/filters/data/crash_reports_dict.hexa`.
+- airgenome: filter resides at `filters/module/data/crash_reports_dict.hexa`.
 - anima: 3-hop trace = .ips crash → procPath correlation → Claude session context.

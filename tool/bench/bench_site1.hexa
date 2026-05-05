@@ -1,13 +1,13 @@
 // tool/bench/bench_site1.hexa — own 5 site-1 baseline (last_for_pid jq vs hexa-scan)
 //
-// Purpose: establish hexa-environment baseline for modules/harvest.hexa#last_for_pid
+// Purpose: establish hexa-environment baseline for harvest/module/harvest.hexa#last_for_pid
 // before C site-1 implementation. Bun-measured % from docs/gate_filter_bench_results.md
 // is invalid as hexa proof per own 5 bans.
 //
 // Synthetic ring: LINES lines, PIDS_N unique PIDs cycling. K iterations × PIDS_N PIDs per run.
 // Output: gdate ns wall-time, per-call ns, speedup, lossless diff_test (must be 0).
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let BENCH_RING = "/tmp/airgenome_bench_site1.ring"
 let LINES = 5000
@@ -28,7 +28,7 @@ fn build_ring() -> void {
     let _ = exec(cmd)
 }
 
-// OLD: tail | tac/tail -r | jq | head — current modules/harvest.hexa#last_for_pid pattern (L189-191)
+// OLD: tail | tac/tail -r | jq | head — current harvest/module/harvest.hexa#last_for_pid pattern (L189-191)
 fn old_last_for_pid(pid: int) -> str {
     let rev = "if [ \"$(uname)\" = \"Linux\" ]; then tac; else tail -r; fi"
     let cmd = "tail -2000 '" + BENCH_RING + "' 2>/dev/null | " + rev + " | jq -c 'select(.pid == " + to_string(pid) + ")' 2>/dev/null | head -1"

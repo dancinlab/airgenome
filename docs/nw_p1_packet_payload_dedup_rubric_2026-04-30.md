@@ -106,6 +106,6 @@ C3-5 — **mid-snap rotation**: cycle 1 → 2 boundary handled via fnv1a ring (B
 
 ## §F. Verdict
 
-- NW-P1-h Σ = **418/420** → **IMPL** (`modules/filters/data/network_packet_payload_dedup.hexa`).
+- NW-P1-h Σ = **418/420** → **IMPL** (`filters/module/data/network_packet_payload_dedup.hexa`).
 - Bench: `tool/bench/bench_nw_p1_packet_payload_dedup.hexa` synth 2000-flow + cross-snap.
 - Expected ROI: encode 20–40ms (synth 2k) / 10–30ms (real ~200 flows). dedup 30–60% packet reduction signal.

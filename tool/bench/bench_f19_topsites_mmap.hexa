@@ -6,7 +6,7 @@
 //
 // 5-tuple: site=F19 + ROI#=19 + baseline_ns + post_ns + diff_test=lossless
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let TILES_N = 200      // synthetic top-sites tile count
 let QUERIES = 100      // exact-match lookups

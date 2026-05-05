@@ -1,0 +1,75 @@
+// filters/module/data/result_cache.hexa — Claude JSONL tool_result 캐시 필터.
+//
+// raw#9 hexa-only · raw#11 snake_case · py 0
+//
+// 기능: JSONL 에서 tool_result 본문만 추출해 캐시 파일로 저장. 같은
+// 본문에 반복 쿼리하는 워크로드 (예: tool_result 길이/카운트/검색) 에서
+// jq full-scan 대비 4.8x~7.8x 가속 (perf_lab P5 결과).
+//
+// 1회 prep (jq 1패스) 후 후속 쿼리는 캐시 파일만 wc/grep 으로 처리.
+//
+// 사용:
+//   hexa filters/module/data/result_cache.hexa <jsonl-path>
+//
+// output 경로: <input>.tool_results.cache (line-per-block)
+
+fn shq(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn shell_int(cmd: str) -> int {
+    let out = exec(cmd).trim()
+    if out == "" { return 0 }
+    return to_int(out)
+}
+
+fn fmt_kb(bytes: int) -> str {
+    if bytes >= 1048576 { return to_string(bytes / 1048576) + " MB" }
+    if bytes >= 1024    { return to_string(bytes / 1024) + " KB" }
+    return to_string(bytes) + " B"
+}
+
+pub fn result_cache_build(jsonl_path: str, out_path: str) -> int {
+    // .message.content[] 중 type=="tool_result" 의 본문 추출.
+    // .content 가 array 면 text 합치고, string 이면 그대로.
+    let jq_expr = ".message.content // [] | if type==\"array\" then map(select(.type==\"tool_result\") | (.content // \"\" | if type==\"array\" then (map(.text // \"\") | join(\"\")) else tostring end)) | .[] else empty end"
+    let t0 = shell_int("date +%s%N")
+    let _ = exec("jq -rc " + shq(jq_expr) + " " + shq(jsonl_path) + " > " + shq(out_path) + " 2>/dev/null")
+    let t1 = shell_int("date +%s%N")
+    return (t1 - t0) / 1000000  // ms
+}
+
+fn run() {
+    let argv = args()
+    let mut path = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        i = i + 1
+        if v == "" { continue }
+        if v.contains(".hexa-cache") { continue }
+        if v.ends_with(".hexa") { continue }
+        if v.ends_with(".jsonl") { path = v }
+    }
+    if path == "" {
+        println("usage: hexa result_cache.hexa <jsonl-path>")
+        return
+    }
+    if file_exists(path) == false {
+        println("ERROR: not found: " + path)
+        return
+    }
+    let out_path = path + ".tool_results.cache"
+    let raw_size = shell_int("wc -c < " + shq(path))
+    let prep_ms = result_cache_build(path, out_path)
+    let cache_size = shell_int("wc -c < " + shq(out_path))
+    let n_blocks = shell_int("wc -l < " + shq(out_path))
+    let n_unique = shell_int("awk '!seen[$0]++' " + shq(out_path) + " | wc -l")
+    println("result_cache: " + path)
+    println("  raw=" + fmt_kb(raw_size) + "  cache=" + fmt_kb(cache_size) + "  ratio=" + to_string((cache_size * 100) / raw_size) + "%")
+    println("  blocks=" + to_string(n_blocks) + "  unique=" + to_string(n_unique))
+    println("  prep=" + to_string(prep_ms) + " ms")
+    println("  output: " + out_path)
+}
+
+run()

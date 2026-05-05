@@ -15,24 +15,24 @@
 surveyed call-sites:
 
 ```
-airgenome/modules/forecast.hexa:39
+airgenome/forecast/module/forecast.hexa:39
     fn jq_field(line: str, expr: str) -> str { ... }
     callers: read_recent_genomes (162) / run_forecast (184) / run_forecast (198, 200)
 
-airgenome/modules/label.hexa:41
+airgenome/label/module/label.hexa:41
     fn jq_field(line: str, expr: str) -> str { ... }
     callers: parse_rule (211, 212, 213, 214 — 8× per rule load)
              run_label (199 host extract per genome line)
 
-airgenome/modules/predictive_throttle.hexa:79
+airgenome/predictive_throttle/module/predictive_throttle.hexa:79
     fn jq_field_int(line: str, key: str) -> int { ... }
     callers: read_history (110)
 
-airgenome/modules/genome_merge.hexa
+airgenome/genome_merge/module/genome_merge.hexa
     inline jq -c piped pattern (pre-site-8b commit) — replaced by
     in-process transform_line; same logical helper
 
-airgenome/modules/filters/data/safari_bookmarks_shbf.hexa:29
+airgenome/filters/module/data/safari_bookmarks_shbf.hexa:29
     inline PAYLOAD python plistlib parser — different format, but
     surfaces same gap when jsonl emit path is added
 ```
@@ -64,19 +64,19 @@ fn jq_field(line: str, expr: str) -> str {
 scattered local definitions in airgenome alone:
 
 ```hexa
-// airgenome/modules/forecast.hexa#jq_field (commit f9554afd, own 6 site-6)
+// airgenome/forecast/module/forecast.hexa#jq_field (commit f9554afd, own 6 site-6)
 fn jq_field(line: str, expr: str) -> str {
     // anchor + slice — own 5 site-2 vit_at pattern
     // single-key only
 }
 
-// airgenome/modules/label.hexa#jq_field (commit 3ab4ceac, own 7 site-9)
+// airgenome/label/module/label.hexa#jq_field (commit 3ab4ceac, own 7 site-9)
 // near-identical to forecast.hexa, separate definition
 
-// airgenome/modules/predictive_throttle.hexa#jq_field_int (commit 88e008c4, own 8 site-14)
+// airgenome/predictive_throttle/module/predictive_throttle.hexa#jq_field_int (commit 88e008c4, own 8 site-14)
 // int-typed variant
 
-// airgenome/modules/genome_merge.hexa (own 6 site-8b commit)
+// airgenome/genome_merge/module/genome_merge.hexa (own 6 site-8b commit)
 // transform_line replaces the jq -c pipe pattern
 ```
 
@@ -287,11 +287,11 @@ production measurement evidence (airgenome wave 2 / own 6 / own 7):
 - A14 RFC promote → hexa-lang PR (사용자 명시 승인 후)
 - airgenome interim: own 5/6/7/8 already implemented local helpers — A14 land 후 별도 cleanup PR
 - A14 land 후 5+ local helper cleanup PR:
-  - airgenome/modules/forecast.hexa: remove local `jq_field`, `use "stdlib/json_lite"` + `json_field_str(line, "pid")`
-  - airgenome/modules/label.hexa: remove local `jq_field`, replace 4+ call sites (parse_rule + run_label)
-  - airgenome/modules/predictive_throttle.hexa: remove local `jq_field_int`, replace with `json_field_int`
-  - airgenome/modules/genome_merge.hexa: confirm transform_line in-process pattern unaffected (no jq_field call), but adjacent jsonl emit can adopt A14
-  - airgenome/modules/filters/data/safari_bookmarks_shbf.hexa: python PAYLOAD parser is separate (plistlib), but adjacent jsonl emit path uses A14
+  - airgenome/forecast/module/forecast.hexa: remove local `jq_field`, `use "stdlib/json_lite"` + `json_field_str(line, "pid")`
+  - airgenome/label/module/label.hexa: remove local `jq_field`, replace 4+ call sites (parse_rule + run_label)
+  - airgenome/predictive_throttle/module/predictive_throttle.hexa: remove local `jq_field_int`, replace with `json_field_int`
+  - airgenome/genome_merge/module/genome_merge.hexa: confirm transform_line in-process pattern unaffected (no jq_field call), but adjacent jsonl emit can adopt A14
+  - airgenome/filters/module/data/safari_bookmarks_shbf.hexa: python PAYLOAD parser is separate (plistlib), but adjacent jsonl emit path uses A14
 - own 10 site-S5 (claude.hexa session_now.json substring chain) unblocked by A14 — currently blocked, A14 land = direct adoption candidate
 - A6 (`to_int_safe`) + A14 jointly cover boundary parse pipeline. A14 internally composes A6 for `json_field_int`.
 

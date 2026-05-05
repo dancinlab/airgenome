@@ -1,6 +1,6 @@
 // tool/bench/bench_f64_active_signal.hexa — F64 5-tuple bench
 //
-// Target: modules/filters/process/safari_active_throttle_signal.hexa
+// Target: filters/module/process/safari_active_throttle_signal.hexa
 //
 // OLD:
 //   1) osascript frontmost (Safari?) → fork 1
@@ -14,7 +14,7 @@
 //   3) in-hexa split + HARD_NEVER 가드 + 1회 append_file → 0 fork
 //   합계: 1-2 fork/cycle 고정
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 fn is_numeric_str(s: str) -> bool {
     let n = len(s)

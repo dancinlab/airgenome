@@ -1,0 +1,370 @@
+// airgenome/filters/module/data/discord_localstorage_shbf.hexa
+//   K4 — Discord Local Storage Sorted-Blob Filter (KDLS v1).
+//
+//   목적: Discord 0.0.388 의 Local Storage / IndexedDB leveldb (~11 MB) 의
+//         사용자-가시 utf-8 키 (channel/server/user/setting 식별자) 를
+//         airgenome 표준 sorted-blob shbf 로 박제. 모던 Chromium leveldb
+//         은 데이터 블록을 snappy 로 압축하므로 stdlib python3 만으로는
+//         30–50% 키만 추출 가능 — 이를 95%+ 로 끌어올리는 것이 v2 의 목표.
+//
+//   blob layout (little-endian):
+//     magic    : 4B  "KDLS"
+//     version  : 4B  u32 (1)
+//     n        : 4B  u32  키 개수
+//     str_sz   : 4B  u32  pool size
+//     [n*4]    : u32 offsets   (발견순)
+//     [n*4]    : u32 lens
+//     [n*1]    : u8  source_tag (0=LS-raw, 1=LS-snappy, 2=IDB, 3=synth)
+//     [str_sz] : utf-8 key pool (NUL-free)
+//
+//   read-only 전략:
+//     - open('rb') only — 모든 .ldb/.log 무수정
+//     - LOCK 절대 미접촉
+//     - pgrep -lf [Dd]iscord 양수 → synth-only fallback (encode-safe window 보장)
+//
+//   classifier_version=KDLS-v1-2026-04-30
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. raw 9 hexa-only.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,resource,mmap,array,glob,re,subprocess,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"src=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"BIN='/tmp/discord_localstorage_kdls.bin'\n" +
+"CLASSIFIER='KDLS-v1-2026-04-30'\n" +
+"LS=os.path.expanduser('~/Library/Application Support/discord/Local Storage/leveldb')\n" +
+"IDB=os.path.expanduser('~/Library/Application Support/discord/IndexedDB')\n" +
+"TOKEN_RE=re.compile(r'(?i)token|password|secret|auth|jwt|bearer')\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"# ---- pure-python snappy 1.x raw-block decoder (38 LOC core) ----\n" +
+"def _vd(buf,p):\n" +
+"    n=0;s=0\n" +
+"    while True:\n" +
+"        b=buf[p];p+=1; n|=(b&0x7f)<<s\n" +
+"        if not (b&0x80): return n,p\n" +
+"        s+=7\n" +
+"        if s>35: raise ValueError('snappy varint overflow')\n" +
+"def snappy_decompress(buf):\n" +
+"    out=bytearray(); ulen,p=_vd(buf,0); end=len(buf)\n" +
+"    while p<end:\n" +
+"        tag=buf[p]; p+=1; t=tag&3\n" +
+"        if t==0:\n" +
+"            x=tag>>2\n" +
+"            if x<60: ln=x+1\n" +
+"            elif x==60: ln=buf[p]+1; p+=1\n" +
+"            elif x==61: ln=(buf[p]|(buf[p+1]<<8))+1; p+=2\n" +
+"            elif x==62: ln=(buf[p]|(buf[p+1]<<8)|(buf[p+2]<<16))+1; p+=3\n" +
+"            else: ln=struct.unpack_from('<I',buf,p)[0]+1; p+=4\n" +
+"            out+=buf[p:p+ln]; p+=ln\n" +
+"        elif t==1:\n" +
+"            ln=4+((tag>>2)&7); off=((tag>>5)&7)<<8|buf[p]; p+=1\n" +
+"            for _ in range(ln): out.append(out[len(out)-off])\n" +
+"        elif t==2:\n" +
+"            ln=(tag>>2)+1; off=buf[p]|(buf[p+1]<<8); p+=2\n" +
+"            for _ in range(ln): out.append(out[len(out)-off])\n" +
+"        else:\n" +
+"            ln=(tag>>2)+1; off=struct.unpack_from('<I',buf,p)[0]; p+=4\n" +
+"            for _ in range(ln): out.append(out[len(out)-off])\n" +
+"    if len(out)!=ulen: raise ValueError('snappy length mismatch')\n" +
+"    return bytes(out)\n" +
+"\n" +
+"def snappy_selftest():\n" +
+"    cases=[]\n" +
+"    cases.append((bytes([0x00]),b''))\n" +
+"    cases.append((bytes([0x05,0x10])+b'hello',b'hello'))\n" +
+"    cases.append((bytes([0x08,0x0c])+b'abcd'+bytes([0x01,0x04]),b'abcdabcd'))\n" +
+"    data=bytes(range(64))\n" +
+"    cases.append((bytes([0x40,0xf0,63])+data,data))\n" +
+"    cases.append((bytes([0x40,0x04])+b'AB'+bytes([0xf6,0x02,0x00]),b'AB'*32))\n" +
+"    ok=0\n" +
+"    for enc,exp in cases:\n" +
+"        try:\n" +
+"            if snappy_decompress(enc)==exp: ok+=1\n" +
+"        except Exception: pass\n" +
+"    return ok,len(cases)\n" +
+"\n" +
+"# ---- leveldb footer + index walk ----\n" +
+"LDB_MAGIC=0xdb4775248b80fb57\n" +
+"def _vd2(buf,p):\n" +
+"    n=0;s=0\n" +
+"    while True:\n" +
+"        b=buf[p];p+=1; n|=(b&0x7f)<<s\n" +
+"        if not (b&0x80): return n,p\n" +
+"        s+=7\n" +
+"def parse_block_handle(buf,p):\n" +
+"    off,p=_vd2(buf,p)\n" +
+"    sz,p=_vd2(buf,p)\n" +
+"    return off,sz,p\n" +
+"\n" +
+"def read_block(f,off,sz):\n" +
+"    f.seek(off); raw=f.read(sz); typ=f.read(1); _crc=f.read(4)\n" +
+"    if not typ: return None,None\n" +
+"    return raw, typ[0]\n" +
+"\n" +
+"def walk_block_keys(block,sink):\n" +
+"    # leveldb data block: [restart-points trailer]\n" +
+"    if len(block)<4: return\n" +
+"    n_restart=struct.unpack_from('<I',block,len(block)-4)[0]\n" +
+"    if n_restart==0 or n_restart*4+4>len(block): return\n" +
+"    rs_off=len(block)-4-n_restart*4\n" +
+"    body=block[:rs_off]\n" +
+"    p=0; last=b''\n" +
+"    while p<len(body):\n" +
+"        try:\n" +
+"            shared,p=_vd2(body,p)\n" +
+"            non_shared,p=_vd2(body,p)\n" +
+"            vlen,p=_vd2(body,p)\n" +
+"        except Exception:\n" +
+"            return\n" +
+"        if p+non_shared+vlen>len(body): return\n" +
+"        key=last[:shared]+body[p:p+non_shared]\n" +
+"        p+=non_shared+vlen\n" +
+"        last=key\n" +
+"        # leveldb internal key trailer: last 8 bytes = (seq<<8)|type. strip if len>8.\n" +
+"        uk=key[:-8] if len(key)>8 else key\n" +
+"        sink.append(uk)\n" +
+"\n" +
+"def harvest_ldb(path,sink_keys,stats):\n" +
+"    sz=os.path.getsize(path)\n" +
+"    if sz<48: return\n" +
+"    with open(path,'rb') as f:\n" +
+"        f.seek(sz-48); footer=f.read(48)\n" +
+"        if len(footer)<48: return\n" +
+"        magic=struct.unpack_from('<Q',footer,40)[0]\n" +
+"        if magic!=LDB_MAGIC:\n" +
+"            stats['corrupt']+=1; return\n" +
+"        # metaindex BlockHandle, then index BlockHandle in first 40 bytes (varint pairs)\n" +
+"        try:\n" +
+"            _moff,_msz,p=parse_block_handle(footer,0)\n" +
+"            ioff,isz,_=parse_block_handle(footer,p)\n" +
+"        except Exception:\n" +
+"            stats['corrupt']+=1; return\n" +
+"        idx_raw,idx_typ=read_block(f,ioff,isz)\n" +
+"        if idx_raw is None:\n" +
+"            stats['corrupt']+=1; return\n" +
+"        if idx_typ==1:\n" +
+"            try: idx=snappy_decompress(idx_raw); stats['snappy_decoded']+=1\n" +
+"            except Exception: stats['snappy_skip']+=1; return\n" +
+"        else:\n" +
+"            idx=idx_raw; stats['raw_blocks']+=1\n" +
+"        # index block: each value entry is a BlockHandle (varint pair)\n" +
+"        if len(idx)<4: return\n" +
+"        n_restart=struct.unpack_from('<I',idx,len(idx)-4)[0]\n" +
+"        if n_restart*4+4>len(idx): return\n" +
+"        body=idx[:len(idx)-4-n_restart*4]\n" +
+"        p=0; last=b''\n" +
+"        handles=[]\n" +
+"        while p<len(body):\n" +
+"            try:\n" +
+"                shared,p=_vd2(body,p)\n" +
+"                non_shared,p=_vd2(body,p)\n" +
+"                vlen,p=_vd2(body,p)\n" +
+"            except Exception: break\n" +
+"            if p+non_shared+vlen>len(body): break\n" +
+"            _ikey=last[:shared]+body[p:p+non_shared]\n" +
+"            v=body[p+non_shared:p+non_shared+vlen]\n" +
+"            try:\n" +
+"                doff,dsz,_=parse_block_handle(v,0)\n" +
+"                handles.append((doff,dsz))\n" +
+"            except Exception: pass\n" +
+"            p+=non_shared+vlen\n" +
+"            last=_ikey\n" +
+"        for (doff,dsz) in handles:\n" +
+"            blk_raw,blk_typ=read_block(f,doff,dsz)\n" +
+"            if blk_raw is None: continue\n" +
+"            if blk_typ==1:\n" +
+"                try: blk=snappy_decompress(blk_raw); stats['snappy_decoded']+=1\n" +
+"                except Exception: stats['snappy_skip']+=1; continue\n" +
+"            else:\n" +
+"                blk=blk_raw; stats['raw_blocks']+=1\n" +
+"            walk_block_keys(blk,sink_keys)\n" +
+"\n" +
+"def is_ascii_print(b):\n" +
+"    if len(b)<3 or len(b)>200: return False\n" +
+"    p=sum(1 for c in b if 32<=c<127)\n" +
+"    return p*100 >= 95*len(b)\n" +
+"\n" +
+"def discord_running():\n" +
+"    try:\n" +
+"        r=subprocess.run(['/usr/bin/pgrep','-lf','[Dd]iscord'],capture_output=True,timeout=3)\n" +
+"        return bool(r.stdout.strip())\n" +
+"    except Exception: return False\n" +
+"\n" +
+"def lock_safe():\n" +
+"    p=os.path.join(LS,'LOCK')\n" +
+"    if not os.path.isfile(p): return True\n" +
+"    return os.stat(p).st_size==0\n" +
+"\n" +
+"def synth_keys(n=5000,seed=42):\n" +
+"    rng=random.Random(seed); out=set()\n" +
+"    cats=['channel','server','user','setting']\n" +
+"    while len(out)<n:\n" +
+"        c=cats[rng.randrange(4)]\n" +
+"        s=f'{c}-{rng.randrange(10**6):08x}-{rng.randrange(10**4):04x}'\n" +
+"        out.add(s)\n" +
+"    return list(out)\n" +
+"\n" +
+"def harvest_real():\n" +
+"    keys=[]; tags=[]; stats={'corrupt':0,'snappy_decoded':0,'snappy_skip':0,'raw_blocks':0,'files':0}\n" +
+"    if not lock_safe(): return None,None,stats\n" +
+"    for path in sorted(glob.glob(os.path.join(LS,'*.ldb'))):\n" +
+"        sink=[]\n" +
+"        try: harvest_ldb(path,sink,stats)\n" +
+"        except Exception: stats['corrupt']+=1; continue\n" +
+"        stats['files']+=1\n" +
+"        for uk in sink:\n" +
+"            if not is_ascii_print(uk): continue\n" +
+"            try: s=uk.decode('utf-8','ignore')\n" +
+"            except Exception: continue\n" +
+"            if not s or TOKEN_RE.search(s): continue\n" +
+"            keys.append(s); tags.append(1 if stats['snappy_decoded']>0 else 0)\n" +
+"    # IndexedDB opportunistic\n" +
+"    for path in glob.glob(os.path.join(IDB,'*','*.ldb')):\n" +
+"        sink=[]\n" +
+"        try: harvest_ldb(path,sink,stats)\n" +
+"        except Exception: continue\n" +
+"        for uk in sink:\n" +
+"            if not is_ascii_print(uk): continue\n" +
+"            try: s=uk.decode('utf-8','ignore')\n" +
+"            except Exception: continue\n" +
+"            if not s or TOKEN_RE.search(s): continue\n" +
+"            keys.append(s); tags.append(2)\n" +
+"    return keys,tags,stats\n" +
+"\n" +
+"def encode(_src):\n" +
+"    t0=time.perf_counter(); reason=[]\n" +
+"    if discord_running():\n" +
+"        reason.append('k4_running'); keys=synth_keys(); tags=[3]*len(keys); source='synthetic (Discord running)'\n" +
+"        stats={'corrupt':0,'snappy_decoded':0,'snappy_skip':0,'raw_blocks':0,'files':0}\n" +
+"    elif not os.path.isdir(LS):\n" +
+"        reason.append('k4_no_ls'); keys=synth_keys(); tags=[3]*len(keys); source='synthetic (no LS dir)'\n" +
+"        stats={'corrupt':0,'snappy_decoded':0,'snappy_skip':0,'raw_blocks':0,'files':0}\n" +
+"    else:\n" +
+"        keys,tags,stats=harvest_real()\n" +
+"        if keys is None or len(keys)==0:\n" +
+"            reason.append('k4_empty'); keys=synth_keys(); tags=[3]*len(keys); source='synthetic (empty harvest)'\n" +
+"        else:\n" +
+"            seen=set(); dk=[]; dt=[]\n" +
+"            for k,t in zip(keys,tags):\n" +
+"                if k in seen: continue\n" +
+"                seen.add(k); dk.append(k); dt.append(t)\n" +
+"            keys=dk; tags=dt; source='real'\n" +
+"            if stats['snappy_skip']>0: reason.append('k4_snappy_skew')\n" +
+"            if stats['corrupt']>0: reason.append('k4_corrupt_ldb')\n" +
+"    n=len(keys)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n); lens=array.array('I',[0]*n); src_tags=bytearray(n)\n" +
+"    for i,k in enumerate(keys):\n" +
+"        kb=k.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(kb); src_tags[i]=tags[i]&0xff\n" +
+"        pool.extend(kb)\n" +
+"    header=struct.pack('<4sIII',b'KDLS',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(offs.tobytes()); f.write(lens.tobytes())\n" +
+"        f.write(bytes(src_tags)); f.write(pool)\n" +
+"    t1=time.perf_counter()\n" +
+"    return {'encode_s':t1-t0,'n':n,'blob_size':os.path.getsize(BIN),'source':source,'stats':stats,'reason':reason}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb'); self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,ps=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        if magic!=b'KDLS' or ver!=1: raise ValueError(f'bad magic/ver {magic} {ver}')\n" +
+"        self.n=n; self.ps=ps; base=16\n" +
+"        offs_off=base; lens_off=base+4*n; tag_off=base+8*n; pool_off=base+9*n\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(self.mm[offs_off:offs_off+4*n]))\n" +
+"        lens=array.array('I'); lens.frombytes(bytes(self.mm[lens_off:lens_off+4*n]))\n" +
+"        tags=bytes(self.mm[tag_off:tag_off+n])\n" +
+"        pool=bytes(self.mm[pool_off:pool_off+ps])\n" +
+"        self.keys=[pool[offs[i]:offs[i]+lens[i]] for i in range(n)]\n" +
+"        self.tags=tags\n" +
+"        # for bisect: build sorted index\n" +
+"        order=sorted(range(n),key=lambda i:self.keys[i])\n" +
+"        self.sorted_keys=[self.keys[i] for i in order]\n" +
+"        self.sorted_back=order\n" +
+"    def prefix_count(self,prefix):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        s=bisect.bisect_left(self.sorted_keys,pb)\n" +
+"        e=bisect.bisect_left(self.sorted_keys,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        return e-s\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def selftest():\n" +
+"    ok,total=snappy_selftest()\n" +
+"    print(f'[selftest] snappy decoder fixtures: {ok}/{total}')\n" +
+"    print(f'[selftest] classifier_version={CLASSIFIER}')\n" +
+"    return ok==total\n" +
+"\n" +
+"def bench():\n" +
+"    print(f'airgenome filter/K4 — discord_localstorage_shbf  (KDLS v1)')\n" +
+"    if not selftest():\n" +
+"        print('SELFTEST FAIL'); sys.exit(2)\n" +
+"    info=encode('')\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f}ms  keys={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}  source={info[\"source\"]}')\n" +
+"    s=info['stats']\n" +
+"    print(f'[stats] files={s[\"files\"]} raw_blocks={s[\"raw_blocks\"]} snappy_decoded={s[\"snappy_decoded\"]} snappy_skip={s[\"snappy_skip\"]} corrupt={s[\"corrupt\"]}')\n" +
+"    print(f'[reason] {\",\".join(info[\"reason\"]) if info[\"reason\"] else \"-\"}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no keys — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    rng=random.Random(11)\n" +
+"    samples=[]\n" +
+"    for _ in range(100):\n" +
+"        i=rng.randrange(b.n)\n" +
+"        k=b.keys[i].decode('utf-8','replace')\n" +
+"        samples.append(k[:max(2,min(len(k),rng.choice([2,3,4,5,6])))])\n" +
+"    rss_blob=rss()\n" +
+"    # warm\n" +
+"    for p in samples[:5]: b.prefix_count(p)\n" +
+"    t0=time.perf_counter()\n" +
+"    h=0\n" +
+"    for p in samples: h+=b.prefix_count(p)\n" +
+"    t1=time.perf_counter(); us=(t1-t0)*1e6/len(samples)\n" +
+"    b.close()\n" +
+"    print(f'[query] 100 prefix-count  hits_total={h}  per_query={us:.1f}us')\n" +
+"    print(f'[rss] after blob loaded: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} keys in {info[\"encode_s\"]*1000:.1f}ms -> {BIN} ({fmt(info[\"blob_size\"])}, source={info[\"source\"]})')\n" +
+"    print(f'classifier_version={CLASSIFIER}')\n" +
+"elif mode=='selftest':\n" +
+"    ok=selftest(); sys.exit(0 if ok else 2)\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench|selftest [<path>]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("discord_localstorage_shbf")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" || v == "selftest" { mode = v }
+            else if v.contains("/") { target = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/discord_localstorage_shbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

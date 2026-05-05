@@ -146,7 +146,7 @@ WiFi-off guard: `system_profiler` reports "Status: Off" → reason=skipped + emp
 
 ## §H. Verdict & ROI
 
-- NW-W1-h4 Σ = **420/420** → **IMPL** (`modules/filters/data/wifi_signal_shbf.hexa`).
+- NW-W1-h4 Σ = **420/420** → **IMPL** (`filters/module/data/wifi_signal_shbf.hexa`).
 - Bench: `tool/bench/bench_nw_w1_wifi_signal_shbf.hexa` — synth N=1000 SHBF encode + 200 BSSID/SSID prefix queries.
 - **Expected ROI**:
   - encode 50–100ms (synth N=1000) / 5–15ms (real current-net only)

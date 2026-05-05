@@ -169,8 +169,8 @@ plugin-registry pattern remains for future external handlers).
 
 ### Invariants
 
-1. `core/core.hexa` imports no other hexa file (self-contained).
-2. New modules import only `use "../core/core"` — no inter-module imports.
+1. `airgenome/core/airgenome.hexa` imports no other hexa file (self-contained).
+2. New modules import only `use "../../airgenome/core/airgenome"` — no inter-module imports.
 3. L0 entry = file present ∧ parse OK ∧ self-test PASS (3-way gate).
 4. `archive/v1/` is read-only — revival requires PR + roadmap entry + L0 refresh.
 

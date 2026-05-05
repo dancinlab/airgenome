@@ -227,10 +227,10 @@ EOF
 
     # Case 3: 경로 blacklist (core/*) → blocked
     cat > "$tmpdir/core.diff" <<'EOF'
-diff --git a/core/core.hexa b/core/core.hexa
+diff --git a/airgenome/core/airgenome.hexa b/airgenome/core/airgenome.hexa
 index 111..222 100644
---- a/core/core.hexa
-+++ b/core/core.hexa
+--- a/airgenome/core/airgenome.hexa
++++ b/airgenome/core/airgenome.hexa
 @@ -1 +1,2 @@
  line
 +injected

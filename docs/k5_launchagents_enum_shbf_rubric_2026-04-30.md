@@ -123,5 +123,5 @@ honest-C3 gap count: **8**.
 
 - `/Users/ghost/core/airgenome/docs/k5_launchagents_enum_shbf_rubric_2026-04-30.md` (this)
 - `/Users/ghost/core/airgenome/docs/k5_launchagents_enum_shbf_rubric_2026-04-30.rubric.jsonl`
-- `/Users/ghost/core/airgenome/modules/filters/data/launchagents_enum_shbf.hexa`
+- `/Users/ghost/core/airgenome/filters/module/data/launchagents_enum_shbf.hexa`
 - `/Users/ghost/core/airgenome/tool/bench/bench_k5_launchagents_enum.hexa`

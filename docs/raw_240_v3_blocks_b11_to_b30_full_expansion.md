@@ -5,7 +5,7 @@
 **Companion artifacts**:
 
 - `/Users/ghost/core/airgenome/docs/raw_240_v3_blocks_b11_to_b30_full_expansion.rubric.jsonl` (machine-readable per-block rows, 20 entries B11–B30)
-- `/Users/ghost/core/airgenome/modules/filters/data/claude_read_cache_layer.hexa` (CC-BG6 reference impl — Option-3 Hybrid, 8/8 selftest PASS, V2.5 720/720 dogfood)
+- `/Users/ghost/core/airgenome/filters/module/data/claude_read_cache_layer.hexa` (CC-BG6 reference impl — Option-3 Hybrid, 8/8 selftest PASS, V2.5 720/720 dogfood)
 - `/Users/ghost/core/airgenome/tool/bench/bench_cc_bg6_read_cache_layer.hexa` (synth + real CC-BG4 transcript bench)
 - `/Users/ghost/core/airgenome/docs/cc_bg6_read_cache_layer_rubric_2026-05-01.md` + `.rubric.jsonl` (CC-BG6 V2.5 720/720 derivation)
 

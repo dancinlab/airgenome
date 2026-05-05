@@ -88,7 +88,7 @@ honest-C3 gap count: **6**.
 
 - `/Users/ghost/core/airgenome/docs/sf2_safari_tab_groups_rubric_2026-04-30.md` (this)
 - `/Users/ghost/core/airgenome/docs/sf2_safari_tab_groups_rubric_2026-04-30.rubric.jsonl`
-- `/Users/ghost/core/airgenome/modules/filters/data/safari_tab_groups.hexa` (HOLD-stub: skip + reason print)
+- `/Users/ghost/core/airgenome/filters/module/data/safari_tab_groups.hexa` (HOLD-stub: skip + reason print)
 - `/Users/ghost/core/airgenome/tool/bench/bench_sf2_safari_tab_groups.hexa` (HOLD-stub: synth-only bench documenting carve-out)
 
 Verdict: **HOLD** (332/400 < 350). Stub artifacts emit `verdict=HOLD reason=safari-running+spec-path-missing` and exit 0.

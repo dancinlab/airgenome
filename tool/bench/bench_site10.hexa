@@ -7,7 +7,7 @@
 // 단일 패스. RULES 7 rules × cycles. raw 91 honest C3 — 측정 후 결정 (구현 가치 < 2× 면
 // 사이트 close, ledger 에 N/A 사유 명시).
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let LINES_SAMPLE = [
     "{\"label\":\"CPU_SPIKE\",\"axis\":0,\"op\":\"gt\",\"threshold\":80,\"desc\":\"x\"}",

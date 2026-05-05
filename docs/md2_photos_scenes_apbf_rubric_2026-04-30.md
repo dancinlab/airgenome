@@ -140,4 +140,4 @@ C3-6 — **PII surface**: scene labels are generally non-PII (beach, indoor) but
 - MD2 hybrid Σ = **380/400** ≥ 350 → **IMPLEMENT**.
 - TCC: accessible on probe host (ZSCENECLASSIFICATION open OK) but row count = 0 → **synth fallback fires** (md2_zero_scenes reason_code).
 - Pattern: F58 autocomplete_trie_mmap APBF applied verbatim to Photos scene surface + ZCONFIDENCE float as score weight; numeric-id-only schema handled via `scene_NNNN` decorator.
-- Deliverables (4 of 8): this .md + companion .rubric.jsonl + modules/filters/data/photos_scenes_apbf.hexa + tool/bench/bench_md2_photos_scenes_apbf.hexa.
+- Deliverables (4 of 8): this .md + companion .rubric.jsonl + filters/module/data/photos_scenes_apbf.hexa + tool/bench/bench_md2_photos_scenes_apbf.hexa.

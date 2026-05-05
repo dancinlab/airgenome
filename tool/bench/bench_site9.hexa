@@ -10,7 +10,7 @@
 //   label (string)   axis (number)    op (string)        threshold (number)
 //   host (optional)  pid (number)     comm (string)      ts (string)
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let BENCH_RING = "/tmp/airgenome_bench_site9.ring"
 let LINES = 200      // synthetic genomes
@@ -41,7 +41,7 @@ fn read_lines() -> list {
     return out
 }
 
-// OLD: per-call exec(echo|jq) — current modules/label.hexa#jq_field L38-41 정확 복제.
+// OLD: per-call exec(echo|jq) — current label/module/label.hexa#jq_field L38-41 정확 복제.
 fn old_jq_field(line: str, expr: str) -> str {
     let cmd = "echo '" + line + "' | jq -r '" + expr + " // \"\"' 2>/dev/null"
     return exec(cmd).trim()

@@ -202,9 +202,9 @@ cmd_sync() {
     info "remote_load self-test"
     bash "$ROOT/bin/remote_load.sh" --self-test | tail -5
     info "probe self-test"
-    hexa run "$ROOT/modules/probe.hexa" self-test | tail -3
+    hexa run "$ROOT/probe/module/probe.hexa" self-test | tail -3
     info "dispatch self-test"
-    hexa run "$ROOT/modules/dispatch.hexa" self-test | tail -3
+    hexa run "$ROOT/dispatch/module/dispatch.hexa" self-test | tail -3
     info "✅ sync 완료"
 }
 

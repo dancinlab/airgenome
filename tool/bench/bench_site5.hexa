@@ -1,10 +1,10 @@
 // tool/bench/bench_site5.hexa — own 5 site-5 (fingerprint stdlib: xxh64 vs sha256)
 //
-// core/core.hexa fingerprint/cache key 신규 추가 시 sha256/sha1/md5 금지, wyhash/xxh64 binding mandate.
+// airgenome/core/airgenome.hexa fingerprint/cache key 신규 추가 시 sha256/sha1/md5 금지, wyhash/xxh64 binding mandate.
 // 현 caller 0 — site-5 는 stdlib API 등록 + bench. xxh64sum (Bun-side wyhash 의 CLI 등가물).
 // 코퍼스 스케일별 측정 — fork 비용이 작은 입력에 dominate.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let SMALL_PATH = "/tmp/airgenome_bench_site5_small.dat"
 let BIG_PATH = "/tmp/airgenome_bench_site5_big.dat"

@@ -1,0 +1,228 @@
+// airgenome/filters/module/data/mail_rules_dict.hexa
+//   MX1 — Mail.app SyncedRules.plist Rules Dict (MRDC).
+//
+//   목적: Mail.app 의 ~/Library/Mail/V<n>/MailData/SyncedRules.plist 는 사용자
+//         정의 메일 규칙 (forward, move, reply, ...) 을 담는 plist. 매번 plistlib
+//         re-parse + 규칙 이름 string match 하던 hot path 를, 1B enum rule-id +
+//         sorted criteria-keyword hash blob 으로 치환.
+//
+//   blob layout (little-endian):
+//     magic    : 4B  "MRDC"
+//     version  : 4B  u32 (1)
+//     n_rules  : 4B  u32 distinct rule count (≤255)
+//     n_kw     : 4B  u32 criteria keyword hash count
+//     str_sz   : 4B  u32 name pool size
+//     [n_rules*4]: u32 name_offs
+//     [n_rules*4]: u32 name_lens
+//     [str_sz]   : utf-8 rule-name pool
+//     [n_kw*4]   : u32 sorted blake2b-32 keyword hashes (criteria field names + values, lowercased)
+//     [n_kw]     : u8  rule_id per keyword (which rule the keyword belongs to)
+//
+// 모드:
+//   encode : SyncedRules.plist → /tmp/mail_rules_dict.bin
+//   bench  : encode + plist re-parse linear vs blob u32-bisect (100 keyword query)
+//
+// 절대 금지: plist mutation 0, iCloud sync trigger 0, launchctl 0, git commit 0.
+// R1 HEXA-FIRST: 인라인 python3 PAYLOAD. R17: perl alarm 120s. /usr/bin/python3 절대.
+
+let PAYLOAD = "import sys,os,plistlib,struct,time,bisect,resource,mmap,array,hashlib,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/mail_rules_dict.bin'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def probe_rules():\n" +
+"    out=[]\n" +
+"    for v in (8,9,10,11,12):\n" +
+"        p=f'{HOME}/Library/Mail/V{v}/MailData/SyncedRules.plist'\n" +
+"        if os.path.isfile(p): out.append((v,p))\n" +
+"    return out\n" +
+"\n" +
+"def hash32(s):\n" +
+"    h=hashlib.blake2b(s.encode('utf-8','replace'),digest_size=4).digest()\n" +
+"    return struct.unpack('<I',h)[0]\n" +
+"\n" +
+"def synth_rules(n=50,seed=11):\n" +
+"    rng=random.Random(seed)\n" +
+"    fields=['from','to','subject','any-recipient','message-content','sender']\n" +
+"    domains=['example.com','noreply.local','newsletter.io','bank.example']\n" +
+"    rules=[]\n" +
+"    for i in range(n):\n" +
+"        nm=f'rule-{i:03d}-{rng.choice([\"forward\",\"archive\",\"flag\",\"delete\",\"move\"])}'\n" +
+"        ncrit=rng.randrange(1,6)\n" +
+"        crits=[]\n" +
+"        for _ in range(ncrit):\n" +
+"            f=rng.choice(fields)\n" +
+"            v=rng.choice(domains)+'/'+str(rng.randrange(9999))\n" +
+"            crits.append((f,v))\n" +
+"        rules.append({'name':nm,'enabled':True,'criteria':crits})\n" +
+"    return rules\n" +
+"\n" +
+"def load_rules(path):\n" +
+"    with open(path,'rb') as fh:\n" +
+"        pl=plistlib.load(fh)\n" +
+"    items=pl if isinstance(pl,list) else pl.get('Rules') or pl.get('rules') or []\n" +
+"    out=[]\n" +
+"    for it in items:\n" +
+"        if not isinstance(it,dict): continue\n" +
+"        nm=str(it.get('Name') or it.get('RuleName') or it.get('name') or '')[:256]\n" +
+"        if not nm: continue\n" +
+"        crits=[]\n" +
+"        carr=it.get('Criteria') or it.get('criteria') or []\n" +
+"        if isinstance(carr,list):\n" +
+"            for c in carr:\n" +
+"                if not isinstance(c,dict): continue\n" +
+"                fld=str(c.get('Header') or c.get('field') or '')[:64].lower()\n" +
+"                exp=str(c.get('Expression') or c.get('value') or '')[:256].lower()\n" +
+"                if fld or exp: crits.append((fld,exp))\n" +
+"        en=bool(it.get('Enabled',True))\n" +
+"        out.append({'name':nm,'enabled':en,'criteria':crits})\n" +
+"    return out\n" +
+"\n" +
+"def encode():\n" +
+"    cands=probe_rules()\n" +
+"    source='real'\n" +
+"    if not cands:\n" +
+"        rules=synth_rules(50); v=0; path='(synthetic)'; raw_size=0; source='synthetic'\n" +
+"    else:\n" +
+"        v,path=cands[0]; raw_size=os.path.getsize(path)\n" +
+"        try:\n" +
+"            rules=load_rules(path)\n" +
+"        except Exception as e:\n" +
+"            print(f'[encode] plist parse fail: {e!r} → synthetic'); rules=synth_rules(50); source='synthetic'\n" +
+"    if not rules:\n" +
+"        rules=synth_rules(50); source='synthetic'\n" +
+"    if len(rules)>255:\n" +
+"        rules=rules[:255]\n" +
+"    n_rules=len(rules)\n" +
+"    pool=bytearray()\n" +
+"    name_offs=array.array('I',[0]*n_rules)\n" +
+"    name_lens=array.array('I',[0]*n_rules)\n" +
+"    for i,r in enumerate(rules):\n" +
+"        nb=r['name'].encode('utf-8','replace')\n" +
+"        name_offs[i]=len(pool); name_lens[i]=len(nb); pool.extend(nb)\n" +
+"    kw_pairs=[]\n" +
+"    for i,r in enumerate(rules):\n" +
+"        for f,vv in r['criteria']:\n" +
+"            for tok in (f,vv):\n" +
+"                if not tok: continue\n" +
+"                kw_pairs.append((hash32(tok),i&0xff))\n" +
+"    kw_pairs.sort(key=lambda x:x[0])\n" +
+"    n_kw=len(kw_pairs)\n" +
+"    kw_hashes=array.array('I',[h for h,_ in kw_pairs])\n" +
+"    kw_rule=bytes(rid for _,rid in kw_pairs)\n" +
+"    header=struct.pack('<4sIIII',b'MRDC',1,n_rules,n_kw,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(name_offs.tobytes()); f.write(name_lens.tobytes())\n" +
+"        f.write(bytes(pool))\n" +
+"        f.write(kw_hashes.tobytes()); f.write(kw_rule)\n" +
+"    return {'mail_v':v,'src':path,'raw_size':raw_size,'n_rules':n_rules,'n_kw':n_kw,'rules':rules,'blob_size':os.path.getsize(BIN),'source':source}\n" +
+"\n" +
+"class RulesDict:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n_rules,n_kw,str_sz=struct.unpack_from('<4sIIII',self.mm,0)\n" +
+"        if magic!=b'MRDC' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n_rules=n_rules; self.n_kw=n_kw\n" +
+"        base=20\n" +
+"        self.name_offs=array.array('I'); self.name_offs.frombytes(self.mm[base:base+4*n_rules])\n" +
+"        b1=base+4*n_rules\n" +
+"        self.name_lens=array.array('I'); self.name_lens.frombytes(self.mm[b1:b1+4*n_rules])\n" +
+"        b2=b1+4*n_rules\n" +
+"        self.pool=bytes(self.mm[b2:b2+str_sz])\n" +
+"        b3=b2+str_sz\n" +
+"        self.kw_hashes=array.array('I'); self.kw_hashes.frombytes(self.mm[b3:b3+4*n_kw])\n" +
+"        b4=b3+4*n_kw\n" +
+"        self.kw_rule=bytes(self.mm[b4:b4+n_kw])\n" +
+"    def name(self,rid):\n" +
+"        o=self.name_offs[rid]; l=self.name_lens[rid]\n" +
+"        return self.pool[o:o+l].decode('utf-8','replace')\n" +
+"    def lookup(self,kw):\n" +
+"        h=hashlib.blake2b(kw.encode('utf-8','replace'),digest_size=4).digest()\n" +
+"        h32=struct.unpack('<I',h)[0]\n" +
+"        i=bisect.bisect_left(self.kw_hashes,h32)\n" +
+"        out=[]\n" +
+"        while i<self.n_kw and self.kw_hashes[i]==h32:\n" +
+"            out.append(self.kw_rule[i])\n" +
+"            i+=1\n" +
+"        return out\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] V{info[\"mail_v\"]}  rules={info[\"n_rules\"]}  keywords={info[\"n_kw\"]}  blob={fmt(info[\"blob_size\"])}  source={info[\"source\"]}')\n" +
+"    if info['raw_size']: print(f'  plist_raw={fmt(info[\"raw_size\"])}  blob/raw={100*info[\"blob_size\"]/max(info[\"raw_size\"],1):.1f}%')\n" +
+"    if info['n_rules']==0:\n" +
+"        print('[bench] no rules — skip'); return\n" +
+"    rd=RulesDict(BIN)\n" +
+"    rng=random.Random(11)\n" +
+"    sample=[]\n" +
+"    for r in info['rules']:\n" +
+"        for f,vv in r['criteria']:\n" +
+"            for t in (f,vv):\n" +
+"                if t: sample.append(t)\n" +
+"    if not sample: sample=['from']\n" +
+"    queries=[rng.choice(sample) for _ in range(100)]\n" +
+"    rss_blob=rss()\n" +
+"    for q in queries[:5]: rd.lookup(q)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    new_hits=0\n" +
+"    for q in queries: new_hits+=len(rd.lookup(q))\n" +
+"    t1=time.perf_counter_ns(); ns_new=t1-t0; per_new=ns_new//len(queries)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    old_hits=0\n" +
+"    for q in queries:\n" +
+"        for i,r in enumerate(info['rules']):\n" +
+"            for f,vv in r['criteria']:\n" +
+"                if q==f or q==vv: old_hits+=1\n" +
+"    t1=time.perf_counter_ns(); ns_old=t1-t0; per_old=ns_old//len(queries)\n" +
+"    rd.close()\n" +
+"    print(f'[query] 100 keyword-lookup  hits new={new_hits} old={old_hits}')\n" +
+"    print(f'  OLD (linear plist scan)    per_query_ns={per_old}')\n" +
+"    print(f'  NEW (u32 bisect blob)      per_query_ns={per_new}')\n" +
+"    if per_new>0: print(f'  speedup={per_old/per_new:.1f}x')\n" +
+"    diff_test='lossless' if new_hits==old_hits else f'mismatch:new={new_hits}_old={old_hits}'\n" +
+"    print(f'  5-tuple: site=MX1 ROI#=mail-rules-dict baseline_ns={per_old} post_ns={per_new} diff_test={diff_test}')\n" +
+"    print(f'[rss] after blob: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode()\n" +
+"    print(f'encoded {info[\"n_rules\"]} rules ({info[\"n_kw\"]} keywords, V{info[\"mail_v\"]}) → {BIN} ({fmt(info[\"blob_size\"])}) source={info[\"source\"]}')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("mail_rules_dict")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/mail_rules_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

@@ -163,7 +163,7 @@ B7 40→34 (+1KB), B10 20→20. Net **−1**. REJECT.
 
 1. `/Users/ghost/core/airgenome/docs/ct3_docker_image_layer_dedup_rubric_2026-04-30.md`
 2. `/Users/ghost/core/airgenome/docs/ct3_docker_image_layer_dedup_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/docker_image_layer_dedup.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/docker_image_layer_dedup.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_ct3_docker_image_layer_dedup.hexa`
 
 **Final CT3 score: 420/420 (V2 + B10 expanded ceiling — rotation/snapshot-

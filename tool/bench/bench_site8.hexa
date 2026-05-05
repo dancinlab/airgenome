@@ -1,11 +1,11 @@
 // tool/bench/bench_site8.hexa — own 6 site-8 baseline (forecast append_out per-prediction exec vs batch)
 //
-// modules/forecast.hexa#append_out 는 per-prediction exec("printf '%s\n' LINE >> OUT") 호출.
+// forecast/module/forecast.hexa#append_out 는 per-prediction exec("printf '%s\n' LINE >> OUT") 호출.
 // run_forecast 의 keys 루프에서 prediction 마다 append_out 호출 (~30 fork/cycle TOP_N_PIDS=30).
 // 직접 적용: keys 루프 안에서 buffer 누적 → 루프 종료 후 1회 append_file (0 fork).
 // own 5 site-3 (harvest append_ring) 의 검증된 패턴 직접 이식.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let BENCH_FILE_OLD = "/tmp/airgenome_bench_site8_old.jsonl"
 let BENCH_FILE_NEW = "/tmp/airgenome_bench_site8_new.jsonl"
@@ -24,7 +24,7 @@ fn make_pred_line(n: int) -> str {
     return "{\"ts\":\"2026-04-30T00:00:00Z\",\"pid\":\"" + to_string(1000 + n) + "\",\"host\":\"mac\",\"horizon\":\"1step\",\"pred_cpu\":" + to_string(n) + ",\"pred_ram\":" + to_string(n) + ",\"samples\":8}"
 }
 
-// OLD: per-prediction exec(printf >>) — modules/forecast.hexa#append_out L220-222
+// OLD: per-prediction exec(printf >>) — forecast/module/forecast.hexa#append_out L220-222
 fn old_append_out(path: str, line: str) -> void {
     let _ = exec("printf '%s\\n' '" + line + "' >> '" + path + "'")
 }

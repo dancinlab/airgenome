@@ -427,7 +427,7 @@ allowed topology (death is terminal):
 ## R-E. raw N+4 — `hexa-no-top-level-explicit-main-call-mandate`
 
 ```
-raw N+4 new "hexa-no-top-level-explicit-main-call-mandate - hexa source files defining `fn main() -> void { ... }` MUST NOT contain a top-level explicit `main()` call at the file end. The hexa runtime auto-invokes `fn main` after module load (since the runtime's auto-invoke patch); a top-level `main()` line at file end causes double-invocation and 'double main' panic. Banned pattern: file ending with bare `main()` line outside any fn. Allowed pattern: `fn main() -> void { ... }` definition with no trailing `main()` invocation. Sourced from airgenome 2026-04-30 cycle — 8 modules across modules/genome_merge.hexa, dispatch/harvest/predictive_throttle/probe, bin/menubar exhibited the pattern after a hexa runtime drift introduced auto-invoke; bulk migration commits fa1daaea, 8b2182cb, bae3db89, 59768b4e. Distinct from raw 18 (self-host fixpoint) and raw 220 (dual-mode codegen parity per-commit) — raw N+4 = source-text canonical-form gate at the explicit-call-site level. Genus slug per raw 106. Cross-repo per raw 47."
+raw N+4 new "hexa-no-top-level-explicit-main-call-mandate - hexa source files defining `fn main() -> void { ... }` MUST NOT contain a top-level explicit `main()` call at the file end. The hexa runtime auto-invokes `fn main` after module load (since the runtime's auto-invoke patch); a top-level `main()` line at file end causes double-invocation and 'double main' panic. Banned pattern: file ending with bare `main()` line outside any fn. Allowed pattern: `fn main() -> void { ... }` definition with no trailing `main()` invocation. Sourced from airgenome 2026-04-30 cycle — 8 modules across genome_merge/module/genome_merge.hexa, dispatch/harvest/predictive_throttle/probe, bin/menubar exhibited the pattern after a hexa runtime drift introduced auto-invoke; bulk migration commits fa1daaea, 8b2182cb, bae3db89, 59768b4e. Distinct from raw 18 (self-host fixpoint) and raw 220 (dual-mode codegen parity per-commit) — raw N+4 = source-text canonical-form gate at the explicit-call-site level. Genus slug per raw 106. Cross-repo per raw 47."
   slug hexa-no-top-level-explicit-main-call-mandate
   enforce tool/no_top_level_main_call_lint.hexa
   enforce-layer cli-lint
@@ -493,7 +493,7 @@ raw N+4 new "hexa-no-top-level-explicit-main-call-mandate - hexa source files de
 ### Flow report (raw 231)
 
 ```
-banned source canonical form (pre-migration airgenome modules/genome_merge.hexa):
+banned source canonical form (pre-migration airgenome genome_merge/module/genome_merge.hexa):
   fn main() -> void {
     → fn body
   }
@@ -503,7 +503,7 @@ banned source canonical form (pre-migration airgenome modules/genome_merge.hexa)
     → top-level main() executes again       (explicit)
       → double-main panic
 
-allowed source canonical form (post-migration airgenome modules/genome_merge.hexa, commit fa1daaea):
+allowed source canonical form (post-migration airgenome genome_merge/module/genome_merge.hexa, commit fa1daaea):
   fn main() -> void {
     → fn body
   }

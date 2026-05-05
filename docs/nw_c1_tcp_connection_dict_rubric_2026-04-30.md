@@ -111,6 +111,6 @@ C3-5 — **TIME_WAIT/CLOSE_WAIT excluded by design**: `-sTCP:ESTABLISHED` filter
 
 ## §F. Verdict
 
-- V3 Σ = **400/400** ≥ 380 → **만점 IMPL** (`modules/filters/data/tcp_connection_dict.hexa`).
+- V3 Σ = **400/400** ≥ 380 → **만점 IMPL** (`filters/module/data/tcp_connection_dict.hexa`).
 - Bench: `tool/bench/bench_nw_c1_tcp_connection_dict.hexa` synth 1500-conn TCDF encode + 200 hash lookup queries.
 - Expected ROI: encode 30–60ms (synth) / 50–120ms (real lsof), per-query lookup ≤2 us (mmap+bisect), speedup ≥120× vs linear-string scan.

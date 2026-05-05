@@ -60,12 +60,12 @@
       "id": "AG6",
       "rule": "원격(ubu/htz/hetzner) 자원 1개 이상 가용 시 Mac heavy compute 절대 0 — blowup/시드/탐색 등 compute 프로세스 즉시 강제 종료. Mac 은 오케스트레이션/UI/모니터링 전용",
       "level": "⛔⛔⛔",
-      "enforcement": "modules/filters/process/compute.hexa 가 30s 주기 launchd (com.airgenome.compute-filter) 로 실행. (1) check_remote(ubu/htz/hetzner) — alive 1+ 시 (2) pgrep -af hexa → BLACKLIST 필터 (3) TERM 3s → KILL 잔존. BLACKLIST 는 2026-04-22 복귀 시 emptied — dry-run + enforce 검증 후 blowup/seed 엔트리 복원 예정. WHITELIST: launcher_cap/menubar/sampler/ag3_*/infra_probe/auto_dispatch/resource_*/detector/growth_bus/genome_*/session_*/usage_refresh/ramdisk/sync_remote/forge_sync_hetzner/cl.hexa/log_rotate/auto_vacuum/compute_filter/ubu_hexa_guard/ubu_bridge/implant/guard/gate_*. unknown 은 log only (보수). remote 전부 down 시에도 strict 모드 (R-MAC-01) 유지 — 배터리/열 보호.",
+      "enforcement": "filters/module/process/compute.hexa 가 30s 주기 launchd (com.airgenome.compute-filter) 로 실행. (1) check_remote(ubu/htz/hetzner) — alive 1+ 시 (2) pgrep -af hexa → BLACKLIST 필터 (3) TERM 3s → KILL 잔존. BLACKLIST 는 2026-04-22 복귀 시 emptied — dry-run + enforce 검증 후 blowup/seed 엔트리 복원 예정. WHITELIST: launcher_cap/menubar/sampler/ag3_*/infra_probe/auto_dispatch/resource_*/detector/growth_bus/genome_*/session_*/usage_refresh/ramdisk/sync_remote/forge_sync_hetzner/cl.hexa/log_rotate/auto_vacuum/compute_filter/ubu_hexa_guard/ubu_bridge/implant/guard/gate_*. unknown 은 log only (보수). remote 전부 down 시에도 strict 모드 (R-MAC-01) 유지 — 배터리/열 보호.",
       "ossified": "2026-04-12",
       "applies_to": "airgenome",
       "trigger_keywords": ["자원연결된게 있으면", "remote available then mac zero", "AG6", "Mac Compute ZERO", "compute filter"],
-      "ssot": "modules/filters/process/compute.hexa",
-      "l0_paths": ["modules/filters/process/compute.hexa", "scripts/com.airgenome.compute-filter.plist"],
+      "ssot": "filters/module/process/compute.hexa",
+      "l0_paths": ["filters/module/process/compute.hexa", "scripts/com.airgenome.compute-filter.plist"],
       "user_directive": "이부분부터 자원연결된게 있으면 mac 자원은 쓰지 않는다 / 1 규칙으로 등록 / 코어부터 만들고 / L0 스크립트로 고정 / 골화 진행"
     },
     {

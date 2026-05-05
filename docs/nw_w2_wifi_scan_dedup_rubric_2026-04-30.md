@@ -135,7 +135,7 @@ Insert path: compute fnv1a64(bssid,channel,bucket) → ring lookup; if present A
 
 ## §H. Verdict & ROI
 
-- NW-W2-h3 Σ = **420/420** → **IMPL** (`modules/filters/data/wifi_scan_dedup.hexa`).
+- NW-W2-h3 Σ = **420/420** → **IMPL** (`filters/module/data/wifi_scan_dedup.hexa`).
 - Bench: `tool/bench/bench_nw_w2_wifi_scan_dedup.hexa` — N=5000 raw scans (with synthetic 70% dup ratio) → WSDD encode + dedup hit-ratio measurement.
 - **Expected ROI**:
   - dedup hit ratio 60–75% on stationary client (within TTL=30s, RSSI bucket=3dB)

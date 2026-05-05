@@ -79,9 +79,9 @@ if (argc >= 2 && strncmp(argv[1], "--mode=loop", 11) == 0) {
     // CGEventTapCreate / AX 코드 경로 진입 금지 (TCC 권한 미사용)
     dispatch_queue_t q = dispatch_queue_create(
         "com.airgenome.loop", DISPATCH_QUEUE_SERIAL);
-    schedule_timer(q, 60,    "modules/harvest.hexa");   // 60s
-    schedule_timer(q, 300,   "modules/label.hexa");      // 5min
-    schedule_timer(q, 3600,  "modules/forecast.hexa");   // 1h
+    schedule_timer(q, 60,    "harvest/module/harvest.hexa");   // 60s
+    schedule_timer(q, 300,   "label/module/label.hexa");      // 5min
+    schedule_timer(q, 3600,  "forecast/module/forecast.hexa");   // 1h
     dispatch_main();
 }
 // else → 기존 tap 메인 루프 (변경 없음)
@@ -226,7 +226,7 @@ after (목표):
   launchd/com.airgenome.harvest.plist (repo)
   → ~/Library/LaunchAgents/com.airgenome.harvest.plist (symlink)
   → launchctl bootstrap gui/$UID
-  → /Users/ghost/core/hexa-lang/hexa run modules/harvest.hexa (60s 주기)
+  → /Users/ghost/core/hexa-lang/hexa run harvest/module/harvest.hexa (60s 주기)
 
 ---
 
@@ -248,7 +248,7 @@ after (목표):
 
 발견 사항 (raw 91 confirmed):
 
-- **[P0] AIRGENOME_ROOT 미설정 → forge 경로 mismatch.** `core/core.hexa:278-282` 에서
+- **[P0] AIRGENOME_ROOT 미설정 → forge 경로 mismatch.** `airgenome/core/airgenome.hexa:278-282` 에서
   `airgenome_root()` 는 `env("AIRGENOME_ROOT")` 우선, 미설정 시 `$HOME/Dev/airgenome`
   fallback. 실제 repo 는 `/Users/ghost/core/airgenome`. 3 plist 의 `EnvironmentVariables`
   에 `AIRGENOME_ROOT` 키 없음 (harvest.plist:33-41, forecast.plist:33-41, label.plist:33-41).
@@ -396,7 +396,7 @@ render 시 `AIRGENOME_ROOT`, `HEXA_BIN` 을 plist 의 EnvironmentVariables 에 �
 
 ## 6. 권한 / TCC (P2)
 
-- harvest 의 `ps -A` (modules/harvest.hexa:38) — 일반 user agent 권한으로 충분.
+- harvest 의 `ps -A` (harvest/module/harvest.hexa:38) — 일반 user agent 권한으로 충분.
   TCC prompt 없음 (측정: vacuum_watcher 가 동일 권한으로 동작 중).
 - `top -l` (harvest.hexa:45) — 동일.
 - Full Disk Access 불필요 (forge/, state/, ~/.airgenome/ 모두 user owned).
@@ -413,12 +413,12 @@ render 시 `AIRGENOME_ROOT`, `HEXA_BIN` 을 plist 의 EnvironmentVariables 에 �
   하나만 업데이트되면 silent fail (Throttle 주기마다 재시작 실패만 로그).
 
 - **[P1] modules/*.hexa 변조 방지 부재.** plist 는 user-writable 디렉터리의
-  .hexa 를 인터프리터로 실행. user 권한 공격자가 modules/harvest.hexa 수정 시
+  .hexa 를 인터프리터로 실행. user 권한 공격자가 harvest/module/harvest.hexa 수정 시
   60s 후 자동 실행. settings_guard.plist 패턴 (chflags uchg + WatchPaths
   → init.hexa:398-442) 을 modules/ 에도 적용 검토.
 
 before:
-  user-writable modules/harvest.hexa
+  user-writable harvest/module/harvest.hexa
   → 60s 주기 자동 실행
   → 변조 감지 메커니즘 없음
 
@@ -485,19 +485,19 @@ flow:
   /Applications/airgenome.app/Contents/MacOS/airgenome --mode=loop (boot-once)
     → main_loop_dispatch (single dispatch_queue serial)
       ├─ dispatch_source_t harvest_timer (interval 60s)
-      │   → spawn_with_watchdog "hexa run modules/harvest.hexa"
+      │   → spawn_with_watchdog "hexa run harvest/module/harvest.hexa"
       │     ├─ lockfile /tmp/airgenome-loop-harvest.lock (exclusive flock)
       │     ├─ timeout 30s → SIGTERM → 3s → SIGKILL
       │     └─ exit code log → ~/.airgenome/loop-harvest.exit.log
       │
       ├─ dispatch_source_t label_timer (interval 300s, leeway 30s)
-      │   → spawn_with_watchdog "hexa run modules/label.hexa"
+      │   → spawn_with_watchdog "hexa run label/module/label.hexa"
       │     ├─ lockfile /tmp/airgenome-loop-label.lock
       │     ├─ timeout 60s
       │     └─ exit code log
       │
       └─ dispatch_source_t forecast_timer (interval 3600s, leeway 300s)
-          → spawn_with_watchdog "hexa run modules/forecast.hexa"
+          → spawn_with_watchdog "hexa run forecast/module/forecast.hexa"
             ├─ lockfile /tmp/airgenome-loop-forecast.lock
             ├─ timeout 120s
             └─ exit code log

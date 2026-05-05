@@ -99,6 +99,6 @@ C3-5 — **classifier-version skew** — `CCDF-v1-2026-04-30` 박제.
 
 ## §F. Verdict
 
-- BR6-h Σ = **374/400** ≥ 350 → **IMPL** (`modules/filters/data/chrome_cookies_dict.hexa`).
+- BR6-h Σ = **374/400** ≥ 350 → **IMPL** (`filters/module/data/chrome_cookies_dict.hexa`).
 - Bench: `tool/bench/bench_br6_chrome_cookies.hexa`.
 - Expected ROI: encode 30–60ms (synth 5000), GROUP BY count: u8 1-pass scan vs str Counter ≥100×, sender-byte saved ≥95%.

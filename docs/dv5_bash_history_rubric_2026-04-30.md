@@ -106,7 +106,7 @@ during encode; final blob stores plain string keys.
 
 1. `/Users/ghost/core/airgenome/docs/dv5_bash_history_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/dv5_bash_history_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/bash_history_columnar.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/bash_history_columnar.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_dv5_bash_history.hexa`
 
 **Final DV5 score: 400/400.**

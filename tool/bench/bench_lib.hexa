@@ -11,7 +11,7 @@
 //   - gdate (homebrew coreutils) 가용
 //   - awk 가용 (awk POSIX 표준 BEGIN{} 만 사용)
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 // ─── timing ──────────────────────────────────────────────
 

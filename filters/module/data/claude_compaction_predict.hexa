@@ -1,0 +1,327 @@
+// filters/module/data/claude_compaction_predict.hexa — C7 (Type B)
+//
+// Wave 2 / own-9 / Type B — Claude session jsonl size 시계열로 compaction
+// trigger 시점 예측 (predictive_throttle.hexa Holt linear 직접 이식).
+//
+// 책임:
+//   1. ~/.claude/projects/<encoded>/<uuid>.jsonl 의 line count / byte size 수집
+//   2. forge/compaction_history.jsonl 의 마지막 N 샘플 + 현재 → Holt linear
+//   3. h-step ahead pred_lines / pred_bytes 계산
+//   4. 임계 (~ 200K 토큰 ≈ ~30K 줄 / ~ 8MB) 초과 예상 시 추천 시그널 emit
+//        - forge/compaction_predict_state.json 갱신 (level/eta/reason)
+//        - 본 모듈은 추천만 emit. 실 compaction trigger 0.
+//
+// 4-layer data filter:
+//   L1 input    → session jsonl path 자동 발견 (가장 큰 jsonl in projects/)
+//   L2 sample   → wc -l + wc -c via 1 fork (own 6 site-6 batch)
+//   L3 forecast → Holt linear (predictive_throttle.hexa#predict_series 직접 이식)
+//   L4 emit     → forge/compaction_predict_state.json (write_file, 0 fork rotate)
+//
+// 5-tuple bench: tool/bench/bench_c7_compaction_predict.hexa
+//   accuracy: post-cycle prediction vs actual compaction trigger event.
+//   합성 시계열: 선형 상승 / 가속 상승 / 안정 / oscillation 4 케이스.
+//
+// 제약:
+//   - try/catch 0 / top-level main() 0 / 외부 의존 0
+//   - 실 compaction trigger 0 — 추천 시그널만 emit
+//   - launchctl 0 / kill 0
+
+use "../../../airgenome/core/airgenome"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  A6 to_int_safe
+// ═══════════════════════════════════════════════════════════════════════
+
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG (predictive_throttle.hexa 와 align)
+// ═══════════════════════════════════════════════════════════════════════
+
+let HOME = env("HOME")
+let HISTORY = ring_path("compaction_history.jsonl")
+let STATE   = ring_path("compaction_predict_state.json")
+let MAX_HISTORY = 30           // 최근 30 sample
+let HORIZON_STEPS = 3          // 3-step ahead = 3 * 주기 (60s 가정 시 3분)
+// claude code compaction trigger 추정 — 200K token ≈ 8MB UTF-8.  안전마진 70%.
+let LINES_PRED_CRIT = 25000    // pred_lines > 25K → ETA 임박
+let BYTES_PRED_CRIT = 6000000  // pred_bytes > 6MB → ETA 임박
+let TTL_SEC = 90
+let ALPHA_NUM = 50
+let BETA_NUM  = 50
+
+fn ts_iso() -> str { return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() }
+fn ts_epoch() -> int { return to_int_safe(exec("date +%s").trim()) }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SESSION JSONL DISCOVERY (own 6 site-6 batch — 1 fork)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ~/.claude/projects/*/*.jsonl 중 가장 큰 (가장 활성) session 자동 선택.
+// 1 fork: find + sort + head — pure shell.  hexa-side 0 fork.
+
+fn discover_active_session() -> str {
+    let cached = env("AG_CLAUDE_SESSION_JSONL")
+    if cached != "" && file_exists(cached) { return cached }
+    let projects_dir = HOME + "/.claude/projects"
+    if file_exists(projects_dir) == false { return "" }
+    // 1 fork: 가장 큰 jsonl → path
+    let cmd = "find '" + projects_dir + "' -maxdepth 2 -name '*.jsonl' -type f 2>/dev/null | xargs -I{} stat -f '%z %N' {} 2>/dev/null | sort -rn | head -1 | awk '{$1=\"\"; sub(/^ */,\"\"); print}'"
+    let path = exec(cmd).trim()
+    return path
+}
+
+// 1 fork: wc -l && wc -c — 단일 명령으로 둘 다 출력.
+struct Sample {
+    lines: int,
+    bytes: int,
+    ok: bool
+}
+
+fn sample_session(path: str) -> Sample {
+    if path == "" { return Sample { lines: 0, bytes: 0, ok: false } }
+    if file_exists(path) == false { return Sample { lines: 0, bytes: 0, ok: false } }
+    let raw = exec("wc -l < '" + path + "' 2>/dev/null && wc -c < '" + path + "' 2>/dev/null").trim()
+    let lines = raw.split("\n")
+    if len(lines) < 2 { return Sample { lines: 0, bytes: 0, ok: false } }
+    let l = to_int_safe(lines[0].trim())
+    let b = to_int_safe(lines[1].trim())
+    return Sample { lines: l, bytes: b, ok: true }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HISTORY RING (predictive_throttle 패턴 직접 이식)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn append_history(s: Sample, path: str) -> void {
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
+    let line = "{\"ts\":\"" + ts_iso() + "\""
+             + ",\"path\":\"" + path + "\""
+             + ",\"lines\":" + to_string(s.lines)
+             + ",\"bytes\":" + to_string(s.bytes) + "}"
+    append_file(HISTORY, line + "\n")
+    let raw = read_file(HISTORY)
+    let xs = raw.split("\n")
+    let mut all = []
+    let mut i = 0
+    while i < len(xs) {
+        if xs[i] != "" { all = all + [xs[i]] }
+        i = i + 1
+    }
+    if len(all) > MAX_HISTORY {
+        let start = len(all) - MAX_HISTORY
+        let mut out = ""
+        let mut j = start
+        while j < len(all) {
+            out = out + all[j] + "\n"
+            j = j + 1
+        }
+        write_file(HISTORY, out)
+    }
+}
+
+fn jq_field_int(line: str, key: str) -> int {
+    let anchor = "\"" + key + "\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return 0 }
+    let after = parts[1]
+    let n = len(after)
+    let mut i = 0
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return to_int_safe(after.substring(0, i).trim()) }
+        if ch == "}" { return to_int_safe(after.substring(0, i).trim()) }
+        i = i + 1
+    }
+    return to_int_safe(after.trim())
+}
+
+fn read_history(field: str) -> list {
+    if file_exists(HISTORY) == false { return [] }
+    let raw = read_file(HISTORY)
+    let xs = raw.split("\n")
+    let mut all = []
+    let mut i = 0
+    while i < len(xs) {
+        if xs[i] != "" { all = all + [xs[i]] }
+        i = i + 1
+    }
+    let total = len(all)
+    let mut start = total - MAX_HISTORY
+    if start < 0 { start = 0 }
+    let mut result = []
+    let mut j = start
+    while j < total {
+        result = result + [jq_field_int(all[j], field)]
+        j = j + 1
+    }
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HOLT LINEAR (predictive_throttle.hexa 직접 이식)
+// ═══════════════════════════════════════════════════════════════════════
+
+struct HoltState {
+    level: int,
+    trend: int,
+    initialized: bool
+}
+
+fn holt_init() -> HoltState {
+    return HoltState { level: 0, trend: 0, initialized: false }
+}
+
+fn holt_step(s: HoltState, y: int) -> HoltState {
+    if !s.initialized {
+        s.level = y
+        s.trend = 0
+        s.initialized = true
+        return s
+    }
+    let level_new = (ALPHA_NUM * y + (100 - ALPHA_NUM) * (s.level + s.trend)) / 100
+    let trend_new = (BETA_NUM * (level_new - s.level) + (100 - BETA_NUM) * s.trend) / 100
+    s.level = level_new
+    s.trend = trend_new
+    return s
+}
+
+fn forecast_h(s: HoltState, h: int) -> int {
+    if !s.initialized { return 0 }
+    return s.level + h * s.trend
+}
+
+pub fn predict_series(series: list, h: int) -> int {
+    let mut s = holt_init()
+    let mut i = 0
+    while i < len(series) {
+        s = holt_step(s, series[i])
+        i = i + 1
+    }
+    return forecast_h(s, h)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STATE EMIT
+// ═══════════════════════════════════════════════════════════════════════
+
+fn write_state(level: str, eta_epoch: int, pred_lines: int, pred_bytes: int, action: str, source: str) -> void {
+    let mut pl = to_string(pred_lines)
+    if pl == "void" { pl = "0" }
+    let mut pb = to_string(pred_bytes)
+    if pb == "void" { pb = "0" }
+    let line = "{\"ts\":\"" + ts_iso() + "\""
+             + ",\"level\":\"" + level + "\""
+             + ",\"eta_epoch\":" + to_string(eta_epoch)
+             + ",\"pred_lines\":" + pl
+             + ",\"pred_bytes\":" + pb
+             + ",\"source\":\"" + source + "\""
+             + ",\"action\":\"" + action + "\"}"
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
+    write_file(STATE, line)
+}
+
+pub fn run_filter() -> int {
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
+
+    let path = discover_active_session()
+    if path == "" {
+        write_state("CALM", 0, 0, 0, "no-session", "")
+        println("claude_compaction_predict: no active session jsonl")
+        return 0
+    }
+
+    let s = sample_session(path)
+    if !s.ok {
+        write_state("CALM", 0, 0, 0, "sample-fail", path)
+        println("claude_compaction_predict: sample failed (" + path + ")")
+        return 0
+    }
+    append_history(s, path)
+
+    let s_lines = read_history("lines")
+    let s_bytes = read_history("bytes")
+    if len(s_lines) < 3 {
+        write_state("WARMUP", 0, s.lines, s.bytes, "warmup", path)
+        println("claude_compaction_predict: warmup (" + to_string(len(s_lines)) + " samples, lines=" + to_string(s.lines) + " bytes=" + to_string(s.bytes) + ")")
+        return 0
+    }
+
+    let pred_l_raw = predict_series(s_lines, HORIZON_STEPS)
+    let pred_b_raw = predict_series(s_bytes, HORIZON_STEPS)
+    let mut pred_l = 0
+    if to_string(pred_l_raw) != "void" { pred_l = pred_l_raw }
+    let mut pred_b = 0
+    if to_string(pred_b_raw) != "void" { pred_b = pred_b_raw }
+
+    let near_l = pred_l > LINES_PRED_CRIT
+    let near_b = pred_b > BYTES_PRED_CRIT
+
+    if !near_l && !near_b {
+        write_state("CALM", 0, pred_l, pred_b, "none", path)
+        println("claude_compaction_predict: CALM (pred lines=" + to_string(pred_l) + " bytes=" + to_string(pred_b) + ")")
+        return 0
+    }
+
+    // 추천 시그널만 emit — 실 enforce 0
+    let eta = ts_epoch() + TTL_SEC
+    let action = if near_l && near_b { "compact-soon-both" }
+                 else if near_l { "compact-soon-lines" }
+                 else { "compact-soon-bytes" }
+    write_state("WATCH", eta, pred_l, pred_b, action, path)
+    println("claude_compaction_predict: WATCH (pred lines=" + to_string(pred_l) + " bytes=" + to_string(pred_b) + " action=" + action + ")")
+    return 1
+}
+
+pub fn self_test() -> void {
+    let s_flat = [10000, 10010, 10020, 10030, 10040]
+    let p_flat = predict_series(s_flat, 3)
+    if p_flat < 9000 || p_flat > 11000 { panic("C7 self_test [flat predict, got " + to_string(p_flat) + "]") }
+
+    let s_rise = [1000, 5000, 10000, 15000, 20000, 25000]
+    let p_rise = predict_series(s_rise, 3)
+    if p_rise < 28000 { panic("C7 self_test [rise predict too low: " + to_string(p_rise) + "]") }
+
+    if LINES_PRED_CRIT != 25000 { panic("C7 self_test [LINES_PRED_CRIT]") }
+    if BYTES_PRED_CRIT != 6000000 { panic("C7 self_test [BYTES_PRED_CRIT]") }
+
+    println("  C7 claude_compaction_predict self_test PASS — flat=" + to_string(p_flat) + " rise=" + to_string(p_rise))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ENTRY (top-level main() 0 — run() 1회 호출)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn run() -> void {
+    let a = args()
+    if len(a) >= 3 && a[2] == "self-test" {
+        self_test()
+        return
+    }
+    let _ = run_filter()
+}
+
+run()

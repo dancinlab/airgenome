@@ -123,6 +123,6 @@ Gap count: **5**.
 ## §H. Cross-Repo Carve-Out
 
 - hive: emit `.raw` ledger of K2 RFSF blob hash + path count for cross-repo session inspection.
-- airgenome: filter resides at `modules/filters/data/sharedfilelist_recent_shbf.hexa`.
+- airgenome: filter resides at `filters/module/data/sharedfilelist_recent_shbf.hexa`.
 - anima: 3-hop trace = SharedFileList recent → cwd correlation → Claude session genome.
 

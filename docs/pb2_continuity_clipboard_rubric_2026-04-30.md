@@ -4,7 +4,7 @@ Origin: `2026-04-30` arsmoriendi99@proton.me — H. Pasteboard wave, filter 2 of
 Source: `~/Library/Group Containers/group.com.apple.coreservices.useractivityd/shared-pasteboard/type-clone/` + Biome `Pasteboard.Change` cross-device sync metadata. Universal Clipboard hand-off events between iCloud-paired devices.
 
 Pattern parents (READ FIRST):
-- `/Users/ghost/core/airgenome/modules/filters/data/zsh_history_columnar.hexa` (K6 400/400 — KZHC magic, u8 dict ≤255 enum).
+- `/Users/ghost/core/airgenome/filters/module/data/zsh_history_columnar.hexa` (K6 400/400 — KZHC magic, u8 dict ≤255 enum).
 - `K2 sharedfilelist_recent_shbf` (LSSharedFileList recent-items SHBF — small per-record metadata indexed pattern).
 - `claude_session_shbf` (cross-device session SHBF ancestry).
 
@@ -116,7 +116,7 @@ collision-resistant 64-bit backs encode-side dict; blob stores plain strings.
 
 1. `/Users/ghost/core/airgenome/docs/pb2_continuity_clipboard_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/pb2_continuity_clipboard_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/continuity_clipboard.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/continuity_clipboard.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_pb2_continuity_clipboard.hexa`
 
 **Final PB2 score: 400/400 — PASS ≥350 impl threshold.**

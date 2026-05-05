@@ -1,6 +1,6 @@
 # hexa-lang upstream candidates — own 5 A 단계
 
-C (modules/harvest.hexa 5 사이트) + B (tool/bench/) 측정에서 surface 한 hexa-lang 자체 개선 후보. own 5 enforcement: C+B 측정 후에만 escalate. Bun% 직접 인용 금지 (own 5 ban).
+C (harvest/module/harvest.hexa 5 사이트) + B (tool/bench/) 측정에서 surface 한 hexa-lang 자체 개선 후보. own 5 enforcement: C+B 측정 후에만 escalate. Bun% 직접 인용 금지 (own 5 ban).
 
 본 ledger 는 **airgenome 측 evidence + 제안 API** 만 정리. hexa-lang repo PR 은 사용자 명시 승인 후.
 
@@ -25,7 +25,7 @@ pub fn pfs_clone(src: string, dst: string) -> int
 //   반환: 0=success, -1=fail, -2=fallback used
 ```
 
-**Caller in airgenome**: `core/core.hexa#rotate_if_full` (현재 shell `cp -c` exec). PR 후 1-line 변경.
+**Caller in airgenome**: `airgenome/core/airgenome.hexa#rotate_if_full` (현재 shell `cp -c` exec). PR 후 1-line 변경.
 
 **Priority**: 🟡 medium — 안전망 가치 + airgenome 외 BTRFS 사용처 일반화.
 
@@ -37,14 +37,14 @@ pub fn pfs_clone(src: string, dst: string) -> int
 - `tool/bench/bench_site5.hexa`: `xxh64sum` CLI 4.9ms (1KB) / 6.9ms (10MB) / 33-46% vs sha256
 - `/Users/ghost/core/hexa-lang/stdlib/hash/xxhash.hexa` — **pure-hexa xxh32/xxh64 already exists** (Stage0 P30, no unsigned int)
 
-**Gap**: airgenome `core/core.hexa#fingerprint()` 가 stdlib 무시하고 `xxh64sum` CLI fork — 5ms/op 중 4.5ms 이상 fork 오버헤드.
+**Gap**: airgenome `airgenome/core/airgenome.hexa#fingerprint()` 가 stdlib 무시하고 `xxh64sum` CLI fork — 5ms/op 중 4.5ms 이상 fork 오버헤드.
 
 **Action**: 
 1. stdlib import 경로 확인 (`use "$HEXA_LANG/stdlib/hash/xxhash"` 또는 hexa 빌트인 path resolver)
 2. airgenome `fingerprint()` 를 `xxh64()` 호출로 변경
 3. 재측정 → fork 제거시 ~5-50× 추가 가속 추정
 
-**Caller in airgenome**: `core/core.hexa#fingerprint()` (forward-looking, 현 callers 0).
+**Caller in airgenome**: `airgenome/core/airgenome.hexa#fingerprint()` (forward-looking, 현 callers 0).
 
 **Priority**: 🟢 high — 이미 존재하는 stdlib, gap 은 airgenome integration 만.
 
@@ -66,7 +66,7 @@ pub fn pfs_tail_bytes(path: string, n: int) -> string
 //   path 미존재: ""
 ```
 
-**Caller in airgenome**: `modules/harvest.hexa#last_for_pid` — 현재 shell `tail -2000` exec.
+**Caller in airgenome**: `harvest/module/harvest.hexa#last_for_pid` — 현재 shell `tail -2000` exec.
 
 **Priority**: 🟡 medium — site-1 이미 큰 win 달성 (2.49×); 추가 native tail 은 ~10× 더 가능.
 
@@ -96,7 +96,7 @@ pub fn pfs_writev_append(path: string, chunks: array) -> int
 //   POSIX writev(2) — list 의 각 element 를 하나의 syscall 로 append
 ```
 
-**Caller in airgenome**: `modules/harvest.hexa#append_ring_batch` — 현재 hexa 측 string concat + append_file. 
+**Caller in airgenome**: `harvest/module/harvest.hexa#append_ring_batch` — 현재 hexa 측 string concat + append_file. 
 
 **Priority**: 🔴 low — append_file 으로 이미 0 fork. 추가 win 작음 (메모리 차원만).
 
@@ -242,8 +242,8 @@ int airgenome_loop_run_once(const char *module_path, int timeout_s, int extra_ar
 - E1 claude_quantum.hexa: try/catch line 204/213 → parse PANIC
 - E2 claude_bytes.hexa: try/catch line 137/143 → parse PANIC
 - E3 claude_runtime.hexa: try/catch 6 sites (line 20/200/284/300/311/320) → parse PANIC
-- modules/filters/transport/anomaly.hexa: parse-warn (try/catch 4건)
-- modules/filters/transport/client.hexa: parse-warn
+- filters/module/transport/anomaly.hexa: parse-warn (try/catch 4건)
+- filters/module/transport/client.hexa: parse-warn
 
 **Gap**: hexa runtime 이 `try { } catch e { }` 차단 — 5 filter 직접 production 측정 불가.
 
@@ -331,7 +331,7 @@ pub fn json_field_float(line: str, key: str) -> float
 ## A15 — `core.net.unix_socket(path, payload)` builtin
 
 **Evidence**: wave 3 측정 (transport)
-- modules/filters/transport/client.hexa 의 `nc -U <socket>` 쉘 우회 → BusyBox `nc -q invalid` 직접 fail
+- filters/module/transport/client.hexa 의 `nc -U <socket>` 쉘 우회 → BusyBox `nc -q invalid` 직접 fail
 
 **Proposed**:
 ```hexa

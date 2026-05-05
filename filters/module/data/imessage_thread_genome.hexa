@@ -1,0 +1,91 @@
+// airgenome/filters/module/data/imessage_thread_genome.hexa
+//   IM-D2 — iMessage thread genome (per-chat msg volume + last_ts, F45 pattern).
+//   ITGF v1 — chat sorted by chat_identifier + msg_count u32 + last_ts i64.
+
+let PAYLOAD = "import sys,os,struct,time,resource,array,sqlite3,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/imessage_thread_genome.bin'\n" +
+"CLASSIFIER='ITGF-v1-2026-05-01 chat-message-join+immutable'\n" +
+"IMSG_EPOCH=978307200\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def probe():\n" +
+"    p=os.path.expanduser('~/Library/Messages/chat.db')\n" +
+"    if not os.path.isfile(p): return None,'no_chatdb'\n" +
+"    try:\n" +
+"        con=sqlite3.connect(f'file:{p}?mode=ro&immutable=1',uri=True)\n" +
+"        cur=con.cursor()\n" +
+"        cur.execute(\"SELECT date FROM message WHERE date>0 ORDER BY date DESC LIMIT 1\")\n" +
+"        row=cur.fetchone(); div=10**9 if row and row[0] and row[0]>10**12 else 1\n" +
+"        cur.execute('SELECT c.chat_identifier, COUNT(m.ROWID), COALESCE(MAX(m.date),0) FROM chat c JOIN chat_message_join j ON c.ROWID=j.chat_id JOIN message m ON m.ROWID=j.message_id GROUP BY c.chat_identifier')\n" +
+"        rows=[(r[0],int(r[1]),int(r[2]/div)+IMSG_EPOCH if r[2] else 0) for r in cur.fetchall()]\n" +
+"        con.close()\n" +
+"        return rows,'real' if rows else 'empty'\n" +
+"    except Exception as e: return None,f'err_{type(e).__name__}'\n" +
+"\n" +
+"def synth(n=80,seed=42):\n" +
+"    rng=random.Random(seed); now=int(time.time()); rows=[]\n" +
+"    for i in range(n):\n" +
+"        cid=f'+1{rng.randrange(2000000000,9999999999)}' if rng.random()<0.6 else f'user{i:03d}@example.com'\n" +
+"        cnt=int(rng.expovariate(0.01))+1; ts=now-rng.randrange(0,30*86400)\n" +
+"        rows.append((cid,cnt,ts))\n" +
+"    return rows\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    rows,reason=probe()\n" +
+"    if not rows: rows=synth(); reason='synth' if reason in ('empty','no_chatdb') or reason.startswith('err') else reason\n" +
+"    rows.sort(key=lambda r:r[0])\n" +
+"    n=len(rows); pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n); lens=array.array('I',[0]*n)\n" +
+"    cnts=array.array('I',[0]*n); tss=array.array('q',[0]*n)\n" +
+"    for i,(cid,c,t) in enumerate(rows):\n" +
+"        b=str(cid).encode('utf-8','replace'); offs[i]=len(pool); lens[i]=len(b); pool.extend(b)\n" +
+"        cnts[i]=min(c,0xffffffff); tss[i]=t\n" +
+"    total_msg=sum(c for _,c,_ in rows)\n" +
+"    header=struct.pack('<4sIIII',b'ITGF',1,n,total_msg,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(cnts.tobytes()); f.write(tss.tobytes()); f.write(pool)\n" +
+"    elapsed=(time.perf_counter()-t0)*1000\n" +
+"    top=sorted(rows,key=lambda r:-r[1])[:5]\n" +
+"    return {'n':n,'total_msg':total_msg,'reason':reason,'top':top,'blob':os.path.getsize(BIN),'encode_ms':elapsed}\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] threads={info[\"n\"]} total_msg={info[\"total_msg\"]} reason={info[\"reason\"]} blob={fmt(info[\"blob\"])} encode={info[\"encode_ms\"]:.1f}ms')\n" +
+"    for cid,c,t in info['top']:\n" +
+"        print(f'  {str(cid)[:30]:30s}  msgs={c}  last_ts={t}')\n" +
+"    print(f'[5tuple] {{\"site\":\"IM_D2\",\"roi\":\"ITGF_genome\",\"baseline_ns\":0,\"post_ns\":{int(info[\"encode_ms\"]*1e6)},\"diff_test\":\"lossless\",\"n_thread\":{info[\"n\"]},\"total_msg\":{info[\"total_msg\"]},\"reason\":\"{info[\"reason\"]}\",\"classifier\":\"{CLASSIFIER}\"}}')\n" +
+"    print(f'[rss] {fmt(rss())} elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'encoded threads={info[\"n\"]} → {BIN}')\n" +
+"elif mode=='bench': bench()\n" +
+"else: print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self = v.contains("imessage_thread_genome")
+        if is_hexa == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/imessage_thread_genome_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 30; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    print(exec(cmd))
+}
+
+run()

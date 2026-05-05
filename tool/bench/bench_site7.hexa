@@ -1,15 +1,15 @@
 // tool/bench/bench_site7.hexa — own 6 site-7 + own 7 site-11 baseline
 // (read_recent_genomes: exec("tail -N RING") fork vs read_file + tail-N slice)
 //
-// modules/forecast.hexa#read_recent_genomes (SCAN_LINES=5000) 와
-// modules/label.hexa#read_recent_genomes (SCAN_LINES=1000) 가 동일 패턴
+// forecast/module/forecast.hexa#read_recent_genomes (SCAN_LINES=5000) 와
+// label/module/label.hexa#read_recent_genomes (SCAN_LINES=1000) 가 동일 패턴
 // (per-cycle exec("tail -N RING")) 사용. 직접 적용: read_file builtin → split("\n")
 // → 마지막 N 라인 슬라이스 (0 fork). own 5 site-4 와 달리 본 사이트는 read 자체.
 //
 // 측정 ring: 5000 라인 (forecast scenario). label SCAN_LINES=1000 도 동일 패턴이므로
 // 단일 bench 로 두 사이트 동시 검증.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let BENCH_RING = "/tmp/airgenome_bench_site7.ring"
 let RING_LINES = 5000     // forecast SCAN_LINES; label 도 동일 패턴
@@ -30,7 +30,7 @@ fn build_ring() -> void {
     let _ = exec(cmd)
 }
 
-// OLD: per-cycle exec("tail -N RING") fork — modules/forecast.hexa#read_recent_genomes L143-157
+// OLD: per-cycle exec("tail -N RING") fork — forecast/module/forecast.hexa#read_recent_genomes L143-157
 // (label.hexa#read_recent_genomes L235-247 와 동일 패턴).
 fn old_read_recent_genomes() -> list {
     let cmd = "tail -" + to_string(SCAN_LINES) + " '" + BENCH_RING + "' 2>/dev/null"

@@ -10,7 +10,7 @@
 // Diff test: OLD jq output vs NEW hexa-split string equality. .label/.pid 등
 // top-level scalar 만 측정 — vit_at (vitals[i]) 는 own 5 site-2 형태와 동일.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let BENCH_RING = "/tmp/airgenome_bench_site6.ring"
 let LINES = 200

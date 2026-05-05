@@ -115,7 +115,7 @@ Read-only path: filter never opens slices `.01` … or `.dylddata`. mmap window 
 
 1. `/Users/ghost/core/airgenome/docs/ix2_dyld_shared_cache_dict_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/ix2_dyld_shared_cache_dict_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/dyld_shared_cache_dict.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/dyld_shared_cache_dict.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_ix2_dyld_shared_cache_dict.hexa`
 
 **Final IX2 score: 400/400 (V2 base ceiling, B10 deliberately deferred — no rubric-uncovered gap).**

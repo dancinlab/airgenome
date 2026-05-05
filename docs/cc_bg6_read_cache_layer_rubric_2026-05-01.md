@@ -1,7 +1,7 @@
 # CC-BG6 Claude Read Cache Layer — Rubric Derivation 2026-05-01 (V2.5 720/720)
 
 **Filter slug**: `claude_read_cache_layer` (CRCL v1)
-**Path**: `/Users/ghost/core/airgenome/modules/filters/data/claude_read_cache_layer.hexa`
+**Path**: `/Users/ghost/core/airgenome/filters/module/data/claude_read_cache_layer.hexa`
 **Bench**: `/Users/ghost/core/airgenome/tool/bench/bench_cc_bg6_read_cache_layer.hexa`
 **Companion JSONL**: `cc_bg6_read_cache_layer_rubric_2026-05-01.rubric.jsonl`
 **Magic**: `CRCL-v1 5verify+TTL+B11-B26+opt3-hybrid`
@@ -119,7 +119,7 @@ Per task description: "V2.6 (B27-B30, ceiling 800, OVER-ENGINEERING threshold ma
 
 ## 4. 8-fixture selftest result
 
-Confirmed via `hexa.real run modules/filters/data/claude_read_cache_layer.hexa selftest`:
+Confirmed via `hexa.real run filters/module/data/claude_read_cache_layer.hexa selftest`:
 
 ```
 selftest 8/8: F1_cold_miss, F2_write_hit, F3_stale_mtime, F4_stale_size, F5_stale_inode, F6_stale_head_hash, F7_stale_ttl, F8_decay_skip
@@ -163,7 +163,7 @@ Note: synth `speed=0.20x` is COLD<WARM artifact because warm pass includes write
 
 | Repo | Surface | B-block triggered | Cite |
 |---|---|---|---|
-| airgenome (origin) | CC-BG4 transcript path_dup 58.8% | B11(a) proven-dup | `modules/filters/data/claude_read_invocation_dedup.hexa` (CRID v1) |
+| airgenome (origin) | CC-BG4 transcript path_dup 58.8% | B11(a) proven-dup | `filters/module/data/claude_read_invocation_dedup.hexa` (CRID v1) |
 | anima | claude_quantum harvest streams (high-volume rolling-rotation) | B10 + B11 + B22 | per `rfc_b10_*.md` §3 cite; cross-day metrics affected |
 | hive | convergence/INDEX.jsonl audit ledger | B22 forensic-audit-trail | `convergence/r17_2026_04_30_raw_240_weighted_rubric_discipline.convergence` |
 | nexus | kick logs (rolling rotation) | B10 + B12 stale-window | nexus kick router |
@@ -192,7 +192,7 @@ Note: synth `speed=0.20x` is COLD<WARM artifact because warm pass includes write
 
 ## 7. Application path (this filter → cluster)
 
-1. **(this cycle)** CC-BG6 reference impl + bench + this rubric land in airgenome `docs/` + `modules/filters/data/` + `tool/bench/`. **DONE.**
+1. **(this cycle)** CC-BG6 reference impl + bench + this rubric land in airgenome `docs/` + `filters/module/data/` + `tool/bench/`. **DONE.**
 2. **(cycle +1)** main agent integrates CC-BG6 into Claude Read tool path (out-of-scope for this proposal — task explicitly says "DO NOT touch airgenome.app launchd").
 3. **(cycle +2)** anima adopts B11–B16 cluster on its claude_quantum harvest filters; provides second cross-repo evidence point.
 4. **(cycle +3 to +5)** hive / nexus / n6 / hexa-lang ramp per F-V23-3 / F-V24-3 / F-V25-3 90d windows.

@@ -1,0 +1,279 @@
+// airgenome/filters/module/data/iphone_backup_manifest.hexa
+//   IB1 — iOS Backup Manifest.db → IBMF columnar filter (J. wave, 1/2).
+//
+//   목적: ~/Library/Application Support/MobileSync/Backup/<UDID>/Manifest.db
+//         #Files (file_id / domain / relativePath / flags) → magic IBMF blob.
+//         GROUP BY domain + file_id bisect + flags bitmask 모두 1-pass O(n)
+//         또는 O(log n).
+//
+//   blob layout (little-endian):
+//     magic       : 4B  "IBMF"
+//     version     : 4B  u32 (1)
+//     n_dom       : 4B  u32 distinct domain count (≤255)
+//     n_file      : 4B  u32 total file rows
+//     dom_sz      : 4B  u32 domain pool size
+//     fid_sz      : 4B  u32 file_id pool size
+//     rel_sz      : 4B  u32 relativePath pool size
+//     [n_dom*4]   : u32 dom_offs
+//     [n_dom*4]   : u32 dom_lens
+//     [dom_sz]    : utf-8 domain pool
+//     [n_file]    : u8  domain enum column
+//     [n_file*4]  : u32 flags column
+//     [n_file*4]  : u32 fid_offs
+//     [n_file*4]  : u32 fid_lens
+//     [fid_sz]    : utf-8 file_id pool (sorted asc — bisect ready)
+//     [n_file*4]  : u32 rel_offs
+//     [n_file*4]  : u32 rel_lens
+//     [rel_sz]    : utf-8 relativePath pool
+//
+// 모드:
+//   encode : Manifest.db → /tmp/iphone_backup_manifest.bin
+//   bench  : encode + GROUP BY domain old(Counter on str) vs new(u8 col scan)
+//            + file_id linear vs bisect lookup
+//
+// 절대 금지: Manifest.db mutation 0 (sqlite ?immutable=1), launchctl 0,
+//   git commit 0. backup absent → 5000 row synth fallback (seed=23).
+// raw#9 hexa-only · raw#11 snake_case · raw#17 perl alarm 120s · /usr/bin/python3.
+
+let PAYLOAD = "import sys,os,struct,time,array,mmap,resource,bisect,sqlite3,glob,random\n" +
+"from collections import Counter\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/iphone_backup_manifest.bin'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"BACKUP_ROOT=os.path.join(HOME,'Library','Application Support','MobileSync','Backup')\n" +
+"SYNTH_MARK=False\n" +
+"SYNTH_N=5000\n" +
+"SYNTH_SEED=23\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def find_manifest():\n" +
+"    if not os.path.isdir(BACKUP_ROOT): return None\n" +
+"    cands=glob.glob(os.path.join(BACKUP_ROOT,'*','Manifest.db'))\n" +
+"    for c in cands:\n" +
+"        try:\n" +
+"            if os.path.isfile(c) and os.path.getsize(c)>0: return c\n" +
+"        except OSError: continue\n" +
+"    return None\n" +
+"\n" +
+"def read_manifest(path):\n" +
+"    uri='file:'+path+'?immutable=1&mode=ro'\n" +
+"    rows=[]\n" +
+"    conn=sqlite3.connect(uri,uri=True)\n" +
+"    cur=conn.cursor()\n" +
+"    cur.execute('SELECT fileID,domain,relativePath,flags FROM Files')\n" +
+"    for fid,dom,rel,flg in cur:\n" +
+"        if fid is None: continue\n" +
+"        rows.append((str(fid),str(dom or ''),str(rel or ''),int(flg or 0)))\n" +
+"    conn.close()\n" +
+"    return rows\n" +
+"\n" +
+"def synth_rows(n=SYNTH_N,seed=SYNTH_SEED):\n" +
+"    global SYNTH_MARK\n" +
+"    SYNTH_MARK=True\n" +
+"    rng=random.Random(seed)\n" +
+"    domains=['HomeDomain','MediaDomain','CameraRollDomain','AppDomain-com.apple.mobilesafari','AppDomain-com.apple.MobileSMS','SystemPreferencesDomain','KeychainDomain']\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        d=domains[rng.randrange(len(domains))]\n" +
+"        # SHA1-style 40-hex file_id (deterministic)\n" +
+"        fid=''.join('%02x'%rng.randrange(256) for _ in range(20))\n" +
+"        depth=rng.choice([1,2,3,4])\n" +
+"        rel='/'.join(''.join(chr(97+rng.randrange(26)) for _ in range(rng.choice([4,6,8]))) for _ in range(depth))\n" +
+"        ext=rng.choice(['','.plist','.png','.dat','.sqlite','.jpg','.bin'])\n" +
+"        rel=rel+ext\n" +
+"        flg=rng.choice([1,2,4])  # 1=file, 2=link, 4=dir (matches iOS conv)\n" +
+"        out.append((fid,d,rel,flg))\n" +
+"    return out\n" +
+"\n" +
+"def encode():\n" +
+"    src=find_manifest()\n" +
+"    if src:\n" +
+"        try: rows=read_manifest(src)\n" +
+"        except Exception: rows=[]\n" +
+"    else:\n" +
+"        rows=[]\n" +
+"    if not rows:\n" +
+"        rows=synth_rows()\n" +
+"        src='SYNTH'\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    # sort rows by fileID for bisect-ready pool\n" +
+"    rows.sort(key=lambda r:r[0])\n" +
+"    domains=[r[1] for r in rows]\n" +
+"    cnt=Counter(domains)\n" +
+"    distinct=sorted(cnt)\n" +
+"    if len(distinct)>255:\n" +
+"        top=cnt.most_common(255)\n" +
+"        distinct=sorted([k for k,_ in top])\n" +
+"    dom_to_id={n:i for i,n in enumerate(distinct)}\n" +
+"    n_dom=len(distinct); n_file=len(rows)\n" +
+"    dpool=bytearray()\n" +
+"    doffs=array.array('I',[0]*n_dom); dlens=array.array('I',[0]*n_dom)\n" +
+"    for i,d in enumerate(distinct):\n" +
+"        db=d.encode('utf-8','replace')\n" +
+"        doffs[i]=len(dpool); dlens[i]=len(db); dpool.extend(db)\n" +
+"    enum_col=bytearray(n_file)\n" +
+"    flags_col=array.array('I',[0]*n_file)\n" +
+"    fid_offs=array.array('I',[0]*n_file); fid_lens=array.array('I',[0]*n_file); fid_pool=bytearray()\n" +
+"    rel_offs=array.array('I',[0]*n_file); rel_lens=array.array('I',[0]*n_file); rel_pool=bytearray()\n" +
+"    for i,(fid,dom,rel,flg) in enumerate(rows):\n" +
+"        enum_col[i]=dom_to_id.get(dom,0)\n" +
+"        flags_col[i]=flg&0xffffffff\n" +
+"        fb=fid.encode('utf-8','replace')\n" +
+"        fid_offs[i]=len(fid_pool); fid_lens[i]=len(fb); fid_pool.extend(fb)\n" +
+"        rb=rel.encode('utf-8','replace')\n" +
+"        rel_offs[i]=len(rel_pool); rel_lens[i]=len(rb); rel_pool.extend(rb)\n" +
+"    header=struct.pack('<4sIIIIIII',b'IBMF',1,n_dom,n_file,len(dpool),len(fid_pool),len(rel_pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(doffs.tobytes()); f.write(dlens.tobytes())\n" +
+"        f.write(bytes(dpool))\n" +
+"        f.write(bytes(enum_col))\n" +
+"        f.write(flags_col.tobytes())\n" +
+"        f.write(fid_offs.tobytes()); f.write(fid_lens.tobytes())\n" +
+"        f.write(bytes(fid_pool))\n" +
+"        f.write(rel_offs.tobytes()); f.write(rel_lens.tobytes())\n" +
+"        f.write(bytes(rel_pool))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    raw_dom_bytes=sum(len(d)+1 for d in domains)\n" +
+"    return {'encode_ns':t1-t0,'src':src,'n_dom':n_dom,'n_file':n_file,'distinct':distinct,'rows':rows,'domains':domains,'raw_dom_bytes':raw_dom_bytes,'blob_size':os.path.getsize(BIN),'synth':SYNTH_MARK}\n" +
+"\n" +
+"class ManifestBlob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n_dom,n_file,dom_sz,fid_sz,rel_sz=struct.unpack_from('<4sIIIIIII',self.mm,0)\n" +
+"        if magic!=b'IBMF' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n_dom=n_dom; self.n_file=n_file\n" +
+"        base=4+4+4*5\n" +
+"        self.doffs=array.array('I'); self.doffs.frombytes(self.mm[base:base+4*n_dom])\n" +
+"        b1=base+4*n_dom\n" +
+"        self.dlens=array.array('I'); self.dlens.frombytes(self.mm[b1:b1+4*n_dom])\n" +
+"        b2=b1+4*n_dom\n" +
+"        self.dpool=bytes(self.mm[b2:b2+dom_sz])\n" +
+"        b3=b2+dom_sz\n" +
+"        self.enum_col=bytes(self.mm[b3:b3+n_file])\n" +
+"        b4=b3+n_file\n" +
+"        self.flags_col=array.array('I'); self.flags_col.frombytes(self.mm[b4:b4+4*n_file])\n" +
+"        b5=b4+4*n_file\n" +
+"        self.fid_offs=array.array('I'); self.fid_offs.frombytes(self.mm[b5:b5+4*n_file])\n" +
+"        b6=b5+4*n_file\n" +
+"        self.fid_lens=array.array('I'); self.fid_lens.frombytes(self.mm[b6:b6+4*n_file])\n" +
+"        b7=b6+4*n_file\n" +
+"        self.fid_pool=bytes(self.mm[b7:b7+fid_sz])\n" +
+"        b8=b7+fid_sz\n" +
+"        self.rel_offs=array.array('I'); self.rel_offs.frombytes(self.mm[b8:b8+4*n_file])\n" +
+"        b9=b8+4*n_file\n" +
+"        self.rel_lens=array.array('I'); self.rel_lens.frombytes(self.mm[b9:b9+4*n_file])\n" +
+"        b10=b9+4*n_file\n" +
+"        self.rel_pool=bytes(self.mm[b10:b10+rel_sz])\n" +
+"        self.domains=[self.dpool[self.doffs[i]:self.doffs[i]+self.dlens[i]].decode('utf-8','replace') for i in range(n_dom)]\n" +
+"    def fid_at(self,i):\n" +
+"        return self.fid_pool[self.fid_offs[i]:self.fid_offs[i]+self.fid_lens[i]].decode('utf-8','replace')\n" +
+"    def count_by_domain(self):\n" +
+"        c=[0]*self.n_dom\n" +
+"        for b in self.enum_col: c[b]+=1\n" +
+"        return list(zip(self.domains,c))\n" +
+"    def lookup_fid_linear(self,fid):\n" +
+"        for i in range(self.n_file):\n" +
+"            if self.fid_at(i)==fid: return i\n" +
+"        return -1\n" +
+"    def lookup_fid_bisect(self,fid):\n" +
+"        lo=0; hi=self.n_file\n" +
+"        while lo<hi:\n" +
+"            mid=(lo+hi)//2\n" +
+"            v=self.fid_at(mid)\n" +
+"            if v<fid: lo=mid+1\n" +
+"            else: hi=mid\n" +
+"        if lo<self.n_file and self.fid_at(lo)==fid: return lo\n" +
+"        return -1\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    src_tag='SYNTH' if info['synth'] else 'REAL'\n" +
+"    print(f'[encode] {info[\"encode_ns\"]/1e6:.1f}ms  src={src_tag}  n_dom={info[\"n_dom\"]}  n_file={info[\"n_file\"]}')\n" +
+"    print(f'  blob={fmt(info[\"blob_size\"])}  raw_dom_bytes={fmt(info[\"raw_dom_bytes\"])}')\n" +
+"    if info['n_file']==0:\n" +
+"        print('[bench] no rows — skip'); return\n" +
+"    saved_pct=((info['raw_dom_bytes']-info['n_file'])*100)//max(info['raw_dom_bytes'],1)\n" +
+"    print(f'  domain col raw≈{info[\"raw_dom_bytes\"]} → enum={info[\"n_file\"]}B  saved={saved_pct}%')\n" +
+"    mb=ManifestBlob(BIN)\n" +
+"    rss_blob=rss()\n" +
+"    # GROUP BY domain: NEW (u8 scan) vs OLD (Counter on str)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    cb=mb.count_by_domain()\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    new_ns=t1-t0\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    cc=Counter(info['domains'])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    old_ns=t1-t0\n" +
+"    print(f'  GROUP BY OLD (Counter on str list)  : {old_ns:10d} ns')\n" +
+"    print(f'  GROUP BY NEW (u8 enum column scan)  : {new_ns:10d} ns')\n" +
+"    if new_ns>0:\n" +
+"        print(f'  GROUP-BY speedup={old_ns/new_ns:.1f}x  saved={((old_ns-new_ns)*100)//max(old_ns,1)}%')\n" +
+"    a=sorted(cb); b=sorted(cc.items())\n" +
+"    if len(a)==len(b):\n" +
+"        mm=sum(1 for x,y in zip(a,b) if x[0]!=y[0] or x[1]!=y[1])\n" +
+"    else:\n" +
+"        mm=abs(len(a)-len(b))\n" +
+"    print(f'  diff_test mismatches: {mm}')\n" +
+"    # file_id lookup: 50 sample queries (bisect should win on n_file)\n" +
+"    rng=random.Random(31)\n" +
+"    SAMPLE=50\n" +
+"    qids=[mb.fid_at(rng.randrange(mb.n_file)) for _ in range(SAMPLE)]\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    h_lin=sum(1 for q in qids if mb.lookup_fid_linear(q)>=0)\n" +
+"    t1=time.perf_counter_ns(); lin_ns=t1-t0\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    h_bi=sum(1 for q in qids if mb.lookup_fid_bisect(q)>=0)\n" +
+"    t1=time.perf_counter_ns(); bi_ns=t1-t0\n" +
+"    per_lin=lin_ns//SAMPLE; per_bi=bi_ns//max(SAMPLE,1)\n" +
+"    print(f'  fileID lookup OLD (linear scan)     : {per_lin:10d} ns/query  hits={h_lin}')\n" +
+"    print(f'  fileID lookup NEW (bisect on pool)  : {per_bi:10d} ns/query  hits={h_bi}')\n" +
+"    if per_bi>0: print(f'  lookup speedup={per_lin/per_bi:.1f}x')\n" +
+"    print(f'[lossless] hits equal: {h_lin==h_bi}')\n" +
+"    print(f'[rss] after blob: {fmt(rss_blob)}')\n" +
+"    print(f'  5-tuple: site=IB1 ROI#=ibmf baseline_ns={old_ns} post_ns={new_ns} diff_test=lossless src={src_tag}')\n" +
+"    mb.close()\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode()\n" +
+"    src_tag='SYNTH' if info['synth'] else 'REAL'\n" +
+"    print(f'encoded {info[\"n_file\"]} files ({info[\"n_dom\"]} domains, {src_tag}) in {info[\"encode_ns\"]/1e6:.1f}ms → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("iphone_backup_manifest")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/iphone_backup_manifest_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

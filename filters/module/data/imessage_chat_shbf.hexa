@@ -1,0 +1,225 @@
+// airgenome/filters/module/data/imessage_chat_shbf.hexa
+//   IM1 — iMessage Chat Sorted Blob Filter (IMBF — F18/T1 직접 이식).
+//
+//   목적: macOS Messages.app 의 chat.db (~/Library/Messages/chat.db) 는 표준
+//         sqlite3 — Telegram postbox 와 달리 read 가능. 하지만 매 query 마다
+//         JOIN(chat, chat_message_join, message) 은 50K+ 메시지 환경에서 ms급.
+//         chat_identifier(prefix) → (last_msg_ts, msg_count) 박제 → bisect 즉답.
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "IMBF"
+//     version : 4B  u32 (1)
+//     n       : 4B  u32  chat 개수
+//     str_sz  : 4B  u32  chat_identifier pool size
+//     [n*4]   : u32 offsets   chat_identifier 시작 (정렬됨)
+//     [n*4]   : u32 lens
+//     [n*4]   : u32 last_ts   가장 최근 message.date (epoch s)
+//     [n*4]   : u32 msg_count
+//     [str_sz]: utf-8 raw
+//
+//   query: chat_identifier prefix → bisect_left → range topK by last_ts
+//
+//   read-only 전략:
+//     - URI mode=ro&immutable=1 — chat.db 자체 변경 0
+//     - WAL/-shm read 자동 차단 (immutable=1 효과)
+//     - file_exists=false 시 synthetic fallback
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+// R17: /usr/bin/perl alarm 120s wrapper. raw 9 hexa-only.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,resource,mmap,array,sqlite3,random\n" +
+"mode=sys.argv[1]; src=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"BIN='/tmp/imessage_chat_imbf.bin'\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"# iMessage epoch: 2001-01-01 nanoseconds since 2001 (post macOS 10.13)\n" +
+"# pre-10.13 was seconds. We probe column type and divide accordingly.\n" +
+"IMSG_EPOCH=978307200  # 2001-01-01 UTC -> unix ts\n" +
+"\n" +
+"def probe_db():\n" +
+"    cands=[os.path.expanduser('~/Library/Messages/chat.db')]\n" +
+"    return [c for c in cands if os.path.isfile(c)]\n" +
+"\n" +
+"def harvest(db_path):\n" +
+"    uri=f'file:{db_path}?mode=ro&immutable=1'\n" +
+"    con=sqlite3.connect(uri,uri=True)\n" +
+"    cur=con.cursor()\n" +
+"    # schema probe — message.date 단위 (s vs ns)\n" +
+"    cur.execute(\"SELECT date FROM message WHERE date>0 ORDER BY date DESC LIMIT 1\")\n" +
+"    row=cur.fetchone()\n" +
+"    div=1\n" +
+"    if row and row[0] and row[0]>10**12:\n" +
+"        div=10**9  # nanoseconds since 2001\n" +
+"    sql=(\"SELECT c.chat_identifier, MAX(m.date), COUNT(m.ROWID) \"\n" +
+"         \"FROM chat c \"\n" +
+"         \"JOIN chat_message_join j ON c.ROWID=j.chat_id \"\n" +
+"         \"JOIN message m ON m.ROWID=j.message_id \"\n" +
+"         \"GROUP BY c.chat_identifier\")\n" +
+"    by_chat={}\n" +
+"    for cid,d,cnt in cur.execute(sql):\n" +
+"        if cid is None or d is None: continue\n" +
+"        ts=int(d/div)+IMSG_EPOCH\n" +
+"        cur_=by_chat.get(cid)\n" +
+"        if cur_ is None or ts>cur_[0]:\n" +
+"            by_chat[cid]=[ts,int(cnt)]\n" +
+"        else:\n" +
+"            cur_[1]+=int(cnt)\n" +
+"    con.close()\n" +
+"    return by_chat\n" +
+"\n" +
+"def synth_chats(n=2000,seed=42):\n" +
+"    rng=random.Random(seed)\n" +
+"    out={}\n" +
+"    for i in range(n):\n" +
+"        if rng.random()<0.5:\n" +
+"            cid='+'+str(rng.randrange(1,99))+''.join(str(rng.randrange(10)) for _ in range(10))\n" +
+"        else:\n" +
+"            cid=f'user{i:05d}@example.com'\n" +
+"        out[cid]=[1700000000+rng.randrange(60*60*24*365),rng.randrange(1,1000)]\n" +
+"    return out\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter()\n" +
+"    db_path=src if (src and os.path.isfile(src)) else (probe_db()[0] if probe_db() else '')\n" +
+"    if db_path:\n" +
+"        try:\n" +
+"            by_chat=harvest(db_path); source=db_path\n" +
+"            if not by_chat:\n" +
+"                by_chat=synth_chats(2000); source='synthetic (empty db)'\n" +
+"        except Exception as e:\n" +
+"            print(f'[encode] sqlite open fail: {e} — synthetic fallback')\n" +
+"            by_chat=synth_chats(2000); source='synthetic'\n" +
+"    else:\n" +
+"        print('[encode] chat.db not accessible — synthetic fallback (FDA needed for real run)')\n" +
+"        by_chat=synth_chats(2000); source='synthetic'\n" +
+"    rows=sorted(by_chat.items(), key=lambda kv:kv[0])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    tss =array.array('I',[0]*n)\n" +
+"    mcs =array.array('I',[0]*n)\n" +
+"    for i,(cid,(ts,mc)) in enumerate(rows):\n" +
+"        cb=cid.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(cb); tss[i]=ts&0xffffffff; mcs[i]=int(mc)&0xffffffff\n" +
+"        pool.extend(cb)\n" +
+"    header=struct.pack('<4sIII',b'IMBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes())\n" +
+"        f.write(tss.tobytes()); f.write(mcs.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter()\n" +
+"    return {'encode_s':t1-t0,'n':n,'blob_size':os.path.getsize(BIN),'source':source}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        if magic!=b'IMBF' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n=n; self.pool_sz=pool_sz\n" +
+"        base=16\n" +
+"        self.offs_off=base; self.lens_off=base+4*n\n" +
+"        self.tss_off =base+8*n; self.mcs_off=base+12*n\n" +
+"        self.pool_off=base+16*n\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(self.mv[self.offs_off:self.offs_off+4*n]))\n" +
+"        lens=array.array('I'); lens.frombytes(bytes(self.mv[self.lens_off:self.lens_off+4*n]))\n" +
+"        tss =array.array('I'); tss.frombytes(bytes(self.mv[self.tss_off :self.tss_off +4*n]))\n" +
+"        mcs =array.array('I'); mcs.frombytes(bytes(self.mv[self.mcs_off :self.mcs_off +4*n]))\n" +
+"        pool=bytes(self.mv[self.pool_off:self.pool_off+pool_sz])\n" +
+"        self.cids=[pool[offs[i]:offs[i]+lens[i]] for i in range(n)]\n" +
+"        self.tss=tss; self.mcs=mcs\n" +
+"    def prefix_topk(self,prefix,k=10):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        cids=self.cids\n" +
+"        start=bisect.bisect_left(cids,pb)\n" +
+"        end=bisect.bisect_left(cids,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        if end==start: return []\n" +
+"        if end-start<=k: idxs=list(range(start,end))\n" +
+"        else: idxs=heapq.nlargest(k,range(start,end),key=lambda i:self.tss[i])\n" +
+"        idxs.sort(key=lambda i:-self.tss[i])\n" +
+"        return [(self.cids[i].decode('utf-8','replace'),int(self.tss[i]),int(self.mcs[i])) for i in idxs]\n" +
+"    def close(self):\n" +
+"        try: self.mv.release()\n" +
+"        except Exception: pass\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def linear_topk(rows,prefix,k=10):\n" +
+"    pb=prefix\n" +
+"    cand=[r for r in rows if r[0].startswith(pb)]\n" +
+"    cand.sort(key=lambda r:-r[1][0])\n" +
+"    return cand[:k]\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  chats={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}  source={info[\"source\"]}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no chats — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    rng=random.Random(7)\n" +
+"    samples=[]\n" +
+"    for _ in range(100):\n" +
+"        i=rng.randrange(b.n)\n" +
+"        cid=b.cids[i].decode('utf-8','replace')\n" +
+"        plen=rng.choice([2,3,4,5,6])\n" +
+"        samples.append(cid[:plen] if len(cid)>=plen else cid)\n" +
+"    rss_blob=rss()\n" +
+"    rows=[(b.cids[i].decode('utf-8','replace'),(int(b.tss[i]),int(b.mcs[i]))) for i in range(b.n)]\n" +
+"    for p in samples[:5]: linear_topk(rows,p,10); b.prefix_topk(p,10)\n" +
+"    t0=time.perf_counter(); h_lin=0\n" +
+"    for p in samples:\n" +
+"        h_lin+=len(linear_topk(rows,p,10))\n" +
+"    t1=time.perf_counter(); lin_us=(t1-t0)*1e6/len(samples)\n" +
+"    t0=time.perf_counter(); h_bi=0\n" +
+"    for p in samples:\n" +
+"        h_bi+=len(b.prefix_topk(p,10))\n" +
+"    t1=time.perf_counter(); bi_us=(t1-t0)*1e6/len(samples)\n" +
+"    b.close()\n" +
+"    print(f'[query] 100 prefix-topK-10  hits linear={h_lin} bisect={h_bi}')\n" +
+"    print(f'  linear scan       : {lin_us:10.1f} us/query')\n" +
+"    print(f'  blob mmap+bisect  : {bi_us :10.1f} us/query')\n" +
+"    if bi_us>0: print(f'  speedup: {lin_us/bi_us:6.1f}x')\n" +
+"    print(f'[lossless] hits equal: {h_lin==h_bi}')\n" +
+"    print(f'[rss] after blob loaded: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} chats in {info[\"encode_s\"]*1000:.1f} ms -> {BIN} ({fmt(info[\"blob_size\"])}, source={info[\"source\"]})')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench [<chat.db path>]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("imessage_chat_shbf")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains("/") || v == "synthetic" { target = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/imessage_chat_shbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

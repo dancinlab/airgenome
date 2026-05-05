@@ -1,12 +1,12 @@
 // tool/bench/bench_site4.hexa — own 5 site-4 (rotate_if_full clonefile snapshot 안전망)
 //
-// modules/harvest.hexa#rotate_if_full 은 MAX_LINES 초과 시 tail|>tmp|mv 로 head 절반 truncate.
+// harvest/module/harvest.hexa#rotate_if_full 은 MAX_LINES 초과 시 tail|>tmp|mv 로 head 절반 truncate.
 // 직접 적용: pre-truncate APFS clonefile (`cp -c`) 로 0-time backup → 안전망 + 회복 가능.
 // 측정: 2.5MB synthetic ring (5000-line × ~500B) — full cp vs clonefile (cp -c).
 // docs/gate_filter_bench_results.md 의 40MB Bun 측정값 (cp -c 2.62ms, cp 18.47ms = 7.06×) 의
 // hexa 환경 + 스케일된 코퍼스 재측정.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 let BENCH_RING = "/tmp/airgenome_bench_site4.ring"
 let BAK_CP = "/tmp/airgenome_bench_site4.cp.bak"

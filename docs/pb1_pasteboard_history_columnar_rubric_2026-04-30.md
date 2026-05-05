@@ -2,7 +2,7 @@
 
 Origin: `2026-04-30` arsmoriendi99@proton.me — H. Pasteboard wave, filter 1 of 2.
 Pattern parents (READ FIRST):
-- `/Users/ghost/core/airgenome/modules/filters/data/zsh_history_columnar.hexa` (K6 400/400 — KZHC magic, u8 type-dict ≤255 enum, ts column, full-payload pool).
+- `/Users/ghost/core/airgenome/filters/module/data/zsh_history_columnar.hexa` (K6 400/400 — KZHC magic, u8 type-dict ≤255 enum, ts column, full-payload pool).
 - `claude_token_columnar` ancestry (#99 dict + pool).
 - `C14 bash_history_mmap` (sorted-pool prefix bisect ancestry — applies to clip-prefix top-K).
 
@@ -115,7 +115,7 @@ backs python dict during encode; final blob stores plain UTI string keys.
 
 1. `/Users/ghost/core/airgenome/docs/pb1_pasteboard_history_columnar_rubric_2026-04-30.md` (this)
 2. `/Users/ghost/core/airgenome/docs/pb1_pasteboard_history_columnar_rubric_2026-04-30.rubric.jsonl`
-3. `/Users/ghost/core/airgenome/modules/filters/data/pasteboard_history_columnar.hexa`
+3. `/Users/ghost/core/airgenome/filters/module/data/pasteboard_history_columnar.hexa`
 4. `/Users/ghost/core/airgenome/tool/bench/bench_pb1_pasteboard_history_columnar.hexa`
 
 **Final PB1 score: 400/400 — PASS ≥350 impl threshold.**

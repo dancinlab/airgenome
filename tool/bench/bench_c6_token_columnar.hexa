@@ -1,6 +1,6 @@
 // tool/bench/bench_c6_token_columnar.hexa — C6 5-tuple bench
 //
-// Target: modules/filters/data/claude_token_columnar.hexa
+// Target: filters/module/data/claude_token_columnar.hexa
 // Pattern: jq full-scan + sum vs columnar projection sum (P3 columnar 변종)
 //
 // OLD (per query):
@@ -14,7 +14,7 @@
 //
 // 측정 환경: HEXA_RESOLVER_NO_REROUTE=1 HEXA_SHIM_NO_DARWIN_LANDING=1, gdate.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 fn is_numeric_str(s: str) -> bool {
     let n = len(s)

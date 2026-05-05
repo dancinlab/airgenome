@@ -1,0 +1,358 @@
+// filters/module/data/claude_hook_event_genome.hexa — C13 (Type D)
+//
+// Wave 2 / own-9 / Type D — Claude hook bus event 6축 게놈 투영.
+// F45 (safari_bg_tab_throttle_genome) 직접 이식. Forge ring 패턴.
+//
+// 6축 매핑 (60-byte 게놈, own 5 site-3 batch pattern):
+//   axis 0 = token_share   (0..255 — 추정 토큰 클립)
+//   axis 1 = tools_count   (0..255 — 본 cycle 안에서 PreToolUse 수)
+//   axis 2 = files_touched (0..255 — Edit/Write 추정)
+//   axis 3 = errors        (0..255 — error / panic / FAIL 토큰 카운트)
+//   axis 4 = time_share    (0..100 — cycle 윈도우 점유율)
+//   axis 5 = cost_share    (0..100 — total event 점유율)
+//
+// 입력 (hook bus tail-N):
+//   ~/.airgenome/.hook-{observe,tools,audit}.jsonl  (spec 명시)
+//   존재하지 않을 시 fallback: ~/.hook-audit (TSV, 실제 환경에 존재)
+//   둘 다 없으면 합성 8 event 로 진행 (bench 동일).
+//
+// 출력 ring: forge/claude_hook_genome.ring (JSONL append-only, MAX_RING 240)
+//   {"ts":"...","window":N,"events":M,"axes":[t,c,f,e,T,C]}
+//
+// 4-layer:
+//   L1 input  → hook jsonl 3 source 또는 audit TSV (1 fork: cat | tail)
+//   L2 census → in-hexa keyword scan (PreToolUse / PostToolUse / error 등)
+//   L3 encode → 6축 게놈 (project_axes)
+//   L4 ring   → append_file + read_file rotate (own 8 site-13)
+//
+// 5-tuple bench: tool/bench/bench_c13_hook_genome.hexa
+//   OLD: per-event jq fork (N events * 2 jq fork)
+//   NEW: 1 fork (cat tail) + in-hexa scan + 1 append_file
+//
+// 제약:
+//   - try/catch 0 / top-level main() 0 / 외부 의존 0
+//   - hook event 변경 0 (read-only) / launchctl 0
+//   - 본 모듈 = census + 게놈 emit 만. 실 hook trigger 0.
+
+use "../../../airgenome/core/airgenome"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  A6 to_int_safe
+// ═══════════════════════════════════════════════════════════════════════
+
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════════════════════
+
+let HOME = env("HOME")
+let RING = ring_path("claude_hook_genome.ring")
+let MAX_RING = 240
+let TAIL_N = 200             // 최근 200 event 윈도우
+
+// 후보 hook bus paths (spec 명시 + fallback)
+let HOOK_PATHS_STR = HOME + "/.airgenome/.hook-observe.jsonl|"
+                  + HOME + "/.airgenome/.hook-tools.jsonl|"
+                  + HOME + "/.airgenome/.hook-audit.jsonl|"
+                  + HOME + "/.hook-audit"
+
+let CPU_AXIS_CLIP = 255
+let PCT_AXIS_CLIP = 100
+
+fn ts_iso() -> str { return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HOOK BUS INPUT — 1 fork batch (own 6 site-6)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn collect_hook_paths() -> list {
+    let parts = HOOK_PATHS_STR.split("|")
+    let mut out = []
+    let mut i = 0
+    while i < len(parts) {
+        let p = parts[i].trim()
+        if file_exists(p) { out = out + [p] }
+        i = i + 1
+    }
+    return out
+}
+
+// 1 fork: cat <multi-paths> 2>/dev/null | tail -N — 가장 최근 N event 만.
+// hook jsonl 부재 시 빈 string 반환.
+fn read_hook_window(paths: list, n: int) -> str {
+    if len(paths) == 0 { return "" }
+    let mut joined = ""
+    let mut i = 0
+    while i < len(paths) {
+        if i > 0 { joined = joined + " " }
+        joined = joined + "'" + paths[i] + "'"
+        i = i + 1
+    }
+    let raw = exec("cat " + joined + " 2>/dev/null | tail -" + to_string(n))
+    return raw
+}
+
+// 합성 hook 라인 (test/bench 환경에서 0 source 폴백) — F45 synth_ps_lines 패턴.
+fn synth_hook_lines(n: int) -> str {
+    let mut s = ""
+    let mut i = 0
+    while i < n {
+        let kind = i % 5
+        let line = if kind == 0 {
+            "{\"event\":\"PreToolUse\",\"tool\":\"Bash\",\"tokens\":120}"
+        } else if kind == 1 {
+            "{\"event\":\"PostToolUse\",\"tool\":\"Read\",\"tokens\":40,\"file\":\"/tmp/x\"}"
+        } else if kind == 2 {
+            "{\"event\":\"PostToolUse\",\"tool\":\"Edit\",\"tokens\":80,\"file\":\"/tmp/y\"}"
+        } else if kind == 3 {
+            "{\"event\":\"PostToolUse\",\"tool\":\"Write\",\"tokens\":60,\"file\":\"/tmp/z\"}"
+        } else {
+            "{\"event\":\"PostToolUse\",\"tool\":\"Bash\",\"error\":\"FAIL\",\"tokens\":30}"
+        }
+        s = s + line + "\n"
+        i = i + 1
+    }
+    return s
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CENSUS — in-hexa keyword count (0 fork)
+// ═══════════════════════════════════════════════════════════════════════
+
+struct EventCensus {
+    events: int,
+    tools: int,            // PreToolUse 수
+    files: int,            // file/path 등장 수
+    errors: int,           // error|FAIL|panic 수
+    tokens: int,           // tokens:NNN 합계
+}
+
+// 단일 줄 파싱: event 종류 + tokens 추출 + file 존재 + error 존재
+fn line_kind(line: str) -> int {
+    // 0=skip, 1=PreToolUse, 2=PostToolUse, 3=other
+    if line == "" { return 0 }
+    if line.contains("PreToolUse") { return 1 }
+    if line.contains("PostToolUse") { return 2 }
+    if line.contains("UserPromptSubmit") { return 3 }
+    if line.contains("SessionStart") { return 3 }
+    if line.contains("Stop") { return 3 }
+    return 3
+}
+
+fn line_has_file(line: str) -> bool {
+    if line.contains("\"file\"") { return true }
+    if line.contains("\"file_path\"") { return true }
+    if line.contains("\"path\"") { return true }
+    return false
+}
+
+fn line_has_error(line: str) -> bool {
+    if line.contains("\"error\"") { return true }
+    if line.contains("FAIL") { return true }
+    if line.contains("panic") { return true }
+    if line.contains("ERROR") { return true }
+    return false
+}
+
+fn line_tokens(line: str) -> int {
+    let anchor = "\"tokens\":"
+    let parts = line.split(anchor)
+    if len(parts) < 2 { return 0 }
+    let after = parts[1]
+    let n = len(after)
+    let mut i = 0
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "," { return to_int_safe(after.substring(0, i).trim()) }
+        if ch == "}" { return to_int_safe(after.substring(0, i).trim()) }
+        i = i + 1
+    }
+    return to_int_safe(after.trim())
+}
+
+pub fn census(raw: str) -> EventCensus {
+    let lines = raw.split("\n")
+    let mut c = EventCensus { events: 0, tools: 0, files: 0, errors: 0, tokens: 0 }
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line == "" { i = i + 1; continue }
+        let k = line_kind(line)
+        if k == 0 { i = i + 1; continue }
+        c.events = c.events + 1
+        if k == 1 { c.tools = c.tools + 1 }
+        if line_has_file(line) { c.files = c.files + 1 }
+        if line_has_error(line) { c.errors = c.errors + 1 }
+        c.tokens = c.tokens + line_tokens(line)
+        i = i + 1
+    }
+    return c
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  6-AXIS PROJECTION
+// ═══════════════════════════════════════════════════════════════════════
+
+fn clip(v: int, hi: int) -> int {
+    if v < 0 { return 0 }
+    if v > hi { return hi }
+    return v
+}
+
+// token_share: 토큰 합 / 1024 → kB-ish 단위 (대략 4토큰/byte 가정)
+// time_share: cycle window 내 활동 점유 — events/TAIL_N * 100
+// cost_share: tokens / (TAIL_N * 200) * 100 — 200 tok/event 평균 가정
+pub fn project_axes(c: EventCensus, window_n: int) -> list {
+    let token_a = clip(c.tokens / 1024, CPU_AXIS_CLIP)
+    let tool_a  = clip(c.tools, CPU_AXIS_CLIP)
+    let file_a  = clip(c.files, CPU_AXIS_CLIP)
+    let err_a   = clip(c.errors, CPU_AXIS_CLIP)
+    let mut time_a = 0
+    if window_n > 0 { time_a = clip((c.events * 100) / window_n, PCT_AXIS_CLIP) }
+    let cap = window_n * 200
+    let mut cost_a = 0
+    if cap > 0 { cost_a = clip((c.tokens * 100) / cap, PCT_AXIS_CLIP) }
+    return [token_a, tool_a, file_a, err_a, time_a, cost_a]
+}
+
+fn axes_json(axes: list) -> str {
+    let mut s = "["
+    let mut i = 0
+    while i < len(axes) {
+        if i > 0 { s = s + "," }
+        s = s + to_string(axes[i])
+        i = i + 1
+    }
+    return s + "]"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  RING ROTATE (own 8 site-13)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn rotate_ring() -> int {
+    if file_exists(RING) == false { return 0 }
+    let raw = read_file(RING)
+    let xs = raw.split("\n")
+    let mut all = []
+    let mut i = 0
+    while i < len(xs) {
+        if xs[i] != "" { all = all + [xs[i]] }
+        i = i + 1
+    }
+    if len(all) <= MAX_RING { return len(all) }
+    let start = len(all) - MAX_RING
+    let mut out = ""
+    let mut j = start
+    while j < len(all) {
+        out = out + all[j] + "\n"
+        j = j + 1
+    }
+    write_file(RING, out)
+    return MAX_RING
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════════════════════════════════
+
+pub fn run_filter() -> int {
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
+    let ts = ts_iso()
+
+    let paths = collect_hook_paths()
+    let mut raw = read_hook_window(paths, TAIL_N)
+    let mut source = "hook-bus"
+    if raw.trim() == "" {
+        raw = synth_hook_lines(8)
+        source = "synth-fallback"
+    }
+
+    let c = census(raw)
+    let axes = project_axes(c, TAIL_N)
+
+    let line = "{\"ts\":\"" + ts + "\""
+             + ",\"window\":" + to_string(TAIL_N)
+             + ",\"events\":" + to_string(c.events)
+             + ",\"tools\":" + to_string(c.tools)
+             + ",\"files\":" + to_string(c.files)
+             + ",\"errors\":" + to_string(c.errors)
+             + ",\"tokens\":" + to_string(c.tokens)
+             + ",\"source\":\"" + source + "\""
+             + ",\"axes\":" + axes_json(axes) + "}"
+    append_file(RING, line + "\n")
+    let kept = rotate_ring()
+
+    println("claude_hook_event_genome: events=" + to_string(c.events)
+          + " tools=" + to_string(c.tools)
+          + " files=" + to_string(c.files)
+          + " errors=" + to_string(c.errors)
+          + " tokens=" + to_string(c.tokens)
+          + " axes=" + axes_json(axes)
+          + " source=" + source
+          + " ring_kept=" + to_string(kept))
+    return 1
+}
+
+pub fn self_test() -> void {
+    // 1. census 합성 8 라인
+    let raw = synth_hook_lines(10)
+    let c = census(raw)
+    if c.events != 10 { panic("C13 self_test [events count, got " + to_string(c.events) + "]") }
+    if c.tools < 1 { panic("C13 self_test [tools count]") }
+    if c.errors < 1 { panic("C13 self_test [errors count]") }
+    if c.tokens < 100 { panic("C13 self_test [tokens sum]") }
+
+    // 2. axes 6원소
+    let axes = project_axes(c, 200)
+    if len(axes) != 6 { panic("C13 self_test [axes len]") }
+
+    // 3. clip 경계
+    if clip(300, 255) != 255 { panic("C13 self_test [clip hi]") }
+    if clip(-1, 100) != 0 { panic("C13 self_test [clip lo]") }
+
+    // 4. line_tokens
+    if line_tokens("{\"tokens\":42,\"x\":1}") != 42 { panic("C13 self_test [line_tokens]") }
+    if line_tokens("{\"tokens\":99}") != 99 { panic("C13 self_test [line_tokens trailing}]") }
+
+    println("  C13 claude_hook_event_genome self_test PASS — events=" + to_string(c.events) + " axes=" + axes_json(axes))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ENTRY (top-level main() 0 — run() 1회 호출)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn run() -> void {
+    let a = args()
+    if len(a) >= 3 && a[2] == "self-test" {
+        self_test()
+        return
+    }
+    let _ = run_filter()
+}
+
+run()

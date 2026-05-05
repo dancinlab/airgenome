@@ -1,6 +1,6 @@
 // tool/bench/bench_f45_safari_genome.hexa — F45 5-tuple bench
 //
-// Target: modules/filters/data/safari_bg_tab_throttle_genome.hexa
+// Target: filters/module/data/safari_bg_tab_throttle_genome.hexa
 // Pattern: own 5/6/7/8 — fork 다수 → ps 1회 + in-hexa parse + append_file
 //
 // OLD (per-cycle, N WebContent 탭 가정):
@@ -18,7 +18,7 @@
 //
 // 측정 환경: HEXA_RESOLVER_NO_REROUTE=1 HEXA_SHIM_NO_DARWIN_LANDING=1, gdate.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 fn is_numeric_str(s: str) -> bool {
     let n = len(s)

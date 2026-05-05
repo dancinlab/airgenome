@@ -1,0 +1,264 @@
+// airgenome/filters/module/data/prefix_trie_mmap.hexa
+//   F58-trie variant — sorted strings → prefix-compressed trie blob.
+//   safari_bench prefix-trie 결과 (226KB / 1.8% of 4.92MB) 의 일반화.
+//
+//   Trade-off vs APBF (autocomplete_trie_mmap):
+//     APBF: pool 7.5% raw / bisect O(log n) (faster query, larger blob)
+//     PTBF: text-trie 1.8% raw / traversal (smaller blob, slower query)
+//   본 모듈은 후자 (압축 우선).
+//
+//   blob layout (text-line trie):
+//     magic   : 4B "PTBF"
+//     version : 4B u32 (1)
+//     n       : 4B u32 string 개수
+//     idx_sz  : 4B u32 line-offset index 바이트 길이 (n*4)
+//     body_sz : 4B u32 trie body 바이트 길이
+//     [n*4]   : u32 line offsets (body 시작점 기준)
+//     [n*4]   : u32 score
+//     [body_sz]: utf-8 trie lines.
+//                각 줄: "<cp>|<suffix>" — cp = prev 와의 common-prefix 바이트수.
+//                복원: full[i] = full[i-1][:cp] + suffix.
+//                (sorted 가정 → cp 항상 양수, dedup 효과 큼.)
+//
+//   query 3가지:
+//     linear : 모든 line 복원 + startswith
+//     bisect : line 복원 후 bisect_left/right (APBF 와 동일)
+//     trie   : cp 누적 + suffix 매칭으로 prefix-skip (복원 회피)
+//
+// 모드: encode | bench
+// 입력: tsv (`<str>\t<score>`) 또는 jsonl, "synthetic" → 10K.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,resource,mmap,array,json,random,tempfile\n" +
+"mode=sys.argv[1]; src=sys.argv[2]\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"DOMAINS=['github.com','google.com','stackoverflow.com','youtube.com','wikipedia.org','reddit.com','developer.mozilla.org','docs.python.org','news.ycombinator.com','twitter.com','apple.com','anthropic.com','openai.com','arxiv.org','medium.com','linkedin.com','amazon.com','netflix.com','spotify.com','dropbox.com']\n" +
+"\n" +
+"def synth(n=10000,seed=42):\n" +
+"    rng=random.Random(seed); out=[]\n" +
+"    for i in range(n):\n" +
+"        d=DOMAINS[i%len(DOMAINS)]\n" +
+"        u=f'https://{d}/path{i}/page{i%137}/sub{rng.randrange(99)}'\n" +
+"        out.append((u,(i*7)%1000))\n" +
+"    return out\n" +
+"\n" +
+"def load_input(path):\n" +
+"    if path in ('-','synthetic',''):\n" +
+"        return synth(10000)\n" +
+"    if not os.path.exists(path):\n" +
+"        print(f'ERROR: not found: {path}'); sys.exit(1)\n" +
+"    rows=[]\n" +
+"    with open(path,'rb') as f:\n" +
+"        head=f.read(2); f.seek(0)\n" +
+"        is_json=head.startswith(b'{')\n" +
+"        for ln in f:\n" +
+"            ln=ln.rstrip(b'\\r\\n')\n" +
+"            if not ln: continue\n" +
+"            if is_json:\n" +
+"                try:\n" +
+"                    o=json.loads(ln)\n" +
+"                    u=o.get('url') or o.get('str') or ''\n" +
+"                    s=int(o.get('score') or o.get('visit_count') or 0)\n" +
+"                except: continue\n" +
+"            else:\n" +
+"                parts=ln.decode('utf-8','replace').split('\\t')\n" +
+"                u=parts[0]\n" +
+"                try: s=int(parts[1]) if len(parts)>1 else 0\n" +
+"                except: s=0\n" +
+"            if u: rows.append((u,s))\n" +
+"    return rows\n" +
+"\n" +
+"def out_path(src):\n" +
+"    if src in ('-','synthetic',''): base='synthetic'\n" +
+"    else: base=os.path.splitext(os.path.basename(src))[0]\n" +
+"    return f'/tmp/{base}_ptbf.bin'\n" +
+"\n" +
+"def common_prefix(a,b):\n" +
+"    n=min(len(a),len(b))\n" +
+"    for i in range(n):\n" +
+"        if a[i]!=b[i]: return i\n" +
+"    return n\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter()\n" +
+"    rows=load_input(src)\n" +
+"    if not rows: print('ERROR: no rows'); sys.exit(1)\n" +
+"    rows.sort(key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    body=bytearray()\n" +
+"    line_offs=array.array('I',[0]*n)\n" +
+"    scs=array.array('I',[0]*n)\n" +
+"    prev=''\n" +
+"    raw_total=0\n" +
+"    for i,(s,sc) in enumerate(rows):\n" +
+"        cp=common_prefix(prev,s)\n" +
+"        line=f'{cp}|{s[cp:]}'.encode('utf-8','replace')\n" +
+"        line_offs[i]=len(body); scs[i]=int(sc)&0xffffffff\n" +
+"        body.extend(line); body.append(0x0a)\n" +
+"        raw_total+=len(s.encode('utf-8','replace'))+1\n" +
+"        prev=s\n" +
+"    idx_sz=4*n\n" +
+"    header=struct.pack('<4sIIII',b'PTBF',1,n,idx_sz,len(body))\n" +
+"    bin_path=out_path(src)\n" +
+"    with open(bin_path,'wb') as f:\n" +
+"        f.write(header); f.write(line_offs.tobytes()); f.write(scs.tobytes()); f.write(body)\n" +
+"    t1=time.perf_counter()\n" +
+"    return {'encode_s':t1-t0,'n':n,'bin':bin_path,'blob_size':os.path.getsize(bin_path),'raw_size':raw_total+8*n}\n" +
+"\n" +
+"class Trie:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,idx_sz,body_sz=struct.unpack_from('<4sIIII',self.mm,0)\n" +
+"        if magic!=b'PTBF' or ver!=1: raise ValueError(f'bad: {magic} {ver}')\n" +
+"        self.n=n\n" +
+"        base=20\n" +
+"        self.idx_off=base\n" +
+"        self.scs_off=base+idx_sz\n" +
+"        self.body_off=base+idx_sz+4*n\n" +
+"        self.body_sz=body_sz\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(self.mv[self.idx_off:self.idx_off+idx_sz]))\n" +
+"        scs =array.array('I'); scs.frombytes(bytes(self.mv[self.scs_off:self.scs_off+4*n]))\n" +
+"        body=bytes(self.mv[self.body_off:self.body_off+body_sz])\n" +
+"        self.line_offs=offs; self.scs=scs; self.body=body\n" +
+"        # restore full strings (lazy / cached for fair compare)\n" +
+"        self._full=None\n" +
+"    def restore_full(self):\n" +
+"        if self._full is not None: return self._full\n" +
+"        full=[None]*self.n\n" +
+"        prev=''\n" +
+"        for i in range(self.n):\n" +
+"            o=self.line_offs[i]\n" +
+"            # line ends at next \\n\n" +
+"            nl=self.body.find(b'\\n',o)\n" +
+"            if nl<0: nl=len(self.body)\n" +
+"            line=self.body[o:nl].decode('utf-8','replace')\n" +
+"            bar=line.find('|')\n" +
+"            cp=int(line[:bar]); suf=line[bar+1:]\n" +
+"            s=prev[:cp]+suf\n" +
+"            full[i]=s; prev=s\n" +
+"        self._full=full\n" +
+"        return full\n" +
+"    def linear_topk(self,prefix,k=10):\n" +
+"        full=self.restore_full()\n" +
+"        cand=[i for i,u in enumerate(full) if u.startswith(prefix)]\n" +
+"        if len(cand)<=k: idxs=cand\n" +
+"        else: idxs=heapq.nlargest(k,cand,key=lambda i:self.scs[i])\n" +
+"        idxs.sort(key=lambda i:-self.scs[i])\n" +
+"        return [(full[i],int(self.scs[i])) for i in idxs]\n" +
+"    def bisect_topk(self,prefix,k=10):\n" +
+"        full=self.restore_full()\n" +
+"        lo=bisect.bisect_left(full,prefix)\n" +
+"        hi=bisect.bisect_left(full,prefix+'\\uffff')\n" +
+"        if hi==lo: return []\n" +
+"        if hi-lo<=k: idxs=list(range(lo,hi))\n" +
+"        else: idxs=heapq.nlargest(k,range(lo,hi),key=lambda i:self.scs[i])\n" +
+"        idxs.sort(key=lambda i:-self.scs[i])\n" +
+"        return [(full[i],int(self.scs[i])) for i in idxs]\n" +
+"    def trie_topk(self,prefix,k=10):\n" +
+"        # raw-trie traversal — restore on demand using cp 누적, prefix 매칭 시만 push.\n" +
+"        # 각 라인: cp + suf. cur_full[i] = cur_full[i-1][:cp] + suf.\n" +
+"        # prefix match check: cur 가 prefix 의 byte-prefix 인지 검사.\n" +
+"        cand=[]\n" +
+"        prev=''\n" +
+"        body=self.body\n" +
+"        offs=self.line_offs\n" +
+"        for i in range(self.n):\n" +
+"            o=offs[i]\n" +
+"            nl=body.find(b'\\n',o)\n" +
+"            if nl<0: nl=len(body)\n" +
+"            line=body[o:nl].decode('utf-8','replace')\n" +
+"            bar=line.find('|')\n" +
+"            cp=int(line[:bar]); suf=line[bar+1:]\n" +
+"            cur=prev[:cp]+suf\n" +
+"            if cur.startswith(prefix): cand.append((i,cur))\n" +
+"            prev=cur\n" +
+"        if len(cand)<=k: chosen=cand\n" +
+"        else:\n" +
+"            chosen=heapq.nlargest(k,cand,key=lambda c:self.scs[c[0]])\n" +
+"        chosen.sort(key=lambda c:-self.scs[c[0]])\n" +
+"        return [(c[1],int(self.scs[c[0]])) for c in chosen]\n" +
+"    def close(self):\n" +
+"        try: self.mv.release()\n" +
+"        except Exception: pass\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def make_prefixes(t,n=200,seed=7):\n" +
+"    rng=random.Random(seed); out=[]\n" +
+"    full=t.restore_full()\n" +
+"    for _ in range(n):\n" +
+"        i=rng.randrange(t.n); u=full[i]\n" +
+"        s=u.find('://'); start=s+3 if s>=0 else 0\n" +
+"        plen=rng.choice([4,5,6,7,8,10,12])\n" +
+"        out.append(u[:start+plen] if len(u)>=start+plen else u)\n" +
+"    return out\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  n={info[\"n\"]}  blob={fmt(info[\"blob_size\"])} (raw_est {fmt(info[\"raw_size\"])}, {100*info[\"blob_size\"]/info[\"raw_size\"]:.1f}%)')\n" +
+"    t=Trie(info['bin'])\n" +
+"    samples=make_prefixes(t,200)\n" +
+"    rss_loaded=rss()\n" +
+"    for p in samples[:5]: t.linear_topk(p,10); t.bisect_topk(p,10); t.trie_topk(p,10)\n" +
+"    t0=time.perf_counter(); h_lin=0\n" +
+"    for p in samples:\n" +
+"        r=t.linear_topk(p,10); h_lin+=len(r)\n" +
+"    t1=time.perf_counter(); lin_us=(t1-t0)*1e6/len(samples)\n" +
+"    t0=time.perf_counter(); h_bi=0\n" +
+"    for p in samples:\n" +
+"        r=t.bisect_topk(p,10); h_bi+=len(r)\n" +
+"    t1=time.perf_counter(); bi_us=(t1-t0)*1e6/len(samples)\n" +
+"    t0=time.perf_counter(); h_tr=0\n" +
+"    for p in samples:\n" +
+"        r=t.trie_topk(p,10); h_tr+=len(r)\n" +
+"    t1=time.perf_counter(); tr_us=(t1-t0)*1e6/len(samples)\n" +
+"    t.close()\n" +
+"    print(f'[query] {len(samples)} prefix-topK-10  hits linear={h_lin} bisect={h_bi} trie={h_tr}')\n" +
+"    print(f'  linear scan       : {lin_us:10.1f} us/query')\n" +
+"    print(f'  bisect on restore : {bi_us :10.1f} us/query')\n" +
+"    print(f'  trie traversal    : {tr_us :10.1f} us/query')\n" +
+"    if bi_us>0: print(f'  speedup linear→bisect: {lin_us/bi_us:6.1f}x')\n" +
+"    if tr_us>0: print(f'  speedup linear→trie  : {lin_us/tr_us:6.1f}x')\n" +
+"    print(f'[lossless] hits all equal: {h_lin==h_bi==h_tr}')\n" +
+"    print(f'[rss] after blob loaded: {fmt(rss_loaded)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} strings in {info[\"encode_s\"]*1000:.1f} ms → {info[\"bin\"]} ({fmt(info[\"blob_size\"])}, raw_est {fmt(info[\"raw_size\"])}, {100*info[\"blob_size\"]/info[\"raw_size\"]:.1f}%)')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench <input|synthetic|->'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = "synthetic"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("prefix_trie_mmap")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v == "-" || v == "synthetic" { target = v }
+            else if v.contains(".tsv") || v.contains(".jsonl") || v.contains(".txt") || v.contains("/") { target = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/prefix_trie_mmap_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

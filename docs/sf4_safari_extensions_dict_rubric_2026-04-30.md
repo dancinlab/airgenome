@@ -99,7 +99,7 @@ honest-C3 gap count: **7**.
 
 - `/Users/ghost/core/airgenome/docs/sf4_safari_extensions_dict_rubric_2026-04-30.md` (this)
 - `/Users/ghost/core/airgenome/docs/sf4_safari_extensions_dict_rubric_2026-04-30.rubric.jsonl`
-- `/Users/ghost/core/airgenome/modules/filters/data/safari_extensions_dict.hexa`
+- `/Users/ghost/core/airgenome/filters/module/data/safari_extensions_dict.hexa`
 - `/Users/ghost/core/airgenome/tool/bench/bench_sf4_safari_extensions_dict.hexa`
 
 Verdict: **IMPL** (376/400 ≥ 350).

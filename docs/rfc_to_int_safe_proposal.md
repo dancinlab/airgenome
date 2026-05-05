@@ -35,7 +35,7 @@ panic on these = brittle pipeline. workaround pattern proliferates.
 scattered local definitions:
 
 ```hexa
-// airgenome/modules/predictive_throttle.hexa (commit 88e008c4)
+// airgenome/predictive_throttle/module/predictive_throttle.hexa (commit 88e008c4)
 fn to_int_safe(s: str) -> int {
     if s == "" { return 0 }
     let parts = s.split(".")
@@ -44,8 +44,8 @@ fn to_int_safe(s: str) -> int {
     return to_int(parts[0])
 }
 
-// airgenome/modules/label.hexa (commit 3ab4ceac, similar)
-// airgenome/modules/forecast.hexa (similar)
+// airgenome/label/module/label.hexa (commit 3ab4ceac, similar)
+// airgenome/forecast/module/forecast.hexa (similar)
 // airgenome modules count: 5+
 ```
 

@@ -1,6 +1,6 @@
 // tool/bench/bench_c4_project_root.hexa — C4 5-tuple bench
 //
-// Target: modules/filters/data/claude_project_root_mmap.hexa
+// Target: filters/module/data/claude_project_root_mmap.hexa
 // Pattern: per-call git fork → in-hexa prefix-trie / dict lookup
 //
 // OLD (per-cycle, statusline 1Hz):
@@ -13,7 +13,7 @@
 //
 // 측정 환경: HEXA_RESOLVER_NO_REROUTE=1 HEXA_SHIM_NO_DARWIN_LANDING=1, gdate.
 
-use "../../core/core"
+use "../../airgenome/core/airgenome"
 
 fn is_numeric_str(s: str) -> bool {
     let n = len(s)
@@ -50,7 +50,7 @@ fn ns_diff(t0: str, t1: str) -> int { return to_int_safe(t1) - to_int_safe(t0) }
 fn seed_cwds() -> list {
     return [
         "/Users/ghost/core/airgenome",
-        "/Users/ghost/core/airgenome/modules/filters/data",
+        "/Users/ghost/core/airgenome/filters/module/data",
         "/Users/ghost/core/airgenome/tool/bench",
         "/Users/ghost/core/hexa-lang",
         "/Users/ghost/core/hive",

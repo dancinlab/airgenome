@@ -1,0 +1,278 @@
+// airgenome/filters/module/data/memo_notes_search_apbf.hexa
+//   M3 — Apple Notes 본문 단어 inverted index APBF (autocomplete prefix blob).
+//
+//   목적: 노트 본문 검색 (search "이 단어로 시작하는 노트") 가 매번 sqlite
+//         FTS / blob walk 으로 풀렸던 hot path 를 byte-reinterpret:
+//           - ZNOTEDATA.ZDATA (gzip-compressed protobuf) parse → token 채집
+//           - 단어 → score (frequency * recency) 정렬 blob (F58 APBF 변종)
+//           - bisect_left 두 번 → prefix range, score top-K heap
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "MAPB"          (Memo APBF)
+//     version : 4B  u32             (1)
+//     n       : 4B  u32             unique 단어 개수
+//     str_sz  : 4B  u32             token pool 바이트 길이
+//     [n*4]   : u32 offsets         pool 내 token 시작 (정렬된 token 순)
+//     [n*4]   : u32 lens            각 token 길이
+//     [n*4]   : u32 score           freq*100 + log2(recency_days)
+//     [str_sz]: utf-8 string pool   token raw bytes
+//
+//   query: bisect_left(tokens, prefix) ~ bisect_left(tokens, prefix+ff*4) → range,
+//          range 안 score 로 top-K heap. F58 APBF 동일 패턴.
+//
+// F58 reference:
+//   - autocomplete_trie_mmap.hexa (APBF) 그대로 — 입력만 (token, score) sequence.
+//   - 차이: Notes 본문 추출은 ZNOTEDATA.ZDATA (gzip) 풀이가 추가됨.
+//
+// 본문 디코딩:
+//   - ZNOTEDATA.ZDATA 는 gzipped protobuf (Apple internal). magic 0x1f 0x8b 확인 후
+//     gzip.decompress() → bytes 에서 ASCII range word \\b[a-zA-Z0-9_]+\\b 추출 (lossy).
+//   - protobuf schema 미공개 — token-level coverage 만 목표 (본문 100% 가 아닌 핵심
+//     단어 추출). 검색 autocomplete 용도로 충분.
+//
+// macOS path probe / TCC: M1 동일.
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드. R17: alarm 120s.
+
+let PAYLOAD = "import sys,os,sqlite3,tempfile,struct,time,bisect,heapq,resource,mmap,array,gzip,re,math\n" +
+"mode=sys.argv[1]; src=sys.argv[2]\n" +
+"BIN='/tmp/memo_notes_search_apbf.bin'\n" +
+"if not os.path.exists(src):\n" +
+"    print('ERROR: not found: '+src); sys.exit(1)\n" +
+"\n" +
+"def to_int_safe(x):\n" +
+"    if x is None: return 0\n" +
+"    if isinstance(x,(int,float)): return int(x)\n" +
+"    s=str(x)\n" +
+"    if not s: return 0\n" +
+"    try: return int(float(s))\n" +
+"    except: return 0\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def safe_copy(src):\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); tmp.close()\n" +
+"    sc=sqlite3.connect(f'file:{src}?mode=ro&immutable=1',uri=True)\n" +
+"    dc=sqlite3.connect(tmp.name)\n" +
+"    sc.backup(dc); dc.close(); sc.close()\n" +
+"    return tmp.name\n" +
+"\n" +
+"WORD_RE=re.compile(rb'[A-Za-z][A-Za-z0-9_]{2,31}')\n" +
+"# Korean / unicode word — utf-8 bytes 의 연속된 non-control-non-punct cluster\n" +
+"UNICODE_WORD_RE=re.compile(rb'[\\xc2-\\xf4][\\x80-\\xbf]+(?:[A-Za-z0-9_\\xc2-\\xf4][\\x80-\\xbf]*){0,15}')\n" +
+"\n" +
+"def extract_tokens(blob_bytes):\n" +
+"    tokens=set()\n" +
+"    for m in WORD_RE.finditer(blob_bytes):\n" +
+"        try: tokens.add(m.group(0).decode('ascii').lower())\n" +
+"        except: pass\n" +
+"    for m in UNICODE_WORD_RE.finditer(blob_bytes):\n" +
+"        try: tokens.add(m.group(0).decode('utf-8','replace').lower())\n" +
+"        except: pass\n" +
+"    return tokens\n" +
+"\n" +
+"def maybe_gunzip(b):\n" +
+"    if not b: return b''\n" +
+"    if b[:2]==b'\\x1f\\x8b':\n" +
+"        try: return gzip.decompress(b)\n" +
+"        except Exception: return b\n" +
+"    return b\n" +
+"\n" +
+"def collect_corpus(conn):\n" +
+"    cur=conn.cursor()\n" +
+"    rows=[]\n" +
+"    queries=[\n" +
+"        'SELECT ZDATA, ZNOTE FROM ZICNOTEDATA',\n" +
+"        'SELECT ZDATA, Z_PK FROM ZNOTEDATA',\n" +
+"    ]\n" +
+"    for q in queries:\n" +
+"        try:\n" +
+"            cur.execute(q); rows=cur.fetchall(); break\n" +
+"        except Exception: continue\n" +
+"    # mod ts per note for recency weight\n" +
+"    mts={}\n" +
+"    for q in ('SELECT Z_PK, ZMODIFICATIONDATE1 FROM ZICCLOUDSYNCINGOBJECT',\n" +
+"             'SELECT Z_PK, ZMODIFICATIONDATE FROM ZICCLOUDSYNCINGOBJECT'):\n" +
+"        try:\n" +
+"            cur.execute(q)\n" +
+"            for pk,t in cur.fetchall(): mts[pk]=to_int_safe(t)\n" +
+"            break\n" +
+"        except Exception: continue\n" +
+"    return rows,mts\n" +
+"\n" +
+"def build_token_scores(rows,mts):\n" +
+"    # score = freq*100 + recency_log\n" +
+"    freq={}\n" +
+"    most_recent={}\n" +
+"    now=int(time.time())\n" +
+"    for data,note_pk in rows:\n" +
+"        if data is None: continue\n" +
+"        b=maybe_gunzip(bytes(data))\n" +
+"        toks=extract_tokens(b)\n" +
+"        rec=mts.get(note_pk,0)\n" +
+"        for t in toks:\n" +
+"            freq[t]=freq.get(t,0)+1\n" +
+"            if rec>most_recent.get(t,0): most_recent[t]=rec\n" +
+"    # mac absolute time → score weight (smaller = older). recency_log = log2(1+rec/86400) clamp.\n" +
+"    out=[]\n" +
+"    for t,c in freq.items():\n" +
+"        rec=most_recent.get(t,0)\n" +
+"        rec_w=int(math.log2(1+max(rec,1)/86400.0)*10) if rec>0 else 0\n" +
+"        score=c*100+rec_w\n" +
+"        out.append((t,min(score,0xffffffff)))\n" +
+"    return out\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter()\n" +
+"    copy=safe_copy(src)\n" +
+"    conn=sqlite3.connect(copy)\n" +
+"    rows,mts=collect_corpus(conn)\n" +
+"    conn.close(); os.unlink(copy)\n" +
+"    pairs=build_token_scores(rows,mts)\n" +
+"    pairs.sort(key=lambda r:r[0])\n" +
+"    n=len(pairs)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    scs =array.array('I',[0]*n)\n" +
+"    for i,(t,sc) in enumerate(pairs):\n" +
+"        tb=t.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(tb); scs[i]=int(sc)&0xffffffff\n" +
+"        pool.extend(tb)\n" +
+"    header=struct.pack('<4sIII',b'MAPB',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(scs.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter()\n" +
+"    return {'encode_s':t1-t0,'n':n,'rows':len(rows),'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        assert magic==b'MAPB' and ver==1\n" +
+"        self.n=n; self.pool_sz=pool_sz\n" +
+"        base=16\n" +
+"        self.offs_off=base\n" +
+"        self.lens_off=base+4*n\n" +
+"        self.scs_off =base+8*n\n" +
+"        self.pool_off=base+12*n\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(self.mv[self.offs_off:self.offs_off+4*n]))\n" +
+"        lens=array.array('I'); lens.frombytes(bytes(self.mv[self.lens_off:self.lens_off+4*n]))\n" +
+"        scs =array.array('I'); scs.frombytes(bytes(self.mv[self.scs_off :self.scs_off +4*n]))\n" +
+"        pool=bytes(self.mv[self.pool_off:self.pool_off+pool_sz])\n" +
+"        self.tokens=[pool[offs[i]:offs[i]+lens[i]] for i in range(n)]\n" +
+"        self.scs=scs\n" +
+"    def token(self,i): return self.tokens[i]\n" +
+"    def prefix_topk(self,prefix,k=10):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        ts=self.tokens\n" +
+"        start=bisect.bisect_left(ts,pb)\n" +
+"        end=bisect.bisect_left(ts,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        if end==start: return []\n" +
+"        if end-start<=k: idxs=list(range(start,end))\n" +
+"        else: idxs=heapq.nlargest(k,range(start,end),key=lambda i:self.scs[i])\n" +
+"        idxs.sort(key=lambda i:-self.scs[i])\n" +
+"        return [(self.tokens[i].decode('utf-8','replace'),int(self.scs[i])) for i in idxs]\n" +
+"    def linear_topk(self,prefix,k=10):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        cand=[i for i,t in enumerate(self.tokens) if t.startswith(pb)]\n" +
+"        if len(cand)<=k: idxs=cand\n" +
+"        else: idxs=heapq.nlargest(k,cand,key=lambda i:self.scs[i])\n" +
+"        idxs.sort(key=lambda i:-self.scs[i])\n" +
+"        return [(self.tokens[i].decode('utf-8','replace'),int(self.scs[i])) for i in idxs]\n" +
+"    def close(self):\n" +
+"        try: self.mv.release()\n" +
+"        except Exception: pass\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  notes_data={info[\"rows\"]}  unique_tokens={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no tokens — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    import random\n" +
+"    rng=random.Random(42)\n" +
+"    samples=[]\n" +
+"    for _ in range(100):\n" +
+"        i=rng.randrange(b.n)\n" +
+"        t=b.token(i).decode('utf-8','replace')\n" +
+"        plen=rng.choice([1,2,3,4])\n" +
+"        samples.append(t[:plen] if len(t)>=plen else t)\n" +
+"    rss_blob=rss()\n" +
+"    for p in samples[:5]: b.prefix_topk(p,10); b.linear_topk(p,10)\n" +
+"    t0=time.perf_counter(); h_bi=0\n" +
+"    for p in samples:\n" +
+"        r=b.prefix_topk(p,10); h_bi+=len(r)\n" +
+"    t1=time.perf_counter(); bi_us=(t1-t0)*1e6/len(samples)\n" +
+"    t0=time.perf_counter(); h_lin=0\n" +
+"    for p in samples:\n" +
+"        r=b.linear_topk(p,10); h_lin+=len(r)\n" +
+"    t1=time.perf_counter(); lin_us=(t1-t0)*1e6/len(samples)\n" +
+"    b.close()\n" +
+"    print(f'[query] 100 prefix-topK-10  hits linear={h_lin} bisect={h_bi}')\n" +
+"    print(f'  linear scan       : {lin_us:10.1f} us')\n" +
+"    print(f'  blob mmap + bisect: {bi_us :10.1f} us')\n" +
+"    if bi_us>0: print(f'  speedup: {lin_us/bi_us:6.1f}x')\n" +
+"    print(f'[lossless] hits equal: {h_lin==h_bi}')\n" +
+"    print(f'[rss] after blob loaded: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} tokens (from {info[\"rows\"]} note bodies) in {info[\"encode_s\"]*1000:.1f} ms → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench <NoteStore.sqlite>'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("memo_notes_search_apbf")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".sqlite") || v.contains(".db") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        let p1 = env("HOME") + "/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite"
+        let p2 = env("HOME") + "/Library/Containers/com.apple.Notes/Data/Library/Notes/NoteStore.sqlite"
+        if file_exists(p1) {
+            target = p1
+        } else if file_exists(p2) {
+            target = p2
+        } else {
+            target = p1
+        }
+        println("(default target: " + target + ")")
+    }
+    if file_exists(target) == false {
+        println("ERROR: not found: " + target)
+        println("hint: TCC > Files & Folders > 'Apple Notes' 또는 FDA 부여 필요")
+        return
+    }
+    let tmp_py = "/tmp/memo_notes_search_apbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

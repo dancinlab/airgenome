@@ -1,0 +1,618 @@
+// filters/module/transport/claude_permission_aho_corasick.hexa — C3 (Type C)
+//
+// Wave 2 / own-9 / Type C — Claude Code permission rule matcher.
+//
+// 4-layer transport filter (ssh.hexa / F7 변종):
+//   L1 input    → ~/.claude*/settings.json permissions.{allow,deny,ask} 패턴 list
+//   L2 encode   → AC byte trie (multi-pattern simultaneous, F7 직접 이식)
+//   L3 query    → bash command 문자열 → trie traversal → match rule 결정
+//   L4 report   → encode | bench | resolve mode 별 stdout (실 enforce 0)
+//
+// 본 모듈 = 추천 시그널만 emit. 실 permission rule 적용 0 (settings.json 변경 0).
+//
+// modes:
+//   --mode=encode    settings.json 패턴 빌드 + footprint 보고 (default)
+//   --mode=bench     synthetic 1000 bash command 으로 regex iter vs AC trie
+//   --mode=resolve   stdin 명령 1줄/1쿼리 → "ALLOW"/"DENY"/"ASK"/"PASS"
+//   --mode=run-once  encode + bench 연속
+//
+// args:
+//   --settings=<path>  (default: ~/.claude/settings.json — 없으면 synth 30 rule)
+//   --queries=<int>    (bench mode 만, default 1000)
+//
+// 절대 금지:
+//   - try/catch 0 / top-level main() 0 / 외부 의존 0
+//   - launchctl 0 / settings.json write 0 (read-only)
+//   - 실 permission enforce 0 — 본 모듈 = bench + 추천 시그널 emit only
+//
+// honest C3 (vs OLD baseline):
+//   AC trie  : O(query_len) multi-pattern simultaneous (F7 변종)
+//   regex    : O(N * query_len) — settings.json 패턴 N개 fnmatch glob
+//   본 모듈 = AC trie. failure-link 지원. F7 reversed insert 와 달리 forward insert.
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════════════════════
+
+let HOME = env("HOME")
+let TMPDIR_RAW = exec("echo ${TMPDIR:-/tmp}").trim()
+let DEFAULT_SETTINGS = HOME + "/.claude/settings.json"
+let SYNTH_QUERIES = TMPDIR_RAW + "/airgenome_c3_perm_queries.txt"
+let DEFAULT_N_QUERY = 1000
+
+// ═══════════════════════════════════════════════════════════════════════
+//  A6 to_int_safe (현 hexa runtime 호환)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn is_numeric_str(s: str) -> bool {
+    let n = len(s)
+    if n == 0 { return false }
+    let mut i = 0
+    if s.substring(0, 1) == "-" { i = 1 }
+    if i >= n { return false }
+    while i < n {
+        let c = s.substring(i, i + 1)
+        if c < "0" { return false }
+        if c > "9" { return false }
+        i = i + 1
+    }
+    return true
+}
+fn to_int_safe(s: str) -> int {
+    let trimmed = s.trim()
+    if trimmed == "" { return 0 }
+    let parts = trimmed.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    if !is_numeric_str(head) { return 0 }
+    return to_int(head)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  AC TRIE (forward insert — bash command prefix match)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Claude permission rule 형태: "Bash(git push:*)", "Read", "WebFetch" 등.
+// glob "*" / ":*" 는 wildcard suffix → forward insert + terminal-on-prefix
+// 으로 prefix match 하면 "Bash(git push" 까지만 매칭해도 hit.
+// (raw rule "Bash(git push:*)" → 인입 시 "*" trailing strip 후 prefix 로 등록)
+
+let mut ac_children_k = [[]]
+let mut ac_children_v = [[]]
+let mut ac_terminal = [0]
+let mut ac_rule_kind = [0]    // 0=none, 1=allow, 2=deny, 3=ask
+let mut ac_fail = [0]
+let mut ac_node_count = 1
+let mut ac_pattern_count = 0
+let mut ac_total_bytes = 0
+
+fn ac_reset() -> void {
+    ac_children_k = [[]]
+    ac_children_v = [[]]
+    ac_terminal = [0]
+    ac_rule_kind = [0]
+    ac_fail = [0]
+    ac_node_count = 1
+    ac_pattern_count = 0
+    ac_total_bytes = 0
+}
+
+fn ac_new_node() -> int {
+    ac_children_k = ac_children_k + [[]]
+    ac_children_v = ac_children_v + [[]]
+    ac_terminal = ac_terminal + [0]
+    ac_rule_kind = ac_rule_kind + [0]
+    ac_fail = ac_fail + [0]
+    let id = ac_node_count
+    ac_node_count = ac_node_count + 1
+    return id
+}
+
+fn ac_child(node: int, b: int) -> int {
+    let ks = ac_children_k[node]
+    let vs = ac_children_v[node]
+    let mut i = 0
+    let n = len(ks)
+    while i < n {
+        if ks[i] == b { return vs[i] }
+        i = i + 1
+    }
+    return -1
+}
+
+fn ac_set_child(node: int, b: int, child_id: int) -> void {
+    let ks = ac_children_k[node]
+    let vs = ac_children_v[node]
+    ac_children_k[node] = ks + [b]
+    ac_children_v[node] = vs + [child_id]
+}
+
+// 1-char str → byte int. ASCII 광대역 (claude rule 은 alphanum + 특수문자 다양).
+fn to_int_byte(c: str) -> int {
+    if len(c) == 0 { return 0 }
+    if c == "a" { return 97 }  if c == "b" { return 98 }  if c == "c" { return 99 }
+    if c == "d" { return 100 } if c == "e" { return 101 } if c == "f" { return 102 }
+    if c == "g" { return 103 } if c == "h" { return 104 } if c == "i" { return 105 }
+    if c == "j" { return 106 } if c == "k" { return 107 } if c == "l" { return 108 }
+    if c == "m" { return 109 } if c == "n" { return 110 } if c == "o" { return 111 }
+    if c == "p" { return 112 } if c == "q" { return 113 } if c == "r" { return 114 }
+    if c == "s" { return 115 } if c == "t" { return 116 } if c == "u" { return 117 }
+    if c == "v" { return 118 } if c == "w" { return 119 } if c == "x" { return 120 }
+    if c == "y" { return 121 } if c == "z" { return 122 }
+    if c == "A" { return 65 }  if c == "B" { return 66 }  if c == "C" { return 67 }
+    if c == "D" { return 68 }  if c == "E" { return 69 }  if c == "F" { return 70 }
+    if c == "G" { return 71 }  if c == "H" { return 72 }  if c == "I" { return 73 }
+    if c == "J" { return 74 }  if c == "K" { return 75 }  if c == "L" { return 76 }
+    if c == "M" { return 77 }  if c == "N" { return 78 }  if c == "O" { return 79 }
+    if c == "P" { return 80 }  if c == "Q" { return 81 }  if c == "R" { return 82 }
+    if c == "S" { return 83 }  if c == "T" { return 84 }  if c == "U" { return 85 }
+    if c == "V" { return 86 }  if c == "W" { return 87 }  if c == "X" { return 88 }
+    if c == "Y" { return 89 }  if c == "Z" { return 90 }
+    if c == "0" { return 48 }  if c == "1" { return 49 }  if c == "2" { return 50 }
+    if c == "3" { return 51 }  if c == "4" { return 52 }  if c == "5" { return 53 }
+    if c == "6" { return 54 }  if c == "7" { return 55 }  if c == "8" { return 56 }
+    if c == "9" { return 57 }
+    if c == "(" { return 40 }  if c == ")" { return 41 }  if c == ":" { return 58 }
+    if c == "*" { return 42 }  if c == "_" { return 95 }  if c == "-" { return 45 }
+    if c == " " { return 32 }  if c == "/" { return 47 }  if c == "." { return 46 }
+    if c == "+" { return 43 }  if c == "=" { return 61 }  if c == "@" { return 64 }
+    if c == "%" { return 37 }  if c == "," { return 44 }  if c == ";" { return 59 }
+    if c == "<" { return 60 }  if c == ">" { return 62 }  if c == "?" { return 63 }
+    if c == "!" { return 33 }  if c == "$" { return 36 }
+    return 1   // catch-all: unknown char treated as common bucket (hash collision OK)
+}
+
+// trailing "*" 또는 ":*" 스트립.  본 prefix 가 trie key.
+fn rule_strip_glob(p: str) -> str {
+    let mut s = p
+    let n = len(s)
+    if n >= 2 {
+        let last2 = s.substring(n - 2, n)
+        if last2 == ":*" {
+            s = s.substring(0, n - 2)
+            return s
+        }
+    }
+    if n >= 1 {
+        let last1 = s.substring(n - 1, n)
+        if last1 == "*" {
+            s = s.substring(0, n - 1)
+            return s
+        }
+    }
+    return s
+}
+
+// rule_kind: 1=allow, 2=deny, 3=ask
+fn ac_insert(pattern: str, kind: int) -> void {
+    let p = rule_strip_glob(pattern)
+    let n = len(p)
+    if n == 0 { return }
+    let mut node = 0
+    let mut i = 0
+    while i < n {
+        let ch = p.substring(i, i + 1)
+        let b = to_int_byte(ch)
+        let nxt = ac_child(node, b)
+        if nxt < 0 {
+            let new_id = ac_new_node()
+            ac_set_child(node, b, new_id)
+            node = new_id
+        } else {
+            node = nxt
+        }
+        i = i + 1
+    }
+    ac_terminal[node] = 1
+    // deny 우선 (실 claude code 와 동일)
+    if kind == 2 {
+        ac_rule_kind[node] = 2
+    } else if ac_rule_kind[node] == 0 {
+        ac_rule_kind[node] = kind
+    }
+    ac_pattern_count = ac_pattern_count + 1
+    ac_total_bytes = ac_total_bytes + n
+}
+
+// AC failure-link 빌드 (BFS) — F7 직접 이식.
+fn ac_build_failures() -> void {
+    let root = 0
+    let mut queue = []
+    let rks = ac_children_k[root]
+    let rvs = ac_children_v[root]
+    let mut i = 0
+    let nr = len(rks)
+    while i < nr {
+        let cid = rvs[i]
+        ac_fail[cid] = root
+        queue = queue + [cid]
+        i = i + 1
+    }
+    let mut q_head = 0
+    while q_head < len(queue) {
+        let node = queue[q_head]
+        q_head = q_head + 1
+        let ks = ac_children_k[node]
+        let vs = ac_children_v[node]
+        let mut j = 0
+        let nk = len(ks)
+        while j < nk {
+            let b = ks[j]
+            let cid = vs[j]
+            let mut f = ac_fail[node]
+            let mut done = 0
+            while done == 0 {
+                let fc = ac_child(f, b)
+                if fc >= 0 && fc != cid {
+                    ac_fail[cid] = fc
+                    done = 1
+                } else if f == root {
+                    ac_fail[cid] = root
+                    done = 1
+                } else {
+                    f = ac_fail[f]
+                }
+            }
+            // terminal propagation: deny override
+            let fk = ac_rule_kind[ac_fail[cid]]
+            if ac_terminal[ac_fail[cid]] == 1 {
+                ac_terminal[cid] = 1
+                if fk == 2 { ac_rule_kind[cid] = 2 }
+                else if ac_rule_kind[cid] == 0 { ac_rule_kind[cid] = fk }
+            }
+            queue = queue + [cid]
+            j = j + 1
+        }
+    }
+}
+
+// query: forward traversal. terminal 만나면 즉시 결과 (deny 가 우선).
+// 반환: 0=PASS, 1=ALLOW, 2=DENY, 3=ASK
+fn ac_query(cmd: str) -> int {
+    let n = len(cmd)
+    if n == 0 { return 0 }
+    let mut node = 0
+    let mut best = 0
+    let mut i = 0
+    while i < n {
+        let ch = cmd.substring(i, i + 1)
+        let b = to_int_byte(ch)
+        let mut nxt = ac_child(node, b)
+        while nxt < 0 && node != 0 {
+            node = ac_fail[node]
+            nxt = ac_child(node, b)
+        }
+        if nxt >= 0 { node = nxt }
+        if ac_terminal[node] == 1 {
+            let k = ac_rule_kind[node]
+            if k == 2 { return 2 }    // deny 즉시 단락
+            if best == 0 || (k != 0 && k < best) { best = k }
+        }
+        i = i + 1
+    }
+    return best
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SETTINGS.JSON 입력 (read-only, anchor extract)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// hexa-lang 에서 jq 없이 JSON 파싱 — own 7 site-9 패턴 (anchor extract).
+// 본 file 은 형식 단순: permissions.allow / deny / ask 가 string array.
+// "allow": [ ... ]  → "allow":[ 앵커 → 다음 ] 까지 substring → "," split → trim quotes.
+
+fn extract_array_after_key(raw: str, key: str) -> list {
+    let anchor = "\"" + key + "\""
+    let parts = raw.split(anchor)
+    if len(parts) < 2 { return [] }
+    let after = parts[1]
+    // skip ws + ":" + ws + "[" 까지
+    let n = len(after)
+    let mut i = 0
+    let mut started = 0
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "[" { started = 1; i = i + 1; break }
+        if ch == "{" { return [] }   // dict object 모드 (hooks 등) — array 아님
+        i = i + 1
+    }
+    if started == 0 { return [] }
+    let mut depth = 1
+    let mut start = i
+    let mut end = i
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "[" { depth = depth + 1 }
+        else if ch == "]" {
+            depth = depth - 1
+            if depth == 0 { end = i; break }
+        }
+        i = i + 1
+    }
+    let body = after.substring(start, end)
+    // body 안의 "string","string2"... 추출 — quote 페어 단위로 (escaped quote 무시)
+    let mut out = []
+    let m = len(body)
+    let mut j = 0
+    while j < m {
+        let c = body.substring(j, j + 1)
+        if c == "\"" {
+            let mut k = j + 1
+            while k < m {
+                let cc = body.substring(k, k + 1)
+                if cc == "\\" { k = k + 2; continue }
+                if cc == "\"" { break }
+                k = k + 1
+            }
+            if k <= m {
+                let s = body.substring(j + 1, k)
+                if len(s) > 0 { out = out + [s] }
+                j = k + 1
+                continue
+            }
+        }
+        j = j + 1
+    }
+    return out
+}
+
+// permissions 객체 안에서만 추출 (root level 의 다른 allow/deny 가 있는 경우 회피).
+fn slice_permissions_block(raw: str) -> str {
+    let anchor = "\"permissions\""
+    let parts = raw.split(anchor)
+    if len(parts) < 2 { return raw }
+    let after = parts[1]
+    let n = len(after)
+    let mut i = 0
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "{" { break }
+        i = i + 1
+    }
+    if i >= n { return raw }
+    let mut depth = 1
+    let start = i
+    i = i + 1
+    while i < n {
+        let ch = after.substring(i, i + 1)
+        if ch == "{" { depth = depth + 1 }
+        else if ch == "}" {
+            depth = depth - 1
+            if depth == 0 { return after.substring(start, i + 1) }
+        }
+        i = i + 1
+    }
+    return after
+}
+
+struct PermPatterns {
+    allow: list,
+    deny: list,
+    ask: list
+}
+
+fn load_settings(path: str) -> PermPatterns {
+    if file_exists(path) == false {
+        return PermPatterns { allow: [], deny: [], ask: [] }
+    }
+    let raw = read_file(path)
+    let perm = slice_permissions_block(raw)
+    return PermPatterns {
+        allow: extract_array_after_key(perm, "allow"),
+        deny:  extract_array_after_key(perm, "deny"),
+        ask:   extract_array_after_key(perm, "ask")
+    }
+}
+
+// settings.json 부재 / 권한 비어 있을 때 합성 30 rule 폴백
+fn synth_patterns() -> PermPatterns {
+    let allow = ["Bash", "Read", "Edit", "Write", "WebFetch", "WebSearch",
+                 "Bash(ls:*)", "Bash(cat:*)", "Bash(grep:*)", "Bash(rg:*)",
+                 "Bash(find:*)", "Bash(echo:*)", "Bash(pwd:*)", "Bash(date:*)",
+                 "Bash(git status*)", "Bash(git log*)", "Bash(git diff*)",
+                 "NotebookEdit", "mcp__plugin_playwright_playwright__browser_navigate",
+                 "mcp__plugin_playwright_playwright__browser_snapshot"]
+    let deny = ["Bash(git push -f*)", "Bash(git push --force*)",
+                "Bash(rm -rf:*)", "Bash(sudo:*)", "Bash(curl http*)"]
+    let ask = ["Bash(git commit*)", "Bash(git push*)", "Bash(npm install*)",
+               "Bash(brew install*)", "Bash(pip install*)"]
+    return PermPatterns { allow: allow, deny: deny, ask: ask }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BENCH: synthetic bash command queries
+// ═══════════════════════════════════════════════════════════════════════
+
+fn build_synth_queries(path: str, n_total: int) -> void {
+    let _rm = exec("rm -f '" + path + "'")
+    let cmd = "awk 'BEGIN { n=" + to_string(n_total) + "; cmds[0]=\"Bash(ls -la /tmp)\"; cmds[1]=\"Bash(cat README.md)\"; cmds[2]=\"Bash(grep foo *.c)\"; cmds[3]=\"Bash(rg pattern src/)\"; cmds[4]=\"Bash(find . -name file)\"; cmds[5]=\"Bash(git status)\"; cmds[6]=\"Bash(git push --force origin main)\"; cmds[7]=\"Bash(rm -rf /tmp/x)\"; cmds[8]=\"Bash(sudo apt update)\"; cmds[9]=\"Bash(curl http://x.com)\"; cmds[10]=\"Bash(git commit -m foo)\"; cmds[11]=\"Bash(npm install lodash)\"; cmds[12]=\"Bash(brew install jq)\"; cmds[13]=\"Bash(echo hello)\"; cmds[14]=\"Bash(pwd)\"; cmds[15]=\"Bash(date +%s)\"; cmds[16]=\"Read(/etc/hosts)\"; cmds[17]=\"Edit(file.txt)\"; cmds[18]=\"WebFetch(https://example.com)\"; cmds[19]=\"WebSearch(claude code)\"; for (i=0;i<n;i++) print cmds[i % 20] }' > '" + path + "'"
+    let _ = exec(cmd)
+}
+
+fn read_lines(path: str) -> list {
+    let raw = read_file(path)
+    let xs = raw.split("\n")
+    let mut out = []
+    let mut i = 0
+    while i < len(xs) {
+        let s = xs[i].trim()
+        if len(s) > 0 { out = out + [s] }
+        i = i + 1
+    }
+    return out
+}
+
+// OLD baseline: regex iter — patterns 전체 순회, prefix match (glob "*" 무시 단순 startsWith).
+fn old_regex_iter(query: str, allow: list, deny: list, ask: list) -> int {
+    // deny 우선
+    let mut i = 0
+    while i < len(deny) {
+        let p = rule_strip_glob(deny[i])
+        if len(p) > 0 && query.starts_with(p) { return 2 }
+        i = i + 1
+    }
+    let mut j = 0
+    while j < len(allow) {
+        let p = rule_strip_glob(allow[j])
+        if len(p) > 0 && query.starts_with(p) { return 1 }
+        j = j + 1
+    }
+    let mut k = 0
+    while k < len(ask) {
+        let p = rule_strip_glob(ask[k])
+        if len(p) > 0 && query.starts_with(p) { return 3 }
+        k = k + 1
+    }
+    return 0
+}
+
+fn now_ns() -> str { return exec("gdate +%s%N").trim() }
+fn ns_diff(t0: str, t1: str) -> int { return to_int_safe(t1) - to_int_safe(t0) }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MODE DISPATCH
+// ═══════════════════════════════════════════════════════════════════════
+
+fn parse_arg(argv: list, key: str, fallback: str) -> str {
+    let mut i = 0
+    while i < len(argv) {
+        let a = argv[i]
+        if a.contains("=") && a.contains(key) {
+            let parts = a.split("=")
+            if len(parts) >= 2 { return parts[1] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+fn ensure_patterns(arg_path: str) -> PermPatterns {
+    if len(arg_path) > 0 && file_exists(arg_path) {
+        let p = load_settings(arg_path)
+        if len(p.allow) + len(p.deny) + len(p.ask) > 0 { return p }
+    }
+    if file_exists(DEFAULT_SETTINGS) {
+        let p2 = load_settings(DEFAULT_SETTINGS)
+        if len(p2.allow) + len(p2.deny) + len(p2.ask) > 0 { return p2 }
+    }
+    return synth_patterns()
+}
+
+fn build_trie(p: PermPatterns) -> void {
+    ac_reset()
+    let mut i = 0
+    while i < len(p.deny) { ac_insert(p.deny[i], 2); i = i + 1 }
+    let mut j = 0
+    while j < len(p.allow) { ac_insert(p.allow[j], 1); j = j + 1 }
+    let mut k = 0
+    while k < len(p.ask) { ac_insert(p.ask[k], 3); k = k + 1 }
+    ac_build_failures()
+}
+
+fn cmd_encode(settings_path: str) -> void {
+    let p = ensure_patterns(settings_path)
+    println("claude_permission_aho_corasick — mode=encode")
+    println("  allow=" + to_string(len(p.allow)) + " deny=" + to_string(len(p.deny)) + " ask=" + to_string(len(p.ask)))
+
+    let t0 = now_ns()
+    build_trie(p)
+    let t1 = now_ns()
+
+    println("  AC trie built in " + to_string(ns_diff(t0, t1)) + " ns")
+    println("  patterns:    " + to_string(ac_pattern_count))
+    println("  nodes:       " + to_string(ac_node_count))
+    println("  pattern_bytes: " + to_string(ac_total_bytes))
+    let footprint_kb = (ac_node_count * 32 + ac_total_bytes) / 1024
+    println("  est_footprint_kb: " + to_string(footprint_kb))
+}
+
+fn cmd_bench(settings_path: str, n_queries: int) -> void {
+    let p = ensure_patterns(settings_path)
+    println("claude_permission_aho_corasick — mode=bench")
+    println("  allow=" + to_string(len(p.allow)) + " deny=" + to_string(len(p.deny)) + " ask=" + to_string(len(p.ask)) + "  queries=" + to_string(n_queries))
+
+    build_trie(p)
+    build_synth_queries(SYNTH_QUERIES, n_queries)
+    let queries = read_lines(SYNTH_QUERIES)
+    println("  loaded queries: " + to_string(len(queries)))
+
+    // OLD: regex iter
+    let t0 = now_ns()
+    let mut hits_old = 0
+    let mut deny_old = 0
+    let mut i = 0
+    while i < len(queries) {
+        let r = old_regex_iter(queries[i], p.allow, p.deny, p.ask)
+        if r > 0 { hits_old = hits_old + 1 }
+        if r == 2 { deny_old = deny_old + 1 }
+        i = i + 1
+    }
+    let t1 = now_ns()
+    let ns_old = ns_diff(t0, t1)
+    println("  OLD-regex_iter total_ns=" + to_string(ns_old) + "  per_query_ns=" + to_string(ns_old / len(queries)) + "  hits=" + to_string(hits_old) + "  deny=" + to_string(deny_old))
+
+    // NEW: AC trie
+    let t2 = now_ns()
+    let mut hits_new = 0
+    let mut deny_new = 0
+    let mut k = 0
+    while k < len(queries) {
+        let r = ac_query(queries[k])
+        if r > 0 { hits_new = hits_new + 1 }
+        if r == 2 { deny_new = deny_new + 1 }
+        k = k + 1
+    }
+    let t3 = now_ns()
+    let ns_new = ns_diff(t2, t3)
+    println("  NEW-AC_trie    total_ns=" + to_string(ns_new) + "  per_query_ns=" + to_string(ns_new / len(queries)) + "  hits=" + to_string(hits_new) + "  deny=" + to_string(deny_new))
+
+    if ns_new > 0 && ns_old > 0 {
+        let ratio = ns_old / ns_new
+        let saved = ((ns_old - ns_new) * 100) / ns_old
+        println("  speedup=" + to_string(ratio) + "x  saved=" + to_string(saved) + "%")
+    }
+    if hits_old != hits_new || deny_old != deny_new {
+        println("  VERIFY WARN: AC trie 결정이 OLD 와 다름 (deny override propagation 차이 가능)")
+    } else {
+        println("  VERIFY OK: AC trie == regex_iter")
+    }
+}
+
+fn cmd_resolve(settings_path: str) -> void {
+    let p = ensure_patterns(settings_path)
+    build_trie(p)
+    let example = "Bash(git push --force origin main)"
+    let r = ac_query(example)
+    let label = if r == 1 { "ALLOW" } else if r == 2 { "DENY" } else if r == 3 { "ASK" } else { "PASS" }
+    println(label + " " + example)
+    let example2 = "Read(/etc/hosts)"
+    let r2 = ac_query(example2)
+    let label2 = if r2 == 1 { "ALLOW" } else if r2 == 2 { "DENY" } else if r2 == 3 { "ASK" } else { "PASS" }
+    println(label2 + " " + example2)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ENTRY (top-level main() 0 — run() 1회 호출)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn run() -> void {
+    let argv = args()
+    let mode = parse_arg(argv, "--mode", "encode")
+    let settings = parse_arg(argv, "--settings", "")
+    let qstr = parse_arg(argv, "--queries", to_string(DEFAULT_N_QUERY))
+    let nq = to_int_safe(qstr)
+
+    if mode == "encode" { cmd_encode(settings); return }
+    if mode == "bench" { cmd_bench(settings, nq); return }
+    if mode == "resolve" { cmd_resolve(settings); return }
+    if mode == "run-once" {
+        cmd_encode(settings)
+        cmd_bench(settings, nq)
+        return
+    }
+    println("claude_permission_aho_corasick: unknown mode '" + mode + "'")
+    println("  usage: --mode=encode|bench|resolve|run-once [--settings=path] [--queries=N]")
+}
+
+run()

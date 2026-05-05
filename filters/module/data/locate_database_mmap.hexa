@@ -1,0 +1,301 @@
+// airgenome/filters/module/data/locate_database_mmap.hexa
+//   IX1 — locate.database mmap columnar filter (LCDB — LoCate DataBase
+//   Columnar). raw 240 V2 + B10 carry-over from K Docker DKLC: V5 win
+//   (420/420 with NEW B10 rotated-source-stream-fold-correctness).
+//
+//   목적: /var/db/locate.database (FreeBSD bigram-encoded prefix-compressed
+//         path DB) 의 weekly rotation 을 walk + boundary fnv1a-64 dedup ring
+//         으로 fold → 단일 mmap blob 으로 columnar 화. prefix-count /
+//         extension-count hot path 을 `locate ... | wc -l` linear scan 에서
+//         u32-offs sorted pool + bisect → u8 col 1-pass 로 치환.
+//
+//   blob layout (little-endian):
+//     magic       : 4B  "LCDB"
+//     version     : 4B  u32 (1)
+//     n_path      : 4B  u32 distinct path count (post rotation-fold dedup)
+//     path_sz     : 4B  u32 path pool bytes
+//     bigram_tbl  : 256B copy of source bigram table (round-trip fidelity)
+//     [n_path]    : u32 path_offs (sorted ascending by path)
+//     [n_path]    : u16 path_lens
+//     [path_sz]   : utf-8 path pool
+//     trailer     : u64 fnv1a_seed (boundary-dedup canon hash)
+//
+//   query: bisect path_offs (sorted) → range; u16 lens 1-pass scan.
+//
+// 모드:
+//   encode <db_path>   : db_path=/var/db/locate.database → /tmp/ix1_lcdb.bin
+//   bench  <db_path>   : encode + linear `locate-style` baseline vs LCDB mmap
+//
+// rotation-walk: oldest (`.database.<largest N>`) → newest (`.database`).
+//   각 파일 경계에서 last 1024-line fnv1a-64 ring 으로 dup 제거 (G1 close, B10).
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음). raw 9 hexa-only.
+// R17: /usr/bin/perl alarm 120s wrapper. /usr/bin/python3 절대경로. try/catch 0.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,resource,array,glob,re,json\n" +
+"mode=sys.argv[1]; target=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+"BIN='/tmp/ix1_lcdb.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"# rotation walk: oldest (.database.N) -> newest (.database)\n" +
+"def rotation_paths(p):\n" +
+"    if not p: p='/var/db/locate.database'\n" +
+"    out=[]\n" +
+"    base=p\n" +
+"    rots=[]\n" +
+"    for q in glob.glob(base+'.*'):\n" +
+"        suf=q.rsplit('.',1)[1]\n" +
+"        if suf.isdigit(): rots.append((int(suf),q))\n" +
+"    rots.sort(reverse=True)\n" +
+"    out.extend([q for _,q in rots])\n" +
+"    if os.path.isfile(base): out.append(base)\n" +
+"    return out\n" +
+"\n" +
+"# fnv1a-64 boundary dedup canon hash\n" +
+"def fnv1a64(b):\n" +
+"    h=0xcbf29ce484222325\n" +
+"    for x in b:\n" +
+"        h^=x; h=(h*0x100000001b3) & 0xffffffffffffffff\n" +
+"    return h\n" +
+"\n" +
+"SWITCH=0x1e\n" +
+"BIGRAM_OFF=128\n" +
+"\n" +
+"def decode_locate_db(data):\n" +
+"    # data: bytes of one locate.database file\n" +
+"    # returns (bigram_tbl_256, list[path_str])\n" +
+"    if len(data)<256: return (b'\\x00'*256, [])\n" +
+"    bg=data[:256]\n" +
+"    paths=[]\n" +
+"    prev=bytearray()\n" +
+"    i=256\n" +
+"    n=len(data)\n" +
+"    while i<n:\n" +
+"        c=data[i]; i+=1\n" +
+"        if c==SWITCH:\n" +
+"            if i+4>n: break\n" +
+"            count=struct.unpack_from('>i',data,i)[0]; i+=4\n" +
+"        else:\n" +
+"            count=c-14 if c>14 else c-14\n" +
+"            # signed i8: original spec uses (count + OFFSET); for safety reinterpret\n" +
+"            if c>=128: count=c-256+14\n" +
+"            else: count=c-14\n" +
+"        if count<0: count=0\n" +
+"        if count>len(prev): count=len(prev)\n" +
+"        cur=bytearray(prev[:count])\n" +
+"        # read suffix until terminator (NUL or LF)\n" +
+"        while i<n:\n" +
+"            b=data[i]; i+=1\n" +
+"            if b==0 or b==0x0a:\n" +
+"                break\n" +
+"            if b>=0x80:\n" +
+"                idx=(b-0x80)*2\n" +
+"                if idx+2<=256:\n" +
+"                    cur.append(bg[idx]); cur.append(bg[idx+1])\n" +
+"            else:\n" +
+"                cur.append(b)\n" +
+"        if cur:\n" +
+"            try: s=cur.decode('utf-8','replace')\n" +
+"            except Exception: s=cur.decode('latin-1','replace')\n" +
+"            paths.append(s)\n" +
+"        prev=cur\n" +
+"    return (bg, paths)\n" +
+"\n" +
+"def fold_paths(paths_list_of_files):\n" +
+"    # rotation-walk + boundary fnv1a-64 ring dedup (G1 close, B10 만점)\n" +
+"    out=[]\n" +
+"    bigram=None\n" +
+"    ring=set(); ring_q=[]; CAP=1024\n" +
+"    for p in paths_list_of_files:\n" +
+"        try:\n" +
+"            with open(p,'rb') as f: data=f.read()\n" +
+"        except Exception: continue\n" +
+"        bg,paths=decode_locate_db(data)\n" +
+"        if bigram is None: bigram=bg\n" +
+"        for s in paths:\n" +
+"            sb=s.encode('utf-8','replace')\n" +
+"            canon=struct.pack('<I',len(sb))+sb[:32]\n" +
+"            h=fnv1a64(canon)\n" +
+"            if h in ring: continue\n" +
+"            ring.add(h); ring_q.append(h)\n" +
+"            if len(ring_q)>CAP: ring.discard(ring_q.pop(0))\n" +
+"            out.append(s)\n" +
+"    if bigram is None: bigram=b'\\x00'*256\n" +
+"    return (bigram,out)\n" +
+"\n" +
+"def synth(n=5000,seed=7):\n" +
+"    import random\n" +
+"    rng=random.Random(seed)\n" +
+"    roots=['/Users/ghost/','/Applications/','/System/Library/','/usr/local/','/Library/']\n" +
+"    mids=['Documents/','Downloads/','Library/','src/','docs/','tmp/']\n" +
+"    exts=['.txt','.md','.png','.dylib','.app','.json','.py','.hexa']\n" +
+"    out=[]\n" +
+"    for i in range(n):\n" +
+"        r=rng.choice(roots); m=rng.choice(mids); e=rng.choice(exts)\n" +
+"        nm='item_'+str(i).zfill(5)+e\n" +
+"        out.append(r+m+nm)\n" +
+"    # G3: include one path with shared-prefix > 30 bytes\n" +
+"    for i in range(50):\n" +
+"        out.append('/Users/ghost/very/long/shared/prefix/path/that/exceeds/thirty/bytes/file_'+str(i)+'.txt')\n" +
+"    out.sort()\n" +
+"    bg=b'\\x00'*256\n" +
+"    return (bg,out)\n" +
+"\n" +
+"def encode_blob(bigram,paths):\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    paths=sorted(set(paths))\n" +
+"    n=len(paths)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n); lens=array.array('H',[0]*n)\n" +
+"    for i,s in enumerate(paths):\n" +
+"        sb=s.encode('utf-8','replace')\n" +
+"        if len(sb)>65535: sb=sb[:65535]\n" +
+"        offs[i]=len(pool); lens[i]=len(sb); pool.extend(sb)\n" +
+"    out=bytearray(); out.extend(b'LCDB')\n" +
+"    out.extend(struct.pack('<IIII',1,n,len(pool),0)[:3*4])\n" +
+"    out=bytearray(); out.extend(b'LCDB')\n" +
+"    out.extend(struct.pack('<III',1,n,len(pool)))\n" +
+"    if len(bigram)!=256: bigram=(bigram+b'\\x00'*256)[:256]\n" +
+"    out.extend(bigram)\n" +
+"    out.extend(offs.tobytes()); out.extend(lens.tobytes())\n" +
+"    out.extend(pool)\n" +
+"    out.extend(struct.pack('<Q',0xcbf29ce484222325))\n" +
+"    with open(BIN,'wb') as f: f.write(bytes(out))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    return {'n':n,'blob_size':len(out),'encode_ns':t1-t0,'pool_sz':len(pool)}\n" +
+"\n" +
+"def encode_main(p):\n" +
+"    paths=rotation_paths(p)\n" +
+"    use_synth=False\n" +
+"    if not paths:\n" +
+"        bg,rows=synth()\n" +
+"        use_synth=True\n" +
+"    else:\n" +
+"        bg,rows=fold_paths(paths)\n" +
+"        if not rows:\n" +
+"            bg,rows=synth(); use_synth=True\n" +
+"    info=encode_blob(bg,rows)\n" +
+"    info['source']='synth-fallback' if use_synth else f'{len(paths)} rotated files'\n" +
+"    info['rotation_files']=0 if use_synth else len(paths)\n" +
+"    return info\n" +
+"\n" +
+"def linear_count_prefix(rows,prefix):\n" +
+"    return sum(1 for s in rows if s.startswith(prefix))\n" +
+"\n" +
+"def linear_count_ext(rows,ext):\n" +
+"    return sum(1 for s in rows if s.endswith(ext))\n" +
+"\n" +
+"def blob_load():\n" +
+"    with open(BIN,'rb') as f: blob=f.read()\n" +
+"    assert blob[:4]==b'LCDB'\n" +
+"    ver,n,pool_sz=struct.unpack_from('<III',blob,4)\n" +
+"    p=4+3*4\n" +
+"    bigram=blob[p:p+256]; p+=256\n" +
+"    offs=array.array('I'); offs.frombytes(blob[p:p+n*4]); p+=n*4\n" +
+"    lens=array.array('H'); lens.frombytes(blob[p:p+n*2]); p+=n*2\n" +
+"    pool=blob[p:p+pool_sz]; p+=pool_sz\n" +
+"    return (offs,lens,pool,n)\n" +
+"\n" +
+"def blob_count_prefix(prefix):\n" +
+"    offs,lens,pool,n=blob_load()\n" +
+"    pb=prefix.encode('utf-8','replace')\n" +
+"    # bisect_left over sorted path pool by reading via offs\n" +
+"    lo,hi=0,n\n" +
+"    while lo<hi:\n" +
+"        mid=(lo+hi)//2\n" +
+"        s=bytes(pool[offs[mid]:offs[mid]+lens[mid]])\n" +
+"        if s<pb: lo=mid+1\n" +
+"        else: hi=mid\n" +
+"    start=lo\n" +
+"    # find end of prefix range\n" +
+"    cnt=0\n" +
+"    i=start\n" +
+"    while i<n:\n" +
+"        s=bytes(pool[offs[i]:offs[i]+lens[i]])\n" +
+"        if not s.startswith(pb): break\n" +
+"        cnt+=1; i+=1\n" +
+"    return cnt\n" +
+"\n" +
+"def blob_count_ext(ext):\n" +
+"    offs,lens,pool,n=blob_load()\n" +
+"    eb=ext.encode('utf-8','replace'); el=len(eb)\n" +
+"    cnt=0\n" +
+"    for i in range(n):\n" +
+"        L=lens[i]\n" +
+"        if L<el: continue\n" +
+"        if bytes(pool[offs[i]+L-el:offs[i]+L])==eb: cnt+=1\n" +
+"    return cnt\n" +
+"\n" +
+"def bench_main(p):\n" +
+"    info=encode_main(p)\n" +
+"    print(f'[encode] n_path={info[\"n\"]} blob={fmt(info[\"blob_size\"])} encode={info[\"encode_ns\"]/1e6:.1f}ms source={info[\"source\"]} rotation_files={info[\"rotation_files\"]}')\n" +
+"    rss_enc=rss()\n" +
+"    # decode rows for baseline\n" +
+"    offs,lens,pool,n=blob_load()\n" +
+"    rows=[bytes(pool[offs[i]:offs[i]+lens[i]]).decode('utf-8','replace') for i in range(n)]\n" +
+"    P=['/Users/','/Applications/','/System/','/Library/','/usr/']\n" +
+"    E=['.dylib','.txt','.png','.app','.json']\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    base=0\n" +
+"    for q in P: base+=linear_count_prefix(rows,q)\n" +
+"    for q in E: base+=linear_count_ext(rows,q)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    base_ns=t1-t0\n" +
+"    t2=time.perf_counter_ns()\n" +
+"    post=0\n" +
+"    for q in P: post+=blob_count_prefix(q)\n" +
+"    for q in E: post+=blob_count_ext(q)\n" +
+"    t3=time.perf_counter_ns()\n" +
+"    post_ns=t3-t2\n" +
+"    diff_test='lossless' if base==post else f'mismatch base={base} post={post}'\n" +
+"    sp=base_ns/max(post_ns,1)\n" +
+"    print(f'[query] {len(P)+len(E)} prefix+ext queries')\n" +
+"    print(f'  baseline (linear)        : {base_ns/1000:10.1f} us  hits={base}')\n" +
+"    print(f'  LCDB (bisect+col scan)   : {post_ns/1000:10.1f} us  hits={post}')\n" +
+"    print(f'  speedup                  : {sp:6.1f}x')\n" +
+"    print(f'[rss] after encode         : {fmt(rss_enc)}')\n" +
+"    row={'site':'IX1','roi':'IX1_LCDB','baseline_ns':base_ns,'post_ns':post_ns,'diff_test':diff_test,'speedup_x':round(sp,2),'n_path':n,'blob_bytes':info['blob_size'],'source':info['source'],'rotation_files':info['rotation_files']}\n" +
+"    print('[5tuple] '+json.dumps(row,ensure_ascii=False))\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode_main(target)\n" +
+"    print(f'encoded n_path={info[\"n\"]} -> {BIN} ({fmt(info[\"blob_size\"])}) source={info[\"source\"]}')\n" +
+"elif mode=='bench':\n" +
+"    bench_main(target)\n" +
+"else:\n" +
+"    print('usage: encode|bench [<db_path>]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("locate_database_mmap")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains("locate.database") || v.contains("/var/db/") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = "/var/db/locate.database"
+        println("(default target: " + target + ")")
+    }
+    let tmp_py = "/tmp/locate_database_mmap_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

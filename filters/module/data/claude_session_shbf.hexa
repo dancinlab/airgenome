@@ -1,0 +1,268 @@
+// airgenome/filters/module/data/claude_session_shbf.hexa
+//   C1 — Claude session metadata SHBF (CSBF — Claude Session Blob Filter).
+//
+//   목적: ~/.claude*/projects/<repo>/<session>.jsonl 들의 metadata
+//         (sessionId, cwd, last_msg_ts, byte_size) 를 단일 mmap blob 으로
+//         압축. 매번 jq/jsonl linear scan 하던 hot path 를 sorted+bisect 으로
+//         치환 (E4/SHBF 패턴 직접 차용).
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "CSBF"          (Claude Session Blob Filter)
+//     version : 4B  u32             (1)
+//     n       : 4B  u32             session 개수
+//     str_sz  : 4B  u32             string pool 바이트 길이 (sessionId|cwd 합)
+//     [n*4]   : u32 sid_off         pool 내 sessionId 시작 (정렬된 sessionId 순)
+//     [n*4]   : u32 sid_len         sessionId 길이
+//     [n*4]   : u32 cwd_off         pool 내 cwd 시작
+//     [n*4]   : u32 cwd_len         cwd 길이
+//     [n*8]   : u64 last_msg_ts_us  unix epoch microseconds
+//     [n*8]   : u64 byte_size       jsonl 파일 byte 크기
+//     [str_sz]: utf-8 string pool   raw bytes (NUL 없음)
+//
+//   query: sessionId prefix bisect_left → range. 그 안의 last_msg_ts/byte_size 즉답.
+//
+// 모드:
+//   encode <root>     : root=~/.claude (또는 glob ~/.claude*/projects) → /tmp/claude_session_csbf.bin
+//   bench  <root>     : encode + linear jsonl scan vs CSBF mmap+bisect 비교
+//
+// E4/F18 와 다른 점:
+//   - source = 다중 jsonl (재귀) — 각 파일의 마지막 line metadata 추출
+//   - 'last_msg_ts' 는 최근 record 의 timestamp (없으면 mtime fallback)
+//   - score 자리에 (last_msg_ts_us, byte_size) 두 개 — top-K 는 ts 내림차순
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음). raw 9 hexa-only.
+// R17: /usr/bin/perl alarm 120s wrapper.
+
+let PAYLOAD = "import sys,os,struct,time,bisect,heapq,resource,mmap,array,json,glob,random\n" +
+"mode=sys.argv[1]; root=sys.argv[2]\n" +
+"BIN='/tmp/claude_session_csbf.bin'\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def expand_root(root):\n" +
+"    # ~/.claude (single) 또는 ~/.claude* (glob) 둘 다 지원\n" +
+"    if '*' in root or '?' in root:\n" +
+"        return [p for p in glob.glob(root) if os.path.isdir(p)]\n" +
+"    if os.path.isdir(root): return [root]\n" +
+"    return []\n" +
+"\n" +
+"def find_jsonls(roots):\n" +
+"    out=[]\n" +
+"    for rt in roots:\n" +
+"        proj=os.path.join(rt,'projects')\n" +
+"        if not os.path.isdir(proj): continue\n" +
+"        for repo_dir in os.listdir(proj):\n" +
+"            d=os.path.join(proj,repo_dir)\n" +
+"            if not os.path.isdir(d): continue\n" +
+"            for fn in os.listdir(d):\n" +
+"                if fn.endswith('.jsonl'):\n" +
+"                    out.append(os.path.join(d,fn))\n" +
+"    return out\n" +
+"\n" +
+"def parse_ts(s):\n" +
+"    # 'YYYY-MM-DDTHH:MM:SS.sssZ' → epoch us. dateutil 없이 stdlib only.\n" +
+"    if not isinstance(s,str): return 0\n" +
+"    s=s.replace('Z','+00:00')\n" +
+"    try:\n" +
+"        from datetime import datetime\n" +
+"        dt=datetime.fromisoformat(s)\n" +
+"        return int(dt.timestamp()*1_000_000)\n" +
+"    except ValueError:\n" +
+"        return 0\n" +
+"\n" +
+"def last_meta(path):\n" +
+"    # 마지막 non-empty line metadata 추출. 큰 파일은 끝부분만 read.\n" +
+"    sz=os.path.getsize(path)\n" +
+"    if sz==0: return None\n" +
+"    with open(path,'rb') as f:\n" +
+"        # 끝 4KB 만 시도\n" +
+"        if sz>4096:\n" +
+"            f.seek(-4096,2)\n" +
+"            chunk=f.read()\n" +
+"        else:\n" +
+"            chunk=f.read()\n" +
+"    lines=chunk.split(b'\\n')\n" +
+"    last=b''\n" +
+"    for ln in reversed(lines):\n" +
+"        if ln.strip():\n" +
+"            last=ln; break\n" +
+"    if not last:\n" +
+"        # fallback: 첫 줄\n" +
+"        with open(path,'rb') as f:\n" +
+"            last=f.readline().strip()\n" +
+"    if not last: return None\n" +
+"    obj={}\n" +
+"    if last[:1]==b'{':\n" +
+"        try: obj=json.loads(last.decode('utf-8','replace'))\n" +
+"        except ValueError: obj={}\n" +
+"    sid=obj.get('sessionId') or os.path.splitext(os.path.basename(path))[0]\n" +
+"    cwd=obj.get('cwd') or ''\n" +
+"    ts =parse_ts(obj.get('timestamp'))\n" +
+"    if ts==0: ts=int(os.path.getmtime(path)*1_000_000)\n" +
+"    return {'sid':str(sid),'cwd':str(cwd),'ts':ts,'sz':sz,'path':path}\n" +
+"\n" +
+"def encode(root):\n" +
+"    t0=time.perf_counter()\n" +
+"    roots=expand_root(root)\n" +
+"    if not roots:\n" +
+"        print(f'ERROR: no claude root: {root}'); sys.exit(1)\n" +
+"    paths=find_jsonls(roots)\n" +
+"    rows=[]\n" +
+"    raw_total=0\n" +
+"    for p in paths:\n" +
+"        m=last_meta(p)\n" +
+"        if m is None: continue\n" +
+"        raw_total+=m['sz']\n" +
+"        rows.append(m)\n" +
+"    rows.sort(key=lambda r:r['sid'])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    sid_off=array.array('I',[0]*n); sid_len=array.array('I',[0]*n)\n" +
+"    cwd_off=array.array('I',[0]*n); cwd_len=array.array('I',[0]*n)\n" +
+"    tss=array.array('Q',[0]*n); szs=array.array('Q',[0]*n)\n" +
+"    for i,r in enumerate(rows):\n" +
+"        sb=r['sid'].encode('utf-8','replace')\n" +
+"        cb=r['cwd'].encode('utf-8','replace')\n" +
+"        sid_off[i]=len(pool); sid_len[i]=len(sb); pool.extend(sb)\n" +
+"        cwd_off[i]=len(pool); cwd_len[i]=len(cb); pool.extend(cb)\n" +
+"        tss[i]=int(r['ts']); szs[i]=int(r['sz'])\n" +
+"    header=struct.pack('<4sIII',b'CSBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(sid_off.tobytes()); f.write(sid_len.tobytes())\n" +
+"        f.write(cwd_off.tobytes()); f.write(cwd_len.tobytes())\n" +
+"        f.write(tss.tobytes()); f.write(szs.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter()\n" +
+"    bsz=os.path.getsize(BIN)\n" +
+"    return {'encode_s':t1-t0,'n':n,'blob_size':bsz,'raw_total':raw_total,'paths':len(paths)}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        if magic!=b'CSBF' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n=n; self.pool_sz=pool_sz\n" +
+"        base=16\n" +
+"        a=base; b=a+4*n; c=b+4*n; d=c+4*n\n" +
+"        e=d+4*n; ff=e+8*n; pool_off=ff+8*n\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        sid_off=array.array('I'); sid_off.frombytes(bytes(self.mv[a:a+4*n]))\n" +
+"        sid_len=array.array('I'); sid_len.frombytes(bytes(self.mv[b:b+4*n]))\n" +
+"        cwd_off=array.array('I'); cwd_off.frombytes(bytes(self.mv[c:c+4*n]))\n" +
+"        cwd_len=array.array('I'); cwd_len.frombytes(bytes(self.mv[d:d+4*n]))\n" +
+"        tss=array.array('Q'); tss.frombytes(bytes(self.mv[e:e+8*n]))\n" +
+"        szs=array.array('Q'); szs.frombytes(bytes(self.mv[ff:ff+8*n]))\n" +
+"        pool=bytes(self.mv[pool_off:pool_off+pool_sz])\n" +
+"        self.sids=[pool[sid_off[i]:sid_off[i]+sid_len[i]] for i in range(n)]\n" +
+"        self.cwds=[pool[cwd_off[i]:cwd_off[i]+cwd_len[i]] for i in range(n)]\n" +
+"        self.tss=tss; self.szs=szs\n" +
+"    def lookup(self,sid_prefix):\n" +
+"        pb=sid_prefix.encode('utf-8') if isinstance(sid_prefix,str) else sid_prefix\n" +
+"        sids=self.sids\n" +
+"        start=bisect.bisect_left(sids,pb)\n" +
+"        end=bisect.bisect_left(sids,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        return [(self.sids[i].decode('utf-8','replace'),self.cwds[i].decode('utf-8','replace'),int(self.tss[i]),int(self.szs[i])) for i in range(start,end)]\n" +
+"    def topk_recent(self,k=10):\n" +
+"        n=self.n\n" +
+"        if k>=n: idxs=list(range(n))\n" +
+"        else: idxs=heapq.nlargest(k,range(n),key=lambda i:self.tss[i])\n" +
+"        idxs.sort(key=lambda i:-self.tss[i])\n" +
+"        return [(self.sids[i].decode('utf-8','replace'),int(self.tss[i])) for i in idxs]\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def linear_scan(paths,sid_prefix):\n" +
+"    # OLD: 모든 jsonl 의 마지막 line 을 매번 읽어 prefix 매칭.\n" +
+"    out=[]\n" +
+"    pb=sid_prefix\n" +
+"    for p in paths:\n" +
+"        m=last_meta(p)\n" +
+"        if m is None: continue\n" +
+"        if m['sid'].startswith(pb): out.append(m)\n" +
+"    return out\n" +
+"\n" +
+"def bench(root):\n" +
+"    info=encode(root)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  sessions={info[\"n\"]}/{info[\"paths\"]} blob={fmt(info[\"blob_size\"])} raw={fmt(info[\"raw_total\"])}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no sessions — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    rng=random.Random(42)\n" +
+"    samples=[]\n" +
+"    for _ in range(50):\n" +
+"        i=rng.randrange(b.n)\n" +
+"        sid=b.sids[i].decode('utf-8','replace')\n" +
+"        plen=rng.choice([4,6,8])\n" +
+"        samples.append(sid[:plen] if len(sid)>=plen else sid)\n" +
+"    rss_blob=rss()\n" +
+"    for p in samples[:5]: b.lookup(p)\n" +
+"    t0=time.perf_counter()\n" +
+"    blob_hits=0\n" +
+"    for p in samples:\n" +
+"        r=b.lookup(p); blob_hits+=len(r)\n" +
+"    t1=time.perf_counter()\n" +
+"    blob_us=(t1-t0)*1e6/len(samples)\n" +
+"    b.close()\n" +
+"    # OLD: linear scan 모든 jsonl per query (Claude session lookup hot path)\n" +
+"    paths=find_jsonls(expand_root(root))\n" +
+"    sample_n=min(5,len(samples))  # OLD 는 비싸 — sub-sample 후 extrapolate\n" +
+"    t0=time.perf_counter()\n" +
+"    lin_hits=0\n" +
+"    for p in samples[:sample_n]:\n" +
+"        r=linear_scan(paths,p); lin_hits+=len(r)\n" +
+"    t1=time.perf_counter()\n" +
+"    linear_us=(t1-t0)*1e6/sample_n\n" +
+"    rss_lin=rss()\n" +
+"    print(f'[query] {len(samples)} sessionId-prefix lookups (blob={blob_hits}, linear sample={sample_n} hits={lin_hits})')\n" +
+"    print(f'  linear jsonl scan (per-query open+tail): {linear_us:10.1f} us')\n" +
+"    print(f'  blob mmap + bisect                     : {blob_us:10.1f} us')\n" +
+"    if blob_us>0:\n" +
+"        print(f'  speedup: {linear_us/blob_us:6.1f}x')\n" +
+"    print(f'[rss] after blob only      : {fmt(rss_blob)}')\n" +
+"    print(f'[rss] after linear scan    : {fmt(rss_lin)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(root)\n" +
+"    print(f'encoded {info[\"n\"]} sessions in {info[\"encode_s\"]*1000:.1f} ms → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench(root)\n" +
+"else:\n" +
+"    print('usage: encode|bench <claude_root>'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("claude_session_shbf")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains("/.claude") || v.contains("/projects") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/.claude*"
+        println("(default target: " + target + ")")
+    }
+    let tmp_py = "/tmp/claude_session_shbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

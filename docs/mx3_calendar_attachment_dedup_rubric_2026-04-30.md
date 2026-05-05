@@ -3,9 +3,9 @@
 Origin: 2026-04-30 — user directive: "Design + implement G. Mail/Calendar 보강 wave (4 filters)". MX3 = EventKit attachments (T2 pattern blake2b hash dedup, calendar event attachments path probe).
 
 Pattern parents (READ FIRST):
-- `/Users/ghost/core/airgenome/modules/filters/data/telegram_media_dedup.hexa` (T2, score 395, ROI 237×) — content-hash blake2b 64bit + sorted blob + bisect cluster lookup; head 64KB hashing.
-- `/Users/ghost/core/airgenome/modules/filters/data/imessage_attachment_dedup.hexa` (K1, 400) — direct T2/M2 transfer pattern.
-- `/Users/ghost/core/airgenome/modules/filters/data/calendar_event_shbf.hexa` (CA1) — Calendar.sqlitedb path probe + schema fallback.
+- `/Users/ghost/core/airgenome/filters/module/data/telegram_media_dedup.hexa` (T2, score 395, ROI 237×) — content-hash blake2b 64bit + sorted blob + bisect cluster lookup; head 64KB hashing.
+- `/Users/ghost/core/airgenome/filters/module/data/imessage_attachment_dedup.hexa` (K1, 400) — direct T2/M2 transfer pattern.
+- `/Users/ghost/core/airgenome/filters/module/data/calendar_event_shbf.hexa` (CA1) — Calendar.sqlitedb path probe + schema fallback.
 
 Rubric source: `/Users/ghost/core/hive/.raw` raw 240 V2. 9 blocks, 400pt ceiling.
 
@@ -72,7 +72,7 @@ Total honest-C3 gap count: **5**.
 
 ## Deliverables
 
-- Filter:    `/Users/ghost/core/airgenome/modules/filters/data/calendar_attachment_dedup.hexa`
+- Filter:    `/Users/ghost/core/airgenome/filters/module/data/calendar_attachment_dedup.hexa`
 - Bench:     `/Users/ghost/core/airgenome/tool/bench/bench_mx3_calendar_attachment_dedup.hexa`
 - Rubric md: `/Users/ghost/core/airgenome/docs/mx3_calendar_attachment_dedup_rubric_2026-04-30.md`
 - Rubric jsonl: `/Users/ghost/core/airgenome/docs/mx3_calendar_attachment_dedup_rubric_2026-04-30.rubric.jsonl`

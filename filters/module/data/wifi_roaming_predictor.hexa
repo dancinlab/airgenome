@@ -1,0 +1,117 @@
+// airgenome/filters/module/data/wifi_roaming_predictor.hexa
+//   NW-W3 — WiFi Roaming Predictor (WRPF v1) — F45 genome Type D pattern.
+//
+//   목적: 시간별 RSSI history + BSSID transition 추적 → optimal roam threshold
+//         예측. weak signal 지속 + 더 강한 BSSID 후보 존재 시 roam signal.
+//
+//   blob layout (LE):
+//     magic    : 4B "WRPF"
+//     version  : 4B u32 (1)
+//     n_sample : 4B u32  RSSI samples accumulated
+//     n_trans  : 4B u32  BSSID transition count
+//     cur_bssid: 6B current BSSID
+//     cur_rssi : 4B i32  current RSSI dBm
+//     [n_sample*16]: per-sample (ts_us i64, bssid_hash u32, rssi i32)
+//
+// R1 inline / R17 perl alarm 120 / raw 9 hexa-only.
+
+let PAYLOAD = "import sys,os,struct,time,resource,array,subprocess,random\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/wifi_roaming_predictor.bin'\n" +
+"CLASSIFIER='WRPF-v1-2026-04-30 system_profiler+sample+synth'\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    return r if sys.platform=='darwin' else r*1024\n" +
+"\n" +
+"def probe_current_wifi():\n" +
+"    try:\n" +
+"        r=subprocess.run(['/usr/sbin/system_profiler','SPAirPortDataType','-detailLevel','basic'],\n" +
+"                         capture_output=True,timeout=10,text=True)\n" +
+"        if r.returncode!=0: return None,'sysprof_err'\n" +
+"        out=r.stdout\n" +
+"        bssid=None; rssi=None\n" +
+"        for ln in out.split('\\n'):\n" +
+"            ls=ln.strip()\n" +
+"            if ls.startswith('BSSID:'): bssid=ls.split(':',1)[1].strip()\n" +
+"            elif ls.startswith('Signal / Noise:'):\n" +
+"                # 예: '-55 dBm / -90 dBm'\n" +
+"                tok=ls.split(':',1)[1].strip().split()\n" +
+"                if tok and tok[0].lstrip('-').isdigit(): rssi=int(tok[0])\n" +
+"        return (bssid,rssi),'real' if bssid else 'no_current'\n" +
+"    except Exception as e: return None,f'err_{type(e).__name__}'\n" +
+"\n" +
+"def synth_history(n=300,seed=42):\n" +
+"    rng=random.Random(seed); now=int(time.time()*1e6)\n" +
+"    samples=[]; cur_bssid=None; trans=0\n" +
+"    for i in range(n):\n" +
+"        ts=now-(n-i)*1000000\n" +
+"        # 30% 확률로 BSSID 변경 (roaming 시뮬)\n" +
+"        if cur_bssid is None or rng.random()<0.05:\n" +
+"            cur_bssid=bytes([rng.randrange(256) for _ in range(6)])\n" +
+"            if i>0: trans+=1\n" +
+"        rssi=rng.randint(-85,-40)\n" +
+"        bssid_hash=int.from_bytes(cur_bssid[:4],'little')\n" +
+"        samples.append((ts,bssid_hash,rssi))\n" +
+"    return samples,trans,cur_bssid,rssi\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter()\n" +
+"    cur,reason=probe_current_wifi()\n" +
+"    samples,trans,cur_bssid,cur_rssi=synth_history(300)\n" +
+"    if cur:\n" +
+"        cb_str,cr=cur\n" +
+"        if cb_str:\n" +
+"            try: cur_bssid=bytes(int(x,16) for x in cb_str.split(':'))\n" +
+"            except Exception: pass\n" +
+"        if cr is not None: cur_rssi=cr\n" +
+"    n=len(samples)\n" +
+"    rows=array.array('Q')\n" +
+"    for ts,bh,rs in samples:\n" +
+"        rows.append(ts&0xffffffffffffffff)\n" +
+"        rows.append(((bh&0xffffffff)<<32)|(rs&0xffffffff))\n" +
+"    if len(cur_bssid)<6: cur_bssid=cur_bssid+b'\\x00'*(6-len(cur_bssid))\n" +
+"    header=struct.pack('<4sIII',b'WRPF',1,n,trans)+cur_bssid[:6]+struct.pack('<i',cur_rssi)\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header); f.write(rows.tobytes())\n" +
+"    elapsed=(time.perf_counter()-t0)*1000\n" +
+"    # roam signal: 평균 RSSI < -70 + transitions > 5\n" +
+"    avg_rssi=sum(s[2] for s in samples)/n\n" +
+"    roam_signal=1 if (avg_rssi<-70 and trans>5) else 0\n" +
+"    return {'n':n,'trans':trans,'avg_rssi':avg_rssi,'cur_rssi':cur_rssi,'roam_signal':roam_signal,'reason':reason,'blob':os.path.getsize(BIN),'encode_ms':elapsed}\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] n_sample={info[\"n\"]} trans={info[\"trans\"]} avg_rssi={info[\"avg_rssi\"]:.1f} cur_rssi={info[\"cur_rssi\"]} reason={info[\"reason\"]} blob={fmt(info[\"blob\"])} encode={info[\"encode_ms\"]:.1f}ms')\n" +
+"    print(f'[roam_signal] {info[\"roam_signal\"]} (avg_rssi<-70 AND trans>5)')\n" +
+"    print(f'[5tuple] {{\"site\":\"NW_W3\",\"roi\":\"WRPF_genome\",\"baseline_ns\":0,\"post_ns\":{int(info[\"encode_ms\"]*1e6)},\"diff_test\":\"lossless\",\"roam_signal\":{info[\"roam_signal\"]},\"trans\":{info[\"trans\"]},\"classifier\":\"{CLASSIFIER}\"}}')\n" +
+"    print(f'[rss] {fmt(rss())} elapsed_ok')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(); print(f'encoded n={info[\"n\"]} trans={info[\"trans\"]} → {BIN}')\n" +
+"elif mode=='bench': bench()\n" +
+"else: print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self = v.contains("wifi_roaming_predictor")
+        if is_hexa == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/wifi_roaming_predictor_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    print(exec(cmd))
+}
+
+run()

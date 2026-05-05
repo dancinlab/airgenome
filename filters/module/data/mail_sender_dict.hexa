@@ -1,0 +1,214 @@
+// airgenome/filters/module/data/mail_sender_dict.hexa
+//   MA3 — Mail.app sender → 1-byte enum dict column (MSDC, #99).
+//
+//   목적: Mail.app 의 sender 컬럼은 distinct value 가 보통 50~250 — 메일
+//         리스트, 알림, 가족, 동료 등 반복 sender 가 절대다수. 매번
+//         "From: <full-name> <addr>" 의 string 비교 / GROUP BY / 표시 색
+//         lookup 을 string 으로 하던 hot path 를 1-byte enum 컬럼으로 치환.
+//         message 당 평균 50-80B sender field → 1B enum.
+//
+//   blob layout (little-endian):
+//     magic    : 4B  "MSDC"
+//     version  : 4B  u32 (1)
+//     n_send   : 4B  u32 distinct sender count (≤255)
+//     n_msg    : 4B  u32 total sender occurrences
+//     str_sz   : 4B  u32 sender pool size
+//     [n_send*4]: u32 name_offs
+//     [n_send*4]: u32 name_lens
+//     [str_sz]  : utf-8 sender pool
+//     [n_msg]   : u8  enum column
+//
+//   query: enum byte → name_offs[id] → 즉시 string 복원.
+//          GROUP BY count = u8 column 1-pass.
+//
+// 모드:
+//   encode : Envelope Index → /tmp/mail_sender_dict.bin
+//   bench  : encode + size 비교 + GROUP BY count old (Counter on str) vs new (u8 scan)
+//
+// 절대 금지: Envelope Index 쓰기 0, emlx mutation 0, SMTP 0, launchctl 0, git commit 0.
+//   sqlite open 은 immutable=1 read-only URI 강제.
+// R1 HEXA-FIRST: 인라인 python3. R17: perl alarm 120s. /usr/bin/python3 절대.
+
+let PAYLOAD = "import sys,os,sqlite3,struct,time,array,mmap,resource\n" +
+"from collections import Counter\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"BIN='/tmp/mail_sender_dict.bin'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"\n" +
+"def probe_envelope():\n" +
+"    out=[]\n" +
+"    for v in (8,9,10,11,12):\n" +
+"        p=f'{HOME}/Library/Mail/V{v}/MailData/Envelope Index'\n" +
+"        if os.path.exists(p): out.append((v,p))\n" +
+"    return out\n" +
+"\n" +
+"def open_ro(path):\n" +
+"    uri=f'file:{path}?immutable=1'\n" +
+"    return sqlite3.connect(uri,uri=True,timeout=2.0)\n" +
+"\n" +
+"def list_tables(con):\n" +
+"    cur=con.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")\n" +
+"    return {r[0] for r in cur.fetchall()}\n" +
+"def list_cols(con,tab):\n" +
+"    cur=con.execute(f'PRAGMA table_info({tab})')\n" +
+"    return [r[1] for r in cur.fetchall()]\n" +
+"\n" +
+"def fetch_senders(con,limit=50000):\n" +
+"    tabs=list_tables(con)\n" +
+"    mcols=set(list_cols(con,'messages')) if 'messages' in tabs else set()\n" +
+"    if 'addresses' in tabs and 'sender' in mcols:\n" +
+"        q=f'SELECT COALESCE(a.address,\"\") FROM messages m LEFT JOIN addresses a ON a.ROWID=m.sender LIMIT {int(limit)}'\n" +
+"    elif 'sender' in mcols:\n" +
+"        q=f'SELECT COALESCE(m.sender,\"\") FROM messages m LIMIT {int(limit)}'\n" +
+"    else:\n" +
+"        return []\n" +
+"    cur=con.execute(q)\n" +
+"    out=[]\n" +
+"    for (s,) in cur.fetchall():\n" +
+"        out.append((s or '')[:256])\n" +
+"    return out\n" +
+"\n" +
+"def encode():\n" +
+"    cands=probe_envelope()\n" +
+"    if not cands:\n" +
+"        print('ERROR: no Envelope Index found'); sys.exit(2)\n" +
+"    v,path=cands[0]\n" +
+"    raw_size=os.path.getsize(path)\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    con=open_ro(path)\n" +
+"    senders=fetch_senders(con,50000)\n" +
+"    con.close()\n" +
+"    if not senders:\n" +
+"        return {'encode_ns':time.perf_counter_ns()-t0,'mail_v':v,'src':path,'raw_size':raw_size,\n" +
+"                'n_send':0,'n_msg':0,'distinct':[],'senders':[],'raw_name_bytes':0,\n" +
+"                'blob_size':0}\n" +
+"    cnt=Counter(senders)\n" +
+"    distinct=sorted(cnt)\n" +
+"    if len(distinct)>255:\n" +
+"        # id=0 reserve as '(OTHER)' bucket — tail senders 가 id=0 로 명시 fallback.\n" +
+"        # 이전 버그: name_to_id.get(s,0) 가 alphabetic first sender 로 misattribute → 810 mismatch.\n" +
+"        top=cnt.most_common(254)\n" +
+"        distinct=['(OTHER)']+sorted([k for k,_ in top])\n" +
+"    name_to_id={n:i for i,n in enumerate(distinct)}\n" +
+"    n_send=len(distinct); n_msg=len(senders)\n" +
+"    pool=bytearray()\n" +
+"    name_offs=array.array('I',[0]*n_send)\n" +
+"    name_lens=array.array('I',[0]*n_send)\n" +
+"    for i,n in enumerate(distinct):\n" +
+"        nb=n.encode('utf-8','replace')\n" +
+"        name_offs[i]=len(pool); name_lens[i]=len(nb); pool.extend(nb)\n" +
+"    enum_col=bytearray(n_msg)\n" +
+"    for i,s in enumerate(senders):\n" +
+"        enum_col[i]=name_to_id.get(s,0)\n" +
+"    header=struct.pack('<4sIIII',b'MSDC',1,n_send,n_msg,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(name_offs.tobytes()); f.write(name_lens.tobytes())\n" +
+"        f.write(bytes(pool)); f.write(bytes(enum_col))\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    raw_name_bytes=sum(len(s)+10 for s in senders)\n" +
+"    return {'encode_ns':t1-t0,'mail_v':v,'src':path,'raw_size':raw_size,\n" +
+"            'n_send':n_send,'n_msg':n_msg,'distinct':distinct,'senders':senders,\n" +
+"            'raw_name_bytes':raw_name_bytes,'blob_size':os.path.getsize(BIN)}\n" +
+"\n" +
+"class SenderDict:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n_send,n_msg,str_sz=struct.unpack_from('<4sIIII',self.mm,0)\n" +
+"        if magic!=b'MSDC' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n_send=n_send; self.n_msg=n_msg\n" +
+"        base=20\n" +
+"        self.name_offs=array.array('I'); self.name_offs.frombytes(self.mm[base:base+4*n_send])\n" +
+"        b1=base+4*n_send\n" +
+"        self.name_lens=array.array('I'); self.name_lens.frombytes(self.mm[b1:b1+4*n_send])\n" +
+"        b2=b1+4*n_send\n" +
+"        self.pool=bytes(self.mm[b2:b2+str_sz])\n" +
+"        b3=b2+str_sz\n" +
+"        self.enum_col=bytes(self.mm[b3:b3+n_msg])\n" +
+"        self.names=[self.pool[self.name_offs[i]:self.name_offs[i]+self.name_lens[i]].decode('utf-8','replace') for i in range(n_send)]\n" +
+"    def count_by_name(self):\n" +
+"        c=[0]*self.n_send\n" +
+"        for b in self.enum_col: c[b]+=1\n" +
+"        return list(zip(self.names,c))\n" +
+"    def close(self):\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    print(f'[encode] {info[\"encode_ns\"]/1e6:.1f}ms  V{info[\"mail_v\"]}  senders_distinct={info[\"n_send\"]}  msgs={info[\"n_msg\"]}')\n" +
+"    print(f'  raw_envelope={fmt(info[\"raw_size\"])}  raw_name_bytes={fmt(info[\"raw_name_bytes\"])}  blob={fmt(info[\"blob_size\"])}')\n" +
+"    if info['n_msg']==0:\n" +
+"        print('[bench] no senders — skip'); return\n" +
+"    saved_pct=((info['raw_name_bytes']-info['n_msg'])*100)//max(info['raw_name_bytes'],1)\n" +
+"    print(f'  sender col bytes raw≈{info[\"raw_name_bytes\"]} → enum={info[\"n_msg\"]}B  saved={saved_pct}%')\n" +
+"    sd=SenderDict(BIN)\n" +
+"    rss_blob=rss()\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    cb=sd.count_by_name()\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    new_ns=t1-t0\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    cc=Counter(info['senders'])\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    old_ns=t1-t0\n" +
+"    sd.close()\n" +
+"    print(f'  count by sender OLD (Counter on str list)  : {old_ns:10d} ns')\n" +
+"    print(f'  count by sender NEW (u8 enum column scan)  : {new_ns:10d} ns')\n" +
+"    if new_ns>0:\n" +
+"        print(f'  speedup={old_ns/new_ns:.1f}x  saved={((old_ns-new_ns)*100)//max(old_ns,1)}%')\n" +
+"    # blob 이 saturated (n_send=255, distinct[0]='(OTHER)') 면 raw Counter 의\n" +
+"    # tail (top 254 외) 를 OTHER 로 fold 후 비교 — fair diff_test.\n" +
+"    cc_folded=cc\n" +
+"    if info['n_send']>=255 and info['distinct'] and info['distinct'][0]=='(OTHER)':\n" +
+"        top_set=set(info['distinct'][1:])\n" +
+"        other_c=sum(c for s,c in cc.items() if s not in top_set)\n" +
+"        cc_folded=Counter({s:c for s,c in cc.items() if s in top_set})\n" +
+"        cc_folded['(OTHER)']=other_c\n" +
+"    a=sorted(cb); b=sorted(cc_folded.items())\n" +
+"    if len(a)==len(b):\n" +
+"        mm=sum(1 for x,y in zip(a,b) if x[0]!=y[0] or x[1]!=y[1])\n" +
+"    else:\n" +
+"        mm=abs(len(a)-len(b))\n" +
+"    print(f'  diff_test mismatches: {mm}')\n" +
+"    print(f'[rss] after blob: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode()\n" +
+"    print(f'encoded {info[\"n_msg\"]} msgs ({info[\"n_send\"]} distinct senders, V{info[\"mail_v\"]}) in {info[\"encode_ns\"]/1e6:.1f}ms → {BIN} ({fmt(info[\"blob_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("mail_sender_dict")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+        }
+        i = i + 1
+    }
+    let tmp_py = "/tmp/mail_sender_dict_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

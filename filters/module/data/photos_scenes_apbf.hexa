@@ -1,0 +1,286 @@
+// airgenome/filters/module/data/photos_scenes_apbf.hexa
+//   MD2 — Photos.app scene labels APBF (PSAB, F58 pattern).
+//
+//   목적: Photos.sqlite#ZSCENECLASSIFICATION (asset → scene id + confidence)
+//         의 prefix 검색/topK 가 매번 sqlite scan 하던 hot path 를 sorted-token
+//         APBF blob (mmap + bisect_left × 2) 로 치환. F58 autocomplete 동일 패턴.
+//
+//   blob layout (little-endian):
+//     magic   : 4B  "PSAB"          (Photos Scene APBF)
+//     version : 4B  u32 (1)
+//     n       : 4B  u32             unique scene labels
+//     str_sz  : 4B  u32             token pool 바이트 길이
+//     [n*4]   : u32 offsets         정렬된 token 시작
+//     [n*4]   : u32 lens            각 token 길이
+//     [n*4]   : u32 score           count*100 + max_conf*100  (clamp u32)
+//     [str_sz]: utf-8 token pool    raw bytes
+//
+//   query: bisect_left(tokens, prefix) ~ bisect_left(tokens, prefix+0xFFFFFFFF)
+//          → range, score top-K heap.
+//
+//   label resolution:
+//     - Photos 16: ZSCENEIDENTIFIER 가 INTEGER (human label 은 runtime 전용)
+//       → token = f'scene_{id:04d}' decorator. prefix bisect 의미 보존.
+//     - sibling text label column (ZSCENELABEL 등) 존재 시 join (older schema fallback).
+//
+// TCC carve:
+//   - file_exists(target)==False → synth-only + reason_code=md2_tcc_deny
+//   - file_exists==True ∧ ZSCENECLASSIFICATION COUNT=0 → synth + md2_zero_scenes
+//   - sqlite open URI 'file:...?mode=ro&immutable=1' 강제 (NO mutation)
+//
+// 절대 금지: Photos.sqlite 쓰기 0, launchctl 0, git commit 0, network 0.
+// R1 HEXA-FIRST: 인라인 python3. R17: /usr/bin/perl alarm 120s. /usr/bin/python3 절대.
+
+let PAYLOAD = "import sys,os,sqlite3,struct,time,bisect,heapq,resource,mmap,array,re,random,tempfile\n" +
+"from collections import Counter\n" +
+"mode=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"src=sys.argv[2] if len(sys.argv)>2 else '__SYNTH__'\n" +
+"BIN='/tmp/photos_scenes_apbf.bin'\n" +
+"CLASSIFIER='PSAB-v1-2026-04-30'\n" +
+"SYNTH_MARK='__SYNTH__'\n" +
+"PII_RE=re.compile(r'face|person|people\\s+\\d',re.IGNORECASE)\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r\n" +
+"    return r*1024\n" +
+"def to_int_safe(v):\n" +
+"    if v is None: return 0\n" +
+"    if isinstance(v,int): return v\n" +
+"    if isinstance(v,float): return int(v)\n" +
+"    try: return int(v)\n" +
+"    except: return 0\n" +
+"\n" +
+"SYNTH_VOCAB=['beach','mountain','sunset','sunrise','indoor','outdoor','restaurant','kitchen','bedroom','livingroom','party','sports','concert','wedding','park','forest','river','lake','ocean','sky','clouds','snow','rain','desert','street','city','highway','airport','train','car','flower','tree','garden','food','dessert','coffee','book','laptop','phone','document','animal','dog','cat','bird','fish','horse','baby','child','art','painting']\n" +
+"\n" +
+"def synth_scenes(n_label=300,n_row=8000):\n" +
+"    rng=random.Random(42)\n" +
+"    labels=list(SYNTH_VOCAB)\n" +
+"    while len(labels)<n_label:\n" +
+"        labels.append(f'scene_{len(labels):04d}')\n" +
+"    weights=[]\n" +
+"    for i in range(n_label):\n" +
+"        if i<5: w=300-i*40\n" +
+"        elif i<30: w=30\n" +
+"        else: w=2\n" +
+"        weights.append(w)\n" +
+"    rows=[]\n" +
+"    for _ in range(n_row):\n" +
+"        idx=rng.choices(range(n_label),weights=weights,k=1)[0]\n" +
+"        conf=rng.uniform(0.3,0.99)\n" +
+"        rows.append((labels[idx],conf))\n" +
+"    return rows\n" +
+"\n" +
+"def open_ro(path):\n" +
+"    uri=f'file:{path}?mode=ro&immutable=1'\n" +
+"    return sqlite3.connect(uri,uri=True,timeout=2.0)\n" +
+"\n" +
+"def safe_copy(src):\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); tmp.close()\n" +
+"    sc=open_ro(src)\n" +
+"    dc=sqlite3.connect(tmp.name)\n" +
+"    sc.backup(dc); dc.close(); sc.close()\n" +
+"    return tmp.name\n" +
+"\n" +
+"def list_tables(con):\n" +
+"    cur=con.execute(\"SELECT name FROM sqlite_master WHERE type='table'\")\n" +
+"    return {r[0] for r in cur.fetchall()}\n" +
+"def list_cols(con,tab):\n" +
+"    cur=con.execute(f'PRAGMA table_info({tab})')\n" +
+"    return [r[1] for r in cur.fetchall()]\n" +
+"\n" +
+"def fetch_real(con):\n" +
+"    tabs=list_tables(con)\n" +
+"    if 'ZSCENECLASSIFICATION' not in tabs:\n" +
+"        return None,'md2_schema_skew'\n" +
+"    cols=set(list_cols(con,'ZSCENECLASSIFICATION'))\n" +
+"    if 'ZSCENEIDENTIFIER' not in cols:\n" +
+"        return None,'md2_schema_skew'\n" +
+"    label_cols=[c for c in ('ZSCENELABEL','ZSCENECLASSIFICATIONLABEL','ZLABEL') if c in cols]\n" +
+"    label_expr=label_cols[0] if label_cols else 'NULL'\n" +
+"    conf_expr='ZCONFIDENCE' if 'ZCONFIDENCE' in cols else '0.0'\n" +
+"    q=f'SELECT ZSCENEIDENTIFIER,{label_expr},{conf_expr} FROM ZSCENECLASSIFICATION WHERE ZSCENEIDENTIFIER IS NOT NULL'\n" +
+"    rows=[]\n" +
+"    has_label=False\n" +
+"    for sid,lbl,conf in con.execute(q):\n" +
+"        if lbl is not None and isinstance(lbl,str) and lbl.strip():\n" +
+"            tok=lbl.strip().lower()[:64]; has_label=True\n" +
+"        else:\n" +
+"            tok=f'scene_{to_int_safe(sid):04d}'\n" +
+"        if PII_RE.search(tok): continue\n" +
+"        c=conf if isinstance(conf,float) else (float(conf) if conf is not None else 0.0)\n" +
+"        rows.append((tok,c))\n" +
+"    if not rows: return None,'md2_zero_scenes'\n" +
+"    return rows,('md2_real' if has_label else 'md2_id_only')\n" +
+"\n" +
+"def aggregate(rows):\n" +
+"    cnt=Counter()\n" +
+"    max_conf={}\n" +
+"    for tok,c in rows:\n" +
+"        cnt[tok]+=1\n" +
+"        if c>max_conf.get(tok,0.0): max_conf[tok]=c\n" +
+"    out=[]\n" +
+"    for tok,n in cnt.items():\n" +
+"        score=int(n*100)+int(max_conf.get(tok,0.0)*100)\n" +
+"        out.append((tok,min(score,0xffffffff)))\n" +
+"    return out\n" +
+"\n" +
+"def encode_blob(pairs,reason):\n" +
+"    pairs.sort(key=lambda r:r[0])\n" +
+"    n=len(pairs)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    scs =array.array('I',[0]*n)\n" +
+"    for i,(t,sc) in enumerate(pairs):\n" +
+"        tb=t.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(tb); scs[i]=int(sc)&0xffffffff\n" +
+"        pool.extend(tb)\n" +
+"    header=struct.pack('<4sIII',b'PSAB',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes()); f.write(lens.tobytes()); f.write(scs.tobytes())\n" +
+"        f.write(pool)\n" +
+"    return {'n':n,'blob_size':os.path.getsize(BIN),'pairs':pairs,'reason':reason}\n" +
+"\n" +
+"def encode():\n" +
+"    t0=time.perf_counter_ns()\n" +
+"    use_synth=False\n" +
+"    if src==SYNTH_MARK or not os.path.exists(src):\n" +
+"        rows=synth_scenes()\n" +
+"        use_synth=True\n" +
+"        reason='md2_tcc_deny' if src!=SYNTH_MARK else 'md2_synth_explicit'\n" +
+"    else:\n" +
+"        try:\n" +
+"            copy=safe_copy(src); con=sqlite3.connect(copy)\n" +
+"            rows,reason=fetch_real(con)\n" +
+"            con.close(); os.unlink(copy)\n" +
+"            if rows is None:\n" +
+"                rows=synth_scenes(); use_synth=True\n" +
+"        except Exception:\n" +
+"            rows=synth_scenes(); use_synth=True; reason='md2_open_fail'\n" +
+"    pairs=aggregate(rows)\n" +
+"    info=encode_blob(pairs,reason)\n" +
+"    t1=time.perf_counter_ns()\n" +
+"    info['encode_ns']=t1-t0; info['synth']=use_synth\n" +
+"    info['n_row']=len(rows); info['classifier']=CLASSIFIER\n" +
+"    return info\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        if magic!=b'PSAB' or ver!=1:\n" +
+"            raise ValueError(f'bad magic/ver: {magic} {ver}')\n" +
+"        self.n=n; self.pool_sz=pool_sz\n" +
+"        base=16\n" +
+"        self.offs_off=base\n" +
+"        self.lens_off=base+4*n\n" +
+"        self.scs_off =base+8*n\n" +
+"        self.pool_off=base+12*n\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(self.mv[self.offs_off:self.offs_off+4*n]))\n" +
+"        lens=array.array('I'); lens.frombytes(bytes(self.mv[self.lens_off:self.lens_off+4*n]))\n" +
+"        scs =array.array('I'); scs.frombytes(bytes(self.mv[self.scs_off :self.scs_off +4*n]))\n" +
+"        pool=bytes(self.mv[self.pool_off:self.pool_off+pool_sz])\n" +
+"        self.tokens=[pool[offs[i]:offs[i]+lens[i]] for i in range(n)]\n" +
+"        self.scs=scs\n" +
+"    def prefix_topk(self,prefix,k=10):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        ts=self.tokens\n" +
+"        s=bisect.bisect_left(ts,pb)\n" +
+"        e=bisect.bisect_left(ts,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        if e==s: return []\n" +
+"        if e-s<=k: idxs=list(range(s,e))\n" +
+"        else: idxs=heapq.nlargest(k,range(s,e),key=lambda i:self.scs[i])\n" +
+"        idxs.sort(key=lambda i:-self.scs[i])\n" +
+"        return [(self.tokens[i].decode('utf-8','replace'),int(self.scs[i])) for i in idxs]\n" +
+"    def linear_topk(self,prefix,k=10):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        cand=[i for i,t in enumerate(self.tokens) if t.startswith(pb)]\n" +
+"        if len(cand)<=k: idxs=cand\n" +
+"        else: idxs=heapq.nlargest(k,cand,key=lambda i:self.scs[i])\n" +
+"        idxs.sort(key=lambda i:-self.scs[i])\n" +
+"        return [(self.tokens[i].decode('utf-8','replace'),int(self.scs[i])) for i in idxs]\n" +
+"    def close(self):\n" +
+"        try: self.mv.release()\n" +
+"        except Exception: pass\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def bench():\n" +
+"    info=encode()\n" +
+"    tag=' [synth]' if info['synth'] else ''\n" +
+"    print(f'[encode]{tag} {info[\"encode_ns\"]/1e6:.1f}ms  rows={info[\"n_row\"]}  unique_labels={info[\"n\"]}  blob={fmt(info[\"blob_size\"])}  reason={info[\"reason\"]}  classifier={info[\"classifier\"]}')\n" +
+"    if info['n']==0:\n" +
+"        print('[bench] no labels — skip query phase'); return\n" +
+"    b=Blob(BIN)\n" +
+"    rng=random.Random(42)\n" +
+"    samples=[]\n" +
+"    for _ in range(100):\n" +
+"        i=rng.randrange(b.n)\n" +
+"        t=b.tokens[i].decode('utf-8','replace')\n" +
+"        plen=rng.choice([1,2,3,4])\n" +
+"        samples.append(t[:plen] if len(t)>=plen else t)\n" +
+"    rss_blob=rss()\n" +
+"    for p in samples[:5]: b.prefix_topk(p,10); b.linear_topk(p,10)\n" +
+"    t0=time.perf_counter(); h_bi=0\n" +
+"    for p in samples:\n" +
+"        r=b.prefix_topk(p,10); h_bi+=len(r)\n" +
+"    t1=time.perf_counter(); bi_us=(t1-t0)*1e6/len(samples)\n" +
+"    t0=time.perf_counter(); h_lin=0\n" +
+"    for p in samples:\n" +
+"        r=b.linear_topk(p,10); h_lin+=len(r)\n" +
+"    t1=time.perf_counter(); lin_us=(t1-t0)*1e6/len(samples)\n" +
+"    b.close()\n" +
+"    print(f'[query] 100 prefix-topK-10  hits linear={h_lin} bisect={h_bi}')\n" +
+"    print(f'  linear scan       : {lin_us:10.1f} us')\n" +
+"    print(f'  blob mmap + bisect: {bi_us :10.1f} us')\n" +
+"    if bi_us>0: print(f'  speedup: {lin_us/bi_us:6.1f}x')\n" +
+"    print(f'[lossless] hits equal: {h_lin==h_bi}')\n" +
+"    print(f'[rss] after blob loaded: {fmt(rss_blob)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode()\n" +
+"    tag=' [synth]' if info['synth'] else ''\n" +
+"    print(f'encoded {info[\"n\"]} labels (from {info[\"n_row\"]} rows) in {info[\"encode_ns\"]/1e6:.1f}ms → {BIN} ({fmt(info[\"blob_size\"])}) reason={info[\"reason\"]}{tag}')\n" +
+"elif mode=='bench':\n" +
+"    bench()\n" +
+"else:\n" +
+"    print('usage: encode|bench [Photos.sqlite]'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("photos_scenes_apbf")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".sqlite") || v.contains(".db") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/Pictures/Photos Library.photoslibrary/database/Photos.sqlite"
+        println("(default target: " + target + ")")
+    }
+    if file_exists(target) == false {
+        println("(target not found / TCC denied — using synthetic fallback)")
+        target = "__SYNTH__"
+    }
+    let tmp_py = "/tmp/photos_scenes_apbf_" + exec("date +%s%N").trim() + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "/usr/bin/perl -e 'alarm 120; exec @ARGV' /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = exec(cmd)
+    print(result)
+}
+
+run()

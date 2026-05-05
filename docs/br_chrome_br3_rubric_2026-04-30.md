@@ -96,6 +96,6 @@ C3-5 — **token surface drop** — `(?i)token|password|secret|auth|jwt|bearer` 
 
 ## §F. Verdict
 
-- BR3-h Σ = **372/400** ≥ 350 → **IMPL** (`modules/filters/data/chrome_localstorage_shbf.hexa`).
+- BR3-h Σ = **372/400** ≥ 350 → **IMPL** (`filters/module/data/chrome_localstorage_shbf.hexa`).
 - Bench: `tool/bench/bench_br3_chrome_localstorage.hexa`.
 - Expected ROI: encode 30–60ms (synth 5000), lookup ~5μs prefix-count, speedup vs naive linear ≥1000×.

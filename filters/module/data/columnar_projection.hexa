@@ -1,0 +1,81 @@
+// filters/module/data/columnar_projection.hexa — JSONL 컬럼 투영 필터.
+//
+// raw#9 hexa-only · raw#11 snake_case · py 0
+//
+// 기능: JSONL 의 단일 필드를 추출해 컬럼 파일로 저장. 후속 카운트/필터
+// 쿼리는 컬럼만 스캔하면 되므로 jq full-scan 대비 7x~9x 가속 (perf_lab P3
+// 결과 — 다른 필드 / 코퍼스에 따라 2x~9x).
+//
+// 1회 prep 비용 (jq 1패스) 후 모든 후속 쿼리는 작은 컬럼 파일에서 수행.
+// 정식 사용 시: 같은 jsonl 에 반복 쿼리하는 워크로드에서 컬럼 캐시 유지.
+//
+// 사용:
+//   hexa filters/module/data/columnar_projection.hexa <jsonl-path> [<field>]
+//
+// 기본 field: "parentUuid". output 경로: <input>.<field>.col
+// 출력은 line-per-record (레코드에 필드 없으면 빈 줄).
+
+fn shq(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn shell_int(cmd: str) -> int {
+    let out = exec(cmd).trim()
+    if out == "" { return 0 }
+    return to_int(out)
+}
+
+fn fmt_kb(bytes: int) -> str {
+    if bytes >= 1048576 { return to_string(bytes / 1048576) + " MB" }
+    if bytes >= 1024    { return to_string(bytes / 1024) + " KB" }
+    return to_string(bytes) + " B"
+}
+
+pub fn columnar_extract(jsonl_path: str, field: str, out_path: str) -> int {
+    // jq 표현식: ".<field> // empty" — 비표준 키도 dot 으로 접근.
+    // tostring 으로 number/object 도 안전하게 직렬화 (column 은 line-oriented).
+    let jq_expr = "(." + field + " // empty) | tostring"
+    let t0 = shell_int("date +%s%N")
+    let _ = exec("jq -r " + shq(jq_expr) + " " + shq(jsonl_path) + " > " + shq(out_path) + " 2>/dev/null")
+    let t1 = shell_int("date +%s%N")
+    return (t1 - t0) / 1000000  // ms
+}
+
+fn run() {
+    let argv = args()
+    let mut path = ""
+    let mut field = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        i = i + 1
+        if v == "" { continue }
+        if v.contains(".hexa-cache") { continue }
+        if v.ends_with(".hexa") { continue }
+        if v.ends_with(".jsonl") { path = v }
+        else if path != "" && field == "" { field = v }
+    }
+    if field == "" { field = "parentUuid" }
+    if path == "" {
+        println("usage: hexa columnar_projection.hexa <jsonl-path> [<field>]")
+        println("  default field: parentUuid")
+        return
+    }
+    if file_exists(path) == false {
+        println("ERROR: not found: " + path)
+        return
+    }
+    let out_path = path + "." + field + ".col"
+    let raw_size = shell_int("wc -c < " + shq(path))
+    let prep_ms = columnar_extract(path, field, out_path)
+    let col_size = shell_int("wc -c < " + shq(out_path))
+    let n_records = shell_int("wc -l < " + shq(out_path))
+    let n_nonempty = shell_int("grep -c . " + shq(out_path))
+    println("columnar_projection: " + path + " field=" + field)
+    println("  raw=" + fmt_kb(raw_size) + "  col=" + fmt_kb(col_size) + "  ratio=" + to_string((col_size * 100) / raw_size) + "%")
+    println("  records=" + to_string(n_records) + "  non_empty=" + to_string(n_nonempty))
+    println("  prep=" + to_string(prep_ms) + " ms")
+    println("  output: " + out_path)
+}
+
+run()
