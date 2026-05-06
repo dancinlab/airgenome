@@ -462,11 +462,9 @@ static void airgenome_launcher_post_paste_keystroke(void) {
     if (src) CFRelease(src);
 }
 
-// Copy snippet content to the general pasteboard. Currently disabled at
-// the call site (raw 168 mandate 2026-05-04 "클립보드 복사 off"); kept
-// here so re-enabling is a one-line uncomment. __attribute__((unused))
-// silences -Wunused-function while the call site is commented out.
-__attribute__((unused))
+// Copy snippet content to the general pasteboard so the subsequent
+// ⌘V synthesis lands the snippet itself in the prior frontmost app
+// (without this, ⌘V would paste whatever the user previously copied).
 static void airgenome_launcher_copy_snippet_to_pasteboard(NSString *content) {
     NSPasteboard *pb = [NSPasteboard generalPasteboard];
     [pb clearContents];
@@ -1787,9 +1785,7 @@ void airgenome_settings_show_manager(void) {
         if (g_launcher_snippet_results.count > 0) {
             NSDictionary *top = g_launcher_snippet_results[0];
             NSString *content = top[@"content"] ?: @"";
-            // 클립보드 복사 off (raw 168 mandate 2026-05-04). Uncomment
-            // to restore the original two-step copy+paste UX.
-            // airgenome_launcher_copy_snippet_to_pasteboard(content);
+            airgenome_launcher_copy_snippet_to_pasteboard(content);
             NSLog(@"[airgenome_launcher] snippet paste: @%@ (%lu chars)",
                   top[@"name"] ?: @"?", (unsigned long)content.length);
             airgenome_launcher_hide_overlay();
@@ -2247,8 +2243,8 @@ static NSInteger airgenome_launcher_match_score(NSString *appName, NSString *que
 
 // Recent-launch path set, populated from launcher.jsonl on show_overlay.
 // Each ".path" value from successful launches inside last 50 rows; matching
-// apps get a +200 boost in match_score (raw 168 minimum-viable: substring
-// match on JSONL, no full JSON parser).
+// apps get a small boost in search_apps (just enough to break ties between
+// same-length matches; substring scan on JSONL, no full JSON parser).
 static NSSet<NSString *> *g_launcher_recent_set = nil;
 
 // App icon cache: path → NSImage. Avoids redundant iconForFile fetch when
@@ -2404,10 +2400,13 @@ NSArray<NSURL *> *airgenome_launcher_search_apps(NSString *query) {
         NSString *name = [[url lastPathComponent] stringByDeletingPathExtension];
         NSInteger s = airgenome_launcher_match_score(name, query);
         if (s > 0) {
-            // Recent-launch boost: +200 if app launched within last 50 rows.
+            // Recent-launch boost: small enough to break ties between
+            // same-length matches without overpowering the length
+            // tiebreaker (1000 - len). +200 displaced shorter snippets
+            // — e.g. "Passwords" beating a "pass" snippet on query "pas".
             if (g_launcher_recent_set
                 && [g_launcher_recent_set containsObject:url.path]) {
-                s += 200;
+                s += 3;
             }
             [scored addObject:@{ @"url": url, @"score": @(s) }];
         }
