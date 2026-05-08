@@ -770,97 +770,39 @@ BOOL airgenome_hotkey_handle_default_keydown(CGEventRef event) {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in: bare 'p' in Safari on a YouTube tab → toggle Picture-in-Picture.
+// Built-in: ⌥P (option+P) globally → toggle YouTube PiP in Safari, regardless
+// of frontmost app.
 // ---------------------------------------------------------------------------
 //
-// Canonical method (Apple WebKit JS API): inject `webkitSetPresentationMode`
-// onto the `<video>` element via `do JavaScript … in document 1`. YouTube
-// installs its own `webkitpresentationmodechanged` listener that immediately
-// reverts PiP back to inline; we suppress it with a capture-phase
-// stopPropagation handler installed BEFORE the mode change. Same pattern
-// used by Keyboard Maestro / Siri Shortcuts macros (MacRumors / Joe Seifi /
-// Apple Developer docs).
+// Use case: user is coding in Void (or any other app) while a YouTube tab is
+// open in Safari. ⌥P toggles PiP without ⌘Tab-ing to Safari.
 //
-// Requires Safari → Develop → "Allow JavaScript from Apple Events" (one-time).
-// Without it `do JavaScript` returns an error; we still consume the keystroke
-// so YouTube's own 'p'=previous-video shortcut doesn't fire.
+// Why ⌥P (and not bare 'p'):
+//   bare 'p' globally would hijack every 'p' keystroke in any text input
+//   (Void editor, terminal, search boxes). ⌥P maps to "π" glyph input on
+//   default macOS layouts — almost never typed in practice. Single modifier
+//   keeps the keystroke light vs ⌘⌥P / ⌃⌘P.
 //
-// Guards (any fail → pass-through, do not consume):
-//   1. key == 'p', no Cmd/Ctrl/Opt/Shift modifiers
-//   2. frontmost bundle == com.apple.Safari
-//   3. Safari focused element role NOT in {AXTextField, AXTextArea, AXComboBox}
-//      — protects URL bar / search box / page text inputs
-//   4. front window URL contains "youtube.com" — narrows scope to YouTube tabs
-//      so bare 'p' on other sites still types normally
+// Mechanism:
+//   AppleScript iterates Safari's open documents (across all windows), finds
+//   the first one whose URL contains "youtube.com", and injects the canonical
+//   webkitSetPresentationMode toggle JS into it. The page-context JS installs
+//   a capture-phase stopPropagation guard against YouTube's own
+//   webkitpresentationmodechanged handler (which would otherwise revert PiP
+//   back to inline immediately) — same pattern as MacRumors / vordenken's
+//   AutoPiP content.js / Joe Seifi.
 //
-// All AX queries are in-process (no fork). osascript is dispatched async on a
-// background queue so the tap callback returns immediately.
-
-static BOOL pip_focused_is_text(pid_t pid) {
-    AXUIElementRef app = AXUIElementCreateApplication(pid);
-    if (!app) return NO;
-    CFTypeRef focused = NULL;
-    AXError e = AXUIElementCopyAttributeValue(
-        app, kAXFocusedUIElementAttribute, &focused);
-    CFRelease(app);
-    if (e != kAXErrorSuccess || !focused) {
-        if (focused) CFRelease(focused);
-        return NO;
-    }
-    CFTypeRef role = NULL;
-    e = AXUIElementCopyAttributeValue(
-        (AXUIElementRef)focused, kAXRoleAttribute, &role);
-    CFRelease(focused);
-    if (e != kAXErrorSuccess || !role) {
-        if (role) CFRelease(role);
-        return NO;
-    }
-    BOOL isText = NO;
-    if (CFGetTypeID(role) == CFStringGetTypeID()) {
-        CFStringRef r = (CFStringRef)role;
-        if (CFStringCompare(r, kAXTextFieldRole, 0) == kCFCompareEqualTo
-         || CFStringCompare(r, kAXTextAreaRole,  0) == kCFCompareEqualTo
-         || CFStringCompare(r, kAXComboBoxRole,  0) == kCFCompareEqualTo) {
-            isText = YES;
-        }
-    }
-    CFRelease(role);
-    return isText;
-}
-
-static BOOL pip_safari_window_is_youtube(pid_t pid) {
-    AXUIElementRef app = AXUIElementCreateApplication(pid);
-    if (!app) return NO;
-    CFTypeRef win = NULL;
-    AXError e = AXUIElementCopyAttributeValue(
-        app, kAXFocusedWindowAttribute, &win);
-    CFRelease(app);
-    if (e != kAXErrorSuccess || !win) {
-        if (win) CFRelease(win);
-        return NO;
-    }
-    CFTypeRef doc = NULL;
-    e = AXUIElementCopyAttributeValue(
-        (AXUIElementRef)win, kAXDocumentAttribute, &doc);
-    CFRelease(win);
-    if (e != kAXErrorSuccess || !doc) {
-        if (doc) CFRelease(doc);
-        return NO;
-    }
-    BOOL hit = NO;
-    if (CFGetTypeID(doc) == CFStringGetTypeID()) {
-        CFRange found = CFStringFind(
-            (CFStringRef)doc, CFSTR("youtube.com"), 0);
-        hit = (found.location != kCFNotFound);
-    }
-    CFRelease(doc);
-    return hit;
-}
+// No-op cases (handler still consumes ⌥P to keep behavior consistent):
+//   - Safari not running                  → osascript reports "safari not running"
+//   - Safari running but no YouTube tab   → osascript reports "no youtube tab"
+//   - Safari has YouTube tab but no <video>→ JS no-op silently
+//
+// Required setup (one-time): Safari → Develop → "Allow JavaScript from Apple
+// Events". Without it osascript returns rc=1 + AppleEvent permission prompt.
 
 static void pip_run_osascript_async(void) {
-    // JS: install capture-phase stopPropagation guard (defeats YouTube's
-    // own webkitpresentationmodechanged handler that snaps PiP back to
-    // inline), then toggle presentation mode based on current state.
+    // page-context JS — capture-phase stopPropagation defeats YouTube's
+    // webkitpresentationmodechanged listener that snaps PiP back to inline.
     static NSString *const kJS =
         @"var v=document.querySelector('video');"
         @"if(v&&v.webkitSupportsPresentationMode){"
@@ -872,27 +814,50 @@ static void pip_run_osascript_async(void) {
         @"}";
     NSString *escaped = [kJS stringByReplacingOccurrencesOfString:@"\""
                                                        withString:@"\\\""];
-    NSString *script =
-        [NSString stringWithFormat:
-            @"tell application \"Safari\" to "
-            @"do JavaScript \"%@\" in document 1",
-            escaped];
+    // 'application "Safari" is running' guard avoids launching Safari just to
+    // check; iterate documents across all windows; first youtube.com tab wins.
+    NSString *script = [NSString stringWithFormat:
+        @"if application \"Safari\" is running then\n"
+        @"  tell application \"Safari\"\n"
+        @"    repeat with d in documents\n"
+        @"      try\n"
+        @"        if URL of d contains \"youtube.com\" then\n"
+        @"          do JavaScript \"%@\" in d\n"
+        @"          return \"ok\"\n"
+        @"        end if\n"
+        @"      end try\n"
+        @"    end repeat\n"
+        @"    return \"no youtube tab\"\n"
+        @"  end tell\n"
+        @"end if\n"
+        @"return \"safari not running\"",
+        escaped];
     dispatch_async(
         dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         @autoreleasepool {
             NSTask *t = [NSTask new];
             t.launchPath = @"/usr/bin/osascript";
             t.arguments = @[@"-e", script];
-            t.standardOutput = [NSPipe pipe];
+            NSPipe *outPipe = [NSPipe pipe];
+            t.standardOutput = outPipe;
             t.standardError = [NSPipe pipe];
             @try {
                 [t launch];
                 [t waitUntilExit];
+                NSData *data =
+                    [outPipe.fileHandleForReading readDataToEndOfFile];
+                NSString *result =
+                    [[[NSString alloc] initWithData:data
+                                           encoding:NSUTF8StringEncoding]
+                     stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
                 if (t.terminationStatus != 0) {
                     NSLog(@"[airgenome_pip] osascript rc=%d "
                           @"(enable Safari → Develop → "
                           @"Allow JavaScript from Apple Events)",
                           t.terminationStatus);
+                } else {
+                    NSLog(@"[airgenome_pip] osascript ok: %@", result);
                 }
             } @catch (NSException *ex) {
                 NSLog(@"[airgenome_pip] osascript launch failed: %@", ex);
@@ -906,24 +871,15 @@ BOOL airgenome_hotkey_handle_pip_keydown(CGEventRef event) {
     int64_t kc = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
     if (kc != kVK_ANSI_P) return NO;
 
+    // Require exactly ⌥ (Option) — no Cmd/Ctrl/Shift. Other combos pass
+    // through so ⌘P (print), ⌃P, etc. retain their normal behavior.
     CGEventFlags relevant = CGEventGetFlags(event)
         & (kCGEventFlagMaskControl | kCGEventFlagMaskCommand
            | kCGEventFlagMaskAlternate | kCGEventFlagMaskShift);
-    if (relevant != 0) return NO;
-
-    NSRunningApplication *front =
-        [[NSWorkspace sharedWorkspace] frontmostApplication];
-    if (!front) return NO;
-    if (![front.bundleIdentifier isEqualToString:@"com.apple.Safari"]) {
-        return NO;
-    }
-
-    pid_t pid = front.processIdentifier;
-    if (pip_focused_is_text(pid)) return NO;
-    if (!pip_safari_window_is_youtube(pid)) return NO;
+    if (relevant != kCGEventFlagMaskAlternate) return NO;
 
     pip_run_osascript_async();
-    NSLog(@"[airgenome_pip] 'p' → Safari/YouTube PiP toggle");
+    NSLog(@"[airgenome_pip] ⌥P → Safari/YouTube PiP toggle (global)");
     return YES;
 }
 
