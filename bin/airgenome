@@ -1073,7 +1073,7 @@ EOF
 # ============================================================
 
 main() {
-    local sub="${1:-help}"
+    local sub="${1:-init}"
     shift || true
     case "$sub" in
         init|start)    cmd_init ;;
