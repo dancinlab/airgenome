@@ -1,0 +1,39 @@
+# com.airgenome.supervisor — child job table
+# ============================================
+# One TSV row per child. Columns are TAB-separated. Lines starting with
+# '#' and blank lines are ignored. Edit this file to add/remove children;
+# `airgenome-supervisor reload` (SIGHUP) re-reads it without process restart.
+#
+# Columns:
+#   1. label       — short id (used in logs; e.g. "tap"). Must be unique.
+#   2. mode        — keepalive | interval:<sec> | watchpaths
+#   3. workdir     — chdir before exec
+#   4. stdout      — append child stdout here
+#   5. stderr      — append child stderr here
+#   6. envfile     — path to a shell-source-able env file (or "-" for none)
+#   7. watchpaths  — colon-separated paths (mode=watchpaths only, else "-")
+#   8. throttle    — minimum seconds between (re)starts (back-pressure floor)
+#   9. cmd         — the command line; whitespace-split into argv
+#
+# Restart policy (mode=keepalive):
+#   - exponential backoff: throttle, 2x, 4x, ... capped at 300s
+#   - reset to throttle after >60s of clean uptime
+#   - exit code 0 with KeepAliveOnSuccess=false semantics is honored only
+#     for the "tap" job (its plist sets KeepAlive.SuccessfulExit=false);
+#     other jobs always restart.
+#
+# Migrated from these legacy LaunchAgents:
+#   com.airgenome                  → label=run            (KeepAlive)
+#   com.airgenome.hook-watch       → label=hook-watch     (StartInterval=5)
+#   com.airgenome.settings-guard   → label=settings-guard (WatchPaths)
+#   com.airgenome.tap              → label=tap            (KeepAlive crash-only)
+#   com.airgenome.tg-bot           → label=tg-bot         (KeepAlive)
+#   com.airgenome.vacuum_watcher   → label=vacuum-watcher (StartInterval=3600)
+#
+# label	mode	workdir	stdout	stderr	envfile	watchpaths	throttle	cmd
+run	keepalive	/Users/ghost/core/airgenome	/Users/ghost/.airgenome/supervisor.stdout.log	/Users/ghost/.airgenome/supervisor.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/run.env	-	10	/bin/bash /Users/ghost/core/airgenome/bin/airgenome run
+hook-watch	interval:5	/Users/ghost/.hx/packages/airgenome	/Users/ghost/.hx/packages/airgenome/.hook-watch.stdout.log	/Users/ghost/.hx/packages/airgenome/.hook-watch.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/hook-watch.env	-	5	/Users/ghost/.hx/packages/airgenome/build/hook watch
+settings-guard	watchpaths	/Users/ghost/.hx/packages/airgenome	/Users/ghost/.hx/packages/airgenome/forge/settings_guard.stdout.log	/Users/ghost/.hx/packages/airgenome/forge/settings_guard.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/settings-guard.env	/Users/ghost/.claude/settings.json	5	/Users/ghost/.hx/bin/hexa run /Users/ghost/.hx/packages/airgenome/tool/settings_guard.hexa
+tap	keepalive-crashonly	-	/Users/ghost/Library/Logs/airgenome.app/airgenome.log	/Users/ghost/Library/Logs/airgenome.app/airgenome.err	/Users/ghost/core/airgenome/config/launchd/envs/tap.env	-	10	/Applications/airgenome.app/Contents/MacOS/airgenome
+tg-bot	keepalive	/Users/ghost/.hx/packages/airgenome	/Users/ghost/.airgenome/tg_bot-core.stdout.log	/Users/ghost/.airgenome/tg_bot-core.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/tg-bot.env	-	15	/Users/ghost/.hx/packages/airgenome/bin/tg_bot-core run
+vacuum-watcher	interval:3600	/Users/ghost/core/airgenome	/Users/ghost/.airgenome/vacuum_watcher.stdout.log	/Users/ghost/.airgenome/vacuum_watcher.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/vacuum-watcher.env	-	300	/Users/ghost/core/hexa-lang/hexa run /Users/ghost/core/airgenome/filters/module/data/vacuum_watcher.hexa

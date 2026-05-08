@@ -1,0 +1,641 @@
+#!/usr/bin/env bash
+# bin/airgenome-supervisor — single-process child supervisor (mini launchd)
+#
+# Replaces 6 legacy LaunchAgents (com.airgenome, com.airgenome.hook-watch,
+# com.airgenome.settings-guard, com.airgenome.tap, com.airgenome.tg-bot,
+# com.airgenome.vacuum_watcher) with one launchd job (com.airgenome.supervisor)
+# that fork/execs each child as an independent OS process. A child crash does
+# not affect siblings; the supervisor itself is supervised by launchd.
+#
+# Architecture: fork/exec, NOT threads. Each child runs in its own subshell
+# wrapper that loops according to mode:
+#   - keepalive            : restart on any exit. Exponential backoff.
+#   - keepalive-crashonly  : restart on non-zero exit only (mirrors the tap plist
+#                            KeepAlive.SuccessfulExit=false).
+#   - interval:<sec>       : run, wait <sec>, run again. Throttled.
+#   - watchpaths           : run once at startup, then re-run when any of
+#                            the configured paths changes (fswatch preferred,
+#                            stat-mtime polling fallback).
+#
+# Job table: config/launchd/supervisor.jobs.tsv (TAB-separated, '#' comments).
+#   Reload: kill -HUP <supervisor-pid> (re-reads TSV, diffs against current
+#           wrapper PIDs, starts new / stops removed; existing wrappers keep
+#           running children unchanged unless their cmd hash changed).
+#
+# Signals:
+#   TERM, INT  → graceful shutdown: SIGTERM each wrapper, give them
+#                SHUTDOWN_GRACE_SEC, then SIGKILL stragglers, exit 0.
+#   HUP        → reload job table.
+#   USR1       → dump status (per-wrapper PID, child PID, restart count,
+#                last exit, current backoff) to stderr.
+#
+# Logging: supervisor itself logs to stderr (which launchd captures via
+# StandardErrorPath in com.airgenome.supervisor.plist). Each child's stdout
+# /stderr go to the paths configured in the TSV.
+
+set -u
+
+# ---------- paths / constants ----------------------------------------------
+
+AIRGENOME_ROOT="${AIRGENOME_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+JOBS_TSV="${AIRGENOME_SUPERVISOR_JOBS:-$AIRGENOME_ROOT/config/launchd/supervisor.jobs.tsv}"
+STATE_DIR="${AIRGENOME_SUPERVISOR_STATE:-$HOME/.airgenome/supervisor}"
+PID_FILE="$STATE_DIR/supervisor.pid"
+
+SHUTDOWN_GRACE_SEC=5
+BACKOFF_CAP_SEC=300
+BACKOFF_RESET_AFTER_SEC=60   # uptime threshold to reset backoff to throttle
+WATCH_POLL_SEC=2             # stat-poll fallback when fswatch missing
+FSWATCH_BIN="$(command -v fswatch 2>/dev/null || true)"
+
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+# ---------- logging --------------------------------------------------------
+
+_ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { printf '[supervisor %s] %s\n' "$(_ts)" "$*" >&2; }
+
+# ---------- job table ------------------------------------------------------
+#
+# Parsed into 9 parallel arrays (bash 3.2 — no associative arrays). The job
+# count is ~10 max, so linear search by label is fine. We keep wrapper state
+# in three more parallel arrays indexed the same way as J_*.
+#
+# Index invariant: WRAP_PID[i] / WRAP_HASH[i] / WRAP_RESTARTS[i] correspond
+# to J_LABEL[i]. On reload we rebuild J_* arrays AND re-establish the WRAP_*
+# arrays via lookup-by-label so wrapper PIDs follow the new index slot.
+
+J_LABEL=()
+J_MODE=()
+J_WORKDIR=()
+J_STDOUT=()
+J_STDERR=()
+J_ENVFILE=()
+J_WATCHPATHS=()
+J_THROTTLE=()
+J_CMD=()
+
+WRAP_PID=()       # i -> wrapper subshell pid (0 = not running)
+WRAP_HASH=()      # i -> hash of mode|workdir|cmd|envfile|watchpaths
+WRAP_RESTARTS=()  # i -> respawn counter
+
+parse_jobs() {
+    J_LABEL=()
+    J_MODE=()
+    J_WORKDIR=()
+    J_STDOUT=()
+    J_STDERR=()
+    J_ENVFILE=()
+    J_WATCHPATHS=()
+    J_THROTTLE=()
+    J_CMD=()
+
+    if [ ! -f "$JOBS_TSV" ]; then
+        log "FATAL jobs table missing: $JOBS_TSV"
+        return 1
+    fi
+
+    local idx=0
+    local raw label mode workdir stdout stderr envfile watchpaths throttle cmd
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        # strip leading whitespace for comment/blank detection only
+        case "$raw" in
+            ''|\#*|' '*\#*) continue ;;
+        esac
+        # 9 TAB fields, last one is "rest of line" (cmd may contain spaces)
+        IFS=$'\t' read -r label mode workdir stdout stderr envfile watchpaths throttle cmd <<<"$raw"
+        if [ -z "${label:-}" ] || [ -z "${cmd:-}" ]; then
+            log "WARN skipping malformed row: $raw"
+            continue
+        fi
+        if [ -n "$(label_to_index "$label")" ]; then
+            log "WARN duplicate label '$label' — keeping first, dropping later"
+            continue
+        fi
+        J_LABEL[$idx]="$label"
+        J_MODE[$idx]="$mode"
+        J_WORKDIR[$idx]="$workdir"
+        J_STDOUT[$idx]="$stdout"
+        J_STDERR[$idx]="$stderr"
+        J_ENVFILE[$idx]="$envfile"
+        J_WATCHPATHS[$idx]="$watchpaths"
+        J_THROTTLE[$idx]="$throttle"
+        J_CMD[$idx]="$cmd"
+        idx=$((idx + 1))
+    done < "$JOBS_TSV"
+
+    log "parsed $idx job(s) from $JOBS_TSV"
+}
+
+# Linear lookup label → index, prints index or empty.
+label_to_index() {
+    local target="$1" i
+    for i in "${!J_LABEL[@]}"; do
+        if [ "${J_LABEL[$i]}" = "$target" ]; then
+            printf '%s' "$i"
+            return 0
+        fi
+    done
+    return 1
+}
+
+job_hash() {
+    local i=$1
+    printf '%s|%s|%s|%s|%s' \
+        "${J_MODE[i]}" "${J_WORKDIR[i]}" "${J_CMD[i]}" \
+        "${J_ENVFILE[i]}" "${J_WATCHPATHS[i]}" \
+      | shasum -a 1 | awk '{print $1}'
+}
+
+# ---------- wrapper (runs as separate subshell, one per child) -------------
+
+# All wrapper logic is in the function below. It is invoked under
+# `( wrapper_main "$i" ) &` so the subshell pid we capture in $! IS the
+# wrapper pid. The wrapper then fork/execs the actual child as its own
+# subprocess and tracks/restarts it.
+
+wrapper_main() {
+    local i="$1"
+    local label="${J_LABEL[i]}"
+    local mode="${J_MODE[i]}"
+    local workdir="${J_WORKDIR[i]}"
+    local out="${J_STDOUT[i]}"
+    local err="${J_STDERR[i]}"
+    local envfile="${J_ENVFILE[i]}"
+    local watch="${J_WATCHPATHS[i]}"
+    local throttle="${J_THROTTLE[i]}"
+    local cmd="${J_CMD[i]}"
+
+    # ensure log dirs
+    mkdir -p "$(dirname "$out")" "$(dirname "$err")" 2>/dev/null || true
+
+    # workdir: '-' means inherit
+    if [ "$workdir" != "-" ] && [ -d "$workdir" ]; then
+        cd "$workdir" || { wrap_log "$label" "FATAL chdir failed: $workdir"; return 1; }
+    fi
+
+    # envfile: '-' means none. Source in subshell isolation (we are already
+    # in a subshell because parent forked us with '&').
+    if [ "$envfile" != "-" ] && [ -f "$envfile" ]; then
+        # shellcheck disable=SC1090
+        . "$envfile" || wrap_log "$label" "WARN envfile load failed: $envfile"
+    fi
+
+    local child_pid=0
+    # SIGTERM to wrapper → forward to child, kill any helper subprocs (fswatch,
+    # sleep) that we may have spawned, then exit.
+    trap '
+        if [ "$child_pid" -gt 0 ] && kill -0 "$child_pid" 2>/dev/null; then
+            kill -TERM "$child_pid" 2>/dev/null || true
+            sleep 1
+            kill -KILL "$child_pid" 2>/dev/null || true
+        fi
+        # nuke any other descendants (fswatch / sleep / inner shells)
+        pkill -P $$ 2>/dev/null || true
+        exit 0
+    ' TERM INT
+
+    case "$mode" in
+        keepalive|keepalive-crashonly)
+            wrap_keepalive "$label" "$mode" "$throttle" "$out" "$err" "$cmd"
+            ;;
+        interval:*)
+            local sec="${mode#interval:}"
+            wrap_interval "$label" "$sec" "$throttle" "$out" "$err" "$cmd"
+            ;;
+        watchpaths)
+            wrap_watchpaths "$label" "$watch" "$throttle" "$out" "$err" "$cmd"
+            ;;
+        *)
+            wrap_log "$label" "FATAL unknown mode: $mode"
+            return 2
+            ;;
+    esac
+}
+
+wrap_log() {
+    # Wrapper log lines go to supervisor stderr (so launchd captures them).
+    # We tag with [wrap label] to disambiguate from child output.
+    local label="$1"; shift
+    printf '[wrap %s %s] %s\n' "$label" "$(_ts)" "$*" >&2
+}
+
+# Spawn child once, exec'd via /bin/sh -c so the cmd column may contain
+# argv splitting. Returns child pid via the global child_pid (in wrapper scope).
+spawn_child() {
+    local out="$1" err="$2" cmd="$3"
+    # use exec inside the launched shell so child_pid IS the leaf process
+    /bin/sh -c "exec $cmd" >>"$out" 2>>"$err" &
+    child_pid=$!
+}
+
+wrap_keepalive() {
+    local label="$1" mode="$2" throttle="$3" out="$4" err="$5" cmd="$6"
+    local backoff="$throttle"
+    local started_at exit_rc dur
+    while true; do
+        wrap_log "$label" "spawn (backoff=${backoff}s mode=$mode)"
+        started_at=$(date +%s)
+        spawn_child "$out" "$err" "$cmd"
+        wait "$child_pid" 2>/dev/null
+        exit_rc=$?
+        child_pid=0
+        dur=$(( $(date +%s) - started_at ))
+        wrap_log "$label" "child exited rc=$exit_rc dur=${dur}s"
+
+        # crash-only mode: rc==0 means clean exit, do NOT restart (mirror
+        # com.airgenome.tap KeepAlive.SuccessfulExit=false). Wrapper exits.
+        if [ "$mode" = "keepalive-crashonly" ] && [ "$exit_rc" -eq 0 ]; then
+            wrap_log "$label" "clean exit + crash-only mode → wrapper stop"
+            return 0
+        fi
+
+        # backoff math: reset if uptime was long; else double, capped.
+        if [ "$dur" -ge "$BACKOFF_RESET_AFTER_SEC" ]; then
+            backoff="$throttle"
+        else
+            backoff=$(( backoff * 2 ))
+            [ "$backoff" -gt "$BACKOFF_CAP_SEC" ] && backoff="$BACKOFF_CAP_SEC"
+        fi
+        sleep "$backoff"
+    done
+}
+
+wrap_interval() {
+    local label="$1" sec="$2" throttle="$3" out="$4" err="$5" cmd="$6"
+    local started_at exit_rc dur sleep_for
+    # Mirrors launchd StartInterval semantics: wait `sec` between starts.
+    # Throttle is the *minimum* gap; if a run takes longer than `sec`, we
+    # still gap by throttle before next spawn.
+    while true; do
+        wrap_log "$label" "spawn (interval=${sec}s)"
+        started_at=$(date +%s)
+        spawn_child "$out" "$err" "$cmd"
+        wait "$child_pid" 2>/dev/null
+        exit_rc=$?
+        child_pid=0
+        dur=$(( $(date +%s) - started_at ))
+        wrap_log "$label" "child exited rc=$exit_rc dur=${dur}s"
+        # next-tick computation: prefer interval; floor at throttle
+        sleep_for="$sec"
+        [ "$sleep_for" -lt "$throttle" ] && sleep_for="$throttle"
+        sleep "$sleep_for"
+    done
+}
+
+wrap_watchpaths() {
+    local label="$1" watch="$2" throttle="$3" out="$4" err="$5" cmd="$6"
+    local IFS=:
+    # shellcheck disable=SC2206
+    local paths=( $watch )
+    IFS=$' \t\n'
+
+    if [ ${#paths[@]} -eq 0 ] || [ -z "${paths[0]}" ]; then
+        wrap_log "$label" "FATAL watchpaths mode with no paths"
+        return 2
+    fi
+
+    # Initial RunAtLoad=true equivalent (the legacy plist sets it).
+    _watchpaths_run_once() {
+        wrap_log "$label" "spawn (trigger=$1)"
+        local s; s=$(date +%s)
+        spawn_child "$out" "$err" "$cmd"
+        wait "$child_pid" 2>/dev/null
+        local rc=$?; child_pid=0
+        wrap_log "$label" "child exited rc=$rc dur=$(( $(date +%s) - s ))s"
+    }
+
+    _watchpaths_run_once "initial"
+
+    if [ -n "$FSWATCH_BIN" ]; then
+        # fswatch streams one line per change event. We respect throttle by
+        # debouncing — drop events that arrive within `throttle` of the last
+        # spawn.
+        local last_run; last_run=$(date +%s)
+        # -0 NUL-separated, -l latency, -r recursive (off by default; we want
+        # exact paths). Run as foreground; trap will terminate it.
+        "$FSWATCH_BIN" -l 0.5 "${paths[@]}" 2>/dev/null | while IFS= read -r changed; do
+            local now; now=$(date +%s)
+            if [ $(( now - last_run )) -lt "$throttle" ]; then
+                continue
+            fi
+            _watchpaths_run_once "$changed"
+            last_run=$(date +%s)
+        done
+    else
+        # Polling fallback. mtime snapshot of every watched path.
+        local snap_old snap_new
+        snap_old="$(_watch_snapshot "${paths[@]}")"
+        local last_run; last_run=$(date +%s)
+        while true; do
+            sleep "$WATCH_POLL_SEC"
+            snap_new="$(_watch_snapshot "${paths[@]}")"
+            if [ "$snap_new" != "$snap_old" ]; then
+                local now; now=$(date +%s)
+                if [ $(( now - last_run )) -ge "$throttle" ]; then
+                    _watchpaths_run_once "stat-poll"
+                    last_run=$(date +%s)
+                fi
+                snap_old="$snap_new"
+            fi
+        done
+    fi
+}
+
+_watch_snapshot() {
+    # stat -f mtime for each path; missing path → "-". Concatenate.
+    local p out=""
+    for p in "$@"; do
+        if [ -e "$p" ]; then
+            out="$out$(stat -f '%m' "$p" 2>/dev/null || echo -):"
+        else
+            out="$out-:"
+        fi
+    done
+    printf '%s' "$out"
+}
+
+# ---------- supervisor lifecycle -------------------------------------------
+#
+# bash 3.2-compatible bookkeeping: WRAP_PID/WRAP_HASH/WRAP_RESTARTS are
+# parallel indexed arrays — same index slot as J_*. WRAP_PID[i]=0 means
+# "no wrapper running for slot i". On SIGCHLD or polling tick, we walk
+# every slot and respawn dead ones.
+
+start_wrapper() {
+    local i="$1"
+    local label="${J_LABEL[$i]}"
+    # Subshell ensures parent does not inherit wrapper traps / cwd / env.
+    ( wrapper_main "$i" ) &
+    local pid=$!
+    WRAP_PID[$i]="$pid"
+    WRAP_HASH[$i]="$(job_hash "$i")"
+    : "${WRAP_RESTARTS[$i]:=0}"
+    log "started wrapper '$label' pid=$pid mode=${J_MODE[$i]}"
+}
+
+stop_wrapper() {
+    local i="$1"
+    local label="${J_LABEL[$i]:-?}"
+    local pid="${WRAP_PID[$i]:-0}"
+    if [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null; then
+        log "stopping wrapper '$label' pid=$pid"
+        kill -TERM "$pid" 2>/dev/null || true
+        local n=0
+        while [ "$n" -lt "$SHUTDOWN_GRACE_SEC" ] && kill -0 "$pid" 2>/dev/null; do
+            sleep 1
+            n=$((n + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            log "wrapper '$label' did not exit in ${SHUTDOWN_GRACE_SEC}s — SIGKILL"
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    fi
+    WRAP_PID[$i]=0
+    WRAP_HASH[$i]=""
+}
+
+start_all() {
+    local i
+    for i in "${!J_LABEL[@]}"; do
+        start_wrapper "$i"
+    done
+}
+
+stop_all() {
+    log "stopping all wrappers"
+    local i
+    for i in "${!J_LABEL[@]}"; do
+        if [ "${WRAP_PID[$i]:-0}" -gt 0 ]; then
+            stop_wrapper "$i"
+        fi
+    done
+}
+
+# Reload: snapshot old state by label, re-parse table, diff by label, then
+# stop removed / start added / restart changed.
+reload_jobs() {
+    log "SIGHUP: reloading job table"
+
+    # Snapshot OLD: label → pid, label → hash, label → restarts
+    local n=${#J_LABEL[@]}
+    local snap_labels=() snap_pids=() snap_hashes=() snap_restarts=()
+    local i
+    for ((i = 0; i < n; i++)); do
+        snap_labels+=( "${J_LABEL[$i]}" )
+        snap_pids+=( "${WRAP_PID[$i]:-0}" )
+        snap_hashes+=( "${WRAP_HASH[$i]:-}" )
+        snap_restarts+=( "${WRAP_RESTARTS[$i]:-0}" )
+    done
+
+    parse_jobs || { log "reload aborted (parse failed)"; return; }
+
+    # Reset wrapper-state arrays sized to NEW table.
+    WRAP_PID=()
+    WRAP_HASH=()
+    WRAP_RESTARTS=()
+    for ((i = 0; i < ${#J_LABEL[@]}; i++)); do
+        WRAP_PID[$i]=0
+        WRAP_HASH[$i]=""
+        WRAP_RESTARTS[$i]=0
+    done
+
+    # For each NEW slot: try to find old slot by label, inherit pid+hash+counter.
+    local new_idx old_idx label new_hash
+    for ((new_idx = 0; new_idx < ${#J_LABEL[@]}; new_idx++)); do
+        label="${J_LABEL[$new_idx]}"
+        new_hash="$(job_hash "$new_idx")"
+        old_idx=-1
+        for ((i = 0; i < ${#snap_labels[@]}; i++)); do
+            if [ "${snap_labels[$i]}" = "$label" ]; then
+                old_idx="$i"
+                break
+            fi
+        done
+        if [ "$old_idx" -ge 0 ]; then
+            WRAP_PID[$new_idx]="${snap_pids[$old_idx]}"
+            WRAP_HASH[$new_idx]="${snap_hashes[$old_idx]}"
+            WRAP_RESTARTS[$new_idx]="${snap_restarts[$old_idx]}"
+            if [ "${snap_hashes[$old_idx]}" != "$new_hash" ]; then
+                log "reload: '$label' config changed (restart wrapper)"
+                stop_wrapper "$new_idx"
+                start_wrapper "$new_idx"
+            fi
+        else
+            log "reload: '$label' newly added"
+            start_wrapper "$new_idx"
+        fi
+    done
+
+    # Stop wrappers for OLD labels that no longer exist in NEW table.
+    for ((i = 0; i < ${#snap_labels[@]}; i++)); do
+        label="${snap_labels[$i]}"
+        old_idx=-1
+        local j
+        for ((j = 0; j < ${#J_LABEL[@]}; j++)); do
+            if [ "${J_LABEL[$j]}" = "$label" ]; then
+                old_idx="$j"
+                break
+            fi
+        done
+        if [ "$old_idx" -lt 0 ] && [ "${snap_pids[$i]}" -gt 0 ]; then
+            log "reload: '$label' removed from table"
+            local pid="${snap_pids[$i]}"
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -TERM "$pid" 2>/dev/null || true
+                local k=0
+                while [ "$k" -lt "$SHUTDOWN_GRACE_SEC" ] && kill -0 "$pid" 2>/dev/null; do
+                    sleep 1; k=$((k + 1))
+                done
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+        fi
+    done
+}
+
+dump_status() {
+    log "=== USR1 status dump ==="
+    local i pid alive
+    for i in "${!J_LABEL[@]}"; do
+        pid="${WRAP_PID[$i]:-0}"
+        if [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null; then
+            alive=ALIVE
+        else
+            alive=DEAD
+        fi
+        log "  ${J_LABEL[$i]} wrap_pid=$pid $alive restarts=${WRAP_RESTARTS[$i]:-0} mode=${J_MODE[$i]}"
+    done
+    log "=== end status ==="
+}
+
+# Polling-based reaper — bash 3.2 compatible (no `wait -n`). Tick every 1s,
+# kill -0 each tracked wrapper pid, respawn dead ones. Reaping (`wait pid`
+# called opportunistically inside the loop) prevents zombies. Signal traps
+# fire between ticks; the sleep is short enough that signal latency stays low.
+SHUTDOWN_REQUESTED=0
+RELOAD_REQUESTED=0
+DUMP_REQUESTED=0
+
+_on_term() { SHUTDOWN_REQUESTED=1; }
+_on_hup()  { RELOAD_REQUESTED=1; }
+_on_usr1() { DUMP_REQUESTED=1; }
+
+reaper_loop() {
+    trap _on_term TERM INT
+    trap _on_hup  HUP
+    trap _on_usr1 USR1
+
+    local i pid
+
+    while true; do
+        if [ "$SHUTDOWN_REQUESTED" -eq 1 ]; then
+            log "supervisor SIGTERM/INT — shutting down"
+            stop_all
+            rm -f "$PID_FILE" 2>/dev/null || true
+            return 0
+        fi
+        if [ "$RELOAD_REQUESTED" -eq 1 ]; then
+            RELOAD_REQUESTED=0
+            reload_jobs
+        fi
+        if [ "$DUMP_REQUESTED" -eq 1 ]; then
+            DUMP_REQUESTED=0
+            dump_status
+        fi
+
+        # Walk every slot. Reap zombies + respawn dead wrappers.
+        for i in "${!J_LABEL[@]}"; do
+            pid="${WRAP_PID[$i]:-0}"
+            if [ "$pid" -le 0 ]; then
+                # No wrapper currently — start one.
+                log "slot ${J_LABEL[$i]}: no wrapper running, spawning"
+                start_wrapper "$i"
+                continue
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+                # Wrapper died. Reap (non-blocking) so we don't carry zombie.
+                wait "$pid" 2>/dev/null || true
+                WRAP_RESTARTS[$i]=$(( ${WRAP_RESTARTS[$i]:-0} + 1 ))
+                log "wrapper '${J_LABEL[$i]}' (pid=$pid) exited — respawning (count=${WRAP_RESTARTS[$i]})"
+                WRAP_PID[$i]=0
+                # brief settle to prevent hot-loop if wrapper itself is broken
+                sleep 2
+                start_wrapper "$i"
+            fi
+        done
+
+        sleep 1
+    done
+}
+
+# ---------- main -----------------------------------------------------------
+
+main() {
+    case "${1:-run}" in
+        run)
+            # Single-instance guard.
+            if [ -f "$PID_FILE" ]; then
+                local prior; prior=$(cat "$PID_FILE" 2>/dev/null || true)
+                if [ -n "$prior" ] && kill -0 "$prior" 2>/dev/null; then
+                    log "another supervisor already running pid=$prior — exit"
+                    exit 1
+                fi
+            fi
+            echo $$ > "$PID_FILE"
+            log "supervisor starting pid=$$ jobs=$JOBS_TSV state=$STATE_DIR"
+            parse_jobs || exit 2
+            start_all
+            reaper_loop
+            ;;
+        reload)
+            local p; p=$(cat "$PID_FILE" 2>/dev/null || true)
+            [ -z "$p" ] && { echo "no supervisor pid file: $PID_FILE" >&2; exit 1; }
+            kill -HUP "$p" && echo "SIGHUP sent to $p"
+            ;;
+        status)
+            local p; p=$(cat "$PID_FILE" 2>/dev/null || true)
+            if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+                echo "supervisor: RUNNING pid=$p"
+                kill -USR1 "$p"
+                echo "(USR1 sent — see launchd stderr log for per-wrapper dump)"
+            else
+                echo "supervisor: NOT RUNNING"
+                exit 1
+            fi
+            ;;
+        stop)
+            local p; p=$(cat "$PID_FILE" 2>/dev/null || true)
+            [ -z "$p" ] && { echo "no supervisor pid file" >&2; exit 1; }
+            kill -TERM "$p" && echo "SIGTERM sent to $p"
+            ;;
+        validate)
+            parse_jobs && {
+                local i
+                for i in "${!J_LABEL[@]}"; do
+                    printf '  [%d] %-16s mode=%-22s throttle=%s\n' \
+                        "$i" "${J_LABEL[i]}" "${J_MODE[i]}" "${J_THROTTLE[i]}"
+                done
+                echo "OK ($(( ${#J_LABEL[@]} )) jobs)"
+            }
+            ;;
+        *)
+            cat >&2 <<USAGE
+usage: airgenome-supervisor <command>
+
+commands:
+  run        — supervisor main loop (called by launchd)
+  reload     — SIGHUP the running supervisor (re-read jobs table)
+  status     — print supervisor pid; SIGUSR1 for child dump (to log)
+  stop       — SIGTERM the running supervisor (graceful shutdown)
+  validate   — parse jobs table and print summary; do not start
+
+env:
+  AIRGENOME_SUPERVISOR_JOBS    override jobs TSV path
+  AIRGENOME_SUPERVISOR_STATE   override pid/state dir (default ~/.airgenome/supervisor)
+USAGE
+            exit 2
+            ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# bin/airgenome-supervisor-migrate — atomic flip from 6 legacy LaunchAgents to
+# one consolidated com.airgenome.supervisor.
+#
+# WHAT IT DOES (in order):
+#   1. Pre-flight checks
+#        - validate the new jobs TSV (bin/airgenome-supervisor validate)
+#        - lint the new plist (plutil -lint)
+#        - verify each child binary referenced by the TSV is reachable
+#        - confirm /opt/homebrew/bin/fswatch exists (watchpaths child fallback
+#          works without it but loses sub-second event latency)
+#   2. Snapshot existing loaded LaunchAgent state to /tmp for rollback
+#   3. launchctl bootout each legacy LaunchAgent (5 jobs)
+#   4. Copy ~/Library/LaunchAgents/<legacy>.plist files to a backup dir
+#      (LEGACY_BACKUP=$HOME/.airgenome/supervisor/legacy-plists.<ts>/) and
+#      remove them so launchd does not auto-load them after a reboot. The
+#      copies in $AIRGENOME_ROOT (the source repo) are untouched.
+#   5. Copy the new plist into ~/Library/LaunchAgents/
+#   6. launchctl bootstrap + enable + kickstart the new supervisor
+#
+# WHAT IT DOES *NOT* DO:
+#   - Modify settings.json (global or project-local)
+#   - Delete or modify the source plists in $AIRGENOME_ROOT
+#   - Send SIGKILL to anything (we rely on each legacy plist's own shutdown
+#     — bootout sends SIGTERM and waits up to 30s before SIGKILL itself)
+#
+# ROLLBACK:
+#   See LEGACY_BACKUP for the exact 5 plist files. Reverse procedure:
+#     launchctl bootout gui/$(id -u)/com.airgenome.supervisor
+#     rm ~/Library/LaunchAgents/com.airgenome.supervisor.plist
+#     cp $LEGACY_BACKUP/*.plist ~/Library/LaunchAgents/
+#     for L in com.airgenome com.airgenome.hook-watch com.airgenome.settings-guard \
+#              com.airgenome.tap com.airgenome.tg-bot com.airgenome.vacuum_watcher; do
+#         launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/$L.plist
+#     done
+#
+# DRY RUN:
+#   AIRGENOME_MIGRATE_DRYRUN=1 bin/airgenome-supervisor-migrate
+#     prints every launchctl / cp / rm command instead of running it.
+
+set -eu
+
+ROOT="${AIRGENOME_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+UID_VAL="$(id -u)"
+LA_DIR="$HOME/Library/LaunchAgents"
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+LEGACY_BACKUP="$HOME/.airgenome/supervisor/legacy-plists.$TS"
+
+# Legacy LaunchAgent labels (in bootout order; the order does not actually
+# matter, but keep tap last so its SIGTERM has time to restore native tiling
+# defaults before subsequent bootout rounds add load).
+LEGACY_LABELS=(
+    com.airgenome
+    com.airgenome.hook-watch
+    com.airgenome.settings-guard
+    com.airgenome.tg-bot
+    com.airgenome.vacuum_watcher
+    com.airgenome.tap
+)
+
+NEW_LABEL="com.airgenome.supervisor"
+NEW_PLIST_SRC="$ROOT/config/launchd/com.airgenome.supervisor.plist"
+NEW_PLIST_DST="$LA_DIR/$NEW_LABEL.plist"
+JOBS_TSV="$ROOT/config/launchd/supervisor.jobs.tsv"
+SUPERVISOR_BIN="$ROOT/bin/airgenome-supervisor"
+
+DRYRUN="${AIRGENOME_MIGRATE_DRYRUN:-0}"
+
+run() {
+    if [ "$DRYRUN" = "1" ]; then
+        printf '[dryrun] %s\n' "$*"
+    else
+        printf '+ %s\n' "$*"
+        "$@"
+    fi
+}
+
+log()  { printf '[migrate %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
+die()  { printf '[migrate FATAL] %s\n' "$*" >&2; exit 1; }
+
+# ---------- pre-flight ------------------------------------------------------
+
+preflight() {
+    log "pre-flight checks"
+
+    [ -f "$NEW_PLIST_SRC" ] || die "missing new plist: $NEW_PLIST_SRC"
+    [ -f "$JOBS_TSV" ]      || die "missing jobs TSV: $JOBS_TSV"
+    [ -x "$SUPERVISOR_BIN" ] || die "missing supervisor bin (or not executable): $SUPERVISOR_BIN"
+
+    plutil -lint "$NEW_PLIST_SRC" >/dev/null || die "plutil -lint failed: $NEW_PLIST_SRC"
+
+    # validate the jobs table parses cleanly
+    "$SUPERVISOR_BIN" validate >/dev/null || die "jobs TSV validate failed"
+
+    # binary reachability check — read column-9 (cmd), take argv[0], -e it.
+    local bad=0 line label mode workdir stdout stderr envfile watchpaths throttle cmd argv0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|\#*|' '*\#*) continue ;; esac
+        IFS=$'\t' read -r label mode workdir stdout stderr envfile watchpaths throttle cmd <<<"$line"
+        argv0="${cmd%% *}"
+        if [ ! -e "$argv0" ]; then
+            log "WARN child binary missing for label='$label': $argv0"
+            bad=$((bad + 1))
+        fi
+        if [ "$envfile" != "-" ] && [ ! -f "$envfile" ]; then
+            log "WARN envfile missing for label='$label': $envfile"
+            bad=$((bad + 1))
+        fi
+    done < "$JOBS_TSV"
+
+    if [ "$bad" -gt 0 ]; then
+        log "WARN $bad child path(s) missing — supervisor will log + retry, not abort"
+    fi
+
+    if ! command -v fswatch >/dev/null 2>&1; then
+        log "INFO fswatch not on PATH — settings-guard child will fall back to mtime polling (2s)"
+    fi
+}
+
+# ---------- snapshot --------------------------------------------------------
+
+snapshot_legacy() {
+    log "snapshotting legacy state to $LEGACY_BACKUP"
+    run mkdir -p "$LEGACY_BACKUP"
+    local label
+    for label in "${LEGACY_LABELS[@]}"; do
+        if [ -f "$LA_DIR/$label.plist" ]; then
+            run cp -p "$LA_DIR/$label.plist" "$LEGACY_BACKUP/"
+        else
+            log "INFO no plist installed for $label (skip)"
+        fi
+    done
+    if [ "$DRYRUN" != "1" ]; then
+        launchctl print "gui/$UID_VAL" 2>/dev/null \
+            | grep -E 'com\.airgenome' \
+            > "$LEGACY_BACKUP/launchctl-print.before.txt" || true
+    fi
+}
+
+# ---------- bootout legacy --------------------------------------------------
+
+bootout_legacy() {
+    log "booting out legacy LaunchAgents"
+    local label
+    for label in "${LEGACY_LABELS[@]}"; do
+        if launchctl print "gui/$UID_VAL/$label" >/dev/null 2>&1; then
+            run launchctl bootout "gui/$UID_VAL/$label" || \
+                log "WARN bootout returned non-zero for $label (may already be gone)"
+        else
+            log "INFO not loaded: $label (skip bootout)"
+        fi
+        if [ -f "$LA_DIR/$label.plist" ]; then
+            run rm -f "$LA_DIR/$label.plist"
+        fi
+    done
+}
+
+# ---------- bootstrap supervisor -------------------------------------------
+
+bootstrap_supervisor() {
+    log "installing + bootstrapping $NEW_LABEL"
+    run cp -p "$NEW_PLIST_SRC" "$NEW_PLIST_DST"
+    # Just in case a previous run left it half-installed:
+    if launchctl print "gui/$UID_VAL/$NEW_LABEL" >/dev/null 2>&1; then
+        run launchctl bootout "gui/$UID_VAL/$NEW_LABEL" || true
+    fi
+    run launchctl bootstrap "gui/$UID_VAL" "$NEW_PLIST_DST"
+    run launchctl enable    "gui/$UID_VAL/$NEW_LABEL"
+    run launchctl kickstart -k "gui/$UID_VAL/$NEW_LABEL"
+}
+
+verify() {
+    log "post-migrate verification"
+    if [ "$DRYRUN" = "1" ]; then
+        log "(dry-run — skipping verify)"
+        return 0
+    fi
+    sleep 2
+    local pids
+    pids="$(launchctl print "gui/$UID_VAL/$NEW_LABEL" 2>/dev/null | awk '/pid =/{print $3; exit}' || true)"
+    if [ -z "$pids" ]; then
+        log "WARN supervisor pid not visible in launchctl print — check stderr log"
+    else
+        log "supervisor pid=$pids"
+    fi
+    log "child status:  $SUPERVISOR_BIN status"
+    log "child dump:    tail -f ~/.airgenome/supervisor/supervisor.stderr.log"
+    log "rollback dir:  $LEGACY_BACKUP"
+}
+
+# ---------- main ------------------------------------------------------------
+
+main() {
+    log "starting migration  AIRGENOME_ROOT=$ROOT  DRYRUN=$DRYRUN"
+    preflight
+    snapshot_legacy
+    bootout_legacy
+    bootstrap_supervisor
+    verify
+    log "DONE."
+    log "If anything looks wrong:  $SUPERVISOR_BIN stop  &&  follow rollback notes in this script's header."
+}
+
+main "$@"
