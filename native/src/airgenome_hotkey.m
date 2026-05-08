@@ -94,6 +94,7 @@ extern CGError _SLPSSetFrontProcessWithOptions(ProcessSerialNumber *psn,
 // Public API — extern'd by airgenome_tap.m and main() startup.
 extern BOOL airgenome_hotkey_handle_keydown(CGEventRef event);
 extern BOOL airgenome_hotkey_handle_default_keydown(CGEventRef event);
+extern BOOL airgenome_hotkey_handle_pip_keydown(CGEventRef event);
 extern void airgenome_hotkey_load_bindings(void);
 
 // Show Desktop: posts the same private Dock notification that Mission
@@ -766,6 +767,164 @@ BOOL airgenome_hotkey_handle_default_keydown(CGEventRef event) {
         return YES;
     }
     return NO;
+}
+
+// ---------------------------------------------------------------------------
+// Built-in: bare 'p' in Safari on a YouTube tab → toggle Picture-in-Picture.
+// ---------------------------------------------------------------------------
+//
+// Canonical method (Apple WebKit JS API): inject `webkitSetPresentationMode`
+// onto the `<video>` element via `do JavaScript … in document 1`. YouTube
+// installs its own `webkitpresentationmodechanged` listener that immediately
+// reverts PiP back to inline; we suppress it with a capture-phase
+// stopPropagation handler installed BEFORE the mode change. Same pattern
+// used by Keyboard Maestro / Siri Shortcuts macros (MacRumors / Joe Seifi /
+// Apple Developer docs).
+//
+// Requires Safari → Develop → "Allow JavaScript from Apple Events" (one-time).
+// Without it `do JavaScript` returns an error; we still consume the keystroke
+// so YouTube's own 'p'=previous-video shortcut doesn't fire.
+//
+// Guards (any fail → pass-through, do not consume):
+//   1. key == 'p', no Cmd/Ctrl/Opt/Shift modifiers
+//   2. frontmost bundle == com.apple.Safari
+//   3. Safari focused element role NOT in {AXTextField, AXTextArea, AXComboBox}
+//      — protects URL bar / search box / page text inputs
+//   4. front window URL contains "youtube.com" — narrows scope to YouTube tabs
+//      so bare 'p' on other sites still types normally
+//
+// All AX queries are in-process (no fork). osascript is dispatched async on a
+// background queue so the tap callback returns immediately.
+
+static BOOL pip_focused_is_text(pid_t pid) {
+    AXUIElementRef app = AXUIElementCreateApplication(pid);
+    if (!app) return NO;
+    CFTypeRef focused = NULL;
+    AXError e = AXUIElementCopyAttributeValue(
+        app, kAXFocusedUIElementAttribute, &focused);
+    CFRelease(app);
+    if (e != kAXErrorSuccess || !focused) {
+        if (focused) CFRelease(focused);
+        return NO;
+    }
+    CFTypeRef role = NULL;
+    e = AXUIElementCopyAttributeValue(
+        (AXUIElementRef)focused, kAXRoleAttribute, &role);
+    CFRelease(focused);
+    if (e != kAXErrorSuccess || !role) {
+        if (role) CFRelease(role);
+        return NO;
+    }
+    BOOL isText = NO;
+    if (CFGetTypeID(role) == CFStringGetTypeID()) {
+        CFStringRef r = (CFStringRef)role;
+        if (CFStringCompare(r, kAXTextFieldRole, 0) == kCFCompareEqualTo
+         || CFStringCompare(r, kAXTextAreaRole,  0) == kCFCompareEqualTo
+         || CFStringCompare(r, kAXComboBoxRole,  0) == kCFCompareEqualTo) {
+            isText = YES;
+        }
+    }
+    CFRelease(role);
+    return isText;
+}
+
+static BOOL pip_safari_window_is_youtube(pid_t pid) {
+    AXUIElementRef app = AXUIElementCreateApplication(pid);
+    if (!app) return NO;
+    CFTypeRef win = NULL;
+    AXError e = AXUIElementCopyAttributeValue(
+        app, kAXFocusedWindowAttribute, &win);
+    CFRelease(app);
+    if (e != kAXErrorSuccess || !win) {
+        if (win) CFRelease(win);
+        return NO;
+    }
+    CFTypeRef doc = NULL;
+    e = AXUIElementCopyAttributeValue(
+        (AXUIElementRef)win, kAXDocumentAttribute, &doc);
+    CFRelease(win);
+    if (e != kAXErrorSuccess || !doc) {
+        if (doc) CFRelease(doc);
+        return NO;
+    }
+    BOOL hit = NO;
+    if (CFGetTypeID(doc) == CFStringGetTypeID()) {
+        CFRange found = CFStringFind(
+            (CFStringRef)doc, CFSTR("youtube.com"), 0);
+        hit = (found.location != kCFNotFound);
+    }
+    CFRelease(doc);
+    return hit;
+}
+
+static void pip_run_osascript_async(void) {
+    // JS: install capture-phase stopPropagation guard (defeats YouTube's
+    // own webkitpresentationmodechanged handler that snaps PiP back to
+    // inline), then toggle presentation mode based on current state.
+    static NSString *const kJS =
+        @"var v=document.querySelector('video');"
+        @"if(v&&v.webkitSupportsPresentationMode){"
+        @"v.addEventListener('webkitpresentationmodechanged',"
+        @"function(e){e.stopPropagation();},true);"
+        @"var m=v.webkitPresentationMode;"
+        @"v.webkitSetPresentationMode("
+        @"m==='picture-in-picture'?'inline':'picture-in-picture');"
+        @"}";
+    NSString *escaped = [kJS stringByReplacingOccurrencesOfString:@"\""
+                                                       withString:@"\\\""];
+    NSString *script =
+        [NSString stringWithFormat:
+            @"tell application \"Safari\" to "
+            @"do JavaScript \"%@\" in document 1",
+            escaped];
+    dispatch_async(
+        dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @autoreleasepool {
+            NSTask *t = [NSTask new];
+            t.launchPath = @"/usr/bin/osascript";
+            t.arguments = @[@"-e", script];
+            t.standardOutput = [NSPipe pipe];
+            t.standardError = [NSPipe pipe];
+            @try {
+                [t launch];
+                [t waitUntilExit];
+                if (t.terminationStatus != 0) {
+                    NSLog(@"[airgenome_pip] osascript rc=%d "
+                          @"(enable Safari → Develop → "
+                          @"Allow JavaScript from Apple Events)",
+                          t.terminationStatus);
+                }
+            } @catch (NSException *ex) {
+                NSLog(@"[airgenome_pip] osascript launch failed: %@", ex);
+            }
+        }
+    });
+}
+
+BOOL airgenome_hotkey_handle_pip_keydown(CGEventRef event) {
+    if (!event || CGEventGetType(event) != kCGEventKeyDown) return NO;
+    int64_t kc = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    if (kc != kVK_ANSI_P) return NO;
+
+    CGEventFlags relevant = CGEventGetFlags(event)
+        & (kCGEventFlagMaskControl | kCGEventFlagMaskCommand
+           | kCGEventFlagMaskAlternate | kCGEventFlagMaskShift);
+    if (relevant != 0) return NO;
+
+    NSRunningApplication *front =
+        [[NSWorkspace sharedWorkspace] frontmostApplication];
+    if (!front) return NO;
+    if (![front.bundleIdentifier isEqualToString:@"com.apple.Safari"]) {
+        return NO;
+    }
+
+    pid_t pid = front.processIdentifier;
+    if (pip_focused_is_text(pid)) return NO;
+    if (!pip_safari_window_is_youtube(pid)) return NO;
+
+    pip_run_osascript_async();
+    NSLog(@"[airgenome_pip] 'p' → Safari/YouTube PiP toggle");
+    return YES;
 }
 
 BOOL airgenome_hotkey_handle_keydown(CGEventRef event) {
