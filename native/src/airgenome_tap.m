@@ -1738,7 +1738,7 @@ extern void airgenome_settings_show_manager(void);
                               info:[NSString stringWithFormat:
                                     @"Windows .exe (%@) 를 실행하려면 exe handler 플러그인이 필요합니다.\n\n"
                                     @"설치 (예: gamebox — Apple Silicon native PE loader):\n"
-                                    @"  git clone https://github.com/need-singularity/gamebox \\\n"
+                                    @"  git clone https://github.com/dancinlab/gamebox \\\n"
                                     @"      ~/.airgenome/plugins/gamebox\n\n"
                                     @"또는 sibling dev mode: plugin.json 가진 dir 을 airgenome 옆에 배치.",
                                     [filename lastPathComponent]]
