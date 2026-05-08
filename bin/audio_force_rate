@@ -1,0 +1,188 @@
+#!/usr/bin/env swift
+// bin/audio_force_rate — pin a CoreAudio output device to a nominal sample rate.
+//
+// Usage:
+//   audio_force_rate                              # default: "Studio Display" → 48000
+//   audio_force_rate "Studio Display" 48000       # explicit name + rate
+//   audio_force_rate --list                       # list all output devices + current rate
+//   audio_force_rate --available "Studio Display" # supported rates for a device
+//
+// Why: 출력 장치가 44.1 kHz 인데 원본 (YouTube 등) 이 48 kHz 면 coreaudiod 가
+// 실시간 리샘플링. fork-storm/USB 경합 시 deadline miss → 글리치 ("치치직").
+// 출력장치를 원본 rate 로 고정하면 리샘플러 자체가 사라짐.
+//
+// 비고: AudioObjectSetPropertyData 는 비동기. set 후 최대 1s 동안 read-back 폴.
+
+import CoreAudio
+import Foundation
+
+let kMain = AudioObjectPropertyElement(kAudioObjectPropertyElementMain)
+let sysObj = AudioObjectID(kAudioObjectSystemObject)
+
+func warn(_ s: String) {
+    FileHandle.standardError.write((s + "\n").data(using: .utf8)!)
+}
+
+// CoreAudio 가 device 이름에 NBSP (U+00A0) 를 끼워넣는 경우가 있음 (예:
+// "Studio<NBSP>Display 스피커"). 사용자 입력 "Studio Display" 와 매칭하려면
+// 양쪽을 일반 공백으로 정규화해야 함.
+func normalize(_ s: String) -> String {
+    return s.replacingOccurrences(of: "\u{00A0}", with: " ")
+}
+
+func deviceList() -> [AudioDeviceID] {
+    var size: UInt32 = 0
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kMain)
+    var st = AudioObjectGetPropertyDataSize(sysObj, &addr, 0, nil, &size)
+    if st != noErr { warn("err size: \(st)"); return [] }
+    let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+    var devs = [AudioDeviceID](repeating: 0, count: count)
+    st = AudioObjectGetPropertyData(sysObj, &addr, 0, nil, &size, &devs)
+    if st != noErr { warn("err get: \(st)"); return [] }
+    return devs
+}
+
+func deviceName(_ id: AudioDeviceID) -> String {
+    var nameRef: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioObjectPropertyName,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kMain)
+    let st = AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &nameRef)
+    if st != noErr { return "<err \(st)>" }
+    return (nameRef?.takeRetainedValue() as String?) ?? "<nil>"
+}
+
+func isOutput(_ id: AudioDeviceID) -> Bool {
+    var size: UInt32 = 0
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyStreamConfiguration,
+        mScope: kAudioDevicePropertyScopeOutput,
+        mElement: kMain)
+    if AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) != noErr || size == 0 { return false }
+    let buf = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
+    defer { buf.deallocate() }
+    if AudioObjectGetPropertyData(id, &addr, 0, nil, &size, buf) != noErr { return false }
+    let bl = UnsafeMutableAudioBufferListPointer(buf.assumingMemoryBound(to: AudioBufferList.self))
+    var ch: UInt32 = 0
+    for b in bl { ch += b.mNumberChannels }
+    return ch > 0
+}
+
+func currentRate(_ id: AudioDeviceID) -> Float64 {
+    var rate: Float64 = 0
+    var size = UInt32(MemoryLayout<Float64>.size)
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyNominalSampleRate,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kMain)
+    _ = AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &rate)
+    return rate
+}
+
+func availableRates(_ id: AudioDeviceID) -> [Float64] {
+    var size: UInt32 = 0
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kMain)
+    if AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) != noErr { return [] }
+    let count = Int(size) / MemoryLayout<AudioValueRange>.size
+    var ranges = [AudioValueRange](repeating: AudioValueRange(mMinimum: 0, mMaximum: 0), count: count)
+    if AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &ranges) != noErr { return [] }
+    var out: [Float64] = []
+    for r in ranges {
+        if r.mMinimum == r.mMaximum { out.append(r.mMinimum) }
+        else { out.append(r.mMinimum); out.append(r.mMaximum) }
+    }
+    return out
+}
+
+func setRate(_ id: AudioDeviceID, _ rate: Float64) -> OSStatus {
+    var rate = rate
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyNominalSampleRate,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kMain)
+    return AudioObjectSetPropertyData(id, &addr, 0, nil, UInt32(MemoryLayout<Float64>.size), &rate)
+}
+
+func waitFor(_ id: AudioDeviceID, _ target: Float64, timeoutMs: Int = 1000) -> Float64 {
+    let step = 25
+    var elapsed = 0
+    while elapsed < timeoutMs {
+        let r = currentRate(id)
+        if abs(r - target) < 0.5 { return r }
+        usleep(useconds_t(step * 1000))
+        elapsed += step
+    }
+    return currentRate(id)
+}
+
+let args = CommandLine.arguments
+
+if args.contains("--list") || args.contains("-l") {
+    for d in deviceList() {
+        let tag = isOutput(d) ? "OUT" : "in "
+        print("\(tag)  id=\(d)  rate=\(Int(currentRate(d)))  \(deviceName(d))")
+    }
+    exit(0)
+}
+
+if let i = args.firstIndex(of: "--available"), i + 1 < args.count {
+    let needle = args[i + 1]
+    var hit = false
+    for d in deviceList() {
+        let n = deviceName(d)
+        if !normalize(n).contains(normalize(needle)) || !isOutput(d) { continue }
+        hit = true
+        let rates = availableRates(d).map { Int($0) }
+        print("\(n): \(rates)")
+    }
+    if !hit { warn("no output matched '\(needle)'"); exit(1) }
+    exit(0)
+}
+
+let nameFilter = (args.count >= 2 && !args[1].hasPrefix("--")) ? args[1] : "Studio Display"
+let target: Float64 = (args.count >= 3) ? (Float64(args[2]) ?? 48000) : 48000
+
+var matched = false
+var anyFail = false
+for d in deviceList() {
+    let n = deviceName(d)
+    if !normalize(n).contains(normalize(nameFilter)) || !isOutput(d) { continue }
+    matched = true
+    let avail = availableRates(d)
+    if !avail.contains(where: { abs($0 - target) < 0.5 }) {
+        warn("\(n): rate \(Int(target)) Hz unsupported. Available: \(avail.map { Int($0) })")
+        anyFail = true
+        continue
+    }
+    let before = currentRate(d)
+    if abs(before - target) < 0.5 {
+        print("noop \(n): already \(Int(before)) Hz")
+        continue
+    }
+    let st = setRate(d, target)
+    if st != noErr {
+        warn("\(n): set status=\(st)")
+        anyFail = true
+        continue
+    }
+    let after = waitFor(d, target)
+    if abs(after - target) < 0.5 {
+        print("ok   \(n): \(Int(before)) → \(Int(after)) Hz")
+    } else {
+        warn("\(n): set returned 0 but rate=\(Int(after)) (expected \(Int(target)))")
+        anyFail = true
+    }
+}
+if !matched {
+    warn("no output device matched '\(nameFilter)' — try --list")
+    exit(1)
+}
+exit(anyFail ? 2 : 0)
