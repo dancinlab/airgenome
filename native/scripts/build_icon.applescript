@@ -2,9 +2,12 @@
 --
 -- Run via: osascript build_icon.applescript <output.png>
 --
--- Apple Color Emoji at 820pt drawn over a transparent background, then
--- written as PNG. The Makefile downsizes via sips and converts to .icns
--- via iconutil.
+-- Apple Color Emoji drawn over a solid black background, then written
+-- as PNG. The Makefile downsizes via sips and converts to .icns.
+--
+-- Uses drawAtPoint: instead of drawInRect: so the glyph is never clipped
+-- by a layout rect; the point is computed from the glyph's measured
+-- bounding box so the emoji is visually centered on the 1024 canvas.
 
 use framework "Foundation"
 use framework "AppKit"
@@ -23,15 +26,27 @@ on run argv
     set bgRect to current application's NSMakeRect(0, 0, theSize, theSize)
     (current application's NSBezierPath's bezierPathWithRect:bgRect)'s fill()
 
-    set theFont to current application's NSFont's fontWithName:"Apple Color Emoji" |size|:820
+    -- Font size 640pt → glyph ≈ 62% of canvas, leaving ample border so the
+    -- macOS squircle mask doesn't clip strands and the icon reads cleanly
+    -- in Dock/Finder thumbnails.
+    set fontSize to 640
+    set theFont to current application's NSFont's fontWithName:"Apple Color Emoji" |size|:fontSize
     set theAttrs to current application's NSDictionary's dictionaryWithObject:theFont forKey:(current application's NSFontAttributeName)
     set theStr to current application's NSAttributedString's alloc()'s initWithString:"🧬" attributes:theAttrs
 
-    -- y origin = (1024-820)/2 = 102 centers the rect on both axes.
-    -- Apple Color Emoji 🧬 has internal padding biasing visual center
-    -- toward upper-left of glyph box; nudge y down (lower y in bottom-left
-    -- coords) to compensate.
-    theStr's drawInRect:(current application's NSMakeRect(102, 92, 820, 820))
+    -- Measure the glyph's natural typographic size, then position the
+    -- drawAtPoint: origin so the glyph's bounding box centers on the
+    -- canvas. drawAtPoint: never clips, so descenders/ribbon ends are
+    -- guaranteed to render in full.
+    set glyphSize to theStr's |size|()
+    set glyphW to width of glyphSize
+    set glyphH to height of glyphSize
+    set originX to (theSize - glyphW) / 2
+    -- Apple Color Emoji typographic box (h=840 at 640pt) has more padding
+    -- below the visible glyph than above; nudge y up so the visible glyph
+    -- centers on the canvas rather than the typographic box centering.
+    set originY to ((theSize - glyphH) / 2) + 10
+    theStr's drawAtPoint:(current application's NSMakePoint(originX, originY))
     theImage's unlockFocus()
 
     set theTiff to theImage's TIFFRepresentation()
