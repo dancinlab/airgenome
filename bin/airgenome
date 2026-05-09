@@ -917,10 +917,11 @@ usage: airgenome overload-check <subcommand>
   airgenome.app 메뉴바 → "Overload check (load>50 / runaway PID)"
   체크/해제 즉시 반영 + ~/.airgenome/menubar.state 에 persist
 
-설정 (컴파일 시 상수):
-  load 임계: 1min loadavg > 50
-  CPU 임계:  단일 PID > 50% × 5min sustained
+설정 (컴파일 시 상수, 2026-05-10 — idle 직전 조기 경보 컨셉):
+  load 임계: 1min loadavg > 80
+  CPU 임계:  단일 PID > 80% × 10min sustained
   Tick:      60s
+  쿨다운:    load 알림 10min (같은 조건 재발화 차단)
 HELP
             ;;
         *)

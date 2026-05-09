@@ -24,10 +24,16 @@
 #include <time.h>
 #include <unistd.h>
 
+// "idle 걸리기 전 조기 경보" 컨셉. 임계 조정 2026-05-10:
+//   load1 > 80    : 일상 heavy 작업 (multi-claude + IDE + Safari) 위로
+//   cpu  > 80%    : runaway 명확 (50% 는 정상 build/encoding 도 잡음)
+//   runaway 10min : 5min 은 normal long task (ffmpeg, swift-build) 도 catch
+//   cooldown 10min: 같은 load1 알림 매 tick 재발화 방지
 #define AIRGENOME_OVERLOAD_INTERVAL_S    60
-#define AIRGENOME_OVERLOAD_LOAD_THRESHOLD 50.0
-#define AIRGENOME_OVERLOAD_CPU_THRESHOLD  50.0
-#define AIRGENOME_OVERLOAD_RUNAWAY_AGE_S  300
+#define AIRGENOME_OVERLOAD_LOAD_THRESHOLD 80.0
+#define AIRGENOME_OVERLOAD_CPU_THRESHOLD  80.0
+#define AIRGENOME_OVERLOAD_RUNAWAY_AGE_S  600
+#define AIRGENOME_OVERLOAD_ALERT_COOLDOWN_S 600
 
 static dispatch_source_t g_overload_src = NULL;
 static dispatch_queue_t  g_overload_q   = NULL;
@@ -38,6 +44,8 @@ static int               g_overload_running = 0;
 
 // pid (NSNumber) → @{ @"first_seen": NSNumber<time_t>, @"notified": NSNumber<bool> }
 static NSMutableDictionary *g_runaway_state = nil;
+// load1 알림 쿨다운 — 같은 조건 매 60s 재발화 방지.
+static time_t g_last_load_alert_ts = 0;
 
 static NSString *airgenome_overload_log_path(void) {
     NSString *home = NSHomeDirectory();
@@ -107,10 +115,21 @@ static void airgenome_overload_tick(void) {
     double load1 = airgenome_overload_load1();
     airgenome_overload_log([NSString stringWithFormat:@"tick load1=%.2f", load1]);
 
+    time_t now_ts = time(NULL);
     if (load1 > AIRGENOME_OVERLOAD_LOAD_THRESHOLD) {
-        NSString *info = [NSString stringWithFormat:@"load1=%.2f (>50)", load1];
-        airgenome_overload_post(@"macOS overload", info);
-        airgenome_overload_log([NSString stringWithFormat:@"ALERT load1=%.2f notification fired", load1]);
+        if (now_ts - g_last_load_alert_ts >= AIRGENOME_OVERLOAD_ALERT_COOLDOWN_S) {
+            NSString *info = [NSString stringWithFormat:
+                @"load1=%.2f (>%.0f) — idle 위험 조기 경보",
+                load1, AIRGENOME_OVERLOAD_LOAD_THRESHOLD];
+            airgenome_overload_post(@"macOS overload", info);
+            airgenome_overload_log([NSString stringWithFormat:
+                @"ALERT load1=%.2f notification fired", load1]);
+            g_last_load_alert_ts = now_ts;
+        } else {
+            airgenome_overload_log([NSString stringWithFormat:
+                @"SUPPRESS load1=%.2f (cooldown %lds remaining)",
+                load1, (long)(AIRGENOME_OVERLOAD_ALERT_COOLDOWN_S - (now_ts - g_last_load_alert_ts))]);
+        }
     }
 
     NSArray *runaway = airgenome_overload_runaway_snapshot();
