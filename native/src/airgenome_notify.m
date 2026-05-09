@@ -48,6 +48,8 @@ static void airgenome_notify_post(NSString *title, NSString *subtitle, NSString 
     note.title = title;
     if (subtitle.length) note.subtitle = subtitle;
     if (info.length)     note.informativeText = info;
+    // 좌측 앱 아이콘은 NSApp.applicationIconImage 가 SSOT — main() 에서
+    // 번들 .icns 로 명시 setting. contentImage (우측 썸네일) 는 미사용.
     [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:note];
 }
 

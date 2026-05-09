@@ -2095,6 +2095,18 @@ int main(int argc, char **argv) {
         // a live main queue.
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        // Force NSApplicationIcon from the bundle's AppIcon.icns at startup.
+        // NotificationCenter pulls the LEFT-side (app) icon from this property,
+        // and macOS's per-bundle icon cache can otherwise serve a stale icon
+        // for the lifetime of the running process. Reloading explicitly here
+        // guarantees the fresh .icns on disk is what NotificationCenter sees.
+        {
+            NSString *iconPath = [[NSBundle mainBundle] pathForResource:@"AppIcon" ofType:@"icns"];
+            if (iconPath) {
+                NSImage *icon = [[NSImage alloc] initWithContentsOfFile:iconPath];
+                if (icon) [NSApp setApplicationIconImage:icon];
+            }
+        }
         // Finder .exe 더블클릭 → application:openFile: 받기 위해 delegate 등록
         // (단일 bundle, 단일 TCC entry — 별도 helper app 0).
         g_exe_handler_delegate = [[AirgenomeExeHandlerDelegate alloc] init];

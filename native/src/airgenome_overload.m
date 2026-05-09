@@ -65,6 +65,8 @@ static void airgenome_overload_post(NSString *title, NSString *info) {
     NSUserNotification *note = [[NSUserNotification alloc] init];
     note.title = title;
     note.informativeText = info;
+    // 좌측 앱 아이콘 = bundle 의 CFBundleIconFile → IconServices 캐시.
+    // contentImage (우측 썸네일) 는 미사용 — 좌측 아이콘만으로 충분.
     [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:note];
 }
 
