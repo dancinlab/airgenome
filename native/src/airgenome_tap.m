@@ -116,6 +116,16 @@ extern void airgenome_hotkey_load_bindings(void);
 // 호출은 g_loop_on=1 일 때만, default OFF.
 extern void airgenome_loop_init(void);
 extern void airgenome_loop_shutdown(void);
+// notify_queue.jsonl drain — overload_check.sh 등 외부 워처가 큐에 append,
+// app bundle context 에서 NSUserNotification 으로 발사. 항상 ON (10s tick).
+extern void airgenome_notify_init(void);
+extern void airgenome_notify_shutdown(void);
+// in-process load watcher — load>50 / runaway PID 5min sustained 시 알림.
+// 단일 launchd 진입점 정책: 별도 plist 없이 app 내부 60s timer.
+extern void airgenome_overload_init(void);
+extern void airgenome_overload_shutdown(void);
+extern void airgenome_overload_set_enabled(int on);
+extern int  airgenome_overload_is_enabled(void);
 // raw 241 단일 binary 단일 TCC entry — bench / filter one-shot dispatch.
 // `airgenome --mode=run-once=<path>` 가 진입. tap 데몬 루프 미진입,
 // singleton lock 미적용. airgenome.app TCC (FDA 등) 자식 상속.
@@ -196,6 +206,9 @@ static NSMenuItem         *g_item_lid    = nil;
 static NSMenuItem         *g_item_winctl = nil;
 static NSMenuItem         *g_item_launcher = nil;
 static NSMenuItem         *g_item_hotkey = nil;
+static NSMenuItem         *g_item_overload = nil;
+// overload 워처 default ON. menubar.state 에서 overrideable.
+static int                 g_overload_on = 1;
 static AirgenomeMenuTarget *g_menu_target = nil;
 
 // Snap-preview overlay -- a borderless transparent window with a white
@@ -1139,6 +1152,8 @@ static void load_menubar_state(void) {
             g_launcher_on = on;
         } else if ([k isEqualToString:@"hotkey"]) {
             g_hotkey_on = on;
+        } else if ([k isEqualToString:@"overload"]) {
+            g_overload_on = on;
         }
     }
 }
@@ -1151,14 +1166,15 @@ static void save_menubar_state(void) {
                                                     error:NULL];
     int mouse_on = (g_buttons_on || g_scroll_on) ? 1 : 0;
     NSString *content = [NSString stringWithFormat:
-        @"mouse=%s\nmagnet=%s\nwake=%s\nlid_closed=%s\nwinctl=%s\nlauncher=%s\nhotkey=%s\n",
+        @"mouse=%s\nmagnet=%s\nwake=%s\nlid_closed=%s\nwinctl=%s\nlauncher=%s\nhotkey=%s\noverload=%s\n",
         mouse_on        ? "on" : "off",
         g_magnet_on     ? "on" : "off",
         g_wake_on       ? "on" : "off",
         g_lid_closed_on ? "on" : "off",
         g_winctl_on     ? "on" : "off",
         g_launcher_on   ? "on" : "off",
-        g_hotkey_on     ? "on" : "off"];
+        g_hotkey_on     ? "on" : "off",
+        g_overload_on   ? "on" : "off"];
     [content writeToFile:menubar_state_path()
               atomically:YES
                 encoding:NSUTF8StringEncoding
@@ -1285,6 +1301,7 @@ static void update_menu_states(void);
 - (void)toggleMagnet:(id)sender;
 - (void)toggleWake:(id)sender;
 - (void)toggleLidClosed:(id)sender;
+- (void)toggleOverload:(id)sender;
 @end
 
 @implementation AirgenomeMenuTarget
@@ -1297,6 +1314,16 @@ static void update_menu_states(void);
     save_menubar_state();
     update_menu_states();
     fprintf(stderr, "menubar: mouse -> %s\n", on ? "ON" : "off");
+    fflush(stderr);
+}
+
+- (void)toggleOverload:(id)sender {
+    (void)sender;
+    g_overload_on = !g_overload_on;
+    airgenome_overload_set_enabled(g_overload_on);
+    save_menubar_state();
+    update_menu_states();
+    fprintf(stderr, "menubar: overload -> %s\n", g_overload_on ? "ON" : "off");
     fflush(stderr);
 }
 
@@ -1477,6 +1504,7 @@ static void update_menu_states(void) {
     if (g_item_winctl)   g_item_winctl.state   = g_winctl_on   ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_launcher) g_item_launcher.state = g_launcher_on ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_hotkey)   g_item_hotkey.state   = g_hotkey_on   ? NSControlStateValueOn : NSControlStateValueOff;
+    if (g_item_overload) g_item_overload.state = g_overload_on ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 // ---------------------------------------------------------------------------
@@ -1572,6 +1600,13 @@ static void install_status_item(void) {
         keyEquivalent:@""];
     g_item_mouse.target = g_menu_target;
     [menu addItem:g_item_mouse];
+
+    g_item_overload = [[NSMenuItem alloc]
+        initWithTitle:@"Overload check (load>50 / runaway PID)"
+               action:@selector(toggleOverload:)
+        keyEquivalent:@""];
+    g_item_overload.target = g_menu_target;
+    [menu addItem:g_item_overload];
 
     update_menu_states();   // sync checkmarks to current real state
 
@@ -2078,9 +2113,21 @@ int main(int argc, char **argv) {
             fflush(stderr);
         }
 
+        // notify queue drain — env gate 없음. 항상 ON. 외부 워처 (overload_check
+        // 등) 가 ~/.airgenome/notify_queue.jsonl 에 JSONL 한 줄씩 append, app
+        // 이 10s 주기로 drain → NSUserNotification 발사.
+        airgenome_notify_init();
+
+        // in-process load watcher — 60s tick. load>50 / runaway PID(>50% × 5min)
+        // 감지 시 NSUserNotification. 단일 launchd 진입점 (com.airgenome.tap) 유지.
+        // menubar.state.overload 반영 (load_menubar_state 가 g_overload_on 갱신).
+        airgenome_overload_set_enabled(g_overload_on);
+
         [NSApp run];
 
         if (g_loop_on) airgenome_loop_shutdown();
+        airgenome_notify_shutdown();
+        airgenome_overload_shutdown();
 
         if (src) CFRelease(src);
         if (g_tap) CFRelease(g_tap);

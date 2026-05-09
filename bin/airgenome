@@ -844,6 +844,94 @@ HELP
 }
 
 # ============================================================
+# overload-check subcommand — in-process load watcher (live in airgenome.app)
+# ============================================================
+#
+# 단일 launchd 진입점 정책: 별도 plist 없음. airgenome.app 안의
+# 60s dispatch_source_t timer 가 sysctl vm.loadavg + ps 를 보고
+# load>50 또는 단일 PID CPU>50% × 5min 시 NSUserNotification 발사.
+# 메뉴바 "Overload check (...)" 토글로 on/off.
+#
+# 본 CLI 는 status/test/logs 만 — 실 토글은 메뉴바에서.
+
+cmd_overload_check() {
+    local sub="${1:-status}"
+    shift || true
+    local airg_dir="$HOME/.airgenome"
+    local state_file="$airg_dir/menubar.state"
+    local log_file="$airg_dir/overload_check.log"
+    local queue_file="$airg_dir/notify_queue.jsonl"
+    case "$sub" in
+        status)
+            local on="(default ON)"
+            if [ -f "$state_file" ]; then
+                local v
+                v=$(grep -E '^overload=' "$state_file" 2>/dev/null | head -1 | cut -d= -f2)
+                [ -n "$v" ] && on="$v"
+            fi
+            echo "overload-check:"
+            echo "  toggle:    $on  (menubar: 'Overload check (...)' 항목)"
+            echo "  state:     $state_file"
+            echo "  log:       $log_file"
+            echo "  queue:     $queue_file"
+            if [ -f "$log_file" ]; then
+                echo
+                echo "recent log (tail 5):"
+                tail -n 5 "$log_file" | sed 's/^/  /'
+            fi
+            ;;
+        test)
+            mkdir -p "$airg_dir"
+            local title="${1:-macOS overload (test)}"
+            local info="${2:-airgenome overload-check test fire @ $(date '+%H:%M:%S')}"
+            # JSON-escape: backslash + double-quote
+            local t i
+            t=${title//\\/\\\\}; t=${t//\"/\\\"}
+            i=${info//\\/\\\\}; i=${i//\"/\\\"}
+            printf '{"title":"%s","subtitle":"","info":"%s"}\n' "$t" "$i" >> "$queue_file"
+            echo "queued → $queue_file"
+            echo "  airgenome.app 가 10s 안에 drain → NSUserNotification 발사."
+            ;;
+        logs)
+            if [ ! -f "$log_file" ]; then
+                echo "(no log yet — airgenome.app 미실행 또는 첫 tick 전)"
+                return 0
+            fi
+            tail -n 40 "$log_file"
+            ;;
+        run-once)
+            # 외부 워처 호환: scripts/overload_check.sh 1회 실행 (in-process timer
+            # 와 별개로 동일 로직을 ad-hoc 실행 — 디버그/CI 용).
+            "$AIRGENOME_ROOT/scripts/overload_check.sh"
+            ;;
+        help|-h|--help|"")
+            cat >&2 <<'HELP'
+usage: airgenome overload-check <subcommand>
+
+  status     menubar 토글 상태 + 로그 경로 + 최근 5줄
+  test [title] [info]  큐에 알림 한 건 enqueue (airgenome.app 가 10s 내 drain)
+  logs       tail ~/.airgenome/overload_check.log
+  run-once   scripts/overload_check.sh 1회 실행 (in-process 와 별개의 ad-hoc check)
+
+토글 (live):
+  airgenome.app 메뉴바 → "Overload check (load>50 / runaway PID)"
+  체크/해제 즉시 반영 + ~/.airgenome/menubar.state 에 persist
+
+설정 (컴파일 시 상수):
+  load 임계: 1min loadavg > 50
+  CPU 임계:  단일 PID > 50% × 5min sustained
+  Tick:      60s
+HELP
+            ;;
+        *)
+            echo "[overload-check] unknown: $sub" >&2
+            echo "  airgenome overload-check help" >&2
+            return 2
+            ;;
+    esac
+}
+
+# ============================================================
 # governance — raw 91 cross-repo cli-coverage parity (2026-04-30)
 # ============================================================
 # Mirrors hive_governance.hexa Tier-A surface via tool/governance.hexa
@@ -1096,6 +1184,7 @@ main() {
         list|ls)       cmd_list "$@" ;;
         offload|off)   cmd_offload "$@" ;;
         tap|input)     cmd_tap "$@" ;;
+        overload-check|overload) cmd_overload_check "$@" ;;
         plugin|plugins) cmd_plugin "$@" ;;
         # `wake` retired 2026-04-30 per raw 213 — use airgenome.app menubar.
         governance|gov) cmd_governance "$@" ;;
@@ -1133,6 +1222,9 @@ usage: airgenome <command>
                  / 'Wake when lid closed' 토글로 이전 (raw 213, 2026-04-30).
                  in-process IOPMAssertionCreateWithName 사용 — admin auth dialog 없음.
                  legacy LaunchAgent (com.airgenome.wake) 는 새 binary 첫 launch 시 자동 정리.
+  overload-check <sub>  load>50 / runaway PID 감지 — airgenome.app 내부 60s timer
+                          status | test [title] [info] | logs | run-once | help
+                          live 토글: airgenome.app 메뉴바의 'Overload check' 항목
   tap <sub>      airgenome native shim (단일 binary, 1 Accessibility grant):
                    (a) mouse button 4/5 → Cmd+[/]   (b) mouse wheel 반전
                    (c) 8-zone 드래그-스냅 + macOS 기본 tiling 비활성화 (종료 시 복구)

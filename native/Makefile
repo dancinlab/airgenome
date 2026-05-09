@@ -22,7 +22,8 @@ BIN           = build/$(APP_NAME)
 # binary (NOT separate exes — one bundle id, one TCC row).
 SRC           = src/airgenome_tap.m src/airgenome_launcher.m \
                 src/airgenome_winctl.m src/airgenome_hotkey.m \
-                src/airgenome_loop.m
+                src/airgenome_loop.m src/airgenome_notify.m \
+                src/airgenome_overload.m
 PLIST_TPL     = launchd/com.airgenome.tap.plist
 INSTALL_PLIST = $(HOME)/Library/LaunchAgents/com.airgenome.tap.plist
 LOG_DIR       = $(HOME)/Library/Logs/$(APP_NAME).app
