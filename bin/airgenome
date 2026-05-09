@@ -860,9 +860,15 @@ cmd_governance() {
         return 1
     fi
     # resolve hexa with fallback ($HOME/.hx/bin/hexa is canonical post-2026-04)
+    # Prefer hexa.real over the ~/.hx/bin/hexa routing shim. The shim
+    # unconditionally dispatches `hexa run` to a remote resource host (ubu-1)
+    # which breaks Mac-local orchestrator semantics (tool/governance.hexa
+    # manages launchd plists + guard logic local to this Mac).
     local hexa_bin="$HEXA"
     if [ ! -x "$hexa_bin" ]; then
-        if [ -x "$HOME/.hx/bin/hexa" ]; then
+        if [ -x "$HOME/.hx/packages/hexa/hexa.real" ]; then
+            hexa_bin="$HOME/.hx/packages/hexa/hexa.real"
+        elif [ -x "$HOME/.hx/bin/hexa" ]; then
             hexa_bin="$HOME/.hx/bin/hexa"
         else
             hexa_bin="$(command -v hexa 2>/dev/null || true)"
