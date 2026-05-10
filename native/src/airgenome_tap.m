@@ -1602,7 +1602,7 @@ static void install_status_item(void) {
     [menu addItem:g_item_mouse];
 
     g_item_overload = [[NSMenuItem alloc]
-        initWithTitle:@"Overload check (load>50 / runaway PID)"
+        initWithTitle:@"Overload watch (load>80 → claude priority)"
                action:@selector(toggleOverload:)
         keyEquivalent:@""];
     g_item_overload.target = g_menu_target;

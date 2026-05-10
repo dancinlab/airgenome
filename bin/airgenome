@@ -849,10 +849,16 @@ HELP
 #
 # 단일 launchd 진입점 정책: 별도 plist 없음. airgenome.app 안의
 # 60s dispatch_source_t timer 가 sysctl vm.loadavg + ps 를 보고
-# load>50 또는 단일 PID CPU>50% × 5min 시 NSUserNotification 발사.
-# 메뉴바 "Overload check (...)" 토글로 on/off.
+#   - load1>80      → "macOS overload" 알림 + 가장 무거운 non-claude / non-system
+#                     PID 상위 N개를 taskpolicy -b (Darwin background tier) 강등 →
+#                     claude code CLI (…/claude.real wrapping + 실 CLI) 가 P-core 독식.
+#                     load 회복 시 전부 default 로 원복.
+#   - 단일 PID CPU>80% × 10min  → "runaway PID" 알림 + 해당 PID background 강등
+#   - 매 tick: claude code CLI PID 들을 taskpolicy -B (not-background) 유지 (상시 약-부스트)
+# 메뉴바 "Overload watch (...)" 토글로 on/off (off 시 강등 PID 원복).
 #
-# 본 CLI 는 status/test/logs 만 — 실 토글은 메뉴바에서.
+# 본 CLI 는 status/test/logs 만 — 실 토글은 메뉴바에서. 메커니즘은 taskpolicy
+# 만 사용 (renice 상향은 root 없이 되돌릴 수 없어 회피). kill 미수행.
 
 cmd_overload_check() {
     local sub="${1:-status}"
@@ -870,7 +876,7 @@ cmd_overload_check() {
                 [ -n "$v" ] && on="$v"
             fi
             echo "overload-check:"
-            echo "  toggle:    $on  (menubar: 'Overload check (...)' 항목)"
+            echo "  toggle:    $on  (menubar: 'Overload watch (load>80 → claude priority)' 항목)"
             echo "  state:     $state_file"
             echo "  log:       $log_file"
             echo "  queue:     $queue_file"
@@ -914,14 +920,17 @@ usage: airgenome overload-check <subcommand>
   run-once   scripts/overload_check.sh 1회 실행 (in-process 와 별개의 ad-hoc check)
 
 토글 (live):
-  airgenome.app 메뉴바 → "Overload check (load>50 / runaway PID)"
-  체크/해제 즉시 반영 + ~/.airgenome/menubar.state 에 persist
+  airgenome.app 메뉴바 → "Overload watch (load>80 → claude priority)"
+  체크/해제 즉시 반영 + ~/.airgenome/menubar.state 에 persist (off → 강등 PID 원복)
 
-설정 (컴파일 시 상수, 2026-05-10 — idle 직전 조기 경보 컨셉):
-  load 임계: 1min loadavg > 80
-  CPU 임계:  단일 PID > 80% × 10min sustained
-  Tick:      60s
-  쿨다운:    load 알림 10min (같은 조건 재발화 차단)
+설정 (컴파일 시 상수, 2026-05-10 — idle 직전 조기 경보 + claude 우선 게이트):
+  load 임계:   1min loadavg > 80
+  CPU 임계:    단일 PID > 80% × 10min sustained → runaway 알림 + 해당 PID 강등
+  강등 대상:   load>80 시 CPU>15% non-claude / non-system PID 상위 12개 → taskpolicy -b
+  claude 보호: …/claude.real (wrapping) + 실 claude CLI → 매 tick taskpolicy -B
+  복원:        load 회복 / watcher off / app 종료 시 강등 PID 전부 default 로
+  Tick:        60s
+  쿨다운:      load 알림 10min (같은 조건 재발화 차단)
 HELP
             ;;
         *)
@@ -1223,7 +1232,7 @@ usage: airgenome <command>
                  / 'Wake when lid closed' 토글로 이전 (raw 213, 2026-04-30).
                  in-process IOPMAssertionCreateWithName 사용 — admin auth dialog 없음.
                  legacy LaunchAgent (com.airgenome.wake) 는 새 binary 첫 launch 시 자동 정리.
-  overload-check <sub>  load>50 / runaway PID 감지 — airgenome.app 내부 60s timer
+  overload-check <sub>  load>80 → claude 우선(경쟁 PID background 강등) + runaway 알림 — app 내부 60s timer
                           status | test [title] [info] | logs | run-once | help
                           live 토글: airgenome.app 메뉴바의 'Overload check' 항목
   tap <sub>      airgenome native shim (단일 binary, 1 Accessibility grant):
