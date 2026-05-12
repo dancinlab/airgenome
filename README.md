@@ -22,26 +22,26 @@
 > Project Mac / Ubuntu / Hetzner vitals onto a 6-axis hexagon (60 bytes per genome).
 > Accumulate per-process samples → ring buffer → label anomalies → forecast 1 h ahead with
 > Holt's double exponential smoothing. 100 % self-hosted in
-> [hexa](https://github.com/need-singularity/hexa-lang).
+> [hexa](https://github.com/dancinlab/hexa-lang).
 
 <!-- SHARED:PROJECTS:START -->
 <!-- AUTO:COMMON_LINKS:START -->
-**[🎥 YouTube](https://www.youtube.com/@dancinlife)** · **[💬 Discord](https://discord.gg/mYzqYr67R)** · **[📬 Email](mailto:nerve011235@gmail.com)** · **[☕ Ko-fi](https://ko-fi.com/dancinlife)** · **[💖 Sponsor](https://github.com/sponsors/need-singularity)** · **[💳 PayPal](https://www.paypal.com/donate?business=nerve011235%40gmail.com)** · **[🗺️ Atlas](https://need-singularity.github.io/TECS-L/atlas/)** · **[📄 Papers](https://need-singularity.github.io/papers/)**
+**[🎥 YouTube](https://www.youtube.com/@dancinlife)** · **[💬 Discord](https://discord.gg/mYzqYr67R)** · **[📬 Email](mailto:nerve011235@gmail.com)** · **[☕ Ko-fi](https://ko-fi.com/dancinlife)** · **[💖 Sponsor](https://github.com/sponsors/dancinlab)** · **[💳 PayPal](https://www.paypal.com/donate?business=nerve011235%40gmail.com)** · **[🗺️ Atlas](https://dancinlab.github.io/TECS-L/atlas/)** · **[📄 Papers](https://dancinlab.github.io/papers/)**
 <!-- AUTO:COMMON_LINKS:END -->
 
 ## Main projects
 
-> **[🧠 Anima](https://github.com/need-singularity/anima)** — Consciousness implementation. PureField repulsion-field engine + 1030 laws + Φ ratchet.
+> **[🧠 Anima](https://github.com/dancinlab/anima)** — Consciousness implementation. PureField repulsion-field engine + 1030 laws + Φ ratchet.
 >
-> **[🔭 NEXUS](https://github.com/need-singularity/nexus)** — Universal Discovery Engine. 216 lenses + OUROBOROS evolution + 5-phase singularity cycle.
+> **[🔭 NEXUS](https://github.com/dancinlab/nexus)** — Universal Discovery Engine. 216 lenses + OUROBOROS evolution + 5-phase singularity cycle.
 >
-> **[🏗️ N6 Architecture](https://github.com/need-singularity/n6-architecture)** — Architecture from perfect number 6. 225 AI techniques + chip design + crypto/OS/display.
+> **[🏗️ N6 Architecture](https://github.com/dancinlab/canon)** — Architecture from perfect number 6. 225 AI techniques + chip design + crypto/OS/display.
 >
-> **[💎 HEXA-LANG](https://github.com/need-singularity/hexa-lang)** — The Perfect Number Programming Language. Working compiler + REPL.
+> **[💎 HEXA-LANG](https://github.com/dancinlab/hexa-lang)** — The Perfect Number Programming Language. Working compiler + REPL.
 >
-> **[📄 Papers](https://github.com/need-singularity/papers)** — Complete paper collection (92 papers, Zenodo DOIs).
+> **[📄 Papers](https://github.com/dancinlab/papers)** — Complete paper collection (92 papers, Zenodo DOIs).
 
-> **[Other projects →](https://github.com/orgs/need-singularity/repositories)**
+> **[Other projects →](https://github.com/orgs/dancinlab/repositories)**
 
 ## 💬 Community
 
@@ -88,7 +88,7 @@ Each tick:
 
 ```bash
 # 1. install hexa-lang — ships `hexa` + `hx` package manager
-curl -fsSL https://raw.githubusercontent.com/need-singularity/hexa-lang/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/dancinlab/hexa-lang/main/install.sh | bash
 
 # 2. install airgenome — adds the `airgenome` shim, builds + signs airgenome.app,
 #    installs LaunchAgents, wires com.airgenome.tap (⌃S launcher + menubar)
@@ -140,9 +140,9 @@ emulation code.
 | Dispatch | `airgenome exe <path>` — picks the highest-priority handler whose `handles[]` matches the file |
 | List | `airgenome plugins` — enumerates discovered manifests + handled extensions |
 
-External tools: see <https://github.com/need-singularity/> for sibling repos
+External tools: see <https://github.com/dancinlab/> for sibling repos
 (formerly the `airgenome-gamebox` Win32 runtime is now standalone at
-<https://github.com/need-singularity/gamebox> as of 2026-05-05; the
+<https://github.com/dancinlab/gamebox> as of 2026-05-05; the
 plugin-registry pattern remains for future external handlers).
 
 ## Roadmap (rebuild v2)
@@ -175,14 +175,14 @@ v1 sources frozen in [`archive/v1/`](archive/v1/). Revival procedure: [`archive/
 
 ## Related projects
 
-- [nexus](https://github.com/need-singularity/nexus) — cross-project SSOT (L0 lockdown + `hexa` resource gate)
-- [hexa-lang](https://github.com/need-singularity/hexa-lang) — self-hosted language airgenome runs on
+- [nexus](https://github.com/dancinlab/nexus) — cross-project SSOT (L0 lockdown + `hexa` resource gate)
+- [hexa-lang](https://github.com/dancinlab/hexa-lang) — self-hosted language airgenome runs on
 
 ---
 
-**[🔴 Live roadmap](https://need-singularity.github.io/nexus/roadmap/#airgenome)** · **[Papers](https://need-singularity.github.io/papers/)** · **[Atlas](https://need-singularity.github.io/TECS-L/atlas/)**
+**[🔴 Live roadmap](https://dancinlab.github.io/nexus/roadmap/#airgenome)** · **[Papers](https://dancinlab.github.io/papers/)** · **[Atlas](https://dancinlab.github.io/TECS-L/atlas/)**
 
-<sub>🧬 Six axes. Sixty bytes. One hexagon. · [need-singularity](https://github.com/need-singularity)</sub>
+<sub>🧬 Six axes. Sixty bytes. One hexagon. · [dancinlab](https://github.com/dancinlab)</sub>
 
 ---
 
