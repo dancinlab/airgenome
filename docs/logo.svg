@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" role="img" aria-label="airgenome logo">
+  <polygon points="70,8 130,42 130,98 70,132 10,98 10,42"
+           fill="none" stroke="#bf8700" stroke-width="6"
+           stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M 50 38 Q 90 70 50 102" fill="none" stroke="#bf8700" stroke-width="5" stroke-linecap="round"/>
+  <path d="M 90 38 Q 50 70 90 102" fill="none" stroke="#bf8700" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="60" cy="50" r="3.5" fill="#bf8700"/>
+  <circle cx="80" cy="50" r="3.5" fill="#bf8700"/>
+  <circle cx="60" cy="90" r="3.5" fill="#bf8700"/>
+  <circle cx="80" cy="90" r="3.5" fill="#bf8700"/>
+  <circle cx="70" cy="70" r="3.5" fill="#bf8700"/>
+</svg>
