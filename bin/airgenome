@@ -3,11 +3,14 @@
 #
 # 책임:
 #   1. 서브커맨드: init / start / stop / status / arm / disarm / logs / run
-#   2. run = supervisor:
+#   2. run = supervisor (비동기 cadence 구조, 2026-05-15~):
 #      - guard_loop() 백그라운드 fork (2s 샘플 CPU/RSS watchdog, bash native)
-#      - probe/dispatch/harvest/label 60s 주기 실행 (hexa)
-#      - forecast 300s 주기 실행 (hexa)
+#      - cadence-10s : displaylink_lifecycle (USB react time)
+#      - cadence-60s : probe · dispatch · harvest · label
+#      - cadence-300s: forecast
+#      - main loop   : guard + cadence health respawn + claude_snapshot (30s)
 #   3. LaunchAgent 하나만 (com.airgenome.plist) → launchd 가 'airgenome run' 호출
+#      → 신규 launchd plist 도입 금지 (governance: g_single_supervisor_plist)
 #
 # guard 설계 (bash, hexa_stage0 lock 우회):
 #   CPU ≥ 85% × 15s → WARN / × 30s → SIGTERM / × 45s → SIGKILL
@@ -580,6 +583,30 @@ spawn_guard() {
     echo "$pid"
 }
 
+# spawn_cadence — 비동기 cadence 서브쉘 fork.
+#   args : label interval mod [mod ...]
+#   stdout: subshell pid (caller 가 health check + respawn)
+#   동작 : while true; do (lock 없으면) mod 순차 실행; _isleep interval; done
+#   trap : 부모의 pkill -TERM -P $$ 가 SIGTERM 시 같이 정리.
+spawn_cadence() {
+    local label="$1" interval="$2"; shift 2
+    local mods="$*"
+    (
+        while true; do
+            if _hexa_lock_busy; then
+                log "$label: hexa_stage0 lock held — skip"
+            else
+                local m
+                for m in $mods; do
+                    run_hexa_mod "$m"
+                done
+            fi
+            _isleep "$interval"
+        done
+    ) &
+    echo $!
+}
+
 cmd_run() {
     echo $$ > "$PID_FILE"
     log "supervisor starting PID=$$"
@@ -588,41 +615,54 @@ cmd_run() {
     guard_pid="$(spawn_guard)"
     log "runtime-guard forked PID=$guard_pid"
 
-    # 시그널 시 guard + 하위 프로세스 전부 TERM, pid 파일 정리.
+    # 비동기 cadence — 모듈별 독립 sleep, 60s 공유 tick 제거.
+    #   10s : displaylink_lifecycle (USB react time)
+    #   60s : probe · dispatch · harvest · label (기존)
+    #   300s: forecast (기존)
+    local cad10_pid cad60_pid cad300_pid
+    cad10_pid="$(spawn_cadence cadence-10s 10 displaylink_lifecycle)"
+    log "cadence-10s forked PID=$cad10_pid (displaylink_lifecycle)"
+    cad60_pid="$(spawn_cadence cadence-60s 60 probe dispatch harvest label)"
+    log "cadence-60s forked PID=$cad60_pid (probe·dispatch·harvest·label)"
+    cad300_pid="$(spawn_cadence cadence-300s 300 forecast)"
+    log "cadence-300s forked PID=$cad300_pid (forecast)"
+
+    # 시그널 시 guard + 모든 cadence + 하위 프로세스 전부 TERM, pid 파일 정리.
     trap '
         log "supervisor SIGTERM/SIGINT";
-        [ -n "${guard_pid:-}" ] && kill -TERM "$guard_pid" 2>/dev/null || true;
+        for _p in "${guard_pid:-}" "${cad10_pid:-}" "${cad60_pid:-}" "${cad300_pid:-}"; do
+            [ -n "$_p" ] && kill -TERM "$_p" 2>/dev/null || true
+        done
         pkill -TERM -P $$ 2>/dev/null || true;
         rm -f "$PID_FILE" "$GUARD_PID_FILE";
         exit 0
     ' TERM INT
 
-    local tick=0
+    # main loop — guard + cadence health check + claude snapshot (30s tick).
+    # 모듈 실행은 위 cadence 서브쉘이 담당, 여기는 supervision 만.
     while true; do
         if ! kill -0 "$guard_pid" 2>/dev/null; then
             log "runtime-guard PID=$guard_pid died — respawning"
             guard_pid="$(spawn_guard)"
             log "runtime-guard respawned PID=$guard_pid"
         fi
-
-        if _hexa_lock_busy; then
-            log "hexa_stage0 lock held — tick $tick modules skipped"
-        else
-            run_hexa_mod probe
-            run_hexa_mod dispatch
-            run_hexa_mod harvest
-            run_hexa_mod label
-
-            if [ $((tick % 5)) -eq 0 ] && [ "$tick" -gt 0 ]; then
-                run_hexa_mod forecast
-            fi
+        if ! kill -0 "$cad10_pid" 2>/dev/null; then
+            log "cadence-10s PID=$cad10_pid died — respawning"
+            cad10_pid="$(spawn_cadence cadence-10s 10 displaylink_lifecycle)"
+            log "cadence-10s respawned PID=$cad10_pid"
         fi
-
-        # 매 tick: claude 세션 latest pointer + fs sync (크래시 내성)
+        if ! kill -0 "$cad60_pid" 2>/dev/null; then
+            log "cadence-60s PID=$cad60_pid died — respawning"
+            cad60_pid="$(spawn_cadence cadence-60s 60 probe dispatch harvest label)"
+            log "cadence-60s respawned PID=$cad60_pid"
+        fi
+        if ! kill -0 "$cad300_pid" 2>/dev/null; then
+            log "cadence-300s PID=$cad300_pid died — respawning"
+            cad300_pid="$(spawn_cadence cadence-300s 300 forecast)"
+            log "cadence-300s respawned PID=$cad300_pid"
+        fi
         claude_snapshot_tick
-
-        tick=$((tick + 1))
-        _isleep 60
+        _isleep 30
     done
 }
 

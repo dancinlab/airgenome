@@ -1,0 +1,88 @@
+// displaylink/module/displaylink_lifecycle.hexa
+// DisplayLink Manager 라이프사이클 — 단일 plist 자기충족 reconcile.
+//
+// Run:   hexa run displaylink/module/displaylink_lifecycle.hexa
+// Plist: launchd/com.airgenome.displaylink-lifecycle.plist
+//        (StartInterval=60 + RunAtLoad → 매분 reconcile)
+//
+// 책임 (모두 sudo 불필요, 사용자 GUI 세션 권한만):
+//   1. DL Manager 자기-자동시작 무력화 (AppAutostart=0) — idempotent 매 호출 적용
+//   2. DisplayLink USB dock 부착 여부 검사 (Vendor=DisplayLink)
+//   3. dock 있고 agent 미실행 → `open -gj` 로 launch
+//   4. dock 없고 agent 실행 중 → SIGTERM (워처부터 → agent → xpc 순)
+//   5. 그 외(이미 정합) → 침묵 (로그 스팸 방지)
+//
+// 단일 plist 노선:
+//   기존 Phase A의 sudo 작업(시스템 LaunchAgent 비활성화 · CrashHelper chmod)을
+//   런타임 reconcile로 대체. DL Manager가 어떤 경로(시스템 LaunchAgent · Login Item ·
+//   사용자 수동)로 떠도 USB 미부착이면 60초 내 정리. CrashRestartHelper는 워처
+//   먼저 죽이는 kill 순서로 자가-부활 race를 차단.
+//
+// 제약:
+//   - try/catch 미사용 (hexa-lang stage1)
+//   - one-shot 실행, 데몬 아님 — launchd가 주기적 호출
+//   - idempotent — 동일 상태에서 N번 호출해도 부작용 없음
+//
+// AG 원칙:
+//   g1 real-limits-first — DL 코덱은 닫혀있고 인코딩 CPU는 물리적 하한.
+//                          소프트웨어 절감 = "안 쓸 때 안 띄우기" 뿐.
+//   g2 lattice-is-tool   — n=6 무관, OS-level 라이프사이클 도메인.
+
+fn usb_displaylink_attached() -> bool {
+    // ioreg는 충분히 빠르다 (~20ms). grep -c 로 매칭 개수만 반환.
+    let cnt = exec("ioreg -p IOUSB -l -w 0 | grep -c '\"USB Vendor Name\" = \"DisplayLink\"'").trim()
+    return cnt != "" && cnt != "0"
+}
+
+fn dl_agent_running() -> bool {
+    return exec("pgrep -x DisplayLinkUserAgent").trim() != ""
+}
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn launch_dl() -> void {
+    // -g: background, -j: hidden. UI는 LSUIElement=1이라 메뉴바만 뜸.
+    let _ = exec("open -gj '/Applications/DisplayLink Manager.app'")
+}
+
+fn kill_dl() -> void {
+    // 순서 중요: 워처(CrashRestartHelper)가 agent 종료를 감지하면 재시동하므로
+    // 반드시 워처부터 죽인 뒤 agent → xpc 순으로 정리. -KILL이 아니라 -TERM이라
+    // DL 측 cleanup hook은 보장.
+    let _1 = exec("pkill -TERM -x CrashRestartHelper 2>/dev/null")
+    let _2 = exec("pkill -TERM -x DisplayLinkUserAgent 2>/dev/null")
+    let _3 = exec("pkill -TERM -x DisplayLinkXpcService 2>/dev/null")
+}
+
+fn ensure_autostart_off() -> void {
+    // idempotent. 값이 이미 0이면 defaults가 no-op. 매 호출 적용해 두면
+    // DL Manager가 무슨 경로로 자기 plist를 1로 되돌려도 다음 사이클에 잡힘.
+    let _ = exec("defaults write com.displaylink.DisplayLinkUserAgent AppAutostart -bool false 2>/dev/null")
+}
+
+fn reconcile() -> void {
+    ensure_autostart_off()
+    let attached = usb_displaylink_attached()
+    let running = dl_agent_running()
+
+    if attached {
+        if running {
+            return
+        }
+        launch_dl()
+        println("[" + ts_iso() + "] launch — USB DisplayLink attached, agent down")
+        return
+    }
+
+    // !attached
+    if running {
+        kill_dl()
+        println("[" + ts_iso() + "] kill — USB DisplayLink absent, agent up")
+        return
+    }
+    // no-op: 둘 다 false (보통 상태). 침묵.
+}
+
+reconcile()

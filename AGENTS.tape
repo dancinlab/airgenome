@@ -127,6 +127,24 @@
   authority = "[@x_tape_spec] §Domain-tape sibling §Architecture-vs-history split"
   @> AGENTS.md
 
+@D g_single_supervisor_plist := "단일 supervisor plist + 비동기 cadence" :: governance [required d=2026-05-15 active]
+  rule = "airgenome 은 단일 LaunchAgent (com.airgenome.plist) 만 유지. 신규 launchd plist 추가 금지. 다중 주기 모듈은 bin/airgenome run 내부 비동기 cadence 서브쉘 (spawn_cadence) 로 분기한다."
+  why = "다중 plist 는 lifecycle / log / 회수 / 권한 경로가 분산되어 관리 부담만 증가. supervisor 는 이미 guard_loop + 모듈 orchestration 을 통합 관리하므로 cadence 만 분리하면 충분."
+  applies-to = "macOS daemon · agent · poller · watcher 류 신규 추가 시"
+  cadences = ["10s: displaylink_lifecycle", "60s: probe · dispatch · harvest · label", "300s: forecast"]
+  entry = "bin/airgenome :: cmd_run · spawn_cadence"
+  authority = "[@x_tape_spec]"
+  @> AGENTS.md
+
+@C c_displaylink_lifecycle := "DisplayLink Manager 라이프사이클" :: config [d=2026-05-15 active]
+  module = "displaylink/module/displaylink_lifecycle.hexa"
+  cadence = "10s (cadence-10s · spawn_cadence)"
+  trigger = "USB Vendor=DisplayLink (Plugable USBC-6950M = DL-6950)"
+  policy = "dock 부착 + agent 미실행 → open -gj launch / dock 미부착 + agent 실행 중 → SIGTERM (워처 먼저)"
+  bootstrap = "ensure_autostart_off() 매 호출 idempotent — DL Manager 자기-자동시작 무력화"
+  why = "DL Manager는 외장 모니터 미사용 시에도 ~428MB RSS + 15% CPU 점유 (DL3 proprietary 코덱은 닫혀있어 인코딩 비용 자체는 절감 불가, 라이프사이클 회수가 유일한 절감로)."
+  bound-by = "[@g_single_supervisor_plist]"
+
 
 @F f1 := "lattice-fit-on-external-entity" :: governance [required deny:write]
   pattern = "applying n=6 lattice as derivation rule to TSMC · ASML · IPCC · NASA · SpaceX · CERN · DeepMind · NIST · or any external vendor"
