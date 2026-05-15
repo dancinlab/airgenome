@@ -529,8 +529,11 @@ run_hexa_mod() {
         >>"$LOG_DIR/${mod}.stdout.log" \
         2>>"$LOG_DIR/${mod}.stderr.log" &
     local mpid=$!
-    wait "$mpid" 2>/dev/null
-    local rc=$?
+    # set -e 가 wait 의 124(timeout)/137(SIGKILL) 반환에 발화해서 bin/airgenome
+    # 전체를 죽이지 않도록 `|| rc=$?` 패턴으로 흡수. 이전엔 모듈 timeout 마다
+    # 'run' child 가 죽고 supervisor 가 재spawn → 매주 ~수백개 stale 누적이었다.
+    local rc=0
+    wait "$mpid" 2>/dev/null || rc=$?
     if [ "$rc" -ne 0 ] && [ "$rc" -lt 128 ]; then
         log "module ${mod} exit=$rc (timeout=${t}s)"
     fi
@@ -588,6 +591,13 @@ spawn_guard() {
 #   stdout: subshell pid (caller 가 health check + respawn)
 #   동작 : while true; do (lock 없으면) mod 순차 실행; _isleep interval; done
 #   trap : 부모의 pkill -TERM -P $$ 가 SIGTERM 시 같이 정리.
+#
+# CRITICAL: 백그라운드 subshell 의 stdout/stderr 를 반드시 파일로 redirect 한다.
+# `cad=$(spawn_cadence ...)` 형태로 호출되므로, redirect 가 없으면 subshell 이
+# command-substitution 파이프 fd 를 상속 → `while true` 라 영원히 안 닫힘 →
+# `$(...)` 가 영구 hang (cmd_run 이 첫 cadence 에서 멈춰 60s/300s/main loop
+# 자체가 시작 안 됨). spawn_guard 가 guard_loop 출력을 파일로 보내 무사했던
+# 것과 동일한 이유. → fd 를 파일로 분리해 파이프를 즉시 닫는다.
 spawn_cadence() {
     local label="$1" interval="$2"; shift 2
     local mods="$*"
@@ -603,7 +613,7 @@ spawn_cadence() {
             fi
             _isleep "$interval"
         done
-    ) &
+    ) >>"$LOG_DIR/${label}.stdout.log" 2>>"$LOG_DIR/${label}.stderr.log" &
     echo $!
 }
 

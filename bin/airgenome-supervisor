@@ -362,6 +362,49 @@ _watch_snapshot() {
 # "no wrapper running for slot i". On SIGCHLD or polling tick, we walk
 # every slot and respawn dead ones.
 
+# Orphan cleanup — run at startup BEFORE start_all().
+# Background: when the supervisor crashes (SIGKILL · OOM · kernel panic ·
+# `launchctl bootout` with stuck wrappers), its wrapper subshells get
+# reparented to launchd (PPID=1) along with their cmd children. launchd's
+# KeepAlive=true respawns the supervisor, but the new instance has no
+# knowledge of the old wrappers — they leak forever. Empirically observed
+# this leak reaching ~900 stale `bin/airgenome run` processes over weeks.
+#
+# Strategy: parse jobs.tsv → for each job's cmd, pkill any matching procs.
+# Safe because the single-instance guard in main() has confirmed no other
+# supervisor is alive; thus any process matching our job cmds is an orphan
+# from a prior generation.
+cleanup_orphans() {
+    if ! parse_jobs >/dev/null 2>&1; then
+        log "orphan-cleanup: parse_jobs failed — skip"
+        return 0
+    fi
+    local i pat label survivors=0
+    # Phase 1: SIGTERM all known job cmds.
+    for ((i = 0; i < ${#J_LABEL[@]}; i++)); do
+        label="${J_LABEL[$i]}"
+        # First 50 chars of cmd: unique enough to scope, short enough to
+        # avoid quoting issues with embedded args/quotes.
+        pat="${J_CMD[$i]:0:50}"
+        if pgrep -f -- "$pat" >/dev/null 2>&1; then
+            local n; n=$(pgrep -f -- "$pat" 2>/dev/null | wc -l | tr -d ' ')
+            log "orphan-cleanup '$label': SIGTERM $n proc matching '$pat'"
+            pkill -TERM -f -- "$pat" 2>/dev/null || true
+            survivors=$((survivors + n))
+        fi
+    done
+    if [ "$survivors" -eq 0 ]; then
+        return 0
+    fi
+    # Phase 2: grace, then SIGKILL stragglers.
+    sleep "$SHUTDOWN_GRACE_SEC"
+    for ((i = 0; i < ${#J_LABEL[@]}; i++)); do
+        pat="${J_CMD[$i]:0:50}"
+        pkill -KILL -f -- "$pat" 2>/dev/null || true
+    done
+    log "orphan-cleanup: $survivors stale procs swept"
+}
+
 start_wrapper() {
     local i="$1"
     local label="${J_LABEL[$i]}"
@@ -581,6 +624,10 @@ main() {
                     exit 1
                 fi
             fi
+            # Orphan cleanup BEFORE claiming PID file. Safe because the guard
+            # above confirms no live supervisor — any matching procs are leaks
+            # from a prior crashed/killed generation.
+            cleanup_orphans
             echo $$ > "$PID_FILE"
             log "supervisor starting pid=$$ jobs=$JOBS_TSV state=$STATE_DIR"
             parse_jobs || exit 2

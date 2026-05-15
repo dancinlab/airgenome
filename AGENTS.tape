@@ -127,14 +127,30 @@
   authority = "[@x_tape_spec] §Domain-tape sibling §Architecture-vs-history split"
   @> AGENTS.md
 
-@D g_single_supervisor_plist := "단일 supervisor plist + 비동기 cadence" :: governance [required d=2026-05-15 active]
-  rule = "airgenome 은 단일 LaunchAgent (com.airgenome.plist) 만 유지. 신규 launchd plist 추가 금지. 다중 주기 모듈은 bin/airgenome run 내부 비동기 cadence 서브쉘 (spawn_cadence) 로 분기한다."
-  why = "다중 plist 는 lifecycle / log / 회수 / 권한 경로가 분산되어 관리 부담만 증가. supervisor 는 이미 guard_loop + 모듈 orchestration 을 통합 관리하므로 cadence 만 분리하면 충분."
+@D g_single_supervisor_plist := "단일 launchd plist + 3-layer supervision" :: governance [required d=2026-05-15 active]
+  rule = "macOS launchd 에 로드되는 airgenome plist 는 정확히 1개 — com.airgenome.supervisor. 신규 라이프사이클 모듈은 (a) supervisor child row 추가 또는 (b) 'run' child 내부 cadence 흡수 — 둘 중 하나로만 진입한다. 별도 LaunchAgent plist 신설은 금지 ([@f_new_launchd_plist])."
+  why = "다중 launchd plist 는 lifecycle / log / 권한 / SIGTERM 경로가 분산되어 관리 부담 증가. Accessibility / Login Item / CGEventTap 권한은 plist Label 단위로 묶여있어 plist 추가 시 권한 재요청 + 중복 grant 위험. 또한 launchd KeepAlive backoff 가 plist 별로 독립적이라 재기동 정책 일관성 깨짐."
   applies-to = "macOS daemon · agent · poller · watcher 류 신규 추가 시"
-  cadences = ["10s: displaylink_lifecycle", "60s: probe · dispatch · harvest · label", "300s: forecast"]
-  entry = "bin/airgenome :: cmd_run · spawn_cadence"
+  layer-0 = "launchd ← 단일 plist: ~/Library/LaunchAgents/com.airgenome.supervisor.plist (Label: com.airgenome.supervisor, KeepAlive=true)"
+  layer-1 = "supervisor (mini-launchd) ← bin/airgenome-supervisor :: SSOT=config/launchd/supervisor.jobs.tsv → fork/exec per-child (7 children: run · hook-watch · settings-guard · tap · tg-bot · vacuum-watcher · audio-rate-pin). reload via SIGHUP, status via SIGUSR1."
+  layer-2 = "'run' child = bin/airgenome run ← spawn_cadence 비동기 cadence: 10s (displaylink_lifecycle) · 60s (probe · dispatch · harvest · label) · 300s (forecast)"
+  decision-tree = "(1) 독립 프로세스 수명 · 별도 env/cwd · watchpaths 필요? → layer-1 supervisor.jobs.tsv child row. (2) 단순 주기적 hexa 모듈? → layer-2 cadence (bin/airgenome :: spawn_cadence). (3) 그 외 신규 plist 신설은 절대 금지."
+  entry = "bin/airgenome-supervisor + config/launchd/supervisor.jobs.tsv + bin/airgenome :: spawn_cadence"
   authority = "[@x_tape_spec]"
   @> AGENTS.md
+
+@F f_new_launchd_plist := "신규 launchd plist 추가" :: governance [required d=2026-05-15 active deny:write]
+  pattern = "~/Library/LaunchAgents/com.airgenome.<X>.plist · /Library/LaunchAgents/com.airgenome.<X>.plist · launchd/com.airgenome.<X>.plist 신규 작성 (단, com.airgenome.supervisor 자체 수정은 허용)"
+  exception = "기존 standalone plist 정리는 허용 (bootout + 파일 삭제). repo/launchd/ 의 legacy plist 들은 [@n_launchd_migration_debt] 참조."
+  see = "[@g_single_supervisor_plist] decision-tree"
+
+@N n_launchd_migration_debt := "standalone launchd plist 잔존 항목" :: note [d=2026-05-15 active]
+  fact-1 = "launchctl list 에 com.airgenome.tap 이 standalone 으로 잡혀있음 (~/Library/LaunchAgents/com.airgenome.tap.plist). 동일 라벨이 supervisor.jobs.tsv 의 'tap' child 로도 정의되어 중복 — 같은 /Applications/airgenome.app 바이너리 2회 기동 위험."
+  fact-2 = "repo/launchd/ 에 legacy plist 12개 잔존 (com.airgenome.plist · com.airgenome.probe.plist · com.airgenome.harvest.plist 등). supervisor 도입 이전 잔재. 현재 어느 것도 사용자 LaunchAgents 에 설치되지 않은 상태로 추정."
+  cleanup-tap = `launchctl bootout gui/$UID/com.airgenome.tap && rm ~/Library/LaunchAgents/com.airgenome.tap.plist`
+  cleanup-repo = "repo/launchd/ legacy 12개는 별도 PR 로 정리 — 영향 분석 필요 (bin/airgenome-init · install.hexa 등이 참조하는지)"
+  why = "정리 전엔 launchctl 출력 노이즈 + 신규 컨트리뷰터 혼동 + 중복 기동 risk."
+  bound-by = "[@g_single_supervisor_plist]"
 
 @C c_displaylink_lifecycle := "DisplayLink Manager 라이프사이클" :: config [d=2026-05-15 active]
   module = "displaylink/module/displaylink_lifecycle.hexa"
