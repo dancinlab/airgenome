@@ -407,6 +407,15 @@ static void spotlight_set(int on) {
     (void)r;
 }
 
+// 기본 정책: Spotlight 인덱싱 OFF. 앱 기동 시 인덱싱이 켜져 있으면 끔
+// (idempotent — 이미 off 면 no-op). supervisor 재시작이 잦아도 항상 off
+// 기본 유지 → "airgenome = 인덱싱 끔" 이 일관. 사용자가 메뉴에서 켜면
+// 그 세션 동안 유효, 다음 기동에 다시 기본(off)로 수렴.
+// (displaylink 의 ensure_autostart_off 와 동일 결의 강한 기본값.)
+static void spotlight_apply_default_off(void) {
+    if (spotlight_indexing_on()) spotlight_set(0);
+}
+
 static void native_tiling_capture_and_disable(void) {
     if (!g_disable_native || !g_magnet_on) return;
     g_orig_edge_drag    = read_default_tristate(KEY_EDGE_DRAG);
@@ -1728,11 +1737,8 @@ static void install_status_item(void) {
     g_item_spotlight.target = g_menu_target;
     [menu addItem:g_item_spotlight];
 
-    // 기본값 = 끄기(체크). 부하 완화가 기본 정책 — 앱 기동 시 인덱싱이
-    // 켜져 있으면 1회 끔. 사용자가 메뉴에서 명시적으로 다시 켜기 전까지
-    // off 유지 (재기동 시에도 off 기본). g_single_process 와 동일 결의
-    // idempotent enforce.
-    if (spotlight_indexing_on()) spotlight_set(0);
+    // 기본값 = 인덱싱 끄기 (부하 완화 기본 정책, idempotent).
+    spotlight_apply_default_off();
 
     update_menu_states();   // sync checkmarks to current real state
 
