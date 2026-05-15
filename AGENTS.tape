@@ -127,7 +127,16 @@
   authority = "[@x_tape_spec] §Domain-tape sibling §Architecture-vs-history split"
   @> AGENTS.md
 
+@D g_single_process := "airgenome = 단일 앱/프로세스 원칙" :: governance [required d=2026-05-15 active]
+  rule = "airgenome 은 본질적으로 단일 앱/프로세스로 수렴한다. 기능 추가가 독립 앱·데몬·상주 프로세스 신설을 요구하면, 먼저 supervisor child 또는 cadence 흡수를 시도하고 그것이 불가능함을 입증해야 한다. 프로세스 다발(sprawl)은 그 자체로 원칙 위반."
+  why = "프로세스 sprawl 의 실제 비용: (a) crash → orphan 누적 leak — 2026-05-15 `bin/airgenome run` 944개 stale 사고 (역대 rc=124 1298회, commit f871a8ba 에서 set -e 흡수 + cleanup_orphans 로 근절) (b) 관찰/회수/신호/로그 경로 파편화 (c) 권한 grant 중복 (d) 사용자 체감 '무거움'. 단일 프로세스는 자원 상한·종료·디버깅을 단일 지점으로 수렴 — ai-native(deterministic single-point control)와 일치."
+  applies-to = "신규 기능·모듈·통합 설계 시 첫 질문 = '별도 프로세스 없이 supervisor child / cadence 로 되는가?'"
+  hierarchy = "이 원칙이 상위. [@g_single_supervisor_plist] 가 launchd 레이어에서, [@f_new_launchd_plist] 가 plist 금지로 구체화."
+  authority = "[@x_lattice_policy]"
+  @> AGENTS.md
+
 @D g_single_supervisor_plist := "단일 launchd plist + 3-layer supervision" :: governance [required d=2026-05-15 active]
+  <: g_single_process
   rule = "macOS launchd 에 로드되는 airgenome plist 는 정확히 1개 — com.airgenome.supervisor. 신규 라이프사이클 모듈은 (a) supervisor child row 추가 또는 (b) 'run' child 내부 cadence 흡수 — 둘 중 하나로만 진입한다. 별도 LaunchAgent plist 신설은 금지 ([@f_new_launchd_plist])."
   why = "다중 launchd plist 는 lifecycle / log / 권한 / SIGTERM 경로가 분산되어 관리 부담 증가. Accessibility / Login Item / CGEventTap 권한은 plist Label 단위로 묶여있어 plist 추가 시 권한 재요청 + 중복 grant 위험. 또한 launchd KeepAlive backoff 가 plist 별로 독립적이라 재기동 정책 일관성 깨짐."
   applies-to = "macOS daemon · agent · poller · watcher 류 신규 추가 시"
