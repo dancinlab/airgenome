@@ -1,32 +1,33 @@
-// displaylink/module/displaylink_lifecycle.hexa
-// DisplayLink Manager 라이프사이클 — 단일 plist 자기충족 reconcile.
+// displaylink/module/displaylink.hexa
+// DisplayLink Manager 라이프사이클 — supervisor cadence 자기충족 reconcile.
 //
-// Run:   hexa run displaylink/module/displaylink_lifecycle.hexa
-// Plist: launchd/com.airgenome.displaylink-lifecycle.plist
-//        (StartInterval=60 + RunAtLoad → 매분 reconcile)
+// Run   : run_hexa_mod displaylink  (bin/airgenome cadence-10s, 매 10s)
+// 경로규약: <name>/module/<name>.hexa — run_hexa_mod 가 이 경로로 해석.
 //
-// 책임 (모두 sudo 불필요, 사용자 GUI 세션 권한만):
-//   1. DL Manager 자기-자동시작 무력화 (AppAutostart=0) — idempotent 매 호출 적용
-//   2. DisplayLink USB dock 부착 여부 검사 (Vendor=DisplayLink)
-//   3. dock 있고 agent 미실행 → `open -gj` 로 launch
-//   4. dock 없고 agent 실행 중 → SIGTERM (워처부터 → agent → xpc 순)
-//   5. 그 외(이미 정합) → 침묵 (로그 스팸 방지)
+// 책임 (모두 sudo 불필요, 사용자 GUI 세션 권한만, 매 호출 idempotent):
+//   1. AppAutostart=0      — DL Manager 자기-자동시작 무력화
+//   2. ShowMenuBarIcon=0   — DL Manager 메뉴바 아이콘 숨김 (headless).
+//                            on/off 는 airgenome 자체 메뉴바에서만.
+//   3. USB dock 부착 여부 검사 (Vendor=DisplayLink)
+//   4. dock 있고 agent 미실행 → `open -gj` 로 launch
+//   5. dock 없고 agent 실행 중 → SIGTERM (워처부터 → agent → xpc 순)
+//   6. 그 외(이미 정합) → 침묵 (로그 스팸 방지)
 //
-// 단일 plist 노선:
-//   기존 Phase A의 sudo 작업(시스템 LaunchAgent 비활성화 · CrashHelper chmod)을
-//   런타임 reconcile로 대체. DL Manager가 어떤 경로(시스템 LaunchAgent · Login Item ·
-//   사용자 수동)로 떠도 USB 미부착이면 60초 내 정리. CrashRestartHelper는 워처
-//   먼저 죽이는 kill 순서로 자가-부활 race를 차단.
+// headless 노선:
+//   코덱만 떼어 쓰는 건 불가능(정적링크·NDA). DL Manager 프로세스는 떠야
+//   하지만 그 자체 메뉴바 UI 는 불필요 → ShowMenuBarIcon=0 으로 숨기고
+//   on/off 제어는 airgenome 메뉴바로 일원화. 참고: defaults 키는
+//   community/DisplayLink 공식 확인 (앱 재시작 시 반영).
 //
 // 제약:
 //   - try/catch 미사용 (hexa-lang stage1)
-//   - one-shot 실행, 데몬 아님 — launchd가 주기적 호출
+//   - one-shot 실행, 데몬 아님 — supervisor cadence 가 주기 호출
 //   - idempotent — 동일 상태에서 N번 호출해도 부작용 없음
 //
 // AG 원칙:
 //   g1 real-limits-first — DL 코덱은 닫혀있고 인코딩 CPU는 물리적 하한.
 //                          소프트웨어 절감 = "안 쓸 때 안 띄우기" 뿐.
-//   g2 lattice-is-tool   — n=6 무관, OS-level 라이프사이클 도메인.
+//   g_single_process     — 별도 plist/앱 없이 supervisor cadence 흡수.
 
 fn usb_displaylink_attached() -> bool {
     // ioreg는 충분히 빠르다 (~20ms). grep -c 로 매칭 개수만 반환.
@@ -62,8 +63,16 @@ fn ensure_autostart_off() -> void {
     let _ = exec("defaults write com.displaylink.DisplayLinkUserAgent AppAutostart -bool false 2>/dev/null")
 }
 
+fn ensure_menubar_hidden() -> void {
+    // ShowMenuBarIcon=0 → DL Manager 자체 메뉴바 아이콘 숨김 (headless).
+    // 앱 재시작 시 반영되므로, 이후 launch_dl() 이 띄우는 인스턴스부터 적용.
+    // idempotent — DL 이 값을 되돌려도 다음 cadence 에서 재적용.
+    let _ = exec("defaults write com.displaylink.DisplayLinkUserAgent ShowMenuBarIcon -bool false 2>/dev/null")
+}
+
 fn reconcile() -> void {
     ensure_autostart_off()
+    ensure_menubar_hidden()
     let attached = usb_displaylink_attached()
     let running = dl_agent_running()
 

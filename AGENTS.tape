@@ -162,13 +162,14 @@
   bound-by = "[@g_single_supervisor_plist]"
 
 @C c_displaylink_lifecycle := "DisplayLink Manager 라이프사이클" :: config [d=2026-05-15 active]
-  module = "displaylink/module/displaylink_lifecycle.hexa"
+  module = "displaylink/module/displaylink.hexa"
+  invoke = "run_hexa_mod displaylink (경로규약 <name>/module/<name>.hexa)"
   cadence = "10s (cadence-10s · spawn_cadence)"
   trigger = "USB Vendor=DisplayLink (Plugable USBC-6950M = DL-6950)"
   policy = "dock 부착 + agent 미실행 → open -gj launch / dock 미부착 + agent 실행 중 → SIGTERM (워처 먼저)"
-  bootstrap = "ensure_autostart_off() 매 호출 idempotent — DL Manager 자기-자동시작 무력화"
-  why = "DL Manager는 외장 모니터 미사용 시에도 ~428MB RSS + 15% CPU 점유 (DL3 proprietary 코덱은 닫혀있어 인코딩 비용 자체는 절감 불가, 라이프사이클 회수가 유일한 절감로)."
-  bound-by = "[@g_single_supervisor_plist]"
+  bootstrap = "매 호출 idempotent — ensure_autostart_off (AppAutostart=0) + ensure_menubar_hidden (ShowMenuBarIcon=0, DL 자체 메뉴바 숨김/headless)"
+  why = "DL Manager는 외장 모니터 미사용 시에도 ~428MB RSS + 15% CPU 점유 (DL3 proprietary 코덱은 닫혀있어 인코딩 비용 자체는 절감 불가, 라이프사이클 회수가 유일한 절감로). 코덱만 추출은 불가(정적링크·NDA) → 프로세스는 띄우되 UI 만 숨김."
+  bound-by = "[@g_single_process]"
 
 
 @F f1 := "lattice-fit-on-external-entity" :: governance [required deny:write]

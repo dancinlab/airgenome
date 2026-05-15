@@ -207,6 +207,8 @@ static NSMenuItem         *g_item_winctl = nil;
 static NSMenuItem         *g_item_launcher = nil;
 static NSMenuItem         *g_item_hotkey = nil;
 static NSMenuItem         *g_item_overload = nil;
+static NSMenuItem         *g_item_displaylink = nil;
+static NSMenuItem         *g_item_spotlight = nil;
 // overload 워처 default ON. menubar.state 에서 overrideable.
 static int                 g_overload_on = 1;
 static AirgenomeMenuTarget *g_menu_target = nil;
@@ -332,6 +334,77 @@ static void kick_window_manager(void) {
     // Hot-reload defaults: WindowManager is auto-respawned by launchd.
     int rc = system("killall WindowManager 2>/dev/null");
     (void)rc;
+}
+
+// ---------------------------------------------------------------------------
+// DisplayLink lifecycle — menubar ON/OFF (single-point control).
+//
+// 코덱만 추출은 불가 (정적링크·NDA). 대신 DL Manager 프로세스를 띄우되
+// 자체 메뉴바 아이콘(ShowMenuBarIcon)·자동시작(AppAutostart)을 무력화하고
+// on/off 를 airgenome 메뉴바 한 곳으로 일원화. OFF → DisplayLinkUserAgent
+// + xpc + CrashRestartHelper 종료 (워처 먼저 → 자가부활 race 차단):
+// ~428MB RSS + 15% CPU + Apple 보라 "녹화중" 아이콘까지 전부 회수.
+// ON → .app 으로 launch. bare binary 직접 실행은 macOS Sequoia 에서
+// ScreenCaptureKit 권한 컨텍스트 부재로 디스플레이 미동작 (raw 검증
+// 2026-05-15) → 반드시 LaunchServices(.app) 경로. 보라 아이콘은 ON 일 때
+// 불가피 (Apple 보안 설계, g1 real-limits-first) — OFF 면 사라짐.
+static int displaylink_running(void) {
+    FILE *f = popen("pgrep -x DisplayLinkUserAgent 2>/dev/null", "r");
+    if (!f) return 0;
+    char buf[32] = {0};
+    int got = (fgets(buf, sizeof buf, f) != NULL);
+    pclose(f);
+    return got ? 1 : 0;
+}
+
+static void displaylink_start(void) {
+    // headless 영구화 (idempotent): 자체 메뉴바 아이콘 + 자동시작 무력화.
+    int r1 = system("defaults write com.displaylink.DisplayLinkUserAgent "
+                     "ShowMenuBarIcon -bool false 2>/dev/null");
+    int r2 = system("defaults write com.displaylink.DisplayLinkUserAgent "
+                     "AppAutostart -bool false 2>/dev/null");
+    int r3 = system("open -gj '/Applications/DisplayLink Manager.app' 2>/dev/null");
+    (void)r1; (void)r2; (void)r3;
+}
+
+static void displaylink_stop(void) {
+    // 순서 중요: 워처(CrashRestartHelper)가 agent 종료를 감지하면 재시동 →
+    // 반드시 워처부터 죽인 뒤 agent → xpc.
+    int r1 = system("pkill -TERM -x CrashRestartHelper 2>/dev/null");
+    int r2 = system("pkill -TERM -x DisplayLinkUserAgent 2>/dev/null");
+    int r3 = system("pkill -TERM -x DisplayLinkXpcService 2>/dev/null");
+    (void)r1; (void)r2; (void)r3;
+}
+
+// ---------------------------------------------------------------------------
+// Spotlight indexing on/off — menubar 토글.
+//
+// 동기: spotlightknowledged/mds_stores 가 인덱싱 중 수십% CPU thrash →
+// load 급등 + WindowServer 굶음 → 메뉴/UI 딜레이. OFF 면 인덱싱 중단 →
+// 그 부하 회수 (검색은 일시 영향, 다시 ON 시 재인덱싱).
+//
+// 권한: `mdutil -a -i on|off` 는 root 필요. ghost 는
+// /etc/sudoers.d/airgenome-guard 의 NOPASSWD:ALL 로 sudo -n 비대화식
+// 실행 가능 (관리자 다이얼로그 없음 — wake/lid 의 admin shell-out 회피
+// 철학과 동일 결). 상태 조회 `mdutil -s /` 는 root 불필요.
+static int spotlight_indexing_on(void) {
+    FILE *f = popen("mdutil -s / 2>/dev/null", "r");
+    if (!f) return 1;                 // 알 수 없음 → ON 가정 (보수적)
+    char buf[256] = {0};
+    int on = 1;
+    while (fgets(buf, sizeof buf, f)) {
+        if (strstr(buf, "Indexing disabled")) { on = 0; break; }
+        if (strstr(buf, "Indexing enabled"))  { on = 1; break; }
+    }
+    pclose(f);
+    return on;
+}
+
+static void spotlight_set(int on) {
+    int r = system(on
+        ? "sudo -n /usr/bin/mdutil -a -i on  >/dev/null 2>&1"
+        : "sudo -n /usr/bin/mdutil -a -i off >/dev/null 2>&1");
+    (void)r;
 }
 
 static void native_tiling_capture_and_disable(void) {
@@ -1302,6 +1375,8 @@ static void update_menu_states(void);
 - (void)toggleWake:(id)sender;
 - (void)toggleLidClosed:(id)sender;
 - (void)toggleOverload:(id)sender;
+- (void)toggleDisplayLink:(id)sender;
+- (void)toggleSpotlight:(id)sender;
 @end
 
 @implementation AirgenomeMenuTarget
@@ -1325,6 +1400,34 @@ static void update_menu_states(void);
     update_menu_states();
     fprintf(stderr, "menubar: overload -> %s\n", g_overload_on ? "ON" : "off");
     fflush(stderr);
+}
+
+// DisplayLink: 실제 상태 = DisplayLinkUserAgent 프로세스 존재 여부 (wake/lid
+// 처럼 live 쿼리, 영속 플래그 없음). save_menubar_state 불필요.
+- (void)toggleDisplayLink:(id)sender {
+    (void)sender;
+    if (displaylink_running()) {
+        displaylink_stop();
+        fprintf(stderr, "menubar: displaylink -> off "
+                        "(agent+xpc+watcher killed; ~428MB+15%%CPU+보라아이콘 회수)\n");
+    } else {
+        displaylink_start();
+        fprintf(stderr, "menubar: displaylink -> ON (open .app, headless)\n");
+    }
+    fflush(stderr);
+    update_menu_states();
+}
+
+// Spotlight: 실제 상태 = mdutil -s 결과 (live 쿼리, 영속 플래그 없음).
+// 체크마크 ON = 인덱싱 활성. 부하 완화하려면 OFF 로 토글.
+- (void)toggleSpotlight:(id)sender {
+    (void)sender;
+    int on = spotlight_indexing_on();
+    spotlight_set(!on);
+    fprintf(stderr, "menubar: spotlight -> %s\n",
+            !on ? "ON (indexing 재개)" : "off (부하 완화 — 검색 일시중단)");
+    fflush(stderr);
+    update_menu_states();
 }
 
 - (void)toggleMagnet:(id)sender {
@@ -1505,6 +1608,9 @@ static void update_menu_states(void) {
     if (g_item_launcher) g_item_launcher.state = g_launcher_on ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_hotkey)   g_item_hotkey.state   = g_hotkey_on   ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_overload) g_item_overload.state = g_overload_on ? NSControlStateValueOn : NSControlStateValueOff;
+    if (g_item_displaylink) g_item_displaylink.state = displaylink_running() ? NSControlStateValueOn : NSControlStateValueOff;
+    // 반전 의미: 체크 = "인덱싱 끄기"가 적용된 상태 (= indexing disabled).
+    if (g_item_spotlight) g_item_spotlight.state = spotlight_indexing_on() ? NSControlStateValueOff : NSControlStateValueOn;
 }
 
 // ---------------------------------------------------------------------------
@@ -1607,6 +1713,26 @@ static void install_status_item(void) {
         keyEquivalent:@""];
     g_item_overload.target = g_menu_target;
     [menu addItem:g_item_overload];
+
+    g_item_displaylink = [[NSMenuItem alloc]
+        initWithTitle:@"DisplayLink (외장 모니터 on/off)"
+               action:@selector(toggleDisplayLink:)
+        keyEquivalent:@""];
+    g_item_displaylink.target = g_menu_target;
+    [menu addItem:g_item_displaylink];
+
+    g_item_spotlight = [[NSMenuItem alloc]
+        initWithTitle:@"Spotlight 인덱싱 끄기"
+               action:@selector(toggleSpotlight:)
+        keyEquivalent:@""];
+    g_item_spotlight.target = g_menu_target;
+    [menu addItem:g_item_spotlight];
+
+    // 기본값 = 끄기(체크). 부하 완화가 기본 정책 — 앱 기동 시 인덱싱이
+    // 켜져 있으면 1회 끔. 사용자가 메뉴에서 명시적으로 다시 켜기 전까지
+    // off 유지 (재기동 시에도 off 기본). g_single_process 와 동일 결의
+    // idempotent enforce.
+    if (spotlight_indexing_on()) spotlight_set(0);
 
     update_menu_states();   // sync checkmarks to current real state
 

@@ -5,9 +5,9 @@
 #   1. 서브커맨드: init / start / stop / status / arm / disarm / logs / run
 #   2. run = supervisor (비동기 cadence 구조, 2026-05-15~):
 #      - guard_loop() 백그라운드 fork (2s 샘플 CPU/RSS watchdog, bash native)
-#      - cadence-10s : displaylink_lifecycle (USB react time)
 #      - cadence-60s : probe · dispatch · harvest · label
 #      - cadence-300s: forecast
+#      (displaylink 은 네이티브 앱으로 이관 — 2026-05-15)
 #      - main loop   : guard + cadence health respawn + claude_snapshot (30s)
 #   3. LaunchAgent 하나만 (com.airgenome.plist) → launchd 가 'airgenome run' 호출
 #      → 신규 launchd plist 도입 금지 (governance: g_single_supervisor_plist)
@@ -525,7 +525,11 @@ run_hexa_mod() {
     local mod="$1"
     local t="${HEXA_MOD_TIMEOUT:-30}"
     # fg 가 아닌 bg + wait 패턴: SIGTERM 이 supervisor 에 도달 시 wait 이 즉시 interrupt 된다.
-    timeout "$t" "$HEXA" run "$AIRGENOME_ROOT/modules/${mod}.hexa" \
+    # 모듈 경로 규약: <name>/module/<name>.hexa (probe/module/probe.hexa 등).
+    # 과거 modules/<name>.hexa 는 존재하지 않는 경로 → hexa 가 조용히 exit 0
+    # (no-op) 라서 probe·dispatch·harvest·label·forecast 가 수주간 dormant
+    # 였음. 2026-05-15 경로 교정.
+    timeout "$t" "$HEXA" run "$AIRGENOME_ROOT/${mod}/module/${mod}.hexa" \
         >>"$LOG_DIR/${mod}.stdout.log" \
         2>>"$LOG_DIR/${mod}.stderr.log" &
     local mpid=$!
@@ -626,12 +630,13 @@ cmd_run() {
     log "runtime-guard forked PID=$guard_pid"
 
     # 비동기 cadence — 모듈별 독립 sleep, 60s 공유 tick 제거.
-    #   10s : displaylink_lifecycle (USB react time)
-    #   60s : probe · dispatch · harvest · label (기존)
-    #   300s: forecast (기존)
-    local cad10_pid cad60_pid cad300_pid
-    cad10_pid="$(spawn_cadence cadence-10s 10 displaylink_lifecycle)"
-    log "cadence-10s forked PID=$cad10_pid (displaylink_lifecycle)"
+    #   60s : probe · dispatch · harvest · label
+    #   300s: forecast
+    # NOTE: displaylink 는 bash cadence 에서 제거됨 (2026-05-15). 매 10s
+    # `timeout`(gtimeout) spawn 이 macOS TCC 폴더접근 프롬프트를 반복 유발 +
+    # bash 는 잘못된 레이어. → airgenome 네이티브 앱 메뉴바 토글로 이관
+    # ([@c_displaylink_lifecycle] · g_single_process).
+    local cad60_pid cad300_pid
     cad60_pid="$(spawn_cadence cadence-60s 60 probe dispatch harvest label)"
     log "cadence-60s forked PID=$cad60_pid (probe·dispatch·harvest·label)"
     cad300_pid="$(spawn_cadence cadence-300s 300 forecast)"
@@ -640,7 +645,7 @@ cmd_run() {
     # 시그널 시 guard + 모든 cadence + 하위 프로세스 전부 TERM, pid 파일 정리.
     trap '
         log "supervisor SIGTERM/SIGINT";
-        for _p in "${guard_pid:-}" "${cad10_pid:-}" "${cad60_pid:-}" "${cad300_pid:-}"; do
+        for _p in "${guard_pid:-}" "${cad60_pid:-}" "${cad300_pid:-}"; do
             [ -n "$_p" ] && kill -TERM "$_p" 2>/dev/null || true
         done
         pkill -TERM -P $$ 2>/dev/null || true;
@@ -655,11 +660,6 @@ cmd_run() {
             log "runtime-guard PID=$guard_pid died — respawning"
             guard_pid="$(spawn_guard)"
             log "runtime-guard respawned PID=$guard_pid"
-        fi
-        if ! kill -0 "$cad10_pid" 2>/dev/null; then
-            log "cadence-10s PID=$cad10_pid died — respawning"
-            cad10_pid="$(spawn_cadence cadence-10s 10 displaylink_lifecycle)"
-            log "cadence-10s respawned PID=$cad10_pid"
         fi
         if ! kill -0 "$cad60_pid" 2>/dev/null; then
             log "cadence-60s PID=$cad60_pid died — respawning"
