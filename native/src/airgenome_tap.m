@@ -208,7 +208,6 @@ static NSMenuItem         *g_item_launcher = nil;
 static NSMenuItem         *g_item_hotkey = nil;
 static NSMenuItem         *g_item_overload = nil;
 static NSMenuItem         *g_item_displaylink = nil;
-static NSMenuItem         *g_item_spotlight = nil;
 // overload 워처 default ON. menubar.state 에서 overrideable.
 static int                 g_overload_on = 1;
 static AirgenomeMenuTarget *g_menu_target = nil;
@@ -374,46 +373,6 @@ static void displaylink_stop(void) {
     int r2 = system("pkill -TERM -x DisplayLinkUserAgent 2>/dev/null");
     int r3 = system("pkill -TERM -x DisplayLinkXpcService 2>/dev/null");
     (void)r1; (void)r2; (void)r3;
-}
-
-// ---------------------------------------------------------------------------
-// Spotlight indexing on/off — menubar 토글.
-//
-// 동기: spotlightknowledged/mds_stores 가 인덱싱 중 수십% CPU thrash →
-// load 급등 + WindowServer 굶음 → 메뉴/UI 딜레이. OFF 면 인덱싱 중단 →
-// 그 부하 회수 (검색은 일시 영향, 다시 ON 시 재인덱싱).
-//
-// 권한: `mdutil -a -i on|off` 는 root 필요. ghost 는
-// /etc/sudoers.d/airgenome-guard 의 NOPASSWD:ALL 로 sudo -n 비대화식
-// 실행 가능 (관리자 다이얼로그 없음 — wake/lid 의 admin shell-out 회피
-// 철학과 동일 결). 상태 조회 `mdutil -s /` 는 root 불필요.
-static int spotlight_indexing_on(void) {
-    FILE *f = popen("mdutil -s / 2>/dev/null", "r");
-    if (!f) return 1;                 // 알 수 없음 → ON 가정 (보수적)
-    char buf[256] = {0};
-    int on = 1;
-    while (fgets(buf, sizeof buf, f)) {
-        if (strstr(buf, "Indexing disabled")) { on = 0; break; }
-        if (strstr(buf, "Indexing enabled"))  { on = 1; break; }
-    }
-    pclose(f);
-    return on;
-}
-
-static void spotlight_set(int on) {
-    int r = system(on
-        ? "sudo -n /usr/bin/mdutil -a -i on  >/dev/null 2>&1"
-        : "sudo -n /usr/bin/mdutil -a -i off >/dev/null 2>&1");
-    (void)r;
-}
-
-// 기본 정책: Spotlight 인덱싱 OFF. 앱 기동 시 인덱싱이 켜져 있으면 끔
-// (idempotent — 이미 off 면 no-op). supervisor 재시작이 잦아도 항상 off
-// 기본 유지 → "airgenome = 인덱싱 끔" 이 일관. 사용자가 메뉴에서 켜면
-// 그 세션 동안 유효, 다음 기동에 다시 기본(off)로 수렴.
-// (displaylink 의 ensure_autostart_off 와 동일 결의 강한 기본값.)
-static void spotlight_apply_default_off(void) {
-    if (spotlight_indexing_on()) spotlight_set(0);
 }
 
 static void native_tiling_capture_and_disable(void) {
@@ -1385,7 +1344,6 @@ static void update_menu_states(void);
 - (void)toggleLidClosed:(id)sender;
 - (void)toggleOverload:(id)sender;
 - (void)toggleDisplayLink:(id)sender;
-- (void)toggleSpotlight:(id)sender;
 @end
 
 @implementation AirgenomeMenuTarget
@@ -1423,18 +1381,6 @@ static void update_menu_states(void);
         displaylink_start();
         fprintf(stderr, "menubar: displaylink -> ON (open .app, headless)\n");
     }
-    fflush(stderr);
-    update_menu_states();
-}
-
-// Spotlight: 실제 상태 = mdutil -s 결과 (live 쿼리, 영속 플래그 없음).
-// 체크마크 ON = 인덱싱 활성. 부하 완화하려면 OFF 로 토글.
-- (void)toggleSpotlight:(id)sender {
-    (void)sender;
-    int on = spotlight_indexing_on();
-    spotlight_set(!on);
-    fprintf(stderr, "menubar: spotlight -> %s\n",
-            !on ? "ON (indexing 재개)" : "off (부하 완화 — 검색 일시중단)");
     fflush(stderr);
     update_menu_states();
 }
@@ -1619,7 +1565,6 @@ static void update_menu_states(void) {
     if (g_item_overload) g_item_overload.state = g_overload_on ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_displaylink) g_item_displaylink.state = displaylink_running() ? NSControlStateValueOn : NSControlStateValueOff;
     // 반전 의미: 체크 = "인덱싱 끄기"가 적용된 상태 (= indexing disabled).
-    if (g_item_spotlight) g_item_spotlight.state = spotlight_indexing_on() ? NSControlStateValueOff : NSControlStateValueOn;
 }
 
 // ---------------------------------------------------------------------------
@@ -1729,16 +1674,6 @@ static void install_status_item(void) {
         keyEquivalent:@""];
     g_item_displaylink.target = g_menu_target;
     [menu addItem:g_item_displaylink];
-
-    g_item_spotlight = [[NSMenuItem alloc]
-        initWithTitle:@"Spotlight 인덱싱 끄기"
-               action:@selector(toggleSpotlight:)
-        keyEquivalent:@""];
-    g_item_spotlight.target = g_menu_target;
-    [menu addItem:g_item_spotlight];
-
-    // 기본값 = 인덱싱 끄기 (부하 완화 기본 정책, idempotent).
-    spotlight_apply_default_off();
 
     update_menu_states();   // sync checkmarks to current real state
 
