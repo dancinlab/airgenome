@@ -171,6 +171,13 @@
   why = "DL Manager는 외장 모니터 미사용 시에도 ~428MB RSS + 15% CPU 점유 (DL3 proprietary 코덱은 닫혀있어 인코딩 비용 자체는 절감 불가, 라이프사이클 회수가 유일한 절감로). 코덱만 추출은 불가(정적링크·NDA) → 프로세스는 띄우되 UI 만 숨김."
   bound-by = "[@g_single_process]"
 
+@D g_post_impl_reinstall := "post-implementation reinstall + restart" :: governance [required d=2026-05-20 active]
+  rule = "After any artifact-affecting change (native/* · launchd/* · install.hexa · run.hexa · hooks/* · dispatch/* · forge/* · any compiled or launchd-wired source), the implementing agent MUST run `hx install airgenome` before declaring the task done. The single-entry installer rebuilds the native bundle, then launchctl-bootout + bootstrap reloads every LaunchAgent — re-execution is included, not a separate step."
+  why = "Build-and-stop leaves stale .app / stale LaunchAgents running; the user can't experience the change. `hx install airgenome` is the project's single install entry (raw 246 · README §install), so making it the mandatory tail of every implementation collapses 'reinstall + restart' into one verb."
+  command = `hx install airgenome`
+  exception = "docs-only edits (*.md · design.md · AGENTS.tape · TAPE-AUDIT.md · README) — no artifact rebuild needed."
+  authority = "[@x_tape_spec]"
+  @> AGENTS.md
 
 @F f1 := "lattice-fit-on-external-entity" :: governance [required deny:write]
   pattern = "applying n=6 lattice as derivation rule to TSMC · ASML · IPCC · NASA · SpaceX · CERN · DeepMind · NIST · or any external vendor"

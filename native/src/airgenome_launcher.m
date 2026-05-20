@@ -438,51 +438,53 @@ static void airgenome_launcher_refresh_status(NSString *query) {
     }
 }
 
-// Synthesize ⌘V into the HID event tap. The launcher panel is non-
-// activating, so the user's prior frontmost app receives the keystroke
-// the moment hide_overlay's orderOut returns focus. Used by snippet-
-// paste (both @-prefix mode and default-mode snippet matches) to land
-// the just-clipboarded content directly in the focused text field.
+// Synthesize the snippet directly as keyboard events via
+// CGEventKeyboardSetUnicodeString — bypasses the pasteboard entirely so
+// the user's clipboard is never overwritten (Decision 1, design.md).
 //
-// 50 ms dispatch_after wrapper is the caller's job — that buffer gives
-// the WindowServer one runloop tick to redirect keystroke routing
-// before the synthetic event arrives.
-static void airgenome_launcher_post_paste_keystroke(void) {
+// Chunking: macOS accepts a UTF-16 buffer per keyboard event, but some
+// receivers (notably Electron text inputs) drop characters past ~20
+// codeunits. 20-codeunit chunks keep the per-event payload safe while
+// still being ~5× faster than per-character posting on typical snippet
+// lengths.
+//
+// Caller wraps in a 50 ms dispatch_after so the WindowServer has one
+// runloop tick to redirect keystroke routing to the prior frontmost app
+// after hide_overlay's orderOut returns focus.
+static void airgenome_launcher_post_typed_string(NSString *content) {
+    if (content.length == 0) return;
     CGEventSourceRef src = CGEventSourceCreate(
         kCGEventSourceStateHIDSystemState);
-    const int kVK_V = 0x09;  // kVK_ANSI_V
-    CGEventRef down = CGEventCreateKeyboardEvent(src, kVK_V, true);
-    CGEventSetFlags(down, kCGEventFlagMaskCommand);
-    CGEventPost(kCGHIDEventTap, down);
-    CFRelease(down);
-    CGEventRef up = CGEventCreateKeyboardEvent(src, kVK_V, false);
-    CGEventSetFlags(up, kCGEventFlagMaskCommand);
-    CGEventPost(kCGHIDEventTap, up);
-    CFRelease(up);
+    static const NSUInteger kChunk = 20;
+    unichar buf[kChunk];
+    NSUInteger len = content.length;
+    for (NSUInteger i = 0; i < len; i += kChunk) {
+        NSUInteger n = (len - i < kChunk) ? (len - i) : kChunk;
+        [content getCharacters:buf range:NSMakeRange(i, n)];
+        CGEventRef down = CGEventCreateKeyboardEvent(src, 0, true);
+        CGEventKeyboardSetUnicodeString(down, n, buf);
+        CGEventPost(kCGHIDEventTap, down);
+        CFRelease(down);
+        CGEventRef up = CGEventCreateKeyboardEvent(src, 0, false);
+        CGEventKeyboardSetUnicodeString(up, n, buf);
+        CGEventPost(kCGHIDEventTap, up);
+        CFRelease(up);
+    }
     if (src) CFRelease(src);
 }
 
-// Copy snippet content to the general pasteboard so the subsequent
-// ⌘V synthesis lands the snippet itself in the prior frontmost app
-// (without this, ⌘V would paste whatever the user previously copied).
-static void airgenome_launcher_copy_snippet_to_pasteboard(NSString *content) {
-    NSPasteboard *pb = [NSPasteboard generalPasteboard];
-    [pb clearContents];
-    [pb setString:content forType:NSPasteboardTypeString];
-}
-
-// Paste into the prior frontmost app by synthesizing ⌘V. The launcher
-// panel is non-activating, so prior-app focus returns the moment
-// hide_overlay's orderOut runs; the 50 ms dispatch_after gives
-// WindowServer one runloop tick to redirect keystroke routing before
-// the synthetic event arrives. Skips empty content so we don't dump
-// whatever was on the pasteboard before — surprising.
-static void airgenome_launcher_paste_snippet_to_frontmost(NSString *content) {
+// Type the snippet into the prior frontmost app. The launcher panel is
+// non-activating, so prior-app focus returns the moment hide_overlay's
+// orderOut runs; the 50 ms dispatch_after gives WindowServer one
+// runloop tick to redirect keystroke routing before the synthetic
+// events arrive. Skips empty content for the same reason the old
+// ⌘V-based path did — no-op rather than firing zero key events.
+static void airgenome_launcher_type_snippet_to_frontmost(NSString *content) {
     if (content.length == 0) return;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                  (int64_t)(50 * NSEC_PER_MSEC)),
         dispatch_get_main_queue(), ^{
-            airgenome_launcher_post_paste_keystroke();
+            airgenome_launcher_post_typed_string(content);
         });
 }
 
@@ -1785,11 +1787,10 @@ void airgenome_settings_show_manager(void) {
         if (g_launcher_snippet_results.count > 0) {
             NSDictionary *top = g_launcher_snippet_results[0];
             NSString *content = top[@"content"] ?: @"";
-            airgenome_launcher_copy_snippet_to_pasteboard(content);
-            NSLog(@"[airgenome_launcher] snippet paste: @%@ (%lu chars)",
+            NSLog(@"[airgenome_launcher] snippet type: @%@ (%lu chars)",
                   top[@"name"] ?: @"?", (unsigned long)content.length);
             airgenome_launcher_hide_overlay();
-            airgenome_launcher_paste_snippet_to_frontmost(content);
+            airgenome_launcher_type_snippet_to_frontmost(content);
         } else {
             airgenome_launcher_hide_overlay();
         }
@@ -2536,30 +2537,22 @@ BOOL airgenome_launcher_launch_app(NSURL *appBundleURL) {
         return YES;
     }
     // Synthetic snippet match (default-mode search injection) → same
-    // copy + paste flow as the @-prefix Enter path. The user's prior
+    // direct-type flow as the @-prefix Enter path. The user's prior
     // app stays frontmost during launcher use (NonactivatingPanel), so
-    // hide_overlay returns focus and the dispatched ⌘V lands in the
-    // text field they were just typing in.
+    // hide_overlay returns focus and the dispatched key events land in
+    // the text field they were just typing in. Pasteboard is not
+    // touched (Decision 1, design.md).
     if (airgenome_launcher_is_snippet_sentinel(appBundleURL)) {
         NSDictionary *snip =
             airgenome_launcher_snippet_for_url(appBundleURL);
         if (snip) {
             NSString *content = snip[@"content"] ?: @"";
-            NSPasteboard *pb = [NSPasteboard generalPasteboard];
-            [pb clearContents];
-            [pb setString:content forType:NSPasteboardTypeString];
-            NSLog(@"[airgenome_launcher] snippet (default) copied: "
+            NSLog(@"[airgenome_launcher] snippet (default) type: "
                   @"%@ (%lu chars)",
                   snip[@"name"] ?: @"?",
                   (unsigned long)content.length);
             airgenome_launcher_hide_overlay();
-            if (content.length > 0) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                             (int64_t)(50 * NSEC_PER_MSEC)),
-                    dispatch_get_main_queue(), ^{
-                        airgenome_launcher_post_paste_keystroke();
-                    });
-            }
+            airgenome_launcher_type_snippet_to_frontmost(content);
         } else {
             airgenome_launcher_hide_overlay();
         }
