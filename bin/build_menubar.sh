@@ -33,7 +33,10 @@ perl -i -pe 's{typedef int64_t \(\*__ffi_ftyp_msg_float\)\(int64_t, int64_t, int
 perl -i -pe 's{HexaVal msg_float\(HexaVal obj, HexaVal sel, HexaVal a1\) \{\n    int64_t __r = \(\(__ffi_ftyp_msg_float\)__ffi_sym_msg_float\)\(hexa_ffi_marshal_arg\(obj\), hexa_ffi_marshal_arg\(sel\), hexa_ffi_marshal_arg\(a1\)\);}{HexaVal msg_float(HexaVal obj, HexaVal sel, HexaVal a1) \{\n    double _da1 = (a1.tag==TAG_FLOAT?a1.f:(a1.tag==TAG_INT?(double)a1.i:0.0));\n    int64_t __r = ((__ffi_ftyp_msg_float)__ffi_sym_msg_float)(hexa_ffi_marshal_arg(obj), hexa_ffi_marshal_arg(sel), _da1);}s' "$OUT_C"
 
 echo "[3/3] clang compile → native binary (AppKit + CoreFoundation link)"
-clang -O2 -framework AppKit -framework CoreFoundation -o "$OUT_BIN" "$OUT_C"
+# -I: runtime.h 위치 (hexa-lang/self). runtime.c 소스도 함께 컴파일해야 _rt_* 심볼 해결.
+clang -O2 -I "${HEXA_LANG:-$HOME/Dev/hexa-lang}/self" \
+  -framework AppKit -framework CoreFoundation \
+  -o "$OUT_BIN" "$OUT_C" "$RUNTIME"
 
 echo "✅ built: $OUT_BIN"
 ls -la "$OUT_BIN"

@@ -59,6 +59,10 @@ let mut cfg_color_high = 80
 let mut cfg_stale_sec = 120
 let mut cfg_spark_cap = 12
 let mut cfg_notify_enabled = 1   // 1 = on, 0 = off
+let mut cfg_cleanup_days = 3           // N일 이상 미사용 캐시 정리 대상
+let mut cfg_cleanup_auto = 0           // 1 = 임계 초과시 자동 apply, 0 = 수동 (notify만)
+let mut cfg_cleanup_interval = 3600    // 스캔 주기(초). 매 tick 부담 방지
+let mut cfg_cleanup_min_kib = 102400   // notify/apply 최소 임계 (기본 100MiB)
 let mut cfg_mtime_cached = 0     // 변경 감지용
 let mut test_mode = 0            // AIRGENOME_MENUBAR_TEST=1 시 1 — menu_add_* 가 stdout 에 로그
 
@@ -70,7 +74,11 @@ fn default_config_json() -> str {
         + "  \"color_high\": 80,\n"
         + "  \"stale_sec\": 120,\n"
         + "  \"spark_cap\": 12,\n"
-        + "  \"notify_enabled\": true\n"
+        + "  \"notify_enabled\": true,\n"
+        + "  \"cleanup_days\": 3,\n"
+        + "  \"cleanup_auto\": false,\n"
+        + "  \"cleanup_interval_sec\": 3600,\n"
+        + "  \"cleanup_min_mib\": 100\n"
         + "}\n"
 }
 
@@ -82,9 +90,9 @@ fn ensure_config_exists() -> bool {
     return true
 }
 
-// 한 번의 jq 호출로 6개 필드 TSV 추출
+// 한 번의 jq 호출로 모든 필드 TSV 추출
 fn load_config() -> void {
-    let expr = "[.tick_sec // 5, .color_low // 50, .color_high // 80, .stale_sec // 120, .spark_cap // 12, (.notify_enabled // true)] | @tsv"
+    let expr = "[.tick_sec // 5, .color_low // 50, .color_high // 80, .stale_sec // 120, .spark_cap // 12, (.notify_enabled // true), .cleanup_days // 3, (.cleanup_auto // false), .cleanup_interval_sec // 3600, .cleanup_min_mib // 100] | @tsv"
     let raw = exec("jq -r '" + expr + "' '" + CONFIG_PATH + "' 2>/dev/null").trim()
     if raw == "" { return }
     let p = raw.split("\t")
@@ -106,6 +114,27 @@ fn load_config() -> void {
     let ne_str = p[5]
     if ne_str == "true" { cfg_notify_enabled = 1 }
     if ne_str == "false" { cfg_notify_enabled = 0 }
+
+    if len(p) >= 10 {
+        let cd_str = p[6]
+        if cd_str != "" {
+            let cd = to_int(cd_str)
+            if cd >= 1 { cfg_cleanup_days = cd }
+        }
+        let ca_str = p[7]
+        if ca_str == "true" { cfg_cleanup_auto = 1 }
+        if ca_str == "false" { cfg_cleanup_auto = 0 }
+        let ci_str = p[8]
+        if ci_str != "" {
+            let ci = to_int(ci_str)
+            if ci >= 60 { cfg_cleanup_interval = ci }
+        }
+        let cm_str = p[9]
+        if cm_str != "" {
+            let cm = to_int(cm_str)
+            if cm >= 0 { cfg_cleanup_min_kib = cm * 1024 }
+        }
+    }
 }
 
 // config 파일 mtime — 변경 감지용
@@ -141,6 +170,13 @@ let mut snap_htz_pct = 0
 let mut snap_infra_age = 0
 let mut snap_throttle_age = 0
 let mut snap_dispatch_age = 0
+
+// 디스크 정리 상태
+let mut snap_cleanup_kib = 0       // 현재 정리 가능 KiB
+let mut snap_cleanup_last_kib = 0  // 직전 apply 로 정리한 KiB
+let mut snap_cleanup_scan_ts = 0   // 마지막 스캔 epoch (interval 게이트)
+let mut snap_disk_avail = ""       // df 가용 (예: 98Gi)
+let mut snap_disk_used_pct = 0     // df Capacity (예: 90)
 
 fn jq_tsv(path: str, expr: str) -> str {
     let cmd = "jq -r '" + expr + "' '" + path + "' 2>/dev/null"
@@ -192,6 +228,68 @@ fn ring_count(filename: str) -> str {
     let out = exec("wc -l '" + p + "' 2>/dev/null | awk '{print $1}'").trim()
     if out == "" { return "0" }
     return out
+}
+
+// ───── 디스크 정리 (보수적 시간 기준) ────────────────────────────
+//
+// 정책:
+//   - 화이트리스트 캐시 경로만 (CrossOver/Cursor/Application Support 일체 제외)
+//   - atime/mtime > cfg_cleanup_days
+//   - 모든 대상은 재생성 안전
+//
+// 명령은 ( ... ) 서브셸로 묶어서 한 번에 exec — tick 부담 최소화.
+
+fn cleanup_find_pipeline() -> str {
+    let n = to_string(cfg_cleanup_days)
+    return "( find \"$HOME/Library/Caches/pip\" -type f -atime +" + n + " -print0 2>/dev/null"
+        + "; find \"$HOME/Library/Caches/Homebrew/downloads\" -type f -atime +" + n + " -print0 2>/dev/null"
+        + "; find \"$HOME/.cache/uv\" -type f -atime +" + n + " -print0 2>/dev/null"
+        + "; find \"$HOME/Library/Caches/ms-playwright\" -mindepth 1 -maxdepth 1 -type d -mtime +" + n + " -print0 2>/dev/null"
+        + "; find \"$HOME/Library/Caches/ms-playwright-go\" -mindepth 1 -maxdepth 1 -type d -mtime +" + n + " -print0 2>/dev/null"
+        + "; find \"$HOME/Library/Developer/Xcode/DerivedData\" -mindepth 1 -maxdepth 1 -type d -mtime +" + n + " -print0 2>/dev/null"
+        + "; find \"$HOME/.cache/puppeteer\" -mindepth 1 -maxdepth 1 -type d -mtime +" + n + " -print0 2>/dev/null"
+        + " )"
+}
+
+fn cleanup_scan_kib() -> int {
+    let cmd = cleanup_find_pipeline() + " | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END{print s+0}'"
+    let r = exec(cmd).trim()
+    if r == "" { return 0 }
+    return to_int(r)
+}
+
+// scan 결과를 사전 capture → 실제 삭제. 반환은 정리 KiB.
+fn cleanup_apply() -> int {
+    let kib = cleanup_scan_kib()
+    if kib == 0 { return 0 }
+    let n = to_string(cfg_cleanup_days)
+    let cmd = "find \"$HOME/Library/Caches/pip\" -type f -atime +" + n + " -delete 2>/dev/null"
+        + "; find \"$HOME/Library/Caches/Homebrew/downloads\" -type f -atime +" + n + " -delete 2>/dev/null"
+        + "; find \"$HOME/.cache/uv\" -type f -atime +" + n + " -delete 2>/dev/null"
+        + "; find \"$HOME/Library/Caches/ms-playwright\" -mindepth 1 -maxdepth 1 -type d -mtime +" + n + " -exec rm -rf {} + 2>/dev/null"
+        + "; find \"$HOME/Library/Caches/ms-playwright-go\" -mindepth 1 -maxdepth 1 -type d -mtime +" + n + " -exec rm -rf {} + 2>/dev/null"
+        + "; find \"$HOME/Library/Developer/Xcode/DerivedData\" -mindepth 1 -maxdepth 1 -type d -mtime +" + n + " -exec rm -rf {} + 2>/dev/null"
+        + "; find \"$HOME/.cache/puppeteer\" -mindepth 1 -maxdepth 1 -type d -mtime +" + n + " -exec rm -rf {} + 2>/dev/null"
+        + "; true"
+    let _ = exec(cmd)
+    return kib
+}
+
+fn human_kib(kib: int) -> str {
+    if kib <= 0 { return "0" }
+    let cmd = "awk -v k=" + to_string(kib) + " 'BEGIN{split(\"K M G T\", u); i=1; while(k>=1024 && i<4){k/=1024; i++}; printf \"%.1f%s\", k, u[i]}'"
+    return exec(cmd).trim()
+}
+
+fn refresh_disk_status() -> void {
+    let r = exec("df -k /System/Volumes/Data 2>/dev/null | awk 'NR==2 {gsub(\"%\",\"\",$5); print $4 \"\\t\" $5}'").trim()
+    if r == "" { return }
+    let p = r.split("\t")
+    if len(p) < 2 { return }
+    let av_kib = to_int(p[0])
+    if av_kib > 0 { snap_disk_avail = human_kib(av_kib) }
+    let used_s = p[1]
+    if used_s != "" { snap_disk_used_pct = to_int(used_s) }
 }
 
 // ───── 시각 표현 ────────────────────────────────────────────────
@@ -300,6 +398,9 @@ fn state_signature() -> str {
         + "|" + to_string(cfg_color_low) + "|" + to_string(cfg_color_high)
         + "|" + to_string(cfg_stale_sec) + "|" + to_string(cfg_spark_cap)
         + "|" + to_string(cfg_notify_enabled)
+        + "|" + snap_disk_avail + "|" + to_string(snap_disk_used_pct)
+        + "|" + to_string(snap_cleanup_kib) + "|" + to_string(snap_cleanup_last_kib)
+        + "|" + to_string(cfg_cleanup_days) + "|" + to_string(cfg_cleanup_auto)
 }
 
 // ───── NSMenu 구축 ──────────────────────────────────────────────
@@ -373,6 +474,22 @@ fn build_menu() -> *Void {
 
     menu_add_separator(menu)
 
+    // 디스크 상태 + 정리 가능량
+    let auto_s = "off"
+    if cfg_cleanup_auto == 1 { auto_s = "on" }
+    let disk_line = "disk:  free=" + snap_disk_avail + "  used=" + to_string(snap_disk_used_pct) + "%"
+    menu_add_info(menu, disk_line)
+    if snap_cleanup_kib > 0 {
+        menu_add_info(menu, "cleanup: " + human_kib(snap_cleanup_kib) + " ready  (days≥" + to_string(cfg_cleanup_days) + ", auto=" + auto_s + ")")
+    } else {
+        menu_add_info(menu, "cleanup: clean  (days≥" + to_string(cfg_cleanup_days) + ", auto=" + auto_s + ")")
+    }
+    if snap_cleanup_last_kib > 0 {
+        menu_add_info(menu, "  last apply: -" + human_kib(snap_cleanup_last_kib))
+    }
+
+    menu_add_separator(menu)
+
     // [Phase A] config 경로 힌트 — 사용자가 편집 위치를 알 수 있게
     menu_add_info(menu, "cfg: ~/.airgenome/menubar_config.json  (auto-reload on save)")
     let ne = cfg_notify_enabled
@@ -430,10 +547,14 @@ fn main() -> void {
     msg0(item, sel("retain"))
 
     refresh_snapshot()
+    refresh_disk_status()
     spark_mac = spark_push(spark_mac, snap_mac_pct)
     spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
     spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
     spark_htz = spark_push(spark_htz, snap_htz_pct)
+
+    // 부팅 직후 1회 초기 스캔 (interval 게이트 통과시킴)
+    snap_cleanup_scan_ts = 0
 
     let button = msg0(item, sel("button"))
     if button != 0 {
@@ -535,10 +656,35 @@ fn main() -> void {
         }
 
         refresh_snapshot()
+        refresh_disk_status()
         spark_mac = spark_push(spark_mac, snap_mac_pct)
         spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
         spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
         spark_htz = spark_push(spark_htz, snap_htz_pct)
+
+        // [Disk cleanup] interval 게이트 — 무거운 find 풀스캔 부담 최소화
+        let now_ts = to_int(exec("date +%s").trim())
+        if now_ts - snap_cleanup_scan_ts >= cfg_cleanup_interval {
+            snap_cleanup_scan_ts = now_ts
+            let prev_kib = snap_cleanup_kib
+            snap_cleanup_kib = cleanup_scan_kib()
+
+            if cfg_cleanup_auto == 1 && snap_cleanup_kib >= cfg_cleanup_min_kib {
+                let freed = cleanup_apply()
+                snap_cleanup_last_kib = freed
+                snap_cleanup_kib = 0
+                post_notification("airgenome",
+                    "auto cleanup: " + human_kib(freed) + " freed",
+                    "days≥" + to_string(cfg_cleanup_days))
+            } else {
+                if snap_cleanup_kib >= cfg_cleanup_min_kib && prev_kib < cfg_cleanup_min_kib {
+                    // 임계 새로 넘어선 순간만 1회 notify (반복 알림 방지)
+                    post_notification("airgenome",
+                        "cleanup ready: " + human_kib(snap_cleanup_kib),
+                        "enable cleanup_auto=true to auto-apply")
+                }
+            }
+        }
 
         if snap_level != prev_level {
             post_notification("airgenome",
