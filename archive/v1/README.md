@@ -42,6 +42,6 @@ archive 의 파일을 활성으로 되돌리려면:
 
 ## 참조
 
-- 직전 활성 커밋: `8b09fa3 Merge pull request #31 from need-singularity/fix/core-hexa-syntax`
+- 직전 활성 커밋: `8b09fa3 Merge pull request #31 from dancinlab/fix/core-hexa-syntax`
 - 이전 roadmap: `archive/v1/roadmap.md` (v1.0–v5.0 vision)
 - ROI SOT (history): `shared/config/roi/airgenome.json` (rebuild 후에도 참조 가능)

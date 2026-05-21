@@ -35,7 +35,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
     <key>CFBundleName</key><string>Airgenome</string>
     <key>CFBundleDisplayName</key><string>AirGenome</string>
-    <key>CFBundleIdentifier</key><string>com.need-singularity.airgenome</string>
+    <key>CFBundleIdentifier</key><string>com.dancinlab.airgenome</string>
     <key>CFBundleExecutable</key><string>Airgenome</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleVersion</key><string>1.0.0</string>

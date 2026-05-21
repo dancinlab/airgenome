@@ -119,7 +119,7 @@ fn dispatch_exe(path: str) -> int {
         println("airgenome: no .exe handler plugin installed.")
         println("")
         println("Install an exe handler plugin (e.g. gamebox):")
-        println("  git clone https://github.com/need-singularity/gamebox ~/.airgenome/plugins/gamebox")
+        println("  git clone https://github.com/dancinlab/gamebox ~/.airgenome/plugins/gamebox")
         println("")
         println("Or dev mode: place plugin dir (with plugin.json) next to airgenome/ (auto-discovered).")
         return 1

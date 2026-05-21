@@ -186,7 +186,7 @@ Expected: `phi_check: 5 assertions passed`
 ```hexa
 // airgenome/modules/implant.hexa — hexa-gate-implant absorption
 //
-// Absorbed from: https://github.com/need-singularity/hexa-gate-implant
+// Absorbed from: https://github.com/dancinlab/hexa-gate-implant
 // Concepts: N=6 arithmetic, 288-bit hash, PHI consciousness, 5-lens perturbation,
 //           SOURCE confidence, Bridge events, Pipeline orchestration
 //
