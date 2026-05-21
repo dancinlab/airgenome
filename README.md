@@ -2,7 +2,7 @@
   <img src="docs/logo.svg" width="140" alt="airgenome">
 </p>
 
-<h1 align="center">🧬 airgenome</h1>
+<h1 align="center">🎛️ airgenome</h1>
 
 <p align="center"><strong>OS Genome Scanner</strong> — six axes · sixty bytes · every host's vitals → one hexagon</p>
 
@@ -68,7 +68,7 @@ Live research discussion, paper drops, stage-gate reviews, cross-project dispatc
 
 | | |
 |---|---|
-| 🧬 | **6-axis hexagon · 60 bytes/genome** — cpu / mem / io / net / gpu / fs |
+| 🎛️ | **6-axis hexagon · 60 bytes/genome** — cpu / mem / io / net / gpu / fs |
 | 📈 | **M0–M6 done** — probe + dispatch + harvest + label + forecast (Holt MAE = 0 % on held-out) |
 | 🍎 | **Native macOS menubar** — ⌃S launcher, `@snippet` → pasteboard, hotkey-action bindings |
 | 🌐 | **Cross-host** — Mac + Ubuntu + Hetzner vitals → unified `infra_state.json` |
