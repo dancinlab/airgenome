@@ -89,3 +89,6 @@ nexus/shared/bin/*.bak
 state/markers/vacuum_watcher_*.marker
 state/markers/pe_d2r_mpq_archive_load_*.marker
 state/markers/audit_*.marker
+
+# editor / runtime .bak files (regenerable)
+*.bak
