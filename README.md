@@ -12,7 +12,6 @@
   <img alt="Milestones" src="https://img.shields.io/badge/M0–M6-done-brightgreen">
   <img alt="Forecast" src="https://img.shields.io/badge/Holt_MAE-0%25_held--out-brightgreen">
   <img alt="Native" src="https://img.shields.io/badge/macOS-menubar%20·%20⌃S-informational">
-  <a href="https://discord.gg/mYzqYr67R"><img alt="Discord" src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white"></a>
 </p>
 
 <p align="center">cpu · mem · io · net · gpu · fs · 60 bytes · ring buffer · Holt forecast · macOS menubar · ⌃S launcher · hexa-lang · self-hosted</p>
@@ -38,7 +37,7 @@
 
 <!-- SHARED:PROJECTS:START -->
 <!-- AUTO:COMMON_LINKS:START -->
-**[YouTube](https://www.youtube.com/@dancinlife)** · **[Discord](https://discord.gg/mYzqYr67R)** · **[Email](mailto:nerve011235@gmail.com)** · **[Ko-fi](https://ko-fi.com/dancinlife)** · **[Sponsor](https://github.com/sponsors/dancinlab)** · **[PayPal](https://www.paypal.com/donate?business=nerve011235%40gmail.com)** · **[Atlas](https://dancinlab.github.io/TECS-L/atlas/)** · **[Papers](https://dancinlab.github.io/papers/)**
+**[YouTube](https://www.youtube.com/@dancinlife)** · **[Email](mailto:nerve011235@gmail.com)** · **[Ko-fi](https://ko-fi.com/dancinlife)** · **[Sponsor](https://github.com/sponsors/dancinlab)** · **[PayPal](https://www.paypal.com/donate?business=nerve011235%40gmail.com)** · **[Atlas](https://dancinlab.github.io/TECS-L/atlas/)** · **[Papers](https://dancinlab.github.io/papers/)**
 <!-- AUTO:COMMON_LINKS:END -->
 
 ## Main projects
@@ -54,12 +53,6 @@
 > **[Papers](https://github.com/dancinlab/papers)** — Complete paper collection (92 papers, Zenodo DOIs).
 
 > **[Other projects →](https://github.com/orgs/dancinlab/repositories)**
-
-## Community
-
-[![Join our Discord](https://invidget.switchblade.xyz/mYzqYr67R)](https://discord.gg/mYzqYr67R)
-
-Live research discussion, paper drops, stage-gate reviews, cross-project dispatch.
 
 <!-- private repos는 projects.json의 private_repos 필드에 저장됨 (노출 금지) -->
 <!-- SHARED:PROJECTS:END -->
