@@ -24,15 +24,11 @@
 #
 # Migrated from these legacy LaunchAgents:
 #   com.airgenome                  → label=run            (KeepAlive)
-#   com.airgenome.hook-watch       → label=hook-watch     (StartInterval=5)
 #   com.airgenome.tap              → label=tap            (KeepAlive crash-only)
-#   com.airgenome.tg-bot           → label=tg-bot         (KeepAlive)
 #   com.airgenome.vacuum_watcher   → label=vacuum-watcher (StartInterval=3600)
 #
 # label	mode	workdir	stdout	stderr	envfile	watchpaths	throttle	cmd
 run	keepalive	/Users/ghost/core/airgenome	/Users/ghost/.airgenome/supervisor.stdout.log	/Users/ghost/.airgenome/supervisor.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/run.env	-	10	/bin/bash /Users/ghost/core/airgenome/bin/airgenome run
-hook-watch	interval:5	/Users/ghost/.hx/packages/airgenome	/Users/ghost/.hx/packages/airgenome/.hook-watch.stdout.log	/Users/ghost/.hx/packages/airgenome/.hook-watch.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/hook-watch.env	-	5	/Users/ghost/.hx/packages/airgenome/build/hook watch
 tap	keepalive-crashonly	-	/Users/ghost/Library/Logs/airgenome.app/airgenome.log	/Users/ghost/Library/Logs/airgenome.app/airgenome.err	/Users/ghost/core/airgenome/config/launchd/envs/tap.env	-	10	/Applications/airgenome.app/Contents/MacOS/airgenome
-tg-bot	keepalive	/Users/ghost/.hx/packages/airgenome	/Users/ghost/.airgenome/tg_bot-core.stdout.log	/Users/ghost/.airgenome/tg_bot-core.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/tg-bot.env	-	15	/Users/ghost/.hx/packages/airgenome/bin/tg_bot-core run
-vacuum-watcher	interval:3600	/Users/ghost/core/airgenome	/Users/ghost/.airgenome/vacuum_watcher.stdout.log	/Users/ghost/.airgenome/vacuum_watcher.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/vacuum-watcher.env	-	300	/Users/ghost/core/hexa-lang/hexa run /Users/ghost/core/airgenome/filters/module/data/vacuum_watcher.hexa
+vacuum-watcher	interval:3600	/Users/ghost/core/airgenome	/Users/ghost/.airgenome/vacuum_watcher.stdout.log	/Users/ghost/.airgenome/vacuum_watcher.stderr.log	/Users/ghost/core/airgenome/config/launchd/envs/vacuum-watcher.env	-	300	/Users/ghost/.hx/bin/hexa run /Users/ghost/core/airgenome/filters/module/data/vacuum_watcher.hexa
 audio-rate-pin	interval:300	/Users/ghost/core/airgenome	/Users/ghost/.airgenome/audio_rate_pin.stdout.log	/Users/ghost/.airgenome/audio_rate_pin.stderr.log	-	-	60	/Users/ghost/core/airgenome/bin/audio_force_rate

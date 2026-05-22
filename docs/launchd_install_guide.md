@@ -135,7 +135,7 @@ ps -p $(cat /tmp/com.airgenome.tap.lock)  # pid alive?
 
 본 가이드는 § B.6 mandate 및 hive-hexa-bin 폭주 재발 방지 원칙을 반영. 다음 자동화는 **금지**:
 
-- `tool/airgenome_init.hexa` 가 `launchctl bootstrap` 자동 호출하는 함수 추가
+- 설치 / 빌드 훅이 `launchctl bootstrap` 을 자동 호출하는 등록 함수 추가
 - KeepAlive=true 또는 KeepAlive 확장으로 dispatch 자동 respawn 도입
 - StartInterval (cron-style) 도입
 - watcher / supervisor / 자기복제 패턴 추가

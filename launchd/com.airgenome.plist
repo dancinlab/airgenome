@@ -41,7 +41,7 @@
         <key>AIRGENOME_ROOT</key>
         <string>/Users/ghost/core/airgenome</string>
         <key>HEXA</key>
-        <string>/Users/ghost/core/hexa-lang/hexa</string>
+        <string>/Users/ghost/.hx/bin/hexa</string>
     </dict>
 
     <key>ProcessType</key>

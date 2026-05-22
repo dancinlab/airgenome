@@ -1,92 +1,45 @@
 // install.hexa — hx build hook for airgenome.
 //
 // Invoked by `hx install airgenome` (hexa-lang package manager) right
-// after the GitHub checkout lands in $HX_PKG_DIR. hx passes these env:
+// after the GitHub checkout lands in $HX_PKG_DIR. hx passes:
 //   HX_PKG_DIR   — absolute path to the checked-out package root
-//   HX_BIN_DIR   — ~/.hx/bin, where hx drops shims
-//   HX_PKG_NAME  — package name ("airgenome")
-// All paths below are derived from HX_PKG_DIR so cwd-independence is
-// guaranteed (hx doesn't chdir into the package before running the hook).
 //
-// Responsibilities (each step idempotent):
-//   1. Build bin/airgenome-init from tool/airgenome_init.hexa.
-//   2. Run bin/airgenome-init — hook watcher + MCP + workspace integration:
-//        - builds build/hook + build/mcp native binaries
-//        - installs ~/Library/LaunchAgents/com.airgenome.hook-watch.plist
-//        - writes .mcp.json with host-specific absolute paths
-//        - appends `command scan` / `command record` blocks to
-//          ~/core/.workspace (idempotent grep-then-append)
-//        - regenerates ~/core/.workspace.lock via workspace_sync
-//   3. raw 240 § B C4 — native airgenome.app build + deploy:
-//        - cd native && make install
-//        - clang → build/airgenome (148KB, includes loop scaffold)
-//        - codesign + bundle → build/airgenome.app
-//        - cp -R → /Applications/airgenome.app
-//        - render plist (AIRG_TAP_LOOP=1 default ON)
-//        - launchctl bootout + bootstrap (사용자가 hx install 호출 = explicit
-//          consent, § B.6 자동 bootstrap 금지 mandate 위반 아님)
+// Responsibility: build + deploy the native airgenome.app menubar tap.
+//   - cd native && make install
+//   - clang → build/airgenome → codesign + bundle → /Applications/airgenome.app
+//   - launchctl bootout + bootstrap com.airgenome.tap
+//     (hx install = explicit user consent for the bootstrap)
 //
 // After this hook returns, hx generates the $HX_BIN_DIR/airgenome shim
-// from run.hexa (already the registry entry), so `airgenome <cmd>` works
-// immediately. The hook watcher is live on a 5s launchd interval, the MCP
-// server is available for Claude Code via .mcp.json, AND the airgenome.app
-// tap is running with loop dispatcher (harvest 60s / label 300s / forecast
-// 3600s) auto-activated.
+// from run.hexa, so `airgenome <cmd>` works immediately.
 
 fn main() -> void {
     let mut root = env("HX_PKG_DIR")
     if root == "" { root = exec("pwd").trim() }
     println("[airgenome/install] HX_PKG_DIR=" + root)
 
-    let hexa = env("HOME") + "/.hx/bin/hexa"
-    let init_src = root + "/tool/airgenome_init.hexa"
-    let init_bin = root + "/bin/airgenome-init"
-
-    if file_exists(init_src) == false {
-        println("[airgenome/install] ERROR: " + init_src + " not found")
-        exit(1)
-    }
-
-    let _ = exec("mkdir -p '" + root + "/bin'")
-    let build_cmd = "cd '" + root + "' && HEXA_VAL_ARENA=0 HEXA_MAC_BUILD_OK=1 '" +
-                    hexa + "' build tool/airgenome_init.hexa -o bin/airgenome-init 2>&1"
-    println("[airgenome/install] [1/3] building bin/airgenome-init ...")
-    let build_out = exec(build_cmd)
-    println(build_out.trim())
-
-    if file_exists(init_bin) == false {
-        println("[airgenome/install] ERROR: bin/airgenome-init not produced — aborting")
-        exit(1)
-    }
-
-    println("[airgenome/install] [2/3] running airgenome-init bootstrap ...")
-    let init_out = exec("AIRGENOME_HOOK_ROOT='" + root + "' '" + init_bin + "' 2>&1")
-    println(init_out.trim())
-
-    // raw 240 § B.7 step 4-5: native airgenome.app build + deploy + launchd.
-    // Idempotent — make install 이 기존 등록 bootout 후 재bootstrap.
     let native_dir = root + "/native"
     if file_exists(native_dir + "/Makefile") == false {
-        println("[airgenome/install] WARN: native/Makefile not found — skipping native install")
-    } else {
-        println("[airgenome/install] [3/3] building + installing airgenome.app ...")
-        let native_cmd = "cd '" + native_dir + "' && make install 2>&1"
-        let native_out = exec(native_cmd)
-        println(native_out.trim())
-        // make install 은 launchctl bootstrap exit code 를 노출 — 실패 시
-        // shell exit 비0 가 본 exec 결과에 안 묻혀나오므로, 산출 verification
-        // 은 /Applications/airgenome.app 존재 + LaunchAgents plist 존재로 확인.
-        let app_bin = "/Applications/airgenome.app/Contents/MacOS/airgenome"
-        let plist  = env("HOME") + "/Library/LaunchAgents/com.airgenome.tap.plist"
-        if file_exists(app_bin) == false {
-            println("[airgenome/install] ERROR: " + app_bin + " missing post-install")
-            exit(1)
-        }
-        if file_exists(plist) == false {
-            println("[airgenome/install] ERROR: " + plist + " missing post-install")
-            exit(1)
-        }
+        println("[airgenome/install] ERROR: native/Makefile not found — aborting")
+        exit(1)
     }
 
-    println("[airgenome/install] done — hook watcher + MCP + workspace + airgenome.app tap (loop=on)")
+    println("[airgenome/install] building + installing airgenome.app ...")
+    let native_out = exec("cd '" + native_dir + "' && make install 2>&1")
+    println(native_out.trim())
+
+    // make install exposes the launchctl bootstrap exit code but it does not
+    // surface cleanly through exec(); verify by artifact existence instead.
+    let app_bin = "/Applications/airgenome.app/Contents/MacOS/airgenome"
+    let plist  = env("HOME") + "/Library/LaunchAgents/com.airgenome.tap.plist"
+    if file_exists(app_bin) == false {
+        println("[airgenome/install] ERROR: " + app_bin + " missing post-install")
+        exit(1)
+    }
+    if file_exists(plist) == false {
+        println("[airgenome/install] ERROR: " + plist + " missing post-install")
+        exit(1)
+    }
+
+    println("[airgenome/install] done — airgenome.app tap installed + bootstrapped")
 }

@@ -8,7 +8,7 @@
 #      - cadence-60s : probe · dispatch · harvest · label
 #      - cadence-300s: forecast
 #      (displaylink 은 네이티브 앱으로 이관 — 2026-05-15)
-#      - main loop   : guard + cadence health respawn + claude_snapshot (30s)
+#      - main loop   : guard + cadence health respawn (30s)
 #   3. LaunchAgent 하나만 (com.airgenome.plist) → launchd 가 'airgenome run' 호출
 #      → 신규 launchd plist 도입 금지 (governance: g_single_supervisor_plist)
 #
@@ -37,8 +37,6 @@ SUPER_LOG="$LOG_DIR/supervisor.log"
 GUARD_LOG="$LOG_DIR/runtime-guard.jsonl"
 ARMED_FLAG="$LOG_DIR/guard_armed"
 OFF_FLAG="$LOG_DIR/guard_off"
-CLAUDE_SNAPSHOT_DIR="$LOG_DIR/claude-sessions"
-CLAUDE_LATEST_PTR="$CLAUDE_SNAPSHOT_DIR/latest.txt"
 PLUGINS_DIR="$LOG_DIR/plugins"
 
 # airgenome_tap (CGEventTap + AX shim — unified mouse buttons + scroll inversion +
@@ -375,18 +373,6 @@ cmd_status() {
     echo "=== 최근 guard 이벤트 (last 5) ==="
     tail -5 "$GUARD_LOG" 2>/dev/null || echo "  (log 없음)"
 
-    echo "=== claude latest session ==="
-    if [ -s "$CLAUDE_LATEST_PTR" ]; then
-        local sp; sp="$(cat "$CLAUDE_LATEST_PTR")"
-        if [ -e "$sp" ]; then
-            stat -f '  %Sm  %N' -t '%Y-%m-%dT%H:%M:%SZ' "$sp" 2>/dev/null
-        else
-            echo "  (pointer stale) $sp"
-        fi
-    else
-        echo "  (no snapshot yet)"
-    fi
-
     echo "=== 산출물 freshness ==="
     local f
     for f in \
@@ -412,97 +398,6 @@ cmd_arm() {
 cmd_disarm() {
     rm -f "$ARMED_FLAG"
     log "guard disarmed (dry-run)"
-}
-
-# airgenome hook <sub> [args]  — state-mutating CLI (MCP tools CLI mirror).
-#   status                                 — cat active.json (current stack)
-#   activate <chain> <seed> [<command>]    — lc_cmd_activate (command=roadmap default)
-#   touch <chain> <kind> <payload>         — lc_cmd_touch
-#   release <chain> <reason>               — lc_cmd_release
-#   is-active <chain>                      — prints 1 or 0
-# State root: AIRGENOME_HOOK_ROOT > CLAUDE_PROJECT_DIR > pwd (raw#15).
-cmd_hook() {
-    # Prefer AOT binary if present and fresher than the .hexa source —
-    # cuts per-hook cost from ~20s (stage0 lock-contended interpreter) to
-    # ~0.1s. Falls back to interpreter if binary is missing or stale.
-    local shim="$AIRGENOME_ROOT/hooks/hook_cli_state.hexa"
-    local bin="$AIRGENOME_ROOT/bin/hook_cli_state"
-    if [ -x "$bin" ] && [ "$bin" -nt "$shim" ]; then
-        "$bin" "$@"
-        return $?
-    fi
-    [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
-    if [ ! -f "$shim" ]; then
-        echo "hook_cli_state.hexa missing: $shim" >&2
-        return 1
-    fi
-    "$HEXA" run "$shim" "$@"
-}
-
-# airgenome status-line
-#   Single-line active-command summary for Claude Code's statusLine
-#   setting. Renders up to 3 top entries as "<icon> <command>: <seed>"
-#   separated by " · "; empty stack → empty line. jq-only, single fork,
-#   so the statusLine stays snappy.
-cmd_status_line() {
-    local f="$AIRGENOME_ROOT/.hook-commands/active.json"
-    [ -f "$f" ] || { echo ""; return 0; }
-    jq -r '
-      (.stack // [])
-      | if length == 0 then ""
-        else
-          (. [0:3] | map(
-            (if .command == "drill"  then "🔭"
-             elif .command == "scan"   then "🧪"
-             elif .command == "record" then "📜"
-             else "•" end)
-            + " " + (.command // "?") + ": " + (.seed // "?")
-          ) | join(" · "))
-          + (if length > 3 then " · +\(length - 3)" else "" end)
-        end
-    ' "$f" 2>/dev/null
-}
-
-# airgenome hooks {list|show <name>|guide}
-#   list     — one-line-per-hook table (name / kind / purpose)
-#   show N   — full JSON object for a single hook by name
-#   guide    — rendered markdown (same surface as MCP airgenome://hooks/guide)
-cmd_hooks() {
-    local sub="${1:-list}"
-    local f="$AIRGENOME_ROOT/hooks/airgenome_hooks.json"
-    if [ ! -f "$f" ]; then
-        echo "airgenome hook guide missing: $f" >&2
-        return 1
-    fi
-    case "$sub" in
-        list)
-            jq -r '.hooks[] | "\(.name)\t\(.kind)\t\(.purpose)"' "$f" |
-                column -t -s $'\t'
-            ;;
-        show)
-            local name="${2:-}"
-            if [ -z "$name" ]; then
-                echo "usage: airgenome hooks show <name>" >&2
-                return 2
-            fi
-            jq --arg n "$name" '.hooks[] | select(.name == $n)' "$f"
-            ;;
-        guide)
-            jq -r '"# airgenome hook guide\n\n" + .description + "\n\n## hooks\n\n" +
-                   ([.hooks[] |
-                     "### \(.name)  (`\(.mcp_tool)`, \(.kind))\n\n" +
-                     "**purpose:** \(.purpose)\n\n" +
-                     "**when:**\n" + (.when | map("- " + .) | join("\n")) + "\n\n" +
-                     "**example:** `\(.example)`\n"
-                    ] | join("\n")) +
-                   "\n## guidance patterns\n\n" +
-                   ([.guidance[] | "- **\(.pattern)** → \(.recommend)"] | join("\n")) + "\n"' "$f"
-            ;;
-        *)
-            echo "usage: airgenome hooks {list|show <name>|guide}" >&2
-            return 2
-            ;;
-    esac
 }
 
 cmd_logs() {
@@ -540,34 +435,6 @@ run_hexa_mod() {
     wait "$mpid" 2>/dev/null || rc=$?
     if [ "$rc" -ne 0 ] && [ "$rc" -lt 128 ]; then
         log "module ${mod} exit=$rc (timeout=${t}s)"
-    fi
-}
-
-# ============================================================
-# claude chat memory snapshot (mac 크래시 대비 최소 안전)
-# ============================================================
-# supervisor tick 마다:
-#   1. sync — 모든 파일시스템 버퍼 플러시 (세션 JSONL 포함)
-#   2. 최신 mtime JSONL 경로를 ~/.airgenome/claude-sessions/latest.txt 에 기록
-# 복구: airgenome last-session → 최신 세션 path 출력
-
-claude_snapshot_tick() {
-    mkdir -p "$CLAUDE_SNAPSHOT_DIR" 2>/dev/null || true
-    local latest
-    latest="$(ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1)"
-    if [ -n "$latest" ]; then
-        printf '%s\n' "$latest" > "$CLAUDE_LATEST_PTR" 2>/dev/null || true
-    fi
-    # 파일시스템 버퍼 플러시 — mac 크래시 시 손실 창 최소화
-    sync 2>/dev/null || true
-}
-
-cmd_last_session() {
-    if [ -s "$CLAUDE_LATEST_PTR" ]; then
-        cat "$CLAUDE_LATEST_PTR"
-    else
-        # fallback: 즉시 계산
-        ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1
     fi
 }
 
@@ -653,7 +520,7 @@ cmd_run() {
         exit 0
     ' TERM INT
 
-    # main loop — guard + cadence health check + claude snapshot (30s tick).
+    # main loop — guard + cadence health check (30s tick).
     # 모듈 실행은 위 cadence 서브쉘이 담당, 여기는 supervision 만.
     while true; do
         if ! kill -0 "$guard_pid" 2>/dev/null; then
@@ -671,7 +538,6 @@ cmd_run() {
             cad300_pid="$(spawn_cadence cadence-300s 300 forecast)"
             log "cadence-300s respawned PID=$cad300_pid"
         fi
-        claude_snapshot_tick
         _isleep 30
     done
 }
@@ -1236,11 +1102,7 @@ main() {
         arm)           cmd_arm ;;
         disarm)        cmd_disarm ;;
         logs)          cmd_logs "${1:-list}" ;;
-        hook)          cmd_hook "$@" ;;
-        hooks)         cmd_hooks "$@" ;;
-        status-line)   cmd_status_line ;;
         run)           cmd_run ;;
-        last-session)  cmd_last_session ;;
         list|ls)       cmd_list "$@" ;;
         offload|off)   cmd_offload "$@" ;;
         tap|input)     cmd_tap "$@" ;;
@@ -1265,10 +1127,7 @@ usage: airgenome <command>
   arm          runtime-guard live-kill on
   disarm       runtime-guard dry-run
   logs [m]       tail: guard|probe|dispatch|harvest|label|forecast|super|list
-  hook <sub>     chain state CLI: status | activate | touch | release | is-active  (MCP tools CLI mirror)
-  hooks <sub>    hook guide: list | show <name> | guide  (same SSOT as MCP airgenome://hooks/guide)
   run            supervisor loop (launchd 가 호출)
-  last-session   최근 Claude Code 세션 JSONL path (mac 크래시 복구용)
   list [kind]    자원 목록 — hosts (live infra_state) | workspace | projects
   offload <t> <cmd...>  원격 실행 — t: ubu1|ubu2|htz (ssh alias 경유)
   plugin <sub>   user-data plugin manager (~/.airgenome/plugins/) —

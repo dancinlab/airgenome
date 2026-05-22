@@ -5,14 +5,11 @@
     <!--
         com.airgenome.supervisor
         ========================
-        Single-process child supervisor (mini-launchd). Replaces 6 legacy
-        LaunchAgents:
-          com.airgenome                  → child label "run"            (keepalive)
-          com.airgenome.hook-watch       → child label "hook-watch"     (interval:5)
-          com.airgenome.settings-guard   → child label "settings-guard" (watchpaths)
-          com.airgenome.tap              → child label "tap"            (keepalive-crashonly)
-          com.airgenome.tg-bot           → child label "tg-bot"         (keepalive)
-          com.airgenome.vacuum_watcher   → child label "vacuum-watcher" (interval:3600)
+        Single-process child supervisor (mini-launchd). Children:
+          run            (keepalive)            bin/airgenome run
+          tap            (keepalive-crashonly)  airgenome.app
+          vacuum-watcher (interval:3600)        vacuum_watcher.hexa
+          audio-rate-pin (interval:300)         bin/audio_force_rate
 
         Architecture: fork/exec, NOT threads. Each child runs as its own OS
         process supervised by a per-child wrapper subshell. A child crash does
@@ -71,7 +68,7 @@
              jobs.tsv resolves. Per-child env files (config/launchd/envs/) are
              sourced inside each wrapper for full per-job env isolation. -->
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/ghost/.hx/bin:/Users/ghost/.hx/shared/bin:/Users/ghost/.hx/packages/airgenome/bin:/Users/ghost/core/nexus/shared/bin:/Users/ghost/core/airgenome/bin:/Users/ghost/core/hexa-lang</string>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/ghost/.hx/bin:/Users/ghost/.hx/shared/bin:/Users/ghost/.hx/packages/airgenome/bin:/Users/ghost/core/nexus/shared/bin:/Users/ghost/core/airgenome/bin</string>
         <key>HOME</key>
         <string>/Users/ghost</string>
         <key>LANG</key>

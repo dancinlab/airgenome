@@ -1,1 +1,0 @@
-{"hook_event_name":"UserPromptSubmit","session_id":"test-session-001","transcript_path":"/tmp/fake_transcript.jsonl","cwd":"/tmp","prompt":"please refactor utils.py"}
