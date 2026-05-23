@@ -310,6 +310,27 @@ cmd_hush() {
     sudo launchctl bootout "gui/$UID_VAL/com.apple.searchpartyuseragent" 2>/dev/null \
         && log "hush: searchpartyuseragent (Find My) OFF for this session"
 
+    # Siri / Apple Intelligence / Biome / Suggestions / CoreSpotlight knowledge —
+    # user has Siri disabled (Assistant Enabled = 0). These satellite daemons are
+    # SIP-protected so bootout is impossible (= zero zombie risk by construction);
+    # we only `disable` them, effect applies on next login.
+    local idle_label disabled_n=0
+    for idle_label in \
+        com.apple.BiomeAgent \
+        com.apple.biomesyncd \
+        com.apple.suggestd \
+        com.apple.corespotlightd; do
+        if launchctl print-disabled "gui/$UID_VAL" 2>/dev/null | grep -q "\"$idle_label\" => disabled"; then
+            continue
+        fi
+        launchctl disable "gui/$UID_VAL/$idle_label" 2>/dev/null && disabled_n=$((disabled_n + 1))
+    done
+    [ $disabled_n -gt 0 ] && log "hush: Siri/Biome/Suggest/CoreSpotlight 데몬 $disabled_n 개 disable (다음 로그인부터 적용)"
+
+    # UniversalControl (Mac ↔ iPad 마우스/키보드 공유) — defaults only, no kill.
+    defaults write com.apple.universalcontrol Disable -bool true 2>/dev/null || true
+    defaults -currentHost write com.apple.universalcontrol Disable -bool true 2>/dev/null || true
+
     log "hush: done — XprotectService/mds idle 진입까지 수십초 소요"
 }
 
