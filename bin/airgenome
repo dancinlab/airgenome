@@ -23,7 +23,17 @@ set -eu
 
 # Defaults: derive AIRGENOME_ROOT from script location, look up HEXA on PATH.
 # Override via env (AIRGENOME_ROOT=... HEXA=...) for non-canonical layouts.
-AIRGENOME_ROOT="${AIRGENOME_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# Resolve symlinks (e.g. ~/.hx/bin/airgenome → ~/.hx/packages/airgenome/bin/airgenome).
+_ag_self="${BASH_SOURCE[0]}"
+while [ -L "$_ag_self" ]; do
+    _ag_link="$(readlink "$_ag_self")"
+    case "$_ag_link" in
+        /*) _ag_self="$_ag_link" ;;
+        *)  _ag_self="$(cd "$(dirname "$_ag_self")" && pwd)/$_ag_link" ;;
+    esac
+done
+AIRGENOME_ROOT="${AIRGENOME_ROOT:-$(cd "$(dirname "$_ag_self")/.." && pwd)}"
+unset _ag_self _ag_link
 HEXA="${HEXA:-$(command -v hexa 2>/dev/null || echo hexa)}"
 LOG_DIR="$HOME/.airgenome"
 PLIST_SRC="$AIRGENOME_ROOT/launchd/com.airgenome.plist"

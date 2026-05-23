@@ -41,5 +41,11 @@ fn main() -> void {
         exit(1)
     }
 
+    // hush — macOS load mitigations (single source of truth: bin/airgenome cmd_hush).
+    // Idempotent; same call used by `airgenome init`.
+    println("[airgenome/install] running hush mitigations ...")
+    let hush_out = exec("'" + root + "/bin/airgenome' hush 2>&1")
+    println(hush_out.trim())
+
     println("[airgenome/install] done — airgenome.app tap installed + bootstrapped")
 }
