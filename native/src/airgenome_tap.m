@@ -131,11 +131,10 @@ extern int  airgenome_overload_is_enabled(void);
 // singleton lock 미적용. airgenome.app TCC (FDA 등) 자식 상속.
 extern int airgenome_loop_run_once(const char *module_path, int timeout_s);
 
-// Magnet thresholds (pixels). Generous defaults for multi-monitor and
-// 4K/5K layouts -- a 20px reach feels invisible at high pixel densities.
-// User-overridable via AIRG_TAP_{EDGE,CORNER}_PX env vars.
-static int EDGE_THRESHOLD_PX    = 80;
-static int CORNER_THRESHOLD_PX  = 160;
+// Magnet thresholds (pixels). User-overridable via
+// AIRG_TAP_{EDGE,CORNER}_PX env vars.
+static int EDGE_THRESHOLD_PX    = 40;
+static int CORNER_THRESHOLD_PX  = 80;
 static int DRAG_MIN_DISTANCE_PX = 8;
 
 // Top-edge guard: while dragging, clamp the cursor's reported y coordinate
@@ -628,7 +627,8 @@ static CGRect zone_to_frame(Zone z, CGRect vf) {
     CGFloat hy = vf.size.height / 2.0;
     switch (z) {
         case ZONE_TOP:
-            return CGRectMake(vf.origin.x, vf.origin.y, vf.size.width, hy);
+            // top-edge drag → maximize (Windows/Magnet snap convention)
+            return vf;
         case ZONE_BOTTOM:
             return CGRectMake(vf.origin.x, vf.origin.y + hy,
                               vf.size.width, hy);
