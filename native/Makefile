@@ -47,7 +47,7 @@ FRAMEWORKS    = -framework ApplicationServices -framework Carbon \
                 -framework Cocoa -framework AppKit -framework IOKit \
                 -F /System/Library/PrivateFrameworks -framework SkyLight
 
-.PHONY: all build app icon install uninstall status logs selftest \
+.PHONY: all build bundle app icon install uninstall status logs selftest \
         restart rebuild clean setup-signing launcher-status launcher-restore \
         loop-selftest
 
@@ -123,6 +123,26 @@ $(LOCAL_APP): $(BIN) $(ICON_ICNS) $(INFO_PLIST)
 	  fi
 	@xattr -cr $(LOCAL_APP) 2>/dev/null || true
 	@echo "built: $(LOCAL_APP) ($$(du -sh $(LOCAL_APP) | awk '{print $$1}'))"
+
+# ---------------------------------------------------------------------------
+# Bundle (CI / packaging): assemble build/airgenome.app WITHOUT codesign and
+# WITHOUT the /Applications deploy or launchctl bootstrap. The icon is
+# best-effort (osascript needs a window server, absent on headless CI), so a
+# missing AppIcon.icns is non-fatal here. The caller (e.g. release.yml) owns
+# codesign so it can pick self-signed vs Developer ID. Local devs use `app`.
+# ---------------------------------------------------------------------------
+
+bundle: $(BIN)
+	@rm -rf $(LOCAL_APP)
+	@mkdir -p $(LOCAL_APP)/Contents/MacOS $(LOCAL_APP)/Contents/Resources
+	@cp $(BIN)        $(INNER_BIN)
+	@cp $(INFO_PLIST) $(LOCAL_APP)/Contents/Info.plist
+	@printf 'APPLairg' > $(LOCAL_APP)/Contents/PkgInfo
+	@$(MAKE) -s $(ICON_ICNS) >/dev/null 2>&1 \
+	    && cp $(ICON_ICNS) $(LOCAL_APP)/Contents/Resources/AppIcon.icns \
+	    || echo "  note: AppIcon.icns skipped (no window server) — bundle is unsigned + icon-less"
+	@xattr -cr $(LOCAL_APP) 2>/dev/null || true
+	@echo "bundled (unsigned): $(LOCAL_APP) ($$(du -sh $(LOCAL_APP) | awk '{print $$1}'))"
 
 # ---------------------------------------------------------------------------
 # Install: deploy bundle to /Applications, render plist with absolute paths,
