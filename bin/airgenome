@@ -331,6 +331,21 @@ cmd_hush() {
     defaults write com.apple.universalcontrol Disable -bool true 2>/dev/null || true
     defaults -currentHost write com.apple.universalcontrol Disable -bool true 2>/dev/null || true
 
+    # WindowServer GPU 부하 — Reduce Transparency + Reduce Motion.
+    # com.apple.universalaccess 는 cfprefsd 독점 관리라 일반 `defaults write` 가
+    # 거부됨 → plutil 로 plist 직접 수정 후 cfprefsd flush. 이미 ON 이면 skip.
+    local ua_plist="$HOME/Library/Preferences/com.apple.universalaccess.plist"
+    local ua_key ua_changed=0
+    for ua_key in reduceTransparency reduceMotion; do
+        if [ "$(defaults read com.apple.universalaccess "$ua_key" 2>/dev/null || echo 0)" != "1" ]; then
+            plutil -replace "$ua_key" -bool true "$ua_plist" 2>/dev/null && ua_changed=1
+        fi
+    done
+    if [ "$ua_changed" = "1" ]; then
+        killall cfprefsd 2>/dev/null || true
+        log "hush: Reduce Transparency + Motion ON (WindowServer GPU 부하 감축)"
+    fi
+
     log "hush: done — XprotectService/mds idle 진입까지 수십초 소요"
 }
 
