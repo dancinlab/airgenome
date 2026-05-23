@@ -239,6 +239,61 @@ guard_loop() {
 # 서브커맨드
 # ============================================================
 
+# HUSH — macOS 시스템 부하 완화 (idempotent).
+# user-level 작업 → 항상 적용. sudo 작업 → 단일 sudo -v prompt 후 묶음 실행.
+# 자세한 배경: HUSH.md
+cmd_hush() {
+    log "hush: applying macOS load mitigations"
+
+    # --- user-level (sudo 없음) ---
+    local hcache="$HOME/.hexa-cache"
+    if [ -d "$hcache" ]; then
+        touch "$hcache/.metadata_never_index" 2>/dev/null || true
+        touch "$hcache/.metadata_never_index_unless_rootfs" 2>/dev/null || true
+        xattr -cr "$hcache" 2>/dev/null || true
+    fi
+    [ -d "$HOME/Downloads" ] && xattr -dr com.apple.quarantine "$HOME/Downloads" 2>/dev/null || true
+
+    if command -v mullvad >/dev/null 2>&1; then
+        local st
+        st="$(mullvad split-tunnel get 2>/dev/null | awk -F': ' '/Split tunneling state/{print $2; exit}')"
+        if [ "$st" = "on" ]; then
+            mullvad split-tunnel set off >/dev/null 2>&1 \
+                && log "hush: mullvad split-tunnel OFF (ESF hook 부하 1차 감축)"
+        fi
+    fi
+
+    # --- sudo (단일 prompt 로 묶음, sudo -v 미리 갱신) ---
+    if ! sudo -n true 2>/dev/null; then
+        log "hush: sudo 권한 필요 (XProtect 정의·Spotlight·Find My 비활성)"
+        sudo -v || die "hush: sudo 거부 — 부분 적용 상태"
+    fi
+
+    sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate ConfigDataInstall -bool false 2>/dev/null \
+        && log "hush: XProtect 정의 자동갱신 OFF (ConfigDataInstall=false)"
+    sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate CriticalUpdateInstall -bool false 2>/dev/null \
+        && log "hush: 보안 응답 자동설치 OFF (CriticalUpdateInstall=false)"
+    sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticDownload -bool false 2>/dev/null \
+        && log "hush: macOS 자동 다운로드 OFF (AutomaticDownload=false)"
+    sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false 2>/dev/null \
+        && log "hush: macOS 자동 설치 OFF (AutomaticallyInstallMacOSUpdates=false)"
+    sudo defaults write /Library/Preferences/com.apple.SoftwareUpdate AutoInstallProductKeys -array 2>/dev/null \
+        && log "hush: AutoInstallProductKeys 비움 (예약된 업데이트 시도 중단)"
+
+    if mdutil -as 2>/dev/null | grep -q 'Indexing enabled'; then
+        sudo mdutil -a -i off >/dev/null 2>&1 \
+            && log "hush: Spotlight 전역 인덱싱 OFF (검색 UI는 파일명 폴백)"
+    fi
+    sudo killall mds mds_stores 2>/dev/null || true
+    sudo killall -m mdworker_shared 2>/dev/null || true
+
+    # Find My / Continuity (사용 안 하면 부하만)
+    sudo launchctl bootout "gui/$UID_VAL/com.apple.searchpartyuseragent" 2>/dev/null \
+        && log "hush: searchpartyuseragent (Find My) OFF for this session"
+
+    log "hush: done — XprotectService/mds idle 진입까지 수십초 소요"
+}
+
 cmd_init() {
     [ -f "$PLIST_SRC" ] || die "plist source missing: $PLIST_SRC"
     [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
@@ -286,6 +341,9 @@ cmd_init() {
             || log "WARN airgenome tap install failed (see $SUPER_LOG)"
         log "  Accessibility 권한 1회 부여 필요: System Settings → Privacy & Security → Accessibility → '+' /Applications/airgenome.app → 토글 → airgenome tap restart"
     fi
+
+    # HUSH — macOS 부하 완화 동행 적용 (idempotent)
+    cmd_hush
 
     log "next: airgenome status (확인) → airgenome arm (live kill on) 필요 시"
 }
@@ -1097,6 +1155,7 @@ main() {
     shift || true
     case "$sub" in
         init|start)    cmd_init ;;
+        hush)          cmd_hush ;;
         stop)          cmd_stop ;;
         status)        cmd_status ;;
         arm)           cmd_arm ;;
@@ -1121,7 +1180,8 @@ airgenome — 단일 진입점 (M14) + inline runtime-guard (M13)
 
 usage: airgenome <command>
 
-  init         plist 배치 + launchctl bootstrap (start 과 동일)
+  init         plist 배치 + launchctl bootstrap + hush 동행 (start 과 동일)
+  hush         macOS 부하 완화만 단독 실행 (XProtect 정의·Spotlight·split-tunnel)
   stop         bootout + supervisor + guard 종료
   status       supervisor + guard 모드 + 산출물 freshness
   arm          runtime-guard live-kill on
