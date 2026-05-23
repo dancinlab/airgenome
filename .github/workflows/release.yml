@@ -1,0 +1,151 @@
+name: release
+
+# Release packaging — fires on tag push (`v*`) or manual dispatch. Builds the
+# native airgenome menubar binary with clang, assembles `airgenome.app`,
+# codesigns it, packages the bundle as `airgenome-<tag>.tar.gz`, and uploads
+# it to the GitHub Release the tag created.
+#
+# ── Codesigning: self-signed NOW, Developer ID-ready LATER ───────────────────
+# This repo does NOT yet have an Apple Developer ID (distribution) cert, so the
+# default path ad-hoc/self-signs the .app (`codesign --sign -`). Gatekeeper will
+# warn on first launch; users right-click → Open to bypass once.
+#
+# The Developer ID + notarization branch below is ALREADY WIRED but dormant —
+# it activates with NO further edits to this file the moment these GitHub repo
+# secrets are set (Settings → Secrets and variables → Actions):
+#
+#   MACOS_DEVELOPER_ID_CERT   base64-encoded Developer ID Application .p12
+#   MACOS_DEVELOPER_ID_PWD    password for the .p12 above
+#   MACOS_DEVELOPER_ID_NAME   identity, e.g. "Developer ID Application: NAME (TEAMID)"
+#   MACOS_NOTARY_APPLE_ID     Apple ID email for notarytool
+#   MACOS_NOTARY_PASSWORD     app-specific password for that Apple ID
+#   MACOS_NOTARY_TEAM_ID      Apple Developer Team ID
+#
+# When MACOS_DEVELOPER_ID_CERT is present, the Codesign step imports the .p12
+# into a throwaway keychain, signs with `--options runtime` + hardened-runtime,
+# notarizes via `xcrun notarytool submit --wait`, then `xcrun stapler staple`s
+# the ticket into the bundle so it passes Gatekeeper offline.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to (re)build + upload assets for'
+        required: false
+
+permissions:
+  contents: write  # softprops/action-gh-release uploads release assets
+
+# Tag/dispatch runs are keyed per-ref and never cancel each other. Only branch
+# refs (should one ever trigger) cancel an older in-flight run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+
+jobs:
+  release:
+    name: release (darwin-arm64)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute release tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+              TAG="${{ github.event.inputs.tag }}"
+          else
+              TAG="${{ github.ref_name }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release tag: $TAG"
+
+      # Build the native binary + assemble build/airgenome.app WITHOUT the
+      # /Applications deploy or launchctl bootstrap (CI must not touch system
+      # paths). `make bundle` produces an UNSIGNED bundle; this workflow owns
+      # codesign in the next step.
+      - name: Build + bundle airgenome.app
+        shell: bash
+        working-directory: native
+        run: |
+          set -euo pipefail
+          make bundle
+          test -x build/airgenome.app/Contents/MacOS/airgenome
+          file build/airgenome.app/Contents/MacOS/airgenome
+
+      - name: Codesign (Developer ID + notarize if secrets set, else self-signed)
+        shell: bash
+        working-directory: native
+        env:
+          MACOS_DEVELOPER_ID_CERT: ${{ secrets.MACOS_DEVELOPER_ID_CERT }}
+          MACOS_DEVELOPER_ID_PWD:  ${{ secrets.MACOS_DEVELOPER_ID_PWD }}
+          MACOS_DEVELOPER_ID_NAME: ${{ secrets.MACOS_DEVELOPER_ID_NAME }}
+          MACOS_NOTARY_APPLE_ID:   ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD:   ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_TEAM_ID:    ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          APP="build/airgenome.app"
+
+          if [ -n "$MACOS_DEVELOPER_ID_CERT" ]; then
+              # ── Developer ID path (dormant until secrets are set) ──────────
+              echo "Developer ID cert present — signing + notarizing"
+              KEYCHAIN="$RUNNER_TEMP/airgenome-signing.keychain-db"
+              KCPASS="$(openssl rand -base64 24)"
+              security create-keychain -p "$KCPASS" "$KEYCHAIN"
+              security set-keychain-settings -lut 21600 "$KEYCHAIN"
+              security unlock-keychain -p "$KCPASS" "$KEYCHAIN"
+              security list-keychains -d user -s "$KEYCHAIN" \
+                  $(security list-keychains -d user | sed s/\"//g)
+
+              CERT_P12="$RUNNER_TEMP/developer_id.p12"
+              echo "$MACOS_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_P12"
+              security import "$CERT_P12" -k "$KEYCHAIN" -P "$MACOS_DEVELOPER_ID_PWD" \
+                  -T /usr/bin/codesign
+              security set-key-partition-list -S apple-tool:,apple:,codesign: \
+                  -s -k "$KCPASS" "$KEYCHAIN" >/dev/null
+
+              codesign --force --deep --options runtime --timestamp \
+                  --sign "$MACOS_DEVELOPER_ID_NAME" "$APP"
+              codesign --verify --strict --verbose=2 "$APP"
+
+              # Notarize the zipped bundle, then staple the ticket so the .app
+              # passes Gatekeeper offline.
+              ZIP="$RUNNER_TEMP/airgenome-notary.zip"
+              ditto -c -k --keepParent "$APP" "$ZIP"
+              xcrun notarytool submit "$ZIP" \
+                  --apple-id "$MACOS_NOTARY_APPLE_ID" \
+                  --password "$MACOS_NOTARY_PASSWORD" \
+                  --team-id "$MACOS_NOTARY_TEAM_ID" \
+                  --wait
+              xcrun stapler staple "$APP"
+              echo "signed (Developer ID) + notarized + stapled"
+          else
+              # ── Self-signed / ad-hoc path (current default) ────────────────
+              echo "::warning::self-signed (no Developer ID cert) — Gatekeeper will warn; users right-click → Open"
+              codesign --force --deep --sign - "$APP"
+              codesign --verify --verbose=2 "$APP" || true
+          fi
+
+      - name: Package — airgenome-${{ steps.tag.outputs.tag }}.tar.gz
+        shell: bash
+        working-directory: native
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          tar -czf "$GITHUB_WORKSPACE/airgenome-${TAG}.tar.gz" -C build airgenome.app
+          ls -la "$GITHUB_WORKSPACE/airgenome-${TAG}.tar.gz"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: airgenome-${{ steps.tag.outputs.tag }}.tar.gz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
