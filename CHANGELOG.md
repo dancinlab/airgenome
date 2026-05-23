@@ -10,6 +10,7 @@ For the full audit trail, see `git log`.
 
 - **HUSH 도메인 + `airgenome hush`** — macOS 부하 완화 묶음을 `bin/airgenome` `cmd_hush()` 로 통합. `airgenome init` 동행 호출 + `hx install airgenome` 의 `install.hexa` 후행 호출 (single source of truth · idempotent). 항목: XProtect 정의 자동갱신 OFF · 보안 응답 자동설치 OFF · macOS 자동 다운로드·설치 OFF · `AutoInstallProductKeys` 비움 · Spotlight 전역 인덱싱 OFF + mds/mds_stores/mdworker 종료 · `~/.hexa-cache` 인덱싱 차단 · `~/Downloads` quarantine xattr 제거 · Mullvad split-tunnel OFF · `searchpartyuseragent`(Find My) bootout. 진단·배경: `HUSH.md` · `HUSH.log.md`.
 - **`AIRGENOME_ROOT` symlink-aware 해석** — `bin/airgenome` 가 `BASH_SOURCE` symlink chain 을 따라가도록 수정. `~/.hx/bin/airgenome` → `~/.hx/packages/airgenome/bin/airgenome` 형태의 hx pkg 설치 경유 호출에서 ROOT 가 잘못 잡혀 `plist source missing` 으로 실패하던 문제 해소.
+- **`cmd_hush` — Mission Control "Displays have separate Spaces" ON** — `defaults write com.apple.spaces spans-displays -bool false` 추가. 풀스크린 시 외 모니터가 검정으로 마스킹되던 macOS 기본 동작을 해소 (각 디스플레이가 독립 Space). 적용에는 로그아웃 후 재로그인 필요.
 - **Claude Code 통합 폐기** — MCP 서버 · 자체 hook bus(`hooks/`) · `claude_*` 필터 25개 · `cl` 멀티계정 런처 · improve 루프 · AG10 룰 · `~/.claude/settings.json` 렌더러 전면 제거. airgenome 은 Claude Code 하니스에 더 이상 관여하지 않음 — 부하 시 Claude Code CLI 에 자원 우선권을 주는 overload-watch(native)만 예외로 유지.
 - **hexa-lang gate 결합 절단** — launchd 하드코딩 `core/hexa-lang/hexa` 경로 → 설치본 `~/.hx/bin/hexa` 로 전환 · `tool/airgenome_init.hexa`(hook/MCP/workspace 부트스트랩) 삭제 · `install.hexa` 는 native 앱 설치만 담당 · hook-watch·tg-bot launchd 잡 제거.
 - **규칙 정리** — `l0_paths` 메타데이터 필드를 전 규칙에서 제거 (uchg 동결 메커니즘 폐기에 따른 죽은 필드).

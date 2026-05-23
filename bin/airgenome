@@ -264,6 +264,15 @@ cmd_hush() {
     fi
     [ -d "$HOME/Downloads" ] && xattr -dr com.apple.quarantine "$HOME/Downloads" 2>/dev/null || true
 
+    # Mission Control: 'Displays have separate Spaces' ON (spans-displays=false).
+    # 풀스크린 시 외 모니터 암전 방지. 사용자 도메인 (sudo 불필요). 적용에 logout 필요.
+    local span_cur
+    span_cur="$(defaults read com.apple.spaces spans-displays 2>/dev/null || echo "1")"
+    if [ "$span_cur" != "0" ]; then
+        defaults write com.apple.spaces spans-displays -bool false \
+            && log "hush: Displays have separate Spaces ON (로그아웃 후 다음 로그인부터 적용 — 풀스크린 시 외 모니터 정상 사용)"
+    fi
+
     if command -v mullvad >/dev/null 2>&1; then
         local st
         st="$(mullvad split-tunnel get 2>/dev/null | awk -F': ' '/Split tunneling state/{print $2; exit}')"
