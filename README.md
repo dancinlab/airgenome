@@ -97,11 +97,11 @@ Each tick:
 
 ## Install
 
-```sh
-# 1. install hexa-lang — ships `hexa` + `hx` package manager
-curl -fsSL https://raw.githubusercontent.com/dancinlab/hexa-lang/main/install.sh | bash
+```bash
+# 1. Install hexa-lang (gives you `hexa` + `hx` package manager)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/dancinlab/hexa-lang/main/install.sh)"
 
-# 2. install airgenome — adds the `airgenome` shim, builds + signs airgenome.app,
+# 2. Install airgenome — adds the `airgenome` shim, builds + signs airgenome.app,
 #    installs LaunchAgents, wires com.airgenome.tap (⌃S launcher + menubar)
 hx install airgenome
 ```
