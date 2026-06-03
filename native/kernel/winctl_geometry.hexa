@@ -1,0 +1,85 @@
+// winctl_geometry.hexa — pure-logic window-arrangement geometry kernel
+//
+// C-PORT (forge-secp256k1-SPLIT pattern): extracted from the PURE math of
+// `winctl_target_rect` in native/src/airgenome_winctl.m. That C function is
+// the only Cocoa-free island in the 8 Objective-C sources — it takes plain
+// rects (visibleFrame, current window) + an action id and returns a target
+// rect by float arithmetic alone. All AXUIElement / NSScreen / CGEvent calls
+// stay in the Obj-C FFI shim; this kernel owns ONLY the rect transform so it
+// is RUNEQ-gated bit/value-exact against the C reference.
+//
+// Action map (alt+N on focused window — see _winctl.m header):
+//   1  Maximize       → vf
+//   2  100/120 center → vf * (100/120) ≈ 83.33%, centered
+//   3  Left half      → left half of vf
+//   4  Right half     → right half of vf
+//   5  Center only    → preserve cur size (clamped to vf), center origin
+//   else              → cur (identity — case 6 is a system action handled
+//                       by the shim, never reaches this kernel)
+//
+// Coords are AX-space (top-left, primary-screen origin) — the kernel is
+// frame-agnostic; the shim does the NS↔AX conversion at the boundary.
+//
+// CLI form (RUNEQ harness): argv = action vfx vfy vfw vfh cwx cwy cww cwh
+// emits  "<x> <y> <w> <h>"  with %.6f formatting (matches the C harness).
+
+// 100/120 scale — declared once; identical literal as the C `scale` const.
+let WINCTL_SCALE_100_120 = 100.0 / 120.0
+
+// Pure transform. Returns [x, y, w, h] as floats.
+fn winctl_target_rect(
+    action: int,
+    vfx: float, vfy: float, vfw: float, vfh: float,
+    cwx: float, cwy: float, cww: float, cwh: float
+) -> [float] {
+    if action == 1 {
+        // Maximize
+        return [vfx, vfy, vfw, vfh]
+    }
+    if action == 2 {
+        // 100/120 center (≈83.33%)
+        let w = vfw * WINCTL_SCALE_100_120
+        let h = vfh * WINCTL_SCALE_100_120
+        return [vfx + (vfw - w) / 2.0, vfy + (vfh - h) / 2.0, w, h]
+    }
+    if action == 3 {
+        // Left half
+        return [vfx, vfy, vfw / 2.0, vfh]
+    }
+    if action == 4 {
+        // Right half
+        return [vfx + vfw / 2.0, vfy, vfw / 2.0, vfh]
+    }
+    if action == 5 {
+        // Center only — preserve current size, clamp to visibleFrame
+        let mut w = cww
+        let mut h = cwh
+        if w > vfw { w = vfw }
+        if h > vfh { h = vfh }
+        return [vfx + (vfw - w) / 2.0, vfy + (vfh - h) / 2.0, w, h]
+    }
+    // default / case 6: identity (current window unchanged)
+    return [cwx, cwy, cww, cwh]
+}
+
+fn _f(argv: [str], i: int) -> float {
+    let mut v = 0.0
+    try { v = to_float(argv[i]) } catch e {}
+    return v
+}
+
+let argv = args()
+let mut action = 0
+if argv.len() >= 2 { try { action = to_int(to_float(argv[1])) } catch e {} }
+let vfx = _f(argv, 2)
+let vfy = _f(argv, 3)
+let vfw = _f(argv, 4)
+let vfh = _f(argv, 5)
+let cwx = _f(argv, 6)
+let cwy = _f(argv, 7)
+let cww = _f(argv, 8)
+let cwh = _f(argv, 9)
+
+let r = winctl_target_rect(action, vfx, vfy, vfw, vfh, cwx, cwy, cww, cwh)
+print(format_float(r[0], 6) + " " + format_float(r[1], 6) + " " +
+      format_float(r[2], 6) + " " + format_float(r[3], 6))

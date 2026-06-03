@@ -141,6 +141,16 @@ static CGRect winctl_visible_frame_ax(NSScreen *screen) {
 
 // Compute target AX rect for action 1..5, given the visibleFrame of the
 // screen the window lives on (already in AX coords).
+//
+// C-PORT (forge-secp256k1-SPLIT): this is the only Cocoa-free math island in
+// the native/src/*.m sources. Its pure rect transform is mirrored 1:1 by the
+// hexa-native kernel ../kernel/winctl_geometry.hexa, which is the SSOT spec for
+// the geometry. This in-process C copy is RUNEQ-locked to that kernel —
+// value-exact over 245 corpus cases (5 actions × 7 real screens × 5 windows +
+// identity path); see ../kernel/runeq_winctl.sh and the C-PORT domain verdict
+// .verdicts/c-port/winctl-geometry-runeq.txt. The menubar tap runs this per
+// keystroke in-process (no shell-out), so the kernel stays the spec and any
+// edit to the math here MUST keep runeq_winctl.sh green.
 static CGRect winctl_target_rect(int action, CGRect vf, CGRect curWin) {
     switch (action) {
         case 1: // Maximize

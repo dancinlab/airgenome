@@ -1,0 +1,5 @@
+------------------------------------------------------------
+RUNEQ winctl_target_rect : C-vs-hexa value-exact
+corpus = 7 actions x 7 screens x 5 windows = 245 cases
+PASS=245  FAIL=0
+VERDICT: 🟢 RUNEQ PASS — kernel value-exact across full corpus
