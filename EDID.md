@@ -1,5 +1,7 @@
 # EDID — DisplayLink USB 모니터 해상도 옵션 노출
 
+> ↩ SSOT: [ARCHITECTURE.md](ARCHITECTURE.md) · history: [CHANGELOG.md](CHANGELOG.md)
+
 @goal: DisplayLink USB 로 연결된 LG UltraFine 4K portrait 모니터에 macOS 가 기본 숨기는 HiDPI 스케일 + 1:1 native 모드를 EDID override 로 노출 — 시스템 설정에서 선택 가능하게.
 
 ## 적용 대상

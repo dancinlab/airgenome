@@ -1,5 +1,7 @@
 # HUSH — macOS 부하 완화
 
+> ↩ SSOT: [ARCHITECTURE.md](ARCHITECTURE.md) · history: [CHANGELOG.md](CHANGELOG.md)
+
 시스템 데몬·백그라운드 서비스의 CPU/배터리/팬 부하를 줄이는 작업 도메인.
 
 ## 자동 적용 — `airgenome init` / `airgenome hush`

@@ -1,5 +1,7 @@
 # HUSH log
 
+> ↩ SSOT: [ARCHITECTURE.md](ARCHITECTURE.md) · history: [CHANGELOG.md](CHANGELOG.md)
+
 ## 2026-05-23
 
 - [x] XProtect 4종 식별 (XprotectService · xprotectd · XProtectUpdateService · XProtectBridgeService)

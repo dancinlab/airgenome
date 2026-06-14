@@ -5,7 +5,11 @@
     "hexa"
   ],
   "lockdown": {
-    "files": [],
+    "files": [
+      "airgenome/core/airgenome.hexa",
+      "run.hexa",
+      "install.hexa"
+    ],
     "fromMarkdown": "CLAUDE.md",
     "onEditReminder": "L0 file edited — update CHANGELOG + issue tracker in the same change."
   },
@@ -42,6 +46,27 @@
     "AGENTS.md",
     "README.md"
   ],
+  "docs": {
+    "architecture": "ARCHITECTURE.md",
+    "log": "CHANGELOG.md",
+    "scratchDir": "scripts/scratch",
+    "scopeDirs": [
+      ""
+    ],
+    "allow": [
+      "README.md",
+      "README.ko.md",
+      "README.en.md",
+      "CHANGELOG.md",
+      "ARCHITECTURE.md",
+      "CLAUDE.md",
+      "AGENTS.md",
+      "LICENSE",
+      "CONTRIBUTING.md",
+      "SECURITY.md",
+      "TAPE-AUDIT.md"
+    ]
+  },
   "ledger": {
     "staleSec": 1800
   }
