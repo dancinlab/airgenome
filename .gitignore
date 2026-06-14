@@ -92,3 +92,5 @@ state/markers/audit_*.marker
 
 # editor / runtime .bak files (regenerable)
 *.bak
+.harness/logs/
+.harness/handoff/
