@@ -1,5 +1,7 @@
 # airgenome — design ledger
 
+> ↩ SSOT: [ARCHITECTURE.md](ARCHITECTURE.md) · history: [CHANGELOG.md](CHANGELOG.md)
+
 Append-only decision log. Each entry: rationale ≥ 3 bullets.
 
 ## Log

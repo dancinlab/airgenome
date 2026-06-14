@@ -6,6 +6,12 @@ For the full audit trail, see `git log`.
 
 ---
 
+## 2026-06-15
+
+- **harness perfect setup** — brought the repo to full [dancinlab/harness](https://github.com/dancinlab/harness) (hardcore) compliance. Initialized the `.harness-engine` submodule; declared L0 lockdown files (`airgenome/core/airgenome.hexa` · `run.hexa` · `install.hexa`) and a root-scoped `docs` block (`scopeDirs:[""]` + `allow` for README variants and the scatter-named `TAPE-AUDIT.md`) in `harness.config.json`. Rewrote `ARCHITECTURE.md` as the English architecture SSOT (6-axis hexagon · 60-byte genome · Banach 1/3 fixed point) and replaced the `CLAUDE.md → project.tape` symlink with a standard harness `CLAUDE.md` (H1 + description + `## Structure` tree + governance + `## Harness` quick reference; `project.tape` retained). Added SSOT quickref pointers to the remaining root docs. Result: `harness docs check` → `docs: ok`, `harness lint` → `lint: ok`, CLAUDE-MD violations = 0.
+
+---
+
 ## 2026-05-23
 
 - **HUSH 도메인 + `airgenome hush`** — macOS 부하 완화 묶음을 `bin/airgenome` `cmd_hush()` 로 통합. `airgenome init` 동행 호출 + `hx install airgenome` 의 `install.hexa` 후행 호출 (single source of truth · idempotent). 항목: XProtect 정의 자동갱신 OFF · 보안 응답 자동설치 OFF · macOS 자동 다운로드·설치 OFF · `AutoInstallProductKeys` 비움 · Spotlight 전역 인덱싱 OFF + mds/mds_stores/mdworker 종료 · `~/.hexa-cache` 인덱싱 차단 · `~/Downloads` quarantine xattr 제거 · Mullvad split-tunnel OFF · `searchpartyuseragent`(Find My) bootout. 진단·배경: `HUSH.md` · `HUSH.log.md`.
