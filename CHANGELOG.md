@@ -6,6 +6,10 @@ For the full audit trail, see `git log`.
 
 ---
 
+## 2026-06-16
+
+- **`airgenome flix` — Safari DRM-video watch mode** — `bin/airgenome` `cmd_flix()` + dispatch (`flix|netflix`) + help. Root cause (verified, DisplayLink KB 830301): an attached DisplayLink screen has no HDCP path, so macOS blocks FairPlay-protected video (Netflix/Disney+/Prime in **Safari**) on **all** displays session-wide; Safari has no hardware-accel toggle, so the only Safari-compatible remedy is official workaround #1 — temporarily remove the DisplayLink screens. `flix on` software-disconnects DisplayLink (pkill agent, mirroring native `displaylink_stop()`) + opens the service in Safari; `flix off` relaunches the agent; bare = toggle; `status` reports playability. Local · reversible · no SIP · no Safari/system-framework mutation. Simultaneous Safari + active-DisplayLink + Netflix has no software path (only SIP-off framework patching — fragile per macOS update, intentionally unshipped). Service aliases: `netflix`(default)·`disney`·`prime`·arbitrary `<url>`.
+
 ## 2026-05-23
 
 - **HUSH 도메인 + `airgenome hush`** — macOS 부하 완화 묶음을 `bin/airgenome` `cmd_hush()` 로 통합. `airgenome init` 동행 호출 + `hx install airgenome` 의 `install.hexa` 후행 호출 (single source of truth · idempotent). 항목: XProtect 정의 자동갱신 OFF · 보안 응답 자동설치 OFF · macOS 자동 다운로드·설치 OFF · `AutoInstallProductKeys` 비움 · Spotlight 전역 인덱싱 OFF + mds/mds_stores/mdworker 종료 · `~/.hexa-cache` 인덱싱 차단 · `~/Downloads` quarantine xattr 제거 · Mullvad split-tunnel OFF · `searchpartyuseragent`(Find My) bootout. 진단·배경: `HUSH.md` · `HUSH.log.md`.
