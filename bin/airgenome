@@ -423,90 +423,6 @@ PY
     rm -f /tmp/airgenome-display.plist
 }
 
-# ============================================================
-# flix — DRM-protected video in Chrome with hardware accel OFF
-# ============================================================
-#
-# Root cause (verified — DisplayLink KB 830301):
-#   macOS blocks FairPlay-protected video (Netflix / Disney+ / Prime in
-#   Safari) on ALL displays whenever ANY DisplayLink screen is attached — the
-#   DisplayLink virtual display has no HDCP path. Safari has NO hardware-accel
-#   toggle, so it cannot be worked around. Chrome / Edge use Widevine L3
-#   (software DRM); with hardware acceleration OFF they drop the HDCP-hardware
-#   requirement and play protected video even with DisplayLink attached
-#   (capped 720p). This is the only software fix that keeps every DisplayLink
-#   screen ON while watching — verified: DisplayLink KB 830301, laptopmag,
-#   hawkdive (2026-06). Firefox has no such toggle.
-#
-#   cmd_flix opens the service in a Chromium browser launched with
-#   --disable-gpu (+ a seeded hardware_acceleration_mode=off pref) inside a
-#   DEDICATED airgenome profile, so:
-#     - the user's main Chrome profile / settings / login are never mutated;
-#     - the flag reliably applies (a separate --user-data-dir is a fresh
-#       instance, unlike re-using a running main Chrome which ignores flags);
-#     - fully reversible — `airgenome flix reset` wipes the profile dir.
-#   Browser preference order: Google Chrome > Microsoft Edge > Brave Browser.
-#   A one-time sign-in is needed in the isolated profile (then it persists).
-FLIX_PROFILE="$LOG_DIR/flix-profile"
-
-# Pick the first installed Widevine+toggle-capable browser. Safari/Firefox
-# excluded — no hardware-acceleration toggle. Echoes the .app name or empty.
-flix_pick_browser() {
-    local cand
-    for cand in "Google Chrome" "Microsoft Edge" "Brave Browser"; do
-        if [ -d "/Applications/$cand.app" ]; then echo "$cand"; return 0; fi
-    done
-    return 1
-}
-
-cmd_flix() {
-    local arg1="${1:-netflix}"
-
-    if [ "$arg1" = "reset" ]; then
-        rm -rf "$FLIX_PROFILE"
-        log "flix: wiped isolated profile $FLIX_PROFILE (next launch starts fresh)."
-        return 0
-    fi
-
-    local url
-    case "$arg1" in
-        netflix|nf)        url="https://www.netflix.com" ;;
-        disney|disney+|dp) url="https://www.disneyplus.com" ;;
-        prime|amazon)      url="https://www.primevideo.com" ;;
-        http*)             url="$arg1" ;;
-        *)                 url="https://$arg1" ;;
-    esac
-
-    local browser
-    if ! browser="$(flix_pick_browser)"; then
-        log "flix: no compatible browser found. Install Google Chrome / Microsoft Edge / Brave."
-        log "      (Safari & Firefox lack a hardware-acceleration toggle, so they cannot play DRM video while DisplayLink is attached — KB 830301.)"
-        return 1
-    fi
-
-    # Seed the dedicated profile so hardware acceleration is OFF from first
-    # launch — matches the verified Chrome 'Use hardware acceleration' = off
-    # fix. --disable-gpu on the command line is belt-and-suspenders.
-    if [ ! -f "$FLIX_PROFILE/Default/Preferences" ]; then
-        mkdir -p "$FLIX_PROFILE/Default"
-        printf '%s' '{"hardware_acceleration_mode":{"enabled":false}}' \
-            > "$FLIX_PROFILE/Default/Preferences"
-    fi
-
-    log "flix: opening $url in '$browser' (HW-accel OFF, isolated profile). DisplayLink stays ON; video capped at 720p (Widevine L3)."
-    if open -na "$browser" --args \
-            --user-data-dir="$FLIX_PROFILE" \
-            --disable-gpu \
-            --disable-gpu-compositing \
-            --no-first-run \
-            --no-default-browser-check \
-            "$url"; then
-        log "flix: launched. First time? Sign in to the service in this window (isolated, persists)."
-    else
-        log "flix: failed to launch '$browser'."
-    fi
-}
-
 cmd_init() {
     [ -f "$PLIST_SRC" ] || die "plist source missing: $PLIST_SRC"
     [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
@@ -1374,7 +1290,6 @@ main() {
         init|start)    cmd_init ;;
         hush)          cmd_hush ;;
         display-override) cmd_display_override ;;
-        flix|netflix)  cmd_flix "$@" ;;
         stop)          cmd_stop ;;
         status)        cmd_status ;;
         arm)           cmd_arm ;;
@@ -1430,12 +1345,6 @@ usage: airgenome <command>
                         rebuild/clean/migrate/restore-native/help
                    ※ airgenome init/stop 에 자동 동행 (opt-out: AIRGENOME_NO_TAP=1)
                    legacy aliases: mouse, magnet (모두 tap 으로 forward)
-  flix [service|reset]   DRM 보호영상(Netflix/Disney+/Prime)을 Chrome/Edge 로
-                 열기. DisplayLink 가 켜져 있으면 Safari 는 보호영상이 전 화면에서
-                 막힘(HDCP 경로 없음, KB 830301). Chrome 을 HW-가속 OFF + 전용
-                 프로필(--disable-gpu)로 띄워 DisplayLink 켠 채로 재생(720p 상한).
-                 유저 기존 Chrome 설정·로그인 미접촉. service: netflix(기본)|
-                 disney|prime|<url> · reset = 전용 프로필 초기화. 별칭: netflix
   guard-loop     guard 만 독립 실행 (디버그)
 
 env:
