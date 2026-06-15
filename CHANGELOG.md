@@ -6,6 +6,12 @@ For the full audit trail, see `git log`.
 
 ---
 
+## 2026-06-16
+
+- **`airgenome flix` — Safari DRM-video watch mode** — `bin/airgenome` `cmd_flix()` + dispatch (`flix|netflix`) + help. Root cause (verified, DisplayLink KB 830301): an attached DisplayLink screen has no HDCP path, so macOS blocks FairPlay-protected video (Netflix/Disney+/Prime in **Safari**) on **all** displays session-wide; Safari has no hardware-accel toggle, so the only Safari-compatible remedy is official workaround #1 — temporarily remove the DisplayLink screens. `flix on` software-disconnects DisplayLink (pkill agent, mirroring native `displaylink_stop()`) + opens the service in Safari; `flix off` relaunches the agent; bare = toggle; `status` reports playability. Local · reversible · no SIP · no Safari/system-framework mutation. Simultaneous Safari + active-DisplayLink + Netflix has no software path (only SIP-off framework patching — fragile per macOS update, intentionally unshipped). Service aliases: `netflix`(default)·`disney`·`prime`·arbitrary `<url>`.
+
+---
+
 ## 2026-06-15
 
 - **harness perfect setup** — brought the repo to full [dancinlab/harness](https://github.com/dancinlab/harness) (hardcore) compliance. Initialized the `.harness-engine` submodule; declared L0 lockdown files (`airgenome/core/airgenome.hexa` · `run.hexa` · `install.hexa`) and a root-scoped `docs` block (`scopeDirs:[""]` + `allow` for README variants and the scatter-named `TAPE-AUDIT.md`) in `harness.config.json`. Rewrote `ARCHITECTURE.md` as the English architecture SSOT (6-axis hexagon · 60-byte genome · Banach 1/3 fixed point) and replaced the `CLAUDE.md → project.tape` symlink with a standard harness `CLAUDE.md` (H1 + description + `## Structure` tree + governance + `## Harness` quick reference; `project.tape` retained). Added SSOT quickref pointers to the remaining root docs. Result: `harness docs check` → `docs: ok`, `harness lint` → `lint: ok`, CLAUDE-MD violations = 0.

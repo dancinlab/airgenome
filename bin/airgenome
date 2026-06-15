@@ -423,6 +423,97 @@ PY
     rm -f /tmp/airgenome-display.plist
 }
 
+# ============================================================
+# flix — Safari "watch mode" for DRM-protected video
+# ============================================================
+#
+# Root cause (verified — DisplayLink KB 830301):
+#   macOS blocks FairPlay-protected video (Netflix / Disney+ / Prime in
+#   Safari) on ALL displays — including the built-in Retina panel — whenever
+#   ANY DisplayLink screen is attached. The DisplayLink virtual display has no
+#   HDCP path, so the media stack refuses protected surfaces session-wide.
+#   Safari has NO hardware-acceleration toggle (unlike Chrome/Edge), so the
+#   ONLY Safari-compatible remedy is the official workaround #1: temporarily
+#   remove the DisplayLink screens. This automates that as a reversible toggle.
+#
+#   on      software-disconnect DisplayLink (kill its agent) so Safari can play
+#           protected video on the Mac's native displays, then open the service
+#           in Safari. External DisplayLink screens go dark for the duration —
+#           inherent (see KB), not a defect.
+#   off     relaunch the DisplayLink agent → external screens come back.
+#   toggle  (bare) on if DisplayLink is up, off if already suspended.
+#   status  report whether Safari can currently play protected video.
+#
+#   Simultaneous Safari + active-DisplayLink + Netflix has NO software path —
+#   only SIP-off system-framework patching, which is fragile and breaks on
+#   every macOS update. Intentionally NOT implemented.
+#
+#   pkill sequence mirrors the native menubar's displaylink_stop()/start()
+#   (airgenome_tap.m) so CLI and menubar stay behaviourally identical.
+flix_dl_running() { pgrep -x DisplayLinkUserAgent >/dev/null 2>&1; }
+
+flix_dl_suspend() {
+    pkill -TERM -x CrashRestartHelper    2>/dev/null || true
+    pkill -TERM -x DisplayLinkUserAgent  2>/dev/null || true
+    pkill -TERM -x DisplayLinkXpcService 2>/dev/null || true
+}
+
+flix_dl_resume() {
+    if [ -d "/Applications/DisplayLink Manager.app" ]; then
+        open -gj "/Applications/DisplayLink Manager.app" 2>/dev/null || true
+    fi
+}
+
+cmd_flix() {
+    local arg1="${1:-}"
+    local action service
+    case "$arg1" in
+        on|off|toggle|status) action="$arg1";   service="${2:-netflix}" ;;
+        "")                   action="toggle";  service="netflix" ;;
+        *)                    action="on";      service="$arg1" ;;
+    esac
+
+    local url
+    case "$service" in
+        netflix|nf)        url="https://www.netflix.com" ;;
+        disney|disney+|dp) url="https://www.disneyplus.com" ;;
+        prime|amazon)      url="https://www.primevideo.com" ;;
+        http*)             url="$service" ;;
+        *)                 url="https://$service" ;;
+    esac
+
+    case "$action" in
+        status)
+            if flix_dl_running; then
+                log "flix: DisplayLink UP -> Safari protected video BLOCKED on all screens (KB 830301). 'airgenome flix on' to watch."
+            else
+                log "flix: DisplayLink DOWN -> Safari can play protected video. 'airgenome flix off' to restore external screens."
+            fi
+            ;;
+        toggle)
+            if flix_dl_running; then cmd_flix on "$service"; else cmd_flix off; fi
+            ;;
+        on)
+            if flix_dl_running; then
+                flix_dl_suspend
+                log "flix: DisplayLink suspended -- external screens go dark while you watch (inherent, KB 830301)."
+                sleep 1   # let the media stack drop the virtual display
+            else
+                log "flix: DisplayLink already down -- Safari ready."
+            fi
+            if open -a Safari "$url"; then
+                log "flix: opened $url in Safari. Done watching? -> 'airgenome flix off' restores external screens."
+            else
+                log "flix: failed to open Safari for $url."
+            fi
+            ;;
+        off)
+            flix_dl_resume
+            log "flix: DisplayLink resume requested -- external screens coming back."
+            ;;
+    esac
+}
+
 cmd_init() {
     [ -f "$PLIST_SRC" ] || die "plist source missing: $PLIST_SRC"
     [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
@@ -1290,6 +1381,7 @@ main() {
         init|start)    cmd_init ;;
         hush)          cmd_hush ;;
         display-override) cmd_display_override ;;
+        flix|netflix)  cmd_flix "$@" ;;
         stop)          cmd_stop ;;
         status)        cmd_status ;;
         arm)           cmd_arm ;;
@@ -1345,6 +1437,12 @@ usage: airgenome <command>
                         rebuild/clean/migrate/restore-native/help
                    ※ airgenome init/stop 에 자동 동행 (opt-out: AIRGENOME_NO_TAP=1)
                    legacy aliases: mouse, magnet (모두 tap 으로 forward)
+  flix [on|off|toggle|status] [service]   Safari DRM-video watch mode —
+                 DisplayLink 가 켜져 있으면 Safari 의 보호영상(Netflix 등)은
+                 모든 화면에서 막힘 (KB 830301). on = DisplayLink 소프트-분리 후
+                 Safari 로 열기 (외장화면 잠시 꺼짐) · off = 외장화면 복원 ·
+                 bare = toggle · status = 현재 재생 가능 여부.
+                 service: netflix(기본)|disney|prime|<url>. 별칭: netflix
   guard-loop     guard 만 독립 실행 (디버그)
 
 env:
