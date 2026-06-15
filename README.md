@@ -120,7 +120,7 @@ airgenome status         # launchd + ring + state summary
 airgenome doctor         # core / launchd / ring / throttle diagnostic
 airgenome cli            # interactive TUI
 airgenome menubar        # menubar + ⌃S launcher (already running via launchd)
-airgenome flix           # Safari DRM-video watch mode (Netflix/Disney+/Prime)
+airgenome flix           # open Netflix in Chrome w/ HW-accel off (DisplayLink stays on)
 ```
 
 ### DRM video + DisplayLink (`airgenome flix`)
@@ -129,20 +129,24 @@ When **any DisplayLink screen is attached**, macOS blocks FairPlay-protected
 video (Netflix, Disney+, Prime in **Safari**) on **all** displays — the
 DisplayLink virtual display has no HDCP path, so the media stack refuses
 protected surfaces session-wide ([DisplayLink KB 830301](https://support.displaylink.com/knowledgebase/articles/830301-content-protected-video-does-not-play-on-mac-while)).
-Safari has no hardware-acceleration toggle (Chrome/Edge do), so the only
-Safari-compatible remedy is the official workaround #1: temporarily remove the
-DisplayLink screens. `airgenome flix` automates that as a reversible toggle.
+Safari has **no** hardware-acceleration toggle, so it cannot be worked around.
+Chrome/Edge use Widevine L3 (software DRM); with hardware acceleration **off**
+they drop the HDCP-hardware requirement and play protected video **with every
+DisplayLink screen still on** (capped 720p) — the only software fix.
+
+`airgenome flix` opens the service in Chrome/Edge launched with `--disable-gpu`
+(+ a seeded `hardware_acceleration_mode=off` pref) inside a **dedicated
+airgenome profile**, so your main Chrome profile, settings, and login are never
+touched. One-time sign-in in the isolated profile, then it persists.
 
 ```sh
-airgenome flix           # toggle: suspend DisplayLink + open Netflix in Safari
-airgenome flix on disney # suspend DisplayLink + open Disney+ in Safari
-airgenome flix off       # relaunch DisplayLink → external screens return
-airgenome flix status    # report whether Safari can play protected video now
+airgenome flix           # open Netflix in Chrome (HW-accel off, isolated profile)
+airgenome flix disney    # Disney+ (also: prime, or any URL)
+airgenome flix reset     # wipe the isolated profile
 ```
 
-External DisplayLink screens go dark while watching — inherent, not a defect.
-Simultaneous Safari + active-DisplayLink + Netflix has no software path (only
-SIP-off framework patching, fragile per macOS update — intentionally unshipped).
+Browser preference order: Google Chrome → Microsoft Edge → Brave. Safari &
+Firefox are unsupported (no hardware-acceleration toggle).
 
 ## Repo layout
 
