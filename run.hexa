@@ -410,6 +410,7 @@ fn print_help() -> void {
     println("  watch [sec]         terminal HUD — status 초단위 refresh (기본 2초)")
     println("  doctor              통합 진단 (core/launchd/ring/throttle)")
     println("  cli                 인터랙티브 TUI — 숫자 선택 dispatch")
+    println("  flix [svc|reset]    DRM 영상(Netflix/Disney+/Prime)을 Chrome(HW가속 off)로 — DisplayLink 켠 채 재생")
     println("  logs [agent] [N]    ~/.airgenome/*.log 최근 tail (기본 all, N=20)")
     println("  status              launchd + ring + state 한눈에")
     println("  install             LaunchAgent bootstrap — mac-local (ring-sync + throttle + menubar)")
@@ -469,6 +470,18 @@ fn main() -> void {
     }
     if sub == "plugins" {
         let _ = run_module_with_arg("exe_dispatch", "list")
+        return
+    }
+    if sub == "flix" || sub == "netflix" {
+        // DRM-video router lives in the bash entry (bin/airgenome cmd_flix).
+        // run.hexa is the hx-shim entry, so delegate so `airgenome flix`
+        // resolves on the installed CLI too. Same airgenome_root() resolution
+        // every other run.hexa command uses; bin/airgenome re-derives its own
+        // root (symlink-aware) once invoked.
+        let mut tail = ""
+        if len(a) >= 4 { tail = " '" + a[3] + "'" }
+        let out = exec("'" + airgenome_root() + "/bin/airgenome' flix" + tail + " 2>&1")
+        print(out)
         return
     }
     println("airgenome: unknown subcommand '" + sub + "'. try 'airgenome help'.")
