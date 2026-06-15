@@ -425,17 +425,22 @@ fn print_help() -> void {
 }
 
 fn main() -> void {
+    // arg layout: the hx shim invokes `hexa <pkg>/run.hexa "$@"`, so args() is
+    // [binary, sub, arg1, ...] — the subcommand is a[1], NOT a[2]. (Older hexa
+    // also surfaced the script path, shifting everything by one; the current
+    // runtime does not, so single-word subcommands like `airgenome status` /
+    // `airgenome flix` were all falling through to print_help.)
     let a = args()
-    if len(a) < 3 {
+    if len(a) < 2 {
         print_help()
         return
     }
-    let sub = a[2]
+    let sub = a[1]
     if sub == "help" { print_help(); return }
     if sub == "status" { cmd_status(); return }
     if sub == "install" {
         let mut mode = "all"
-        if len(a) >= 4 { mode = a[3] }
+        if len(a) >= 3 { mode = a[2] }
         cmd_install(mode)
         return
     }
@@ -447,25 +452,25 @@ fn main() -> void {
     if sub == "logs" {
         let mut ag = ""
         let mut n = 20
-        if len(a) >= 4 { ag = a[3] }
-        if len(a) >= 5 { n = to_int(a[4]) }
+        if len(a) >= 3 { ag = a[2] }
+        if len(a) >= 4 { n = to_int(a[3]) }
         cmd_logs(ag, n)
         return
     }
     if sub == "cli" { cmd_cli(); return }
     if sub == "watch" {
         let mut ival = 2
-        if len(a) >= 4 { ival = to_int(a[3]) }
+        if len(a) >= 3 { ival = to_int(a[2]) }
         cmd_watch(ival)
         return
     }
     if sub == "throttle" { let _ = run_module("predictive_throttle"); return }
     if sub == "exe" {
-        if len(a) < 4 {
+        if len(a) < 3 {
             println("usage: airgenome exe <path/to.exe>")
             return
         }
-        let _ = run_module_with_arg("exe_dispatch", a[3])
+        let _ = run_module_with_arg("exe_dispatch", a[2])
         return
     }
     if sub == "plugins" {
@@ -479,7 +484,7 @@ fn main() -> void {
         // every other run.hexa command uses; bin/airgenome re-derives its own
         // root (symlink-aware) once invoked.
         let mut tail = ""
-        if len(a) >= 4 { tail = " '" + a[3] + "'" }
+        if len(a) >= 3 { tail = " '" + a[2] + "'" }
         let out = exec("'" + airgenome_root() + "/bin/airgenome' flix" + tail + " 2>&1")
         print(out)
         return
