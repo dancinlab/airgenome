@@ -8,6 +8,7 @@ daemon (`⌃S` launcher). The tick loop converges as a **Banach 1/3 contraction*
 stable resource fixed point.
 
 Full architecture SSOT: [ARCHITECTURE.md](ARCHITECTURE.md). History: [CHANGELOG.md](CHANGELOG.md).
+This file is the single markdown governance SSOT (identity · governance · structure); the legacy `project.tape` has been retired (md 단일화).
 
 ## Structure
 
