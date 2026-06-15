@@ -90,7 +90,7 @@ sudo rm /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-1e6d/Disp
 
 ## 관련
 
-- `airgenome flix` — 보호영상(Netflix/Disney+/Prime)을 Chrome/Edge(HW-가속 OFF·전용 프로필)로 열어 DisplayLink 켠 채 재생(720p). DisplayLink 부착 시 Safari 는 FairPlay 보호영상이 전 화면에서 차단됨(HDCP 경로 없음, KB 830301). 상세는 `README.md` § DRM video + DisplayLink.
+- 보호영상(Netflix/Disney+/Prime) — DisplayLink 부착 시 Safari 는 FairPlay 보호영상이 전 화면에서 차단됨(HDCP 경로 없음, KB 830301). Chrome/Edge 에서 하드웨어 가속을 끄면 DisplayLink 켠 채 재생(720p). 수동 설정 방법은 `README.md` § DRM video + DisplayLink (manual Chrome fix).
 - [[AIRGENOME]] — 전체 airgenome 도메인
 - [[HUSH]] — `cmd_hush` (macOS 부하 완화) 와 `cmd_init` 안에서 sequential 적용
 - DisplayLink 식별자 발견: `swift /tmp/list_displays.swift` (CoreGraphics CGGetActiveDisplayList)
