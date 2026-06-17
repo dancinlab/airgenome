@@ -251,7 +251,7 @@ guard_loop() {
 
 # HUSH — macOS 시스템 부하 완화 (idempotent).
 # user-level 작업 → 항상 적용. sudo 작업 → 단일 sudo -v prompt 후 묶음 실행.
-# 자세한 배경: HUSH.md
+# 자세한 배경: ARCHITECTURE.json (Domains → HUSH node)
 cmd_hush() {
     log "hush: applying macOS load mitigations"
 

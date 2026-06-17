@@ -94,3 +94,7 @@ state/markers/audit_*.marker
 *.bak
 .harness/logs/
 .harness/handoff/
+
+# python bytecode (serve.py imports)
+__pycache__/
+*.pyc

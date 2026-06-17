@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 1,
+  "kind": "architecture-tree",
+  "name": "airgenome",
+  "title": "🧬 airgenome — architecture tree",
+  "summary": "OS genome scanner — every host's live vitals projected onto a 6-axis resource hexagon (cpu · mem · io · net · gpu · fs), serialized as a 60-byte genome, accumulated in a ring buffer, labeled for anomalies, and forecast 1 h ahead (Holt α/β). Self-hosted in hexa-lang and shipped as a native macOS menubar daemon (⌃S launcher). The tick loop converges as a Banach 1/3 contraction toward a stable resource fixed point — each tick maps the current resource state toward a stable fixed point at contraction factor 1/3, so the adaptive throttle settles deterministically rather than oscillating.",
+  "note": "This JSON tree is the architecture SSOT (update-in-place, NOT append-only). Human viewer = ARCHITECTURE.html via `python3 serve.py` (http; browsers block file:// fetch). History/decisions → CHANGELOG.md; governance → CLAUDE.md / README.md. Migrated 2026-06-18 from ARCHITECTURE.md (prose) + the scattered domain snapshot/log docs (AIRGENOME.md/.log.md · DESIGN.md/.log.md · HUSH.md/.log.md · EDID.md · domains/C-PORT.md/.log.md) + DOMAINS.tape (the retired `harness domain` roster) into this single tree SSOT (hexa-codex #161 / anima pattern). Every retired doc's substance is folded into node summary/note fields below; the full append-only DESIGN decision ledger + HUSH/C-PORT step logs remain recoverable via `git log` of the deleted files.",
+  "meta": {
+    "ssot": "github.com/dancinlab/airgenome",
+    "parent": "dancinlab",
+    "siblings": [
+      "hexa-lang (language/compiler/hx)",
+      "anima (consciousness substrate)",
+      "harness (governance engine — pinned as .harness-engine submodule)"
+    ],
+    "verify": "L0 invariant for every module = file present ∧ parse OK ∧ self-test PASS (3-way gate). `hexa verify` runs the parse + self-test gate (wired as the harness verify check). Protected branches: main, master (harness pre-push / branch-protection in the hardcore profile).",
+    "migrated_from": "ARCHITECTURE.md (prose) + domain snapshot/log .md docs + DOMAINS.tape → ARCHITECTURE.json tree SSOT + ARCHITECTURE.html viewer (c4 standard), 2026-06-18; the `harness domain` feature is retired upstream so DOMAINS.tape (its roster) is gone too."
+  },
+  "columns": ["name", "summary", "status", "path", "note"],
+  "children": [
+    {
+      "name": "Tick pipeline — probe → dispatch → harvest → label → forecast",
+      "summary": "Each tick runs a five-stage pipeline over the 6-axis hexagon. Input = live host vitals. Processing = hexagon encode → ring accumulate → rule label → Holt smoothing. Output = infra_state.json (state) + labeled_anomaly.jsonl (anomalies) + forecast.jsonl (1 h-ahead prediction). The AdaptiveThrottle in the core contracts the tick interval toward its fixed point (Banach 1/3) based on observed load.",
+      "kind": "pipeline",
+      "children": [
+        {
+          "name": "1. probe",
+          "summary": "sample Mac vitals → nexus/shared/infra_state.json. (Cross-host probing of remote Ubuntu/Hetzner was scoped out — airgenome runs mac-local only since PR #89, 2026-05-22.)",
+          "kind": "stage",
+          "path": "nexus/shared/infra_state.json"
+        },
+        {
+          "name": "2. dispatch",
+          "summary": "pick the best host per workload (AG6 Mac-protect, AG7 fallback) → dispatch state.",
+          "kind": "stage"
+        },
+        {
+          "name": "3. harvest",
+          "summary": "top-N processes → 60-byte hexagon per process → forge/*.ring (ring buffer) → sigdiff deltas.",
+          "kind": "stage",
+          "path": "forge/*.ring"
+        },
+        {
+          "name": "4. label",
+          "summary": "match accumulator rules → forge/labeled_anomaly.jsonl.",
+          "kind": "stage",
+          "path": "forge/labeled_anomaly.jsonl"
+        },
+        {
+          "name": "5. forecast",
+          "summary": "Holt double-exponential (α / β) smoothing → 1 h-ahead → forge/forecast.jsonl. Cited delivery grade: Holt MAE 0% held-out.",
+          "kind": "stage",
+          "path": "forge/forecast.jsonl"
+        }
+      ]
+    },
+    {
+      "name": "Components",
+      "summary": "The module tree. airgenome is a SINGLE-HUB (hub-and-spoke): every module fans out radially from airgenome/core/airgenome (the 60-byte genome core); modules never cross-import each other (the intra-repo reuse lattice is recorded in NEXUS.tape; commons @D g67 intra-project only).",
+      "kind": "components",
+      "children": [
+        {
+          "name": "airgenome/core/airgenome.hexa — self-contained core",
+          "summary": "Vitals + sample + assess + AdaptiveThrottle (imports no other hexa file). L0.",
+          "kind": "module",
+          "path": "airgenome/core/airgenome.hexa",
+          "status": "L0",
+          "note": "L0 lockdown — editing this file requires explicit approval + a CHANGELOG.md entry in the same change."
+        },
+        {
+          "name": "airgenome/core/test/core_test.hexa — core self-test",
+          "summary": "The PASS leg of the L0 3-way gate (file present ∧ parse OK ∧ self-test PASS).",
+          "kind": "module",
+          "path": "airgenome/core/test/core_test.hexa"
+        },
+        {
+          "name": "run.hexa — tick driver",
+          "summary": "Runs the probe → dispatch → harvest → label → forecast pipeline. L0.",
+          "kind": "module",
+          "path": "run.hexa",
+          "status": "L0",
+          "note": "L0 lockdown — edits require explicit approval + a same-change CHANGELOG entry."
+        },
+        {
+          "name": "install.hexa — hx install entry",
+          "summary": "`hx install` entry — installs the airgenome shim, builds + signs the .app, wires LaunchAgents. L0. Single-entry installer (rebuilds native + bootouts/bootstraps every LaunchAgent in one verb). Now installs the native app only — the hook/MCP/workspace bootstrap (former tool/airgenome_init.hexa) was removed; launchd points at the installed ~/.hx/bin/hexa, not a hardcoded core/hexa-lang path.",
+          "kind": "module",
+          "path": "install.hexa",
+          "status": "L0",
+          "note": "L0 lockdown. Governance @D g_post_impl_reinstall (DESIGN decision 2): every artifact-affecting implementation must end with `hx install airgenome`; docs-only edits (*.md, README) are exempt. Edits require explicit approval + a same-change CHANGELOG entry."
+        },
+        {
+          "name": "native/src/ — macOS .app (Objective-C)",
+          "summary": "The 8 authored Obj-C sources (8055 LOC): airgenome_tap.m (CGEventTap install + routing · TCC · AX, 2216 LOC), airgenome_launcher.m (menubar app / status item · ⌃S overlay · @snippets · settings, 2616 LOC), airgenome_hotkey.m (CGEventTap chord remap → action binder, 910 LOC), airgenome_loop.m (per-app throttle loop driver, 1310 LOC), airgenome_winctl.m (AX window arrange + Dock reset, ~301 LOC), airgenome_overload.m (load watcher · taskpolicy · notify, 419 LOC), airgenome_notify.m (NSUserNotification helper, 151 LOC), airgenome_helper.mm (privileged helper FFI, 142 LOC).",
+          "kind": "module",
+          "path": "native/src/",
+          "note": "C-PORT analysis (2026-06-03): 7/8 of these are Cocoa/AppKit/CGEvent/AX side-effect floor (irreducible platform floor); only airgenome_winctl.m held a cleanly separable pure-logic island. See the C-PORT node under Domains."
+        },
+        {
+          "name": "bin/ — shell shims + supervisor",
+          "summary": "airgenome CLI shim, airgenome-supervisor, menubar.hexa, build/stress/host helpers. cmd_hush() (macOS load mitigation) + cmd_display_override() (DisplayLink EDID) + cmd_init() (calls both, idempotent) live here.",
+          "kind": "module",
+          "path": "bin/"
+        },
+        {
+          "name": "forge/ — genome ring buffers + outputs",
+          "summary": "Genome ring buffers (*.ring) + labeled_anomaly.jsonl + forecast.jsonl + sample sets.",
+          "kind": "module",
+          "path": "forge/"
+        },
+        {
+          "name": "config/ — runtime config",
+          "summary": "hosts.json, label_rules.jsonl, commands.json, lens_registry.json, protected_agents.txt, e2e_acceptance.jsonl.",
+          "kind": "module",
+          "path": "config/"
+        },
+        {
+          "name": "nexus/shared/ — cross-host SSOT",
+          "summary": "Unified infra_state.json (sibling-repo convergence point). The intra-repo reuse lattice itself is recorded in NEXUS.tape at the repo root.",
+          "kind": "module",
+          "path": "nexus/shared/"
+        },
+        {
+          "name": "tool/governance.hexa — governance surface",
+          "summary": "Governance / policy enforcement surface.",
+          "kind": "module",
+          "path": "tool/governance.hexa"
+        },
+        {
+          "name": "archive/v1/ — read-only freeze",
+          "summary": "Read-only freeze of v1 sources. Revival requires a PR + roadmap entry + L0 refresh.",
+          "kind": "module",
+          "path": "archive/v1/",
+          "status": "frozen"
+        },
+        {
+          "name": "docs/ — supporting docs",
+          "summary": "Supporting docs + logo.svg (README header glyph) + the dense *.rubric.jsonl detection/dedup/label-rule manifests + RFC/proposal docs.",
+          "kind": "module",
+          "path": "docs/"
+        }
+      ]
+    },
+    {
+      "name": "Domains — folded work-streams (former <NAME>.md snapshots)",
+      "summary": "Each child is a work-domain that previously lived as a UPPERCASE-NAME .md snapshot (+ append-only .log.md) registered in DOMAINS.tape. The `harness domain` feature is retired upstream, so the roster (DOMAINS.tape) and the per-domain docs are folded here. @goal + key milestones preserved per node; full append-only step logs recoverable via `git log` of the deleted files.",
+      "kind": "domains",
+      "children": [
+        {
+          "name": "AIRGENOME — macOS menubar power-utility",
+          "summary": "@goal: macOS menubar power-utility — Magnet 8-zone window snap · ⌃S app launcher · custom hotkeys · wake/sleep control · overload-watch (load > 80 → claude priority). The umbrella domain for the native app feature surface.",
+          "kind": "domain",
+          "status": "active",
+          "note": "Was AIRGENOME.md (snapshot) + AIRGENOME.log.md (append-only, was an empty boilerplate scaffold — no entries to preserve). Overload-watch: load > 80 → the Claude Code CLI is prioritized — competing PIDs demoted to taskpolicy_bg, Claude pinned foreground (CHANGELOG 2026-05-10)."
+        },
+        {
+          "name": "DESIGN — design rules + decision ledger",
+          "summary": "airgenome's live design rules (formerly @D governance blocks in the retired project.tape; identity + governance now consolidated into CLAUDE.md / README.md as the markdown governance SSOT). Append-only decision audit trail — one decision per gate, never batched, each entry's rationale ≥ 3 bullets.",
+          "kind": "domain",
+          "note": "Was DESIGN.md (pointer) + DESIGN.log.md (decision ledger, 5 decisions, recoverable via git log). Decisions preserved: (1) snippet auto-input via direct CGEventKeyboardSetUnicodeString typing over clipboard paste — content never lands on the system clipboard; (2) register @D g_post_impl_reinstall governance entry — every artifact-affecting impl ends with `hx install airgenome`; docs-only edits exempt; (3) chase the external SIGKILL matcher before any install fallback — identify the matcher first, do NOT shortcut to make install; (4) bypass shim via fresh-copy + `exec -a hexa` (matcher isolated to an exact-path allowlist of hexa binaries); (5) ABORT decision-4's hand-rolled bypass — rely on anima §169 RATE-LIMIT-GOVERNANCE-DESIGN auto-cycle: the matcher is AppleSystemPolicy (ASP) kernel enforcement matching by binary name, and anima rotates the shim's exec target on each ASP ban, so a hand-rolled copy+exec shim would race anima's writes for zero added robustness."
+        },
+        {
+          "name": "HUSH — macOS 부하 완화 (system load mitigation)",
+          "summary": "Reduces CPU/battery/fan load of system daemons & background services. Auto-applied by `airgenome init` (hush step runs idempotently) or standalone `airgenome hush` (one sudo prompt; die on refusal). Implementation = bin/airgenome cmd_hush(). Env toggles: AIRGENOME_NO_HUSH · AIRGENOME_HUSH_NOSUDO.",
+          "kind": "domain",
+          "status": "active",
+          "path": "bin/airgenome (cmd_hush)",
+          "note": "Was HUSH.md (state) + HUSH.log.md (step log, recoverable via git log). Applied mitigations: XProtect definition updates OFF (ConfigDataInstall=0 · CriticalUpdateInstall=0); Spotlight global indexing OFF (mdutil -a -i off → FSSearchOnly, search UI falls back to filename); mds/mds_stores/mdworker_shared auto-quit after Spotlight OFF; ~/.hexa-cache indexing blocked (.metadata_never_index flag · xattr -cr); ~/Downloads quarantine xattr stripped; Mullvad split-tunnel OFF (ESF subscriber stays asleep); macOS auto-update OFF (AutomaticDownload=false · AutomaticallyInstallMacOSUpdates=false · AutoInstallProductKeys=[]) → softwareupdated 21%→0%. ROOT-CAUSE chain: claude/hexa fork·exec storm → Mullvad eslogger (ESF subscriber) → XprotectService (yara, was ~70%) + syspolicyd (code-sign verify). The real load is the user's own work (claude × 6 sessions running hexa run → clang fork storm), not the security daemons (those are the effect). A hexa-lang fix (content-addressed cache key hexa_run.<sha16>_<ver>) cut a 3-run from 380→100ms and dropped load avg 82.81→4.46 (-95%). SIP-protected daemons (xprotectd, the XProtect.daemon.scan set) need Recovery → csrutil disable first; the bootout/disable full-set is staged but pending. Open follow-ons: replayd permanent disable when screen-recording unused; LaunchAgent cleanup (com.anima.*); 24h re-observation for Spotlight/XProtect auto-reactivation."
+        },
+        {
+          "name": "EDID — DisplayLink USB monitor resolution options",
+          "summary": "@goal: expose macOS-hidden HiDPI scale + 1:1 native modes for a LG UltraFine 4K portrait monitor connected via DisplayLink USB, selectable in System Settings, via an EDID override. Applied by `airgenome init` (cmd_display_override after cmd_hush, one sudo prompt) or standalone `airgenome display-override` (idempotent — airgenome-managed marker → skip).",
+          "kind": "domain",
+          "status": "active",
+          "path": "bin/airgenome (cmd_display_override)",
+          "note": "Was EDID.md (no log). Target: LG UltraFine 4K (Vendor 0x1e6d, Product 0x5cbb, 2 units same product code → single override covers both; panel native 2160×3840; found via CGGetActiveDisplayList Swift probe since ioreg doesn't expose the DisplayLink virtual display). Override file: /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-1e6d/DisplayProductID-5cbb (root:wheel 644, 750 bytes, XML plist, sudo to write). Exposes 7 modes (1080×1920 2×, 960×1707 2×, 864×1536 2×, 810×1440 2×, 2160×3840 1:1, 1620×2880 1:1, 1080×1920 1:1). Apply needs a reboot (EDID cache read once at boot, no hot-reload), then System Settings → Displays → ⌥-click Resolution. Limits: cannot reduce DisplayLink CPU pump (USB framebuffer forced to panel-native by firmware — override only adds UI-scale modes); panel-native itself cannot be overridden on DisplayLink. Rollback: rm the override file + reboot. Implementation: bin/airgenome cmd_display_override (66 lines, python3 plistlib 16-byte big-endian entries per scaled resolution). DRM note: with DisplayLink attached, Safari blocks FairPlay-protected video full-screen (no HDCP path, KB 830301); Chrome/Edge with HW accel OFF plays at 720p (manual fix in README § DRM video + DisplayLink)."
+        },
+        {
+          "name": "C-PORT — C-family → hexa-native extraction",
+          "summary": "🔁 @goal: extract pure-logic kernels from airgenome's authored C-family sources (8 Obj-C files, native/src/*.m[m]) into hexa-native and lock them with a RUNEQ value-exact gate; keep Cocoa/AppKit/CGEvent/AX FFI calls as a thin Obj-C shim (irreducible platform floor). forge-secp256k1-SPLIT pattern — one kernel per round, cleanest separation first.",
+          "kind": "domain",
+          "status": "🟢 winctl TERMINAL · 1 deferred candidate",
+          "note": "Was domains/C-PORT.md (snapshot) + domains/C-PORT.log.md (step log, recoverable via git log). INVENTORY of 8 native/src/*.m[m]: airgenome_winctl.m (✅ winctl_target_rect pure rect geometry — EXTRACTED), the other 7 (airgenome_overload, _hotkey, _launcher, _loop, _tap, _notify, _helper) = ⚪ Cocoa-FFI-irreducible platform floor. DONE milestones: inventory+classify 8 sources; extract winctl_target_rect → native/kernel/winctl_geometry.hexa; C reference harness native/kernel/winctl_geometry_ref.c lifted 1:1; RUNEQ sweep 245 cases (5 actions × 7 real screens × 5 windows + identity) → 🟢 PASS value-exact (%.6f byte-identical) via native/kernel/runeq_winctl.sh; FFI-shim cite in winctl.m; verdict persisted at .verdicts/c-port/winctl-geometry-runeq.txt. DEFERRED: overload is_claude/is_protected NSString predicate kernel — a thin candidate but NSString-bound + intertwined with the ps/dispatch pipeline, not this round's cleanest split. Tier: 1 🟢 extracted+RUNEQ-locked · 7 ⚪ Cocoa-floor. airgenome authored C-family = NOT yet terminal (one deferred candidate remains)."
+        }
+      ]
+    },
+    {
+      "name": "Governance & verify",
+      "summary": "How airgenome is governed and verified. Governed by the dancinlab/harness engine, pinned as the .harness-engine submodule (harness-hardcore branch, hardcore profile). Hook delegates are wired in .claude/settings.json (pre bash / pre write / post edit / prompt / prefs / easy / recommend / SessionStart) — all guarded so the repo works even when the engine is absent.",
+      "kind": "governance",
+      "children": [
+        {
+          "name": "Lockdown (L0)",
+          "summary": "airgenome/core/airgenome.hexa, run.hexa, install.hexa are L0 — edits require explicit approval + a CHANGELOG entry in the same change (harness.config.json lockdown.files; fromMarkdown = CLAUDE.md).",
+          "kind": "policy"
+        },
+        {
+          "name": "L0 invariant — 3-way gate",
+          "summary": "Every module is file present ∧ parse OK ∧ self-test PASS. archive/v1/ is a read-only freeze; revival requires a PR + roadmap entry + L0 refresh.",
+          "kind": "policy"
+        },
+        {
+          "name": "Verify",
+          "summary": "`hexa verify` (wired as the harness verify check, timeout 240s) runs the parse + self-test gate.",
+          "kind": "policy"
+        },
+        {
+          "name": "Protected branches",
+          "summary": "main, master — harness pre-push / branch-protection in the hardcore profile.",
+          "kind": "policy"
+        },
+        {
+          "name": "Docs discipline",
+          "summary": "ARCHITECTURE.json (this file) is the architecture SSOT, update-in-place; humans read it via ARCHITECTURE.html (python3 serve.py). History is appended to CHANGELOG.md; transient artifacts go under scripts/scratch/. Run `harness docs check` to verify. Sibling cross-project policy: LATTICE_POLICY.md (verify against real math/physics/engineering limits, not the n=6 lattice — commons g25/g26).",
+          "kind": "policy"
+        },
+        {
+          "name": "Harness engine",
+          "summary": "Pinned as the .harness-engine submodule (dancinlab/harness@harness-hardcore). Run: bash .harness-engine/bin/harness <cmd>. Quick reference — lint (staged-L0 + freshness + convergence) · verify (hexa verify) · docs check (single-doc discipline) · audit (6-axis self-scorecard) · pr-cycle (push branch → open PR → self-merge).",
+          "kind": "policy"
+        }
+      ]
+    }
+  ]
+}
