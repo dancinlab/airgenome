@@ -4,7 +4,7 @@
   "name": "airgenome",
   "title": "🧬 airgenome — architecture tree",
   "summary": "OS genome scanner — every host's live vitals projected onto a 6-axis resource hexagon (cpu · mem · io · net · gpu · fs), serialized as a 60-byte genome, accumulated in a ring buffer, labeled for anomalies, and forecast 1 h ahead (Holt α/β). Self-hosted in hexa-lang and shipped as a native macOS menubar daemon (⌃S launcher). The tick loop converges as a Banach 1/3 contraction toward a stable resource fixed point — each tick maps the current resource state toward a stable fixed point at contraction factor 1/3, so the adaptive throttle settles deterministically rather than oscillating.",
-  "note": "This JSON tree is the architecture SSOT (update-in-place, NOT append-only). Human viewer = ARCHITECTURE.html via `python3 serve.py` (http; browsers block file:// fetch). History/decisions → CHANGELOG.md; governance → CLAUDE.md / README.md. Migrated 2026-06-18 from ARCHITECTURE.md (prose) + the scattered domain snapshot/log docs (AIRGENOME.md/.log.md · DESIGN.md/.log.md · HUSH.md/.log.md · EDID.md · domains/C-PORT.md/.log.md) + DOMAINS.tape (the retired `harness domain` roster) into this single tree SSOT (hexa-codex #161 / anima pattern). Every retired doc's substance is folded into node summary/note fields below; the full append-only DESIGN decision ledger + HUSH/C-PORT step logs remain recoverable via `git log` of the deleted files.",
+  "note": "This JSON tree is the architecture SSOT (update-in-place, NOT append-only). Human viewer = ARCHITECTURE.html via `python3 serve.py` (http; browsers block file:// fetch). History/decisions → CHANGELOG.jsonl; governance → CLAUDE.md / README.md. Migrated 2026-06-18 from ARCHITECTURE.md (prose) + the scattered domain snapshot/log docs (AIRGENOME.md/.log.md · DESIGN.md/.log.md · HUSH.md/.log.md · EDID.md · domains/C-PORT.md/.log.md) + DOMAINS.tape (the retired `harness domain` roster) into this single tree SSOT (hexa-codex #161 / anima pattern). Every retired doc's substance is folded into node summary/note fields below; the full append-only DESIGN decision ledger + HUSH/C-PORT step logs remain recoverable via `git log` of the deleted files.",
   "meta": {
     "ssot": "github.com/dancinlab/airgenome",
     "parent": "dancinlab",
@@ -91,7 +91,7 @@
           "kind": "module",
           "path": "airgenome/core/airgenome.hexa",
           "status": "L0",
-          "note": "L0 lockdown — editing this file requires explicit approval + a CHANGELOG.md entry in the same change."
+          "note": "L0 lockdown — editing this file requires explicit approval + a CHANGELOG.jsonl entry in the same change."
         },
         {
           "name": "airgenome/core/test/core_test.hexa — core self-test",
@@ -505,7 +505,7 @@
         },
         {
           "name": "Docs discipline",
-          "summary": "ARCHITECTURE.json (this file) is the architecture SSOT, update-in-place; humans read it via ARCHITECTURE.html (python3 serve.py). History is appended to CHANGELOG.md; transient artifacts go under scripts/scratch/. Run `harness docs check` to verify. Sibling cross-project policy: LATTICE_POLICY.md (verify against real math/physics/engineering limits, not the n=6 lattice — commons g25/g26).",
+          "summary": "ARCHITECTURE.json (this file) is the architecture SSOT, update-in-place; humans read it via ARCHITECTURE.html (python3 serve.py). History is appended to CHANGELOG.jsonl; transient artifacts go under scripts/scratch/. Run `harness docs check` to verify. Sibling cross-project policy: LATTICE_POLICY.md (verify against real math/physics/engineering limits, not the n=6 lattice — commons g25/g26).",
           "kind": "policy"
         },
         {

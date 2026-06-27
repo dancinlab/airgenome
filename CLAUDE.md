@@ -7,7 +7,7 @@ buffer, labeled for anomalies, and forecast 1 h ahead (Holt α/β). Self-hosted 
 daemon (`⌃S` launcher). The tick loop converges as a **Banach 1/3 contraction** toward a
 stable resource fixed point.
 
-Full architecture SSOT: [ARCHITECTURE.json](ARCHITECTURE.json) (human viewer: [ARCHITECTURE.html](ARCHITECTURE.html) via `python3 serve.py`). History: [CHANGELOG.md](CHANGELOG.md).
+Full architecture SSOT: [ARCHITECTURE.json](ARCHITECTURE.json) (human viewer: [ARCHITECTURE.html](ARCHITECTURE.html) via `python3 serve.py`). History: [CHANGELOG.jsonl](CHANGELOG.jsonl).
 This file is the single markdown governance SSOT (identity · governance · structure); the legacy `project.tape` has been retired (md 단일화).
 
 ## Structure
@@ -26,18 +26,18 @@ This file is the single markdown governance SSOT (identity · governance · stru
 ├─ archive/v1 — read-only freeze of v1 (revival = PR + roadmap + L0 refresh)
 ├─ docs — supporting docs + logo.svg
 ├─ ARCHITECTURE.json — architecture SSOT tree (update-in-place) · viewer ARCHITECTURE.html + serve.py
-├─ CHANGELOG.md — change history (append-only)
+├─ CHANGELOG.jsonl — change history (append-only)
 └─ .harness-engine — pinned harness engine submodule (dancinlab/harness@harness-hardcore)
 ```
 
 ## Governance
 
 - **L0 lockdown**: `airgenome/core/airgenome.hexa`, `run.hexa`, `install.hexa`. Editing an L0 file
-  requires explicit approval + a `CHANGELOG.md` entry in the same change.
+  requires explicit approval + a `CHANGELOG.jsonl` entry in the same change.
 - **L0 invariant**: every module is **file present ∧ parse OK ∧ self-test PASS** (3-way gate).
   `archive/v1/` is read-only — revival needs a PR + roadmap entry + L0 refresh.
 - **Docs discipline**: architecture → `ARCHITECTURE.json` (tree SSOT, update-in-place; human viewer
-  `ARCHITECTURE.html` via `python3 serve.py`); history → `CHANGELOG.md` (append); transient artifacts →
+  `ARCHITECTURE.html` via `python3 serve.py`); history → `CHANGELOG.jsonl` (append); transient artifacts →
   `scripts/scratch/`. Root docs carry a quickref pointer to the SSOT.
 - **Protected branches**: `main`, `master`. Verify with `hexa verify` before push.
 
