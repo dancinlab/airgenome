@@ -157,6 +157,8 @@ docs/
   logo.svg             # README header glyph
 AGENTS.tape            # governance + identity (.tape v1.2)
 CLAUDE.md              # symlink → AGENTS.tape (Claude Code project instructions)
+ARCHITECTURE.json      # architecture SSOT (update-in-place · human viewer: serve.py)
+CHANGELOG.jsonl        # change history (append-only JSONL · newest-first)
 ```
 
 ## Plugins
