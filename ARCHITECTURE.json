@@ -280,7 +280,7 @@
                 "name": "airgenome_tap.m",
                 "role": "detail",
                 "id": "components-native-src-macos-app-objective-c-airgenome-tap-m",
-                "detail": " airgenome_tap.m (CGEventTap install + routing · TCC · AX, 2216 LOC)"
+                "detail": " airgenome_tap.m (CGEventTap install + routing · TCC · AX; startup installs the menubar status item BEFORE the AX permission gate and never fatal-exits when unauthorized — arm_event_tap() lazily arms the tap via a 3s recheck timer once Accessibility is granted (AXIsProcessTrustedWithOptions prompt), so the icon always shows and features light up on grant with no relaunch/thrash, ~2290 LOC)"
               },
               {
                 "name": "airgenome_launcher.m",
