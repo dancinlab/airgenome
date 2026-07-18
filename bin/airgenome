@@ -7,7 +7,6 @@
 #      - guard_loop() 백그라운드 fork (2s 샘플 CPU/RSS watchdog, bash native)
 #      - cadence-60s : probe · dispatch · harvest · label
 #      - cadence-300s: forecast
-#      (displaylink 은 네이티브 앱으로 이관 — 2026-05-15)
 #      - main loop   : guard + cadence health respawn (30s)
 #   3. LaunchAgent 하나만 (com.airgenome.plist) → launchd 가 'airgenome run' 호출
 #      → 신규 launchd plist 도입 금지 (governance: g_single_supervisor_plist)
@@ -349,80 +348,6 @@ cmd_hush() {
     log "hush: done — XprotectService/mds idle 진입까지 수십초 소요"
 }
 
-# cmd_display_override — writes EDID override plists under
-#   /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-XXXX/
-#       DisplayProductID-XXXX
-# for the LG UltraFine portrait monitors discovered via DisplayLink USB
-# (CGDisplay reports vendor=0x1e6d model=0x5cbb). The override exposes
-# additional HiDPI scale modes that macOS hides by default for DisplayLink
-# attached monitors. CPU-pump reduction is NOT guaranteed — DisplayLink
-# firmware fixes panel native at 2160x3840 regardless of this override —
-# but adds System Settings scale options + locks "looks like" choice across
-# reboots. Effect applies only after reboot. Rollback = `sudo rm` the file.
-# sudo required (writes under /Library/Displays/).
-cmd_display_override() {
-    local vendor_hex="1e6d"   # LG Electronics
-    local product_hex="5cbb"  # UltraFine (portrait 4K via DisplayLink USB)
-    local overrides_root="/Library/Displays/Contents/Resources/Overrides"
-    local vdir="$overrides_root/DisplayVendorID-$vendor_hex"
-    local pfile="$vdir/DisplayProductID-$product_hex"
-
-    # idempotent — skip when our marker is already present
-    if [ -f "$pfile" ] && grep -q "airgenome-override" "$pfile" 2>/dev/null; then
-        log "display-override: $pfile already airgenome-managed (skip)"
-        return 0
-    fi
-
-    if ! sudo -n true 2>/dev/null; then
-        log "display-override: sudo required to write under $overrides_root"
-        sudo -v || { log "display-override: sudo refused — skipped"; return 0; }
-    fi
-
-    sudo mkdir -p "$vdir" 2>/dev/null || {
-        log "display-override: cannot mkdir $vdir (SIP may be enforcing $overrides_root)"
-        return 1
-    }
-
-    # scale-resolutions binary entries (16 bytes each, big-endian):
-    #   bytes [0..4)  width  (uint32 BE)
-    #   bytes [4..8)  height (uint32 BE)
-    #   bytes [8..12) scale flag — 0x00000001 = HiDPI 2x · 0x00000000 = native
-    #   bytes [12..16) enable — 0x00000001 = enabled
-    # python base64 used for clarity vs raw bash printf (avoids encoding bugs).
-    python3 - "$pfile" <<'PY' >/tmp/airgenome-display.plist
-import sys, struct, base64, plistlib
-
-def entry(w, h, hidpi=1, enabled=1):
-    return struct.pack(">IIII", w, h, hidpi, enabled)
-
-scaled = [
-    entry(1080, 1920, 1, 1),  # default looks-like (current)
-    entry( 960, 1707, 1, 1),  # tighter HiDPI
-    entry( 864, 1536, 1, 1),  # smaller HiDPI
-    entry( 810, 1440, 1, 1),  # smallest practical HiDPI
-    entry(2160, 3840, 0, 1),  # 1:1 native (no scale — biggest workspace)
-    entry(1620, 2880, 0, 1),  # 1:1 reduced
-    entry(1080, 1920, 0, 1),  # 1:1 small (smallest practical, framebuffer 1/4)
-]
-
-doc = {
-    "DisplayProductName": "LG UltraFine (airgenome-override)",
-    "DisplayVendorID": 0x1e6d,
-    "DisplayProductID": 0x5cbb,
-    "scale-resolutions": scaled,
-}
-
-with open("/tmp/airgenome-display.plist", "wb") as f:
-    plistlib.dump(doc, f, fmt=plistlib.FMT_XML)
-PY
-
-    sudo install -m 644 /tmp/airgenome-display.plist "$pfile" \
-        && log "display-override: wrote $pfile (LG UltraFine — 7 scaled-resolutions + native modes)" \
-        && log "  → reboot required for new options to appear in System Settings → Displays" \
-        || log "display-override: install failed — check sudo + SIP status"
-    rm -f /tmp/airgenome-display.plist
-}
-
 cmd_init() {
     [ -f "$PLIST_SRC" ] || die "plist source missing: $PLIST_SRC"
     [ -x "$HEXA" ] || die "hexa binary missing: $HEXA"
@@ -473,10 +398,6 @@ cmd_init() {
 
     # HUSH — macOS 부하 완화 동행 적용 (idempotent)
     cmd_hush
-
-    # DISPLAY-OVERRIDE — EDID override for DisplayLink portrait monitors
-    # (additional HiDPI scale modes; reboot required to take effect)
-    cmd_display_override
 
     log "next: airgenome status (확인) → airgenome arm (live kill on) 필요 시"
 }
@@ -690,10 +611,6 @@ cmd_run() {
     # 비동기 cadence — 모듈별 독립 sleep, 60s 공유 tick 제거.
     #   60s : probe · dispatch · harvest · label
     #   300s: forecast
-    # NOTE: displaylink 는 bash cadence 에서 제거됨 (2026-05-15). 매 10s
-    # `timeout`(gtimeout) spawn 이 macOS TCC 폴더접근 프롬프트를 반복 유발 +
-    # bash 는 잘못된 레이어. → airgenome 네이티브 앱 메뉴바 토글로 이관
-    # ([@c_displaylink_lifecycle] · g_single_process).
     local cad60_pid cad300_pid
     cad60_pid="$(spawn_cadence cadence-60s 60 probe dispatch harvest label)"
     log "cadence-60s forked PID=$cad60_pid (probe·dispatch·harvest·label)"
@@ -1289,7 +1206,6 @@ main() {
     case "$sub" in
         init|start)    cmd_init ;;
         hush)          cmd_hush ;;
-        display-override) cmd_display_override ;;
         stop)          cmd_stop ;;
         status)        cmd_status ;;
         arm)           cmd_arm ;;

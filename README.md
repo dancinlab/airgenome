@@ -122,24 +122,6 @@ airgenome cli            # interactive TUI
 airgenome menubar        # menubar + ⌃S launcher (already running via launchd)
 ```
 
-### DRM video + DisplayLink (manual Chrome fix)
-
-When **any DisplayLink screen is attached**, macOS blocks FairPlay-protected
-video (Netflix, Disney+, Prime in **Safari**) on **all** displays — the
-DisplayLink virtual display has no HDCP path, so the media stack refuses
-protected surfaces session-wide ([DisplayLink KB 830301](https://support.displaylink.com/knowledgebase/articles/830301-content-protected-video-does-not-play-on-mac-while)).
-Safari has **no** hardware-acceleration toggle, so it cannot be worked around;
-Chrome/Edge use Widevine L3 (software DRM) and play protected video **with every
-DisplayLink screen still on** (capped 720p) once hardware acceleration is off.
-
-There is no airgenome command for this — set it once directly in the browser:
-
-1. Open `chrome://settings/system` (or `edge://settings/system`).
-2. Turn **off** "Use hardware acceleration when available".
-3. Click **Relaunch**. Netflix/Disney+/Prime now play in that browser.
-
-(Revert any time by re-enabling the toggle. Firefox has no such toggle.)
-
 ## Repo layout
 
 ```
