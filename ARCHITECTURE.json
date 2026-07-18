@@ -304,7 +304,7 @@
                 "name": "airgenome_winctl.m",
                 "role": "detail",
                 "id": "components-native-src-macos-app-objective-c-airgenome-winctl-m",
-                "detail": ", airgenome_winctl.m (AX window arrange + Dock reset, ~301 LOC)"
+                "detail": ", airgenome_winctl.m (AX window arrange + Dock reset; apply size→pos→size with per-app AXEnhancedUserInterface disable/restore so Chromium/Electron windows honor snap, ~341 LOC)"
               },
               {
                 "name": "airgenome_overload.m",
