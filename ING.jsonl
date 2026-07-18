@@ -1,0 +1,1 @@
+{"kind":"work","id":"1","ts":"2026-07-18T15:52:33.732Z","text":"DisplayLink 폐기 + winctl-fix 릴리즈 + ghost 재설치 파이프라인: ①DisplayLink 관련기능 전면 폐기(tap.m·bin/airgenome·displaylink.hexa·markers·docs) → merge ②최신 태그 release.yml workflow_dispatch 릴리즈 ③ghost 호스트 재설치"}
