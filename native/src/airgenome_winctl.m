@@ -233,29 +233,69 @@ static BOOL winctl_read_window_rect(AXUIElementRef win, CGRect *out) {
     return YES;
 }
 
-// Apply target rect to the AX window (set position then size — order matters
-// when window goes to a different monitor, since size could be clamped to
-// the OLD monitor before position moves it).
+// AXEnhancedUserInterface lives on the APPLICATION element (not the window).
+// Chromium/Electron apps (Chrome, VS Code, Slack) turn this ON when they detect
+// an AX client; while it is ON they debounce/ignore programmatic position+size
+// writes, so alt+N snap silently no-ops for Chrome even though it works for
+// Terminal/Safari/Finder. Canonical fix (Rectangle · yabai · Hammerspoon):
+// disable it, apply the frame, restore it. Do NOT touch AXManualAccessibility
+// (that enables Chromium's content AX tree → heavy CPU/mem cost).
+static const CFStringRef kWinctlAXEnhancedUserInterface =
+    CFSTR("AXEnhancedUserInterface");
+
+// Apply target rect to the AX window as size → position → size. First size lets
+// the app enforce min/increment constraints, position performs the cross-
+// monitor move, final size corrects clamping against the destination display.
+// More reliable for Chromium than position→size→position while still fixing the
+// Terminal/iTerm re-clamp. AXEnhancedUserInterface is disabled around the writes
+// (only when it was already true and the disable succeeds) and restored after.
 static void winctl_apply_rect(AXUIElementRef win, CGRect r) {
+    if (!win) return;
+
+    // AXEnhancedUserInterface is an application-element attribute. Derive the
+    // pid from `win` (not from focused-app, which could change mid-op).
+    AXUIElementRef app = NULL;
+    pid_t pid = 0;
+    if (AXUIElementGetPid(win, &pid) == kAXErrorSuccess && pid > 0)
+        app = AXUIElementCreateApplication(pid);
+
+    CFTypeRef originalEnhanced = NULL;
+    Boolean restoreEnhanced = false;
+    if (app
+        && AXUIElementCopyAttributeValue(app, kWinctlAXEnhancedUserInterface,
+                                         &originalEnhanced) == kAXErrorSuccess
+        && originalEnhanced
+        && CFGetTypeID(originalEnhanced) == CFBooleanGetTypeID()
+        && CFBooleanGetValue((CFBooleanRef)originalEnhanced)) {
+        // Restore only if the disable actually took (VoiceOver can veto it).
+        restoreEnhanced =
+            AXUIElementSetAttributeValue(app, kWinctlAXEnhancedUserInterface,
+                                         kCFBooleanFalse) == kAXErrorSuccess;
+    }
+
     CGPoint p = CGPointMake(r.origin.x, r.origin.y);
     CGSize  s = CGSizeMake(r.size.width, r.size.height);
+    AXValueRef sizVal1 = AXValueCreate(kAXValueCGSizeType,  &s);
+    if (sizVal1) {
+        AXUIElementSetAttributeValue(win, kAXSizeAttribute, sizVal1);
+        CFRelease(sizVal1);
+    }
     AXValueRef posVal = AXValueCreate(kAXValueCGPointType, &p);
-    AXValueRef sizVal = AXValueCreate(kAXValueCGSizeType,  &s);
     if (posVal) {
         AXUIElementSetAttributeValue(win, kAXPositionAttribute, posVal);
         CFRelease(posVal);
     }
-    if (sizVal) {
-        AXUIElementSetAttributeValue(win, kAXSizeAttribute, sizVal);
-        CFRelease(sizVal);
+    AXValueRef sizVal2 = AXValueCreate(kAXValueCGSizeType,  &s);
+    if (sizVal2) {
+        AXUIElementSetAttributeValue(win, kAXSizeAttribute, sizVal2);
+        CFRelease(sizVal2);
     }
-    // Second position pass: some apps (Terminal, iTerm) honor size first then
-    // re-clamp position — repeating position keeps origin authoritative.
-    posVal = AXValueCreate(kAXValueCGPointType, &p);
-    if (posVal) {
-        AXUIElementSetAttributeValue(win, kAXPositionAttribute, posVal);
-        CFRelease(posVal);
-    }
+
+    if (restoreEnhanced)
+        AXUIElementSetAttributeValue(app, kWinctlAXEnhancedUserInterface,
+                                     kCFBooleanTrue);
+    if (originalEnhanced) CFRelease(originalEnhanced);
+    if (app) CFRelease(app);
 }
 
 BOOL airgenome_winctl_handle_keydown(CGEventRef event) {
