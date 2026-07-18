@@ -336,7 +336,7 @@
             "name": "bin/ — shell shims + supervisor",
             "role": "module",
             "id": "components-bin-shell-shims-supervisor",
-            "detail": "airgenome CLI shim, airgenome-supervisor, menubar.hexa, build/stress/host helpers. cmd_hush() (macOS load mitigation) + cmd_display_override() (DisplayLink EDID) + cmd_init() (calls both, idempotent) live here. · path: bin/"
+            "detail": "airgenome CLI shim, airgenome-supervisor, menubar.hexa, build/stress/host helpers. cmd_hush() (macOS load mitigation) + cmd_init() (idempotent, calls cmd_hush) live here. · path: bin/"
           },
           {
             "name": "forge/ — genome ring buffers + outputs",
@@ -571,86 +571,6 @@
                 "role": "",
                 "id": "domains-hush-macos-system-load-mitigation-note",
                 "detail": "Was HUSH.md (state) + HUSH.log.md (step log, recoverable via git log). "
-              }
-            ]
-          },
-          {
-            "name": "EDID — DisplayLink USB monitor resolution options",
-            "role": "domain",
-            "id": "domains-edid-displaylink-usb-monitor-resolution",
-            "detail": "@goal: expose macOS-hidden HiDPI scale + 1:1 native modes for a LG UltraFine 4K portrait monitor connected via DisplayLink USB, selectable in System Settings, via an EDID override. ",
-            "children": [
-              {
-                "name": "Target",
-                "role": "detail",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-target",
-                "detail": " Target: LG UltraFine 4K (Vendor 0x1e6d, Product 0x5cbb, 2 units same product code → single override covers both; panel native 2160×3840; found via CGGetActiveDisplayList Swift probe since ioreg doesn't expose the DisplayLink virtual display). "
-              },
-              {
-                "name": "Override file",
-                "role": "detail",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-override-file",
-                "detail": "Override file: /Library/Displays/Contents/Resources/Overrides/DisplayVendorID-1e6d/DisplayProductID-5cbb (root:wheel 644, 750 bytes, XML plist, sudo to write). "
-              },
-              {
-                "name": "Exposes 7 modes",
-                "role": "detail",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-exposes-7-modes",
-                "detail": "Exposes 7 modes (1080×1920 2×, 960×1707 2×, 864×1536 2×, 810×1440 2×, 2160×3840 1:1, 1620×2880 1:1, 1080×1920 1:1). "
-              },
-              {
-                "name": "Apply",
-                "role": "detail",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-apply",
-                "detail": "Apply needs a reboot (EDID cache read once at boot, no hot-reload), then System Settings → Displays → ⌥-click Resolution. "
-              },
-              {
-                "name": "Limits",
-                "role": "detail",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-limits",
-                "detail": "Limits: cannot reduce DisplayLink CPU pump (USB framebuffer forced to panel-native by firmware — override only adds UI-scale modes); panel-native itself cannot be overridden on DisplayLink. "
-              },
-              {
-                "name": "Rollback",
-                "role": "detail",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-rollback",
-                "detail": "Rollback: rm the override file + reboot. "
-              },
-              {
-                "name": "Implementation",
-                "role": "detail",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-implementation",
-                "detail": "Implementation: bin/airgenome cmd_display_override (66 lines, python3 plistlib 16-byte big-endian entries per scaled resolution). "
-              },
-              {
-                "name": "DRM note",
-                "role": "detail",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-drm-note",
-                "detail": "DRM note: with DisplayLink attached, Safari blocks FairPlay-protected video full-screen (no HDCP path, KB 830301); Chrome/Edge with HW accel OFF plays at 720p (manual fix in README § DRM video + DisplayLink)."
-              },
-              {
-                "name": "EDID — DisplayLink USB monitor resolution options (cont 2)",
-                "role": "",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-c2",
-                "detail": "Applied by `airgenome init` (cmd_display_override after cmd_hush, one sudo prompt) or standalone `airgenome display-override` (idempotent — airgenome-managed marker → skip)."
-              },
-              {
-                "name": "status",
-                "role": "",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-status",
-                "detail": "active"
-              },
-              {
-                "name": "path",
-                "role": "",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-path",
-                "detail": "bin/airgenome (cmd_display_override)"
-              },
-              {
-                "name": "note",
-                "role": "",
-                "id": "domains-edid-displaylink-usb-monitor-resolution-note",
-                "detail": "Was EDID.md (no log)."
               }
             ]
           },

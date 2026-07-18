@@ -206,7 +206,6 @@ static NSMenuItem         *g_item_winctl = nil;
 static NSMenuItem         *g_item_launcher = nil;
 static NSMenuItem         *g_item_hotkey = nil;
 static NSMenuItem         *g_item_overload = nil;
-static NSMenuItem         *g_item_displaylink = nil;
 // overload 워처 default ON. menubar.state 에서 overrideable.
 static int                 g_overload_on = 1;
 static AirgenomeMenuTarget *g_menu_target = nil;
@@ -332,46 +331,6 @@ static void kick_window_manager(void) {
     // Hot-reload defaults: WindowManager is auto-respawned by launchd.
     int rc = system("killall WindowManager 2>/dev/null");
     (void)rc;
-}
-
-// ---------------------------------------------------------------------------
-// DisplayLink lifecycle — menubar ON/OFF (single-point control).
-//
-// 코덱만 추출은 불가 (정적링크·NDA). 대신 DL Manager 프로세스를 띄우되
-// 자체 메뉴바 아이콘(ShowMenuBarIcon)·자동시작(AppAutostart)을 무력화하고
-// on/off 를 airgenome 메뉴바 한 곳으로 일원화. OFF → DisplayLinkUserAgent
-// + xpc + CrashRestartHelper 종료 (워처 먼저 → 자가부활 race 차단):
-// ~428MB RSS + 15% CPU + Apple 보라 "녹화중" 아이콘까지 전부 회수.
-// ON → .app 으로 launch. bare binary 직접 실행은 macOS Sequoia 에서
-// ScreenCaptureKit 권한 컨텍스트 부재로 디스플레이 미동작 (raw 검증
-// 2026-05-15) → 반드시 LaunchServices(.app) 경로. 보라 아이콘은 ON 일 때
-// 불가피 (Apple 보안 설계, g1 real-limits-first) — OFF 면 사라짐.
-static int displaylink_running(void) {
-    FILE *f = popen("pgrep -x DisplayLinkUserAgent 2>/dev/null", "r");
-    if (!f) return 0;
-    char buf[32] = {0};
-    int got = (fgets(buf, sizeof buf, f) != NULL);
-    pclose(f);
-    return got ? 1 : 0;
-}
-
-static void displaylink_start(void) {
-    // headless 영구화 (idempotent): 자체 메뉴바 아이콘 + 자동시작 무력화.
-    int r1 = system("defaults write com.displaylink.DisplayLinkUserAgent "
-                     "ShowMenuBarIcon -bool false 2>/dev/null");
-    int r2 = system("defaults write com.displaylink.DisplayLinkUserAgent "
-                     "AppAutostart -bool false 2>/dev/null");
-    int r3 = system("open -gj '/Applications/DisplayLink Manager.app' 2>/dev/null");
-    (void)r1; (void)r2; (void)r3;
-}
-
-static void displaylink_stop(void) {
-    // 순서 중요: 워처(CrashRestartHelper)가 agent 종료를 감지하면 재시동 →
-    // 반드시 워처부터 죽인 뒤 agent → xpc.
-    int r1 = system("pkill -TERM -x CrashRestartHelper 2>/dev/null");
-    int r2 = system("pkill -TERM -x DisplayLinkUserAgent 2>/dev/null");
-    int r3 = system("pkill -TERM -x DisplayLinkXpcService 2>/dev/null");
-    (void)r1; (void)r2; (void)r3;
 }
 
 static void native_tiling_capture_and_disable(void) {
@@ -1343,7 +1302,6 @@ static void update_menu_states(void);
 - (void)toggleWake:(id)sender;
 - (void)toggleLidClosed:(id)sender;
 - (void)toggleOverload:(id)sender;
-- (void)toggleDisplayLink:(id)sender;
 @end
 
 @implementation AirgenomeMenuTarget
@@ -1367,22 +1325,6 @@ static void update_menu_states(void);
     update_menu_states();
     fprintf(stderr, "menubar: overload -> %s\n", g_overload_on ? "ON" : "off");
     fflush(stderr);
-}
-
-// DisplayLink: 실제 상태 = DisplayLinkUserAgent 프로세스 존재 여부 (wake/lid
-// 처럼 live 쿼리, 영속 플래그 없음). save_menubar_state 불필요.
-- (void)toggleDisplayLink:(id)sender {
-    (void)sender;
-    if (displaylink_running()) {
-        displaylink_stop();
-        fprintf(stderr, "menubar: displaylink -> off "
-                        "(agent+xpc+watcher killed; ~428MB+15%%CPU+보라아이콘 회수)\n");
-    } else {
-        displaylink_start();
-        fprintf(stderr, "menubar: displaylink -> ON (open .app, headless)\n");
-    }
-    fflush(stderr);
-    update_menu_states();
 }
 
 - (void)toggleMagnet:(id)sender {
@@ -1563,7 +1505,6 @@ static void update_menu_states(void) {
     if (g_item_launcher) g_item_launcher.state = g_launcher_on ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_hotkey)   g_item_hotkey.state   = g_hotkey_on   ? NSControlStateValueOn : NSControlStateValueOff;
     if (g_item_overload) g_item_overload.state = g_overload_on ? NSControlStateValueOn : NSControlStateValueOff;
-    if (g_item_displaylink) g_item_displaylink.state = displaylink_running() ? NSControlStateValueOn : NSControlStateValueOff;
     // 반전 의미: 체크 = "인덱싱 끄기"가 적용된 상태 (= indexing disabled).
 }
 
@@ -1667,13 +1608,6 @@ static void install_status_item(void) {
         keyEquivalent:@""];
     g_item_overload.target = g_menu_target;
     [menu addItem:g_item_overload];
-
-    g_item_displaylink = [[NSMenuItem alloc]
-        initWithTitle:@"DisplayLink (외장 모니터 on/off)"
-               action:@selector(toggleDisplayLink:)
-        keyEquivalent:@""];
-    g_item_displaylink.target = g_menu_target;
-    [menu addItem:g_item_displaylink];
 
     update_menu_states();   // sync checkmarks to current real state
 

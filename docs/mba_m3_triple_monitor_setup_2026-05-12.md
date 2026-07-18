@@ -228,6 +228,28 @@ system_profiler SPThunderboltDataType | grep -E "Device Name|Status|Speed"
 
 ---
 
+## DRM 영상 + DisplayLink (수동 Chrome 우회)
+
+(구 airgenome README 에서 이관 — airgenome 은 DisplayLink 관련 기능을 폐기했다.)
+
+**DisplayLink 화면이 하나라도 연결되면** macOS 는 FairPlay 보호 영상(Safari 의
+Netflix · Disney+ · Prime)을 **모든** 디스플레이에서 차단한다 — DisplayLink 가상
+디스플레이에는 HDCP 경로가 없어 미디어 스택이 세션 전체에서 보호 서피스를 거부한다
+([DisplayLink KB 830301](https://support.displaylink.com/knowledgebase/articles/830301-content-protected-video-does-not-play-on-mac-while)).
+Safari 는 하드웨어 가속 토글이 **없어** 우회 불가; Chrome/Edge 는 Widevine L3(소프트
+DRM)를 써서 하드웨어 가속을 끄면 **DisplayLink 화면을 켠 채로** 보호 영상을 재생한다
+(720p 상한).
+
+airgenome 명령은 없다 — 브라우저에서 한 번 직접 설정한다:
+
+1. `chrome://settings/system` (또는 `edge://settings/system`) 열기.
+2. **"Use hardware acceleration when available"** 끄기.
+3. **Relaunch** 클릭. 해당 브라우저에서 Netflix/Disney+/Prime 재생됨.
+
+(토글을 다시 켜면 원복. Firefox 에는 이 토글이 없다.)
+
+---
+
 ## 참고 자료
 
 - [Apple 공식 — M3 MacBook Air 듀얼 모니터 가이드](https://support.apple.com/en-us/117373)
