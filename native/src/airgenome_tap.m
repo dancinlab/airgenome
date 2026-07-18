@@ -163,6 +163,7 @@ static const char *KEY_OPTION_ACCEL  = "EnableTilingOptionAccelerator";
 // ---------------------------------------------------------------------------
 
 static CFMachPortRef    g_tap            = NULL;
+static CFRunLoopSourceRef g_tap_src      = NULL;  // runloop source for g_tap
 
 // Drag detection state for the magnet feature.
 static int              g_dragging       = 0;
@@ -1937,6 +1938,84 @@ extern void airgenome_settings_show_manager(void);
 @end
 static AirgenomeExeHandlerDelegate *g_exe_handler_delegate = nil;
 
+// Recheck timer that arms the event tap the moment Accessibility is granted.
+// Lets the menubar icon appear BEFORE permission exists (no more fatal-exit on
+// first run) — the tap arms lazily once the user enables the app in System
+// Settings, with no relaunch and no thrash.
+static dispatch_source_t g_ax_recheck_timer = NULL;
+
+// Create + enable the CGEventTap (and capture native-tiling defaults). Idempotent
+// — a no-op if already armed. Returns true on success. Requires Accessibility
+// permission; callers must gate on AXIsProcessTrusted() first.
+static bool arm_event_tap(void) {
+    if (g_tap) return true;  // already armed
+
+    native_tiling_capture_and_disable();
+
+    // Union of all feature event types so the menubar can flip g_*_on flags at
+    // runtime without re-creating the tap (per-event gating in tap_callback).
+    CGEventMask mask = CGEventMaskBit(kCGEventOtherMouseDown)
+                     | CGEventMaskBit(kCGEventScrollWheel)
+                     | CGEventMaskBit(kCGEventLeftMouseDown)
+                     | CGEventMaskBit(kCGEventLeftMouseDragged)
+                     | CGEventMaskBit(kCGEventLeftMouseUp)
+                     | CGEventMaskBit(kCGEventKeyDown);
+    g_tap = CGEventTapCreate(kCGSessionEventTap,
+                             kCGHeadInsertEventTap,
+                             kCGEventTapOptionDefault,
+                             mask,
+                             tap_callback,
+                             NULL);
+    if (!g_tap) {
+        native_tiling_restore();
+        emit_ai_native_error(
+            "cgeventtap-create-failed: missing Accessibility permission",
+            "1) System Settings -> Privacy & Security -> Accessibility  "
+            "2) add+enable /Applications/airgenome.app  "
+            "3) toggle on (no reboot needed)");
+        return false;
+    }
+    g_tap_src = CFMachPortCreateRunLoopSource(NULL, g_tap, 0);
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), g_tap_src, kCFRunLoopCommonModes);
+    CGEventTapEnable(g_tap, true);
+    fprintf(stderr,
+        "airgenome_tap: armed  buttons=%s scroll=%s magnet=%s  native-tiling=%s\n",
+        g_buttons_on ? "on" : "off",
+        g_scroll_on  ? "on" : "off",
+        g_magnet_on  ? "on" : "off",
+        (g_disable_native && g_magnet_on) ? "disabled" : "untouched");
+    fprintf(stderr,
+        "             magnet thresholds: edge=%dpx corner=%dpx drag-min=%dpx\n",
+        EDGE_THRESHOLD_PX, CORNER_THRESHOLD_PX, DRAG_MIN_DISTANCE_PX);
+    fflush(stderr);
+    return true;
+}
+
+// Poll for Accessibility grant every 3s and arm the tap once it lands, then stop
+// polling. Used when the app starts WITHOUT permission — the icon is already up,
+// so the user just toggles the app on and features light up on their own.
+static void start_ax_recheck(void) {
+    if (g_ax_recheck_timer) return;
+    g_ax_recheck_timer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(g_ax_recheck_timer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+        (uint64_t)(3 * NSEC_PER_SEC), (uint64_t)(500 * NSEC_PER_MSEC));
+    dispatch_source_set_event_handler(g_ax_recheck_timer, ^{
+        if (!AXIsProcessTrusted()) return;
+        fprintf(stderr, "airgenome_tap: Accessibility granted -> arming tap\n");
+        fflush(stderr);
+        if (arm_event_tap()) {
+            update_menu_states();
+            if (g_ax_recheck_timer) {
+                dispatch_source_cancel(g_ax_recheck_timer);
+                g_ax_recheck_timer = NULL;
+            }
+        }
+    });
+    dispatch_resume(g_ax_recheck_timer);
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
         // raw 241 단일 binary 단일 TCC entry — `--mode=run-once=<path>` 진입점.
@@ -2022,78 +2101,12 @@ int main(int argc, char **argv) {
             return 64;
         }
 
-        // AX permission check up front -- both CGEventTap and AX window
-        // manipulation need it. Bailing here keeps native-tiling defaults
-        // untouched on first-run-without-permission.
-        if (g_magnet_on && !AXIsProcessTrusted()) {
-            emit_ai_native_error(
-                "ax-permission-missing: process not in Accessibility allowlist",
-                "1) System Settings -> Privacy & Security -> Accessibility  "
-                "2) add+enable build/airgenome binary  "
-                "3) re-run (no reboot needed)");
-            emit_sentinel("FAIL", "ax-permission-missing");
-            return 78;
-        }
-
-        native_tiling_capture_and_disable();
-
-        // Always subscribe to the union of all feature event types so the
-        // menubar can flip g_*_on flags at runtime without re-creating the
-        // CGEventTap. The callback gates per-event handling on the flags
-        // (see tap_callback above), so an "off" feature is a cheap noop.
-        // hive raw 209: kCGEventKeyDown required for launcher hotkey hook
-        // (handle_keydown in tap_callback line ~804). Was missing in iter 14
-        // tap.m integration — silent-dead-code bug found 2026-04-30 04:38.
-        CGEventMask mask = CGEventMaskBit(kCGEventOtherMouseDown)
-                         | CGEventMaskBit(kCGEventScrollWheel)
-                         | CGEventMaskBit(kCGEventLeftMouseDown)
-                         | CGEventMaskBit(kCGEventLeftMouseDragged)
-                         | CGEventMaskBit(kCGEventLeftMouseUp)
-                         | CGEventMaskBit(kCGEventKeyDown);
-
-        // Mouse button feature needs to suppress the original button event
-        // (return NULL from callback), so the tap must be in default mode
-        // rather than listen-only. Magnet does not modify events but lives
-        // in the same tap.
-        g_tap = CGEventTapCreate(kCGSessionEventTap,
-                                 kCGHeadInsertEventTap,
-                                 kCGEventTapOptionDefault,
-                                 mask,
-                                 tap_callback,
-                                 NULL);
-        if (!g_tap) {
-            native_tiling_restore();
-            emit_ai_native_error(
-                "cgeventtap-create-failed: missing Accessibility permission",
-                "1) System Settings -> Privacy & Security -> Accessibility  "
-                "2) add+enable build/airgenome binary  "
-                "3) re-run (no reboot needed)");
-            emit_sentinel("FAIL", "accessibility-permission-missing");
-            return 78;
-        }
-
-        CFRunLoopSourceRef src =
-            CFMachPortCreateRunLoopSource(NULL, g_tap, 0);
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), src,
-                           kCFRunLoopCommonModes);
-        CGEventTapEnable(g_tap, true);
-
-        fprintf(stderr,
-            "airgenome_tap: armed  buttons=%s scroll=%s magnet=%s  "
-            "native-tiling=%s\n",
-            g_buttons_on ? "on" : "off",
-            g_scroll_on  ? "on" : "off",
-            g_magnet_on  ? "on" : "off",
-            (g_disable_native && g_magnet_on) ? "disabled" : "untouched");
-        fprintf(stderr,
-            "             magnet thresholds: edge=%dpx corner=%dpx drag-min=%dpx\n",
-            EDGE_THRESHOLD_PX, CORNER_THRESHOLD_PX, DRAG_MIN_DISTANCE_PX);
-        fflush(stderr);
-
-        // NSApp accessory mode: shows in the macOS menu bar (NSStatusItem)
-        // but does not appear in the Dock. install_signal_handlers must
-        // run AFTER NSApp is initialized so the dispatch sources fire on
-        // a live main queue.
+        // Menubar FIRST — the NSStatusItem must appear even BEFORE Accessibility
+        // permission exists, so the app never silently vanishes on first run (the
+        // old code fatal-exited here, so the icon never showed until permission
+        // was granted → thrash under KeepAlive). install_signal_handlers must run
+        // AFTER NSApp init so its dispatch sources fire on a live main queue.
+        // NSApp accessory mode: menu bar only, no Dock tile.
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         // Force NSApplicationIcon from the bundle's AppIcon.icns at startup.
@@ -2114,6 +2127,30 @@ int main(int argc, char **argv) {
         [NSApp setDelegate:g_exe_handler_delegate];
         install_status_item();
         install_signal_handlers();
+
+        // Accessibility: prompt (adds the app to the allowlist + shows the system
+        // dialog), then arm the CGEventTap. If not yet trusted, DO NOT fatal —
+        // keep the menubar alive and poll; the tap arms itself the moment the user
+        // enables the app (no relaunch, no thrash). Every feature (buttons/scroll/
+        // magnet) needs the tap and we already bailed if all are off, so trust is
+        // always required to arm.
+        NSDictionary *axOpts =
+            @{ (__bridge NSString *)kAXTrustedCheckOptionPrompt: @YES };
+        BOOL axTrusted =
+            AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)axOpts);
+        if (axTrusted) {
+            bool armed = arm_event_tap();
+            emit_sentinel(armed ? "PASS" : "FAIL",
+                          armed ? "armed" : "cgeventtap-create-failed");
+        } else {
+            fprintf(stderr,
+                "airgenome_tap: menubar up; waiting for Accessibility permission "
+                "(System Settings -> Privacy & Security -> Accessibility -> enable "
+                "/Applications/airgenome.app). Tap arms automatically once granted.\n");
+            fflush(stderr);
+            emit_sentinel("WAIT", "ax-permission-pending");
+            start_ax_recheck();
+        }
 
         // raw 240 § B C4 — env gate. default OFF. AIRG_TAP_LOOP=1 시만
         // dispatch_source_t timer 3개 (harvest 60s / label 300s / forecast
@@ -2142,7 +2179,7 @@ int main(int argc, char **argv) {
         airgenome_notify_shutdown();
         airgenome_overload_shutdown();
 
-        if (src) CFRelease(src);
+        if (g_tap_src) CFRelease(g_tap_src);
         if (g_tap) CFRelease(g_tap);
         native_tiling_restore();
     }
