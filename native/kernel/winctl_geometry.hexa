@@ -14,8 +14,10 @@
 //   3  Left half      → left half of vf
 //   4  Right half     → right half of vf
 //   5  Center only    → preserve cur size (clamped to vf), center origin
-//   else              → cur (identity — case 6 is a system action handled
-//                       by the shim, never reaches this kernel)
+//   6  Top half       → top half of vf (상 최대)
+//   7  Bottom half    → bottom half of vf (하 최대)
+//   else              → cur (identity — dock reset (alt+0) is a system action
+//                       handled by the shim, never reaches this kernel)
 //
 // Coords are AX-space (top-left, primary-screen origin) — the kernel is
 // frame-agnostic; the shim does the NS↔AX conversion at the boundary.
@@ -58,7 +60,15 @@ fn winctl_target_rect(
         if h > vfh { h = vfh }
         return [vfx + (vfw - w) / 2.0, vfy + (vfh - h) / 2.0, w, h]
     }
-    // default / case 6: identity (current window unchanged)
+    if action == 6 {
+        // Top half (상 최대) — AX coords: top edge is min y
+        return [vfx, vfy, vfw, vfh / 2.0]
+    }
+    if action == 7 {
+        // Bottom half (하 최대)
+        return [vfx, vfy + vfh / 2.0, vfw, vfh / 2.0]
+    }
+    // default: identity (current window unchanged — dock reset is a shim action)
     return [cwx, cwy, cww, cwh]
 }
 

@@ -3,7 +3,8 @@
 #
 # Sweeps a real corpus of (action × screen visibleFrame × current-window) cases
 # and asserts the two emit byte-identical "<x> <y> <w> <h>" lines. Covers all
-# 5 window actions + the case-6/default identity path, real macOS screen sizes
+# 7 window actions (incl. 6=top half, 7=bottom half) + the default identity
+# path (action 0 = dock reset, a shim action → identity here), real macOS sizes
 # (incl. multi-display origins + notch-trimmed visibleFrame heights) and the
 # action-5 clamp branch (window larger than visibleFrame on each axis).
 #
@@ -33,7 +34,7 @@ windows=(
   "500 500 1200 200"   # wide-short → action-5 clamp width only on small screens
   "50 50 100 2500"     # tall-thin → action-5 clamp height
 )
-actions=(1 2 3 4 5 6 0)   # 6 and 0 exercise the identity/default path
+actions=(1 2 3 4 5 6 7 0)   # 6=top half, 7=bottom half; 0 exercises the identity/default path
 
 pass=0; fail=0
 for a in "${actions[@]}"; do

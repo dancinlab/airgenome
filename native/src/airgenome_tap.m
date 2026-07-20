@@ -89,7 +89,7 @@ static int g_disable_native = 1;
 static int g_launcher_on = 1;   // ctrl+s app launcher overlay; hive raw 209
                                  // (default ON 2026-04-30 — user expectation
                                  // is "installed = working"; menubar can OFF)
-static int g_winctl_on   = 1;   // alt+1..5 window arrange; raw 209 sister axis
+static int g_winctl_on   = 1;   // alt+1..7 window arrange + alt+0 dock reset; raw 209 sister axis
 static int g_hotkey_on   = 1;   // user-defined hotkey-action binder; raw 209 sister #3
 static int g_loop_on     = 1;   // raw 240 § B C4 — in-process harvest/forecast/label
                                  // dispatcher. default ON (사용자 mandate "airgenome
