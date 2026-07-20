@@ -44,6 +44,12 @@ static Rect winctl_target_rect(int action, Rect vf, Rect curWin) {
             r.w = w; r.h = h;
             return r;
         }
+        case 6: /* Top half (상 최대) */
+            r.x = vf.x; r.y = vf.y; r.w = vf.w; r.h = vf.h / 2;
+            return r;
+        case 7: /* Bottom half (하 최대) */
+            r.x = vf.x; r.y = vf.y + vf.h / 2; r.w = vf.w; r.h = vf.h / 2;
+            return r;
         default:
             return curWin;
     }

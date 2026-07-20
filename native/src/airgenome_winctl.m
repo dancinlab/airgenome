@@ -23,7 +23,10 @@
 //   alt+3  Left Half      — left half of visibleFrame
 //   alt+4  Right Half     — right half of visibleFrame
 //   alt+5  Center Only    — preserve size, center origin
-//   alt+6  Dock Reset     — NOT a window action. Resets macOS Dock's
+//   alt+6  Top Half       — top half of visibleFrame (상 최대 · user mandate
+//                           2026-07-21)
+//   alt+7  Bottom Half    — bottom half of visibleFrame (하 최대 · same mandate)
+//   alt+0  Dock Reset     — NOT a window action. Resets macOS Dock's
 //                           tilesize to a fixed value (recovery from
 //                           accidental drag-resize). Default 48px; override
 //                           via AIRG_TAP_WINCTL_DOCK_TILE env (clamped 16..128).
@@ -31,6 +34,8 @@
 //                           then SIGHUP-equivalent restart via killall Dock
 //                           (Dock auto-respawns; no admin auth needed since
 //                           com.apple.dock prefs live in user domain).
+//                           (Moved 6→0 per 2026-07-21 mandate to free 6/7 for
+//                            top/bottom half.)
 //
 // Coordinate system note: AX uses GLOBAL screen coords with origin at the
 // TOP-LEFT of the PRIMARY screen, while NSScreen.visibleFrame is bottom-left
@@ -54,8 +59,14 @@ extern BOOL airgenome_winctl_handle_keydown(CGEventRef event);
 // once on first-install (without duplicating the prefs+killall sequence).
 extern void airgenome_winctl_reset_dock_tilesize(void);
 
-// Hotkey table: keycode → action id 1..6.
-// kVK_ANSI_1..5 = 0x12,0x13,0x14,0x15,0x17 (5 is 0x17 not 0x16); 6 = 0x16.
+// Sentinel action id for the Dock-tilesize reset (system action, not a window
+// rect transform). Kept well clear of the 1..7 window-action range so the
+// winctl_target_rect geometry never sees it.
+#define WINCTL_ACTION_DOCK_RESET 100
+
+// Hotkey table: keycode → action id (1..7 window actions + dock-reset sentinel).
+// kVK_ANSI_1..5 = 0x12,0x13,0x14,0x15,0x17 (5 is 0x17 not 0x16); 6 = 0x16;
+// 7 = 0x1A; 0 = 0x1D (top-row digit row is non-contiguous on the macOS keymap).
 static int winctl_keycode_to_action(int64_t kc) {
     switch (kc) {
         case kVK_ANSI_1: return 1;
@@ -63,7 +74,9 @@ static int winctl_keycode_to_action(int64_t kc) {
         case kVK_ANSI_3: return 3;
         case kVK_ANSI_4: return 4;
         case kVK_ANSI_5: return 5;
-        case kVK_ANSI_6: return 6;
+        case kVK_ANSI_6: return 6;   // Top half (상 최대)
+        case kVK_ANSI_7: return 7;   // Bottom half (하 최대)
+        case kVK_ANSI_0: return WINCTL_ACTION_DOCK_RESET;  // Dock reset (moved 6→0)
         default:         return 0;
     }
 }
@@ -146,8 +159,8 @@ static CGRect winctl_visible_frame_ax(NSScreen *screen) {
 // the native/src/*.m sources. Its pure rect transform is mirrored 1:1 by the
 // hexa-native kernel ../kernel/winctl_geometry.hexa, which is the SSOT spec for
 // the geometry. This in-process C copy is RUNEQ-locked to that kernel —
-// value-exact over 245 corpus cases (5 actions × 7 real screens × 5 windows +
-// identity path); see ../kernel/runeq_winctl.sh and the C-PORT domain verdict
+// value-exact over the runeq corpus (7 window actions × real screens × windows
+// + identity path); see ../kernel/runeq_winctl.sh and the C-PORT domain verdict
 // .verdicts/c-port/winctl-geometry-runeq.txt. The menubar tap runs this per
 // keystroke in-process (no shell-out), so the kernel stays the spec and any
 // edit to the math here MUST keep runeq_winctl.sh green.
@@ -179,8 +192,14 @@ static CGRect winctl_target_rect(int action, CGRect vf, CGRect curWin) {
                               vf.origin.y + (vf.size.height - h) / 2,
                               w, h);
         }
-        // case 6 handled in handle_keydown directly (system action, not
-        // a window-rect transform — never reaches winctl_target_rect).
+        case 6: // Top half (상 최대) — AX coords: top edge is min y.
+            return CGRectMake(vf.origin.x, vf.origin.y,
+                              vf.size.width, vf.size.height / 2);
+        case 7: // Bottom half (하 최대)
+            return CGRectMake(vf.origin.x, vf.origin.y + vf.size.height / 2,
+                              vf.size.width, vf.size.height / 2);
+        // Dock reset (alt+0) is a system action handled in handle_keydown —
+        // it never reaches winctl_target_rect.
         default:
             return curWin;
     }
@@ -314,10 +333,10 @@ BOOL airgenome_winctl_handle_keydown(CGEventRef event) {
     int action = winctl_keycode_to_action(kc);
     if (action == 0) return NO;
 
-    // alt+6: system-level Dock tilesize reset, NOT a window manipulation.
+    // alt+0: system-level Dock tilesize reset, NOT a window manipulation.
     // Bypass the focused-window pipeline entirely (works even with no
     // focused app, e.g. on Desktop / Mission Control).
-    if (action == 6) {
+    if (action == WINCTL_ACTION_DOCK_RESET) {
         airgenome_winctl_reset_dock_tilesize();
         return YES;
     }
